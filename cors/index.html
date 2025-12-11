@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CORS Checker</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 30px;
+        }
+
+        button {
+            flex: 1;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            background: #f5f5f5;
+            color: #666;
+        }
+
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+
+        .result-container {
+            display: none;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+
+        .result-container.show {
+            display: block;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .result-success {
+            background: #d4edda;
+            border: 2px solid #c3e6cb;
+        }
+
+        .result-error {
+            background: #f8d7da;
+            border: 2px solid #f5c6cb;
+        }
+
+        .result-warning {
+            background: #fff3cd;
+            border: 2px solid #ffeaa7;
+        }
+
+        .result-title {
+            font-weight: 600;
+            margin-bottom: 12px;
+            font-size: 16px;
+        }
+
+        .result-success .result-title {
+            color: #155724;
+        }
+
+        .result-error .result-title {
+            color: #721c24;
+        }
+
+        .result-warning .result-title {
+            color: #856404;
+        }
+
+        .result-message {
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 12px;
+        }
+
+        .result-success .result-message {
+            color: #155724;
+        }
+
+        .result-error .result-message {
+            color: #721c24;
+        }
+
+        .result-warning .result-message {
+            color: #856404;
+        }
+
+        .result-details {
+            background: white;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-family: 'Courier New', monospace;
+            margin-top: 12px;
+            overflow-x: auto;
+        }
+
+        .detail-row {
+            margin-bottom: 6px;
+        }
+
+        .detail-label {
+            font-weight: 600;
+            color: #555;
+        }
+
+        .detail-value {
+            color: #333;
+            word-break: break-all;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #ffffff;
+            border-radius: 50%;
+            border-top-color: transparent;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .origin-info {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .origin-info strong {
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🌐 CORS Checker</h1>
+        <p class="subtitle">Test if an API allows Cross-Origin Resource Sharing from your origin</p>
+
+        <div class="origin-info">
+            <strong>Your Origin:</strong> <span id="currentOrigin"></span>
+        </div>
+
+        <div class="input-group">
+            <label for="apiUrl">API Endpoint URL</label>
+            <input 
+                type="text" 
+                id="apiUrl" 
+                placeholder="https://api.example.com/endpoint"
+                value="https://jsonplaceholder.typicode.com/posts/1"
+            >
+        </div>
+
+        <div class="button-group">
+            <button class="btn-primary" id="checkBtn" onclick="checkCORS()">
+                Check CORS
+            </button>
+            <button class="btn-secondary" onclick="clearResults()">
+                Clear
+            </button>
+        </div>
+
+        <div id="resultContainer" class="result-container">
+            <div class="result-title" id="resultTitle"></div>
+            <div class="result-message" id="resultMessage"></div>
+            <div class="result-details" id="resultDetails"></div>
+        </div>
+    </div>
+
+    <script>
+        // Display current origin
+        document.getElementById('currentOrigin').textContent = window.location.origin;
+
+        async function checkCORS() {
+            const urlInput = document.getElementById('apiUrl');
+            const url = urlInput.value.trim();
+            const resultContainer = document.getElementById('resultContainer');
+            const checkBtn = document.getElementById('checkBtn');
+
+            // Validate URL
+            if (!url) {
+                showResult('error', 'Invalid URL', 'Please enter a valid API URL.');
+                return;
+            }
+
+            try {
+                new URL(url);
+            } catch (e) {
+                showResult('error', 'Invalid URL', 'The URL format is invalid. Make sure it includes the protocol (http:// or https://).');
+                return;
+            }
+
+            // Show loading state
+            checkBtn.disabled = true;
+            checkBtn.innerHTML = '<span class="spinner"></span>Checking...';
+            resultContainer.classList.remove('show');
+
+            try {
+                // Attempt to fetch the URL
+                const response = await fetch(url, {
+                    method: 'GET',
+                    mode: 'cors',
+                });
+
+                // If we get here, CORS is allowed
+                const corsHeaders = {
+                    'Access-Control-Allow-Origin': response.headers.get('Access-Control-Allow-Origin'),
+                    'Access-Control-Allow-Methods': response.headers.get('Access-Control-Allow-Methods'),
+                    'Access-Control-Allow-Headers': response.headers.get('Access-Control-Allow-Headers'),
+                    'Access-Control-Allow-Credentials': response.headers.get('Access-Control-Allow-Credentials'),
+                    'Access-Control-Expose-Headers': response.headers.get('Access-Control-Expose-Headers'),
+                };
+
+                const details = buildDetailsHTML(corsHeaders, response.status, response.statusText);
+
+                showResult(
+                    'success',
+                    '✓ CORS is Enabled',
+                    `The API allows CORS requests from your origin. The request was successful with status ${response.status}.`,
+                    details
+                );
+
+            } catch (error) {
+                // Check if it's a CORS error
+                if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
+                    showResult(
+                        'error',
+                        '✗ CORS is Blocked',
+                        'The API does not allow CORS requests from your origin. The browser blocked the request due to CORS policy.',
+                        `<div class="detail-row"><span class="detail-label">Error:</span> <span class="detail-value">${error.message}</span></div>
+                         <div class="detail-row" style="margin-top: 12px;"><span class="detail-label">Possible reasons:</span></div>
+                         <div class="detail-value" style="margin-left: 16px; margin-top: 8px;">
+                            • The server doesn't set CORS headers<br>
+                            • The server doesn't allow your origin<br>
+                            • The endpoint doesn't exist (404)<br>
+                            • Network or firewall issues
+                         </div>`
+                    );
+                } else if (error.name === 'AbortError') {
+                    showResult(
+                        'error',
+                        '✗ Request Timeout',
+                        'The request took too long to complete.',
+                        `<div class="detail-row"><span class="detail-label">Error:</span> <span class="detail-value">${error.message}</span></div>`
+                    );
+                } else {
+                    showResult(
+                        'error',
+                        '✗ Request Failed',
+                        'An error occurred while checking the API.',
+                        `<div class="detail-row"><span class="detail-label">Error:</span> <span class="detail-value">${error.message}</span></div>`
+                    );
+                }
+            } finally {
+                // Reset button
+                checkBtn.disabled = false;
+                checkBtn.innerHTML = 'Check CORS';
+            }
+        }
+
+        function buildDetailsHTML(corsHeaders, status, statusText) {
+            let html = `<div class="detail-row"><span class="detail-label">Status:</span> <span class="detail-value">${status} ${statusText}</span></div>`;
+            
+            html += '<div class="detail-row" style="margin-top: 12px;"><span class="detail-label">CORS Headers:</span></div>';
+            
+            for (const [header, value] of Object.entries(corsHeaders)) {
+                if (value) {
+                    html += `<div class="detail-row" style="margin-left: 16px;">
+                        <span class="detail-label">${header}:</span> 
+                        <span class="detail-value">${value}</span>
+                    </div>`;
+                }
+            }
+
+            if (Object.values(corsHeaders).every(v => !v)) {
+                html += '<div class="detail-value" style="margin-left: 16px; color: #856404;">No CORS headers found (server may allow all origins by default)</div>';
+            }
+
+            return html;
+        }
+
+        function showResult(type, title, message, details = '') {
+            const resultContainer = document.getElementById('resultContainer');
+            const resultTitle = document.getElementById('resultTitle');
+            const resultMessage = document.getElementById('resultMessage');
+            const resultDetails = document.getElementById('resultDetails');
+
+            resultContainer.className = `result-container result-${type} show`;
+            resultTitle.textContent = title;
+            resultMessage.textContent = message;
+            resultDetails.innerHTML = details;
+
+            if (!details) {
+                resultDetails.style.display = 'none';
+            } else {
+                resultDetails.style.display = 'block';
+            }
+        }
+
+        function clearResults() {
+            const resultContainer = document.getElementById('resultContainer');
+            resultContainer.classList.remove('show');
+            document.getElementById('apiUrl').value = '';
+        }
+
+        // Allow Enter key to trigger check
+        document.getElementById('apiUrl').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                checkCORS();
+            }
+        });
+    </script>
+</body>
+</html>
