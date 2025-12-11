@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>בחירת מיקום ירושלים - Jerusalem Location Picker</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        #map {
+            height: calc(100vh - 120px);
+            width: 100%;
+        }
+
+        .controls {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+
+        .controls h1 {
+            color: white;
+            font-size: 24px;
+            margin-bottom: 15px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .button-group {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            background: white;
+            color: #667eea;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            font-weight: 600;
+            border-radius: 25px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .info-box {
+            background: #f8f9fa;
+            padding: 15px;
+            margin: 10px 20px;
+            border-radius: 8px;
+            text-align: center;
+            font-size: 14px;
+            color: #495057;
+            border-left: 4px solid #667eea;
+        }
+
+        .info-box.selected {
+            background: #d4edda;
+            border-left-color: #28a745;
+            color: #155724;
+        }
+
+        .leaflet-popup-content-wrapper {
+            border-radius: 8px;
+        }
+
+        .leaflet-popup-content {
+            text-align: center;
+            font-family: inherit;
+        }
+
+        .popup-button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin-top: 10px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+
+        .popup-button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 8px rgba(102, 126, 234, 0.3);
+        }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <h1>🗺️ בחירת מיקום ירושלים - Jerusalem Location Picker</h1>
+        <div class="button-group">
+            <button id="useLocationBtn">📍 השתמש במיקום שלי / Use My Location</button>
+            <button id="openSceneBtn" disabled>🚀 פתח סצנה תלת-ממדית / Open 3D Scene</button>
+        </div>
+    </div>
+
+    <div id="infoBox" class="info-box">
+        לחץ על המפה לבחירת מיקום או השתמש במיקום הנוכחי שלך<br>
+        Click on the map to select a location or use your current location
+    </div>
+
+    <div id="map"></div>
+
+    <!-- Leaflet JavaScript -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+        // Jerusalem center coordinates
+        const JERUSALEM_CENTER = [31.7683, 35.2137];
+        const DEFAULT_ZOOM = 13;
+        const DEFAULT_Z = 1000;
+
+        let map;
+        let selectedMarker = null;
+        let selectedCoords = null;
+
+        // Initialize the map
+        function initMap() {
+            map = L.map('map').setView(JERUSALEM_CENTER, DEFAULT_ZOOM);
+
+            // Add OpenStreetMap tile layer
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+                maxZoom: 19
+            }).addTo(map);
+
+            // Add click event to map
+            map.on('click', onMapClick);
+
+            // Add a marker at Jerusalem center as reference
+            L.marker(JERUSALEM_CENTER)
+                .addTo(map)
+                .bindPopup('<b>ירושלים / Jerusalem</b><br>Click anywhere on the map to select a location')
+                .openPopup();
+        }
+
+        // Handle map click
+        function onMapClick(e) {
+            const lat = e.latlng.lat;
+            const lng = e.latlng.lng;
+
+            setSelectedLocation(lat, lng);
+        }
+
+        // Set selected location
+        function setSelectedLocation(lat, lng) {
+            selectedCoords = { lat, lng };
+
+            // Remove previous marker if exists
+            if (selectedMarker) {
+                map.removeLayer(selectedMarker);
+            }
+
+            // Add new marker
+            selectedMarker = L.marker([lat, lng])
+                .addTo(map)
+                .bindPopup(`
+                    <div>
+                        <strong>מיקום נבחר / Selected Location</strong><br>
+                        <small>Lat: ${lat.toFixed(6)}<br>
+                        Lng: ${lng.toFixed(6)}</small><br>
+                        <button class="popup-button" onclick="openScene()">פתח סצנה / Open Scene</button>
+                    </div>
+                `)
+                .openPopup();
+
+            // Update info box
+            const infoBox = document.getElementById('infoBox');
+            infoBox.className = 'info-box selected';
+            infoBox.innerHTML = `
+                ✅ מיקום נבחר / Location Selected<br>
+                <small>Coordinates: ${lat.toFixed(6)}, ${lng.toFixed(6)}</small>
+            `;
+
+            // Enable the open scene button
+            document.getElementById('openSceneBtn').disabled = false;
+        }
+
+        // Use geolocation
+        function useMyLocation() {
+            if (!navigator.geolocation) {
+                alert('Geolocation is not supported by your browser / הדפדפן שלך לא תומך במיקום גיאוגרפי');
+                return;
+            }
+
+            const infoBox = document.getElementById('infoBox');
+            infoBox.className = 'info-box';
+            infoBox.innerHTML = '🔍 מאתר את מיקומך / Locating you...';
+
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const lat = position.coords.latitude;
+                    const lng = position.coords.longitude;
+
+                    // Pan to user location
+                    map.setView([lat, lng], 16);
+
+                    // Set as selected location
+                    setSelectedLocation(lat, lng);
+                },
+                (error) => {
+                    let errorMsg = 'לא ניתן לקבל את המיקום שלך / Unable to get your location';
+
+                    switch(error.code) {
+                        case error.PERMISSION_DENIED:
+                            errorMsg = 'הרשאה נדחתה / Permission denied';
+                            break;
+                        case error.POSITION_UNAVAILABLE:
+                            errorMsg = 'מיקום לא זמין / Position unavailable';
+                            break;
+                        case error.TIMEOUT:
+                            errorMsg = 'תם הזמן / Request timeout';
+                            break;
+                    }
+
+                    alert(errorMsg);
+
+                    infoBox.className = 'info-box';
+                    infoBox.innerHTML = `
+                        לחץ על המפה לבחירת מיקום או השתמש במיקום הנוכחי שלך<br>
+                        Click on the map to select a location or use your current location
+                    `;
+                }
+            );
+        }
+
+        // Open the 3D scene
+        function openScene() {
+            if (!selectedCoords) {
+                alert('אנא בחר מיקום תחילה / Please select a location first');
+                return;
+            }
+
+            const url = `https://oapgis.ofekonline.com/customscene/Jrs_Public/?locale=he&y=${selectedCoords.lat}&x=${selectedCoords.lng}&z=${DEFAULT_Z}`;
+            window.open(url, '_blank');
+        }
+
+        // Event listeners
+        document.getElementById('useLocationBtn').addEventListener('click', useMyLocation);
+        document.getElementById('openSceneBtn').addEventListener('click', openScene);
+
+        // Initialize map when page loads
+        window.addEventListener('load', initMap);
+    </script>
+</body>
+</html>
