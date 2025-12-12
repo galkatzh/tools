@@ -210,15 +210,42 @@
         }
 
         // Use geolocation
-        function useMyLocation() {
+        async function useMyLocation() {
             if (!navigator.geolocation) {
                 alert('Geolocation is not supported by your browser / הדפדפן שלך לא תומך במיקום גיאוגרפי');
                 return;
             }
 
+            // Check if page is served over HTTPS (required for geolocation in modern browsers)
+            if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+                alert('⚠️ Geolocation requires HTTPS\n\nהמיקום הגיאוגרפי דורש HTTPS\n\nPlease access this page via HTTPS or use localhost for testing.');
+                return;
+            }
+
+            // Check permission state if Permissions API is available
+            if (navigator.permissions) {
+                try {
+                    const permissionStatus = await navigator.permissions.query({ name: 'geolocation' });
+
+                    if (permissionStatus.state === 'denied') {
+                        alert('⚠️ Location permission is blocked\n\nהרשאת מיקום חסומה\n\nPlease enable location permissions in your browser settings:\n\n• Chrome/Edge: Click the lock icon in the address bar → Site settings → Location → Allow\n• Safari: Settings → Privacy → Location Services → Safari → Allow\n• Firefox: Click the lock icon → Clear permissions → Try again');
+                        return;
+                    }
+                } catch (err) {
+                    // Permissions API not supported, continue anyway
+                    console.log('Permissions API not supported:', err);
+                }
+            }
+
             const infoBox = document.getElementById('infoBox');
             infoBox.className = 'info-box';
             infoBox.innerHTML = '🔍 מאתר את מיקומך / Locating you...';
+
+            const options = {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0
+            };
 
             navigator.geolocation.getCurrentPosition(
                 (position) => {
@@ -233,27 +260,37 @@
                 },
                 (error) => {
                     let errorMsg = 'לא ניתן לקבל את המיקום שלך / Unable to get your location';
+                    let detailedMsg = '';
 
                     switch(error.code) {
                         case error.PERMISSION_DENIED:
-                            errorMsg = 'הרשאה נדחתה / Permission denied';
+                            errorMsg = '⚠️ Location Permission Denied / הרשאת מיקום נדחתה';
+                            detailedMsg = '\n\nTo fix this:\n\n' +
+                                '1. Check that the page is served over HTTPS\n' +
+                                '2. Enable location permissions in browser settings\n' +
+                                '3. Click the lock/info icon in address bar → Site settings → Location → Allow\n\n' +
+                                'iPhone: Settings → Safari → Location → Allow\n' +
+                                'Android: Chrome → Settings → Site settings → Location → Allow';
                             break;
                         case error.POSITION_UNAVAILABLE:
                             errorMsg = 'מיקום לא זמין / Position unavailable';
+                            detailedMsg = '\n\nPlease check:\n• Location services are enabled on your device\n• You have GPS/WiFi enabled';
                             break;
                         case error.TIMEOUT:
                             errorMsg = 'תם הזמן / Request timeout';
+                            detailedMsg = '\n\nLocation request timed out. Please try again.';
                             break;
                     }
 
-                    alert(errorMsg);
+                    alert(errorMsg + detailedMsg);
 
                     infoBox.className = 'info-box';
                     infoBox.innerHTML = `
                         לחץ על המפה לבחירת מיקום או השתמש במיקום הנוכחי שלך<br>
                         Click on the map to select a location or use your current location
                     `;
-                }
+                },
+                options
             );
         }
 
