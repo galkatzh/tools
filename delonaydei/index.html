@@ -142,6 +142,87 @@
             margin-bottom: 10px;
             color: #333;
         }
+        .comparison-mode-toggle {
+            display: none;
+            background: #fff;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        .comparison-mode-toggle.active {
+            display: block;
+        }
+        .comparison-mode-toggle button {
+            padding: 10px 20px;
+            margin: 0 5px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .comparison-mode-toggle button.selected {
+            background: #3498db;
+            color: white;
+        }
+        .comparison-mode-toggle button:not(.selected) {
+            background: #ecf0f1;
+            color: #333;
+        }
+        .comparison-mode-toggle button:hover {
+            opacity: 0.8;
+        }
+        .comparison-instructions {
+            display: none;
+            background: #fffbcc;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            border: 2px solid #f1c40f;
+        }
+        .comparison-instructions.active {
+            display: block;
+        }
+        .comparison-summary {
+            display: none;
+            background: #fff;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .comparison-summary.active {
+            display: block;
+        }
+        .comparison-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 15px;
+        }
+        .comparison-card {
+            padding: 15px;
+            border-radius: 8px;
+            border: 2px solid;
+        }
+        .comparison-card.neighborhood1 {
+            border-color: rgb(75, 192, 192);
+            background: rgba(75, 192, 192, 0.05);
+        }
+        .comparison-card.neighborhood2 {
+            border-color: rgb(255, 99, 132);
+            background: rgba(255, 99, 132, 0.05);
+        }
+        .comparison-card h4 {
+            margin-bottom: 10px;
+            color: #333;
+        }
+        .comparison-card p {
+            margin: 5px 0;
+            font-size: 14px;
+        }
         .filters {
             display: none;
             background: #fff;
@@ -221,6 +302,16 @@
         <strong>Instructions:</strong> Click on any location on the map to view real estate deals for that area.
     </div>
 
+    <div class="comparison-mode-toggle active" id="comparisonModeToggle">
+        <button id="singleModeBtn" class="selected" onclick="switchToSingleMode()">Single Neighborhood</button>
+        <button id="comparisonModeBtn" onclick="switchToComparisonMode()">Compare Neighborhoods</button>
+    </div>
+
+    <div class="comparison-instructions" id="comparisonInstructions">
+        <strong>Comparison Mode:</strong> Click on the map to select <span id="neighborhoodSelectPrompt">the first neighborhood</span>.
+        <span id="comparisonStatus"></span>
+    </div>
+
     <div id="map"></div>
 
     <div class="loading" id="loading">
@@ -229,6 +320,11 @@
     </div>
 
     <div class="summary" id="summary"></div>
+
+    <div class="comparison-summary" id="comparisonSummary">
+        <h3>Neighborhood Comparison</h3>
+        <div class="comparison-grid" id="comparisonGrid"></div>
+    </div>
 
     <div class="filters" id="filters">
         <h3>Filters</h3>
@@ -282,6 +378,7 @@
         <table id="dealsTable">
             <thead>
                 <tr>
+                    <th data-column="source" id="sourceHeader" style="display: none;">Source</th>
                     <th data-column="settlementNameHeb">Settlement</th>
                     <th data-column="streetNameHeb">Street</th>
                     <th data-column="houseNum">House #</th>
@@ -317,6 +414,13 @@
         let allDeals = [];
         let filteredDeals = [];
 
+        // Comparison mode variables
+        let comparisonMode = false;
+        let neighborhood1 = null;
+        let neighborhood2 = null;
+        let neighborhood1Marker = null;
+        let neighborhood2Marker = null;
+
         // Convert WGS84 (lat/lon) to Web Mercator (EPSG:3857)
         function latLonToWebMercator(lat, lon) {
             const x = lon * 20037508.34 / 180;
@@ -340,6 +444,64 @@
             if (!dateStr) return 'N/A';
             const date = new Date(dateStr);
             return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+        }
+
+        // Switch to single mode
+        function switchToSingleMode() {
+            comparisonMode = false;
+            document.getElementById('singleModeBtn').classList.add('selected');
+            document.getElementById('comparisonModeBtn').classList.remove('selected');
+            document.getElementById('comparisonInstructions').classList.remove('active');
+            document.getElementById('comparisonSummary').classList.remove('active');
+            document.getElementById('sourceHeader').style.display = 'none';
+
+            // Clear comparison data
+            neighborhood1 = null;
+            neighborhood2 = null;
+            if (neighborhood1Marker) map.removeLayer(neighborhood1Marker);
+            if (neighborhood2Marker) map.removeLayer(neighborhood2Marker);
+            neighborhood1Marker = null;
+            neighborhood2Marker = null;
+
+            // Hide all data displays
+            document.getElementById('chartsContainer').classList.remove('active');
+            document.getElementById('filters').classList.remove('active');
+            document.getElementById('tableContainer').classList.remove('active');
+            document.getElementById('summary').classList.remove('active');
+        }
+
+        // Switch to comparison mode
+        function switchToComparisonMode() {
+            comparisonMode = true;
+            document.getElementById('singleModeBtn').classList.remove('selected');
+            document.getElementById('comparisonModeBtn').classList.add('selected');
+            document.getElementById('comparisonInstructions').classList.add('active');
+            document.getElementById('sourceHeader').style.display = '';
+
+            // Clear single mode data
+            allDeals = [];
+            filteredDeals = [];
+            if (currentMarker) map.removeLayer(currentMarker);
+            currentMarker = null;
+
+            // Reset comparison selections
+            neighborhood1 = null;
+            neighborhood2 = null;
+            if (neighborhood1Marker) map.removeLayer(neighborhood1Marker);
+            if (neighborhood2Marker) map.removeLayer(neighborhood2Marker);
+            neighborhood1Marker = null;
+            neighborhood2Marker = null;
+
+            // Update prompt
+            document.getElementById('neighborhoodSelectPrompt').textContent = 'the first neighborhood';
+            document.getElementById('comparisonStatus').textContent = '';
+
+            // Hide all data displays
+            document.getElementById('chartsContainer').classList.remove('active');
+            document.getElementById('filters').classList.remove('active');
+            document.getElementById('tableContainer').classList.remove('active');
+            document.getElementById('summary').classList.remove('active');
+            document.getElementById('comparisonSummary').classList.remove('active');
         }
 
         // Fetch all deals data with pagination
@@ -396,9 +558,8 @@
             return Math.sqrt(avgSquareDiff);
         }
 
-        // Process data and create charts
-        function createCharts(deals) {
-            // Calculate price per sqm and price per room for each deal
+        // Helper function to process deals
+        function processDealsData(deals) {
             const processedDeals = deals.map(deal => {
                 const pricePerSqm = deal.assetArea ? deal.dealAmount / deal.assetArea : null;
                 const pricePerRoom = deal.assetRoomNum ? deal.dealAmount / deal.assetRoomNum : null;
@@ -406,7 +567,6 @@
                 return { ...deal, pricePerSqm, pricePerRoom, year };
             }).filter(deal => deal.year !== null);
 
-            // Group by year
             const yearlyData = {};
             processedDeals.forEach(deal => {
                 if (!yearlyData[deal.year]) {
@@ -423,37 +583,38 @@
                 }
             });
 
-            // Calculate averages and standard deviations
+            return { processedDeals, yearlyData };
+        }
+
+        // Helper function to calculate yearly averages
+        function calculateYearlyAverages(yearlyData) {
             const years = Object.keys(yearlyData).sort();
             const avgPricePerSqm = [];
-            const stdDevPricePerSqm = [];
             const avgPricePerRoom = [];
-            const stdDevPricePerRoom = [];
 
             years.forEach(year => {
                 const data = yearlyData[year];
 
-                // Price per sqm
                 if (data.pricePerSqmValues.length > 0) {
                     const avg = data.pricePerSqmValues.reduce((sum, val) => sum + val, 0) / data.pricePerSqmValues.length;
                     avgPricePerSqm.push(avg);
-                    stdDevPricePerSqm.push(calculateStdDev(data.pricePerSqmValues, avg));
                 } else {
-                    avgPricePerSqm.push(0);
-                    stdDevPricePerSqm.push(0);
+                    avgPricePerSqm.push(null);
                 }
 
-                // Price per room
                 if (data.pricePerRoomValues.length > 0) {
                     const avg = data.pricePerRoomValues.reduce((sum, val) => sum + val, 0) / data.pricePerRoomValues.length;
                     avgPricePerRoom.push(avg);
-                    stdDevPricePerRoom.push(calculateStdDev(data.pricePerRoomValues, avg));
                 } else {
-                    avgPricePerRoom.push(0);
-                    stdDevPricePerRoom.push(0);
+                    avgPricePerRoom.push(null);
                 }
             });
 
+            return { years, avgPricePerSqm, avgPricePerRoom };
+        }
+
+        // Process data and create charts (updated for comparison mode)
+        function createCharts(deals, neighborhood2Deals = null) {
             // Destroy existing charts if they exist
             if (pricePerSqmChart) {
                 pricePerSqmChart.destroy();
@@ -462,161 +623,346 @@
                 pricePerRoomChart.destroy();
             }
 
-            // Calculate error bounds for price per sqm
-            const upperBoundSqm = avgPricePerSqm.map((avg, i) => avg + stdDevPricePerSqm[i]);
-            const lowerBoundSqm = avgPricePerSqm.map((avg, i) => avg - stdDevPricePerSqm[i]);
+            if (neighborhood2Deals) {
+                // Comparison mode
+                const n1Data = processDealsData(deals);
+                const n2Data = processDealsData(neighborhood2Deals);
 
-            // Create price per sqm chart
-            const ctx1 = document.getElementById('pricePerSqmChart').getContext('2d');
-            pricePerSqmChart = new Chart(ctx1, {
-                type: 'line',
-                data: {
-                    labels: years,
-                    datasets: [{
-                        label: 'Upper Bound (Avg + StdDev)',
-                        data: upperBoundSqm,
-                        borderColor: 'rgba(75, 192, 192, 0.3)',
-                        backgroundColor: 'rgba(75, 192, 192, 0.1)',
-                        borderWidth: 1,
-                        borderDash: [5, 5],
-                        fill: '+1',
-                        tension: 0.1,
-                        pointRadius: 0
-                    }, {
-                        label: 'Avg ₪/m²',
-                        data: avgPricePerSqm,
-                        borderColor: 'rgb(75, 192, 192)',
-                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
-                        borderWidth: 2,
-                        tension: 0.1,
-                        fill: false,
-                        pointRadius: 3,
-                        pointHoverRadius: 5
-                    }, {
-                        label: 'Lower Bound (Avg - StdDev)',
-                        data: lowerBoundSqm,
-                        borderColor: 'rgba(75, 192, 192, 0.3)',
-                        backgroundColor: 'rgba(75, 192, 192, 0.1)',
-                        borderWidth: 1,
-                        borderDash: [5, 5],
-                        fill: false,
-                        tension: 0.1,
-                        pointRadius: 0
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    plugins: {
-                        legend: {
-                            display: true
-                        },
-                        tooltip: {
-                            callbacks: {
-                                label: function(context) {
-                                    return '₪' + context.parsed.y.toLocaleString('en-US', {
-                                        minimumFractionDigits: 0,
-                                        maximumFractionDigits: 0
-                                    }) + '/m²';
+                // Get all unique years from both datasets
+                const allYears = [...new Set([
+                    ...Object.keys(n1Data.yearlyData),
+                    ...Object.keys(n2Data.yearlyData)
+                ])].sort();
+
+                // Calculate averages for both neighborhoods
+                const n1Averages = {};
+                const n2Averages = {};
+
+                allYears.forEach(year => {
+                    const n1YearData = n1Data.yearlyData[year];
+                    const n2YearData = n2Data.yearlyData[year];
+
+                    n1Averages[year] = { pricePerSqm: null, pricePerRoom: null };
+                    n2Averages[year] = { pricePerSqm: null, pricePerRoom: null };
+
+                    if (n1YearData && n1YearData.pricePerSqmValues.length > 0) {
+                        n1Averages[year].pricePerSqm = n1YearData.pricePerSqmValues.reduce((sum, val) => sum + val, 0) / n1YearData.pricePerSqmValues.length;
+                    }
+                    if (n1YearData && n1YearData.pricePerRoomValues.length > 0) {
+                        n1Averages[year].pricePerRoom = n1YearData.pricePerRoomValues.reduce((sum, val) => sum + val, 0) / n1YearData.pricePerRoomValues.length;
+                    }
+                    if (n2YearData && n2YearData.pricePerSqmValues.length > 0) {
+                        n2Averages[year].pricePerSqm = n2YearData.pricePerSqmValues.reduce((sum, val) => sum + val, 0) / n2YearData.pricePerSqmValues.length;
+                    }
+                    if (n2YearData && n2YearData.pricePerRoomValues.length > 0) {
+                        n2Averages[year].pricePerRoom = n2YearData.pricePerRoomValues.reduce((sum, val) => sum + val, 0) / n2YearData.pricePerRoomValues.length;
+                    }
+                });
+
+                const n1AvgPricePerSqm = allYears.map(year => n1Averages[year].pricePerSqm);
+                const n1AvgPricePerRoom = allYears.map(year => n1Averages[year].pricePerRoom);
+                const n2AvgPricePerSqm = allYears.map(year => n2Averages[year].pricePerSqm);
+                const n2AvgPricePerRoom = allYears.map(year => n2Averages[year].pricePerRoom);
+
+                // Create price per sqm chart
+                const ctx1 = document.getElementById('pricePerSqmChart').getContext('2d');
+                pricePerSqmChart = new Chart(ctx1, {
+                    type: 'line',
+                    data: {
+                        labels: allYears,
+                        datasets: [{
+                            label: 'Neighborhood 1 - Avg ₪/m²',
+                            data: n1AvgPricePerSqm,
+                            borderColor: 'rgb(75, 192, 192)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                            borderWidth: 2,
+                            tension: 0.1,
+                            pointRadius: 3,
+                            pointHoverRadius: 5
+                        }, {
+                            label: 'Neighborhood 2 - Avg ₪/m²',
+                            data: n2AvgPricePerSqm,
+                            borderColor: 'rgb(255, 99, 132)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                            borderWidth: 2,
+                            tension: 0.1,
+                            pointRadius: 3,
+                            pointHoverRadius: 5
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            legend: {
+                                display: true
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        return context.dataset.label + ': ₪' + context.parsed.y.toLocaleString('en-US', {
+                                            minimumFractionDigits: 0,
+                                            maximumFractionDigits: 0
+                                        }) + '/m²';
+                                    }
                                 }
                             }
-                        }
-                    },
-                    scales: {
-                        y: {
-                            beginAtZero: false,
-                            ticks: {
-                                callback: function(value) {
-                                    return '₪' + value.toLocaleString();
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: false,
+                                ticks: {
+                                    callback: function(value) {
+                                        return '₪' + value.toLocaleString();
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            });
+                });
 
-            // Calculate error bounds for price per room
-            const upperBoundRoom = avgPricePerRoom.map((avg, i) => avg + stdDevPricePerRoom[i]);
-            const lowerBoundRoom = avgPricePerRoom.map((avg, i) => avg - stdDevPricePerRoom[i]);
-
-            // Create price per room chart
-            const ctx2 = document.getElementById('pricePerRoomChart').getContext('2d');
-            pricePerRoomChart = new Chart(ctx2, {
-                type: 'line',
-                data: {
-                    labels: years,
-                    datasets: [{
-                        label: 'Upper Bound (Avg + StdDev)',
-                        data: upperBoundRoom,
-                        borderColor: 'rgba(255, 99, 132, 0.3)',
-                        backgroundColor: 'rgba(255, 99, 132, 0.1)',
-                        borderWidth: 1,
-                        borderDash: [5, 5],
-                        fill: '+1',
-                        tension: 0.1,
-                        pointRadius: 0
-                    }, {
-                        label: 'Avg ₪/Room',
-                        data: avgPricePerRoom,
-                        borderColor: 'rgb(255, 99, 132)',
-                        backgroundColor: 'rgba(255, 99, 132, 0.2)',
-                        borderWidth: 2,
-                        tension: 0.1,
-                        fill: false,
-                        pointRadius: 3,
-                        pointHoverRadius: 5
-                    }, {
-                        label: 'Lower Bound (Avg - StdDev)',
-                        data: lowerBoundRoom,
-                        borderColor: 'rgba(255, 99, 132, 0.3)',
-                        backgroundColor: 'rgba(255, 99, 132, 0.1)',
-                        borderWidth: 1,
-                        borderDash: [5, 5],
-                        fill: false,
-                        tension: 0.1,
-                        pointRadius: 0
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    plugins: {
-                        legend: {
-                            display: true
-                        },
-                        tooltip: {
-                            callbacks: {
-                                label: function(context) {
-                                    return '₪' + context.parsed.y.toLocaleString('en-US', {
-                                        minimumFractionDigits: 0,
-                                        maximumFractionDigits: 0
-                                    }) + '/room';
+                // Create price per room chart
+                const ctx2 = document.getElementById('pricePerRoomChart').getContext('2d');
+                pricePerRoomChart = new Chart(ctx2, {
+                    type: 'line',
+                    data: {
+                        labels: allYears,
+                        datasets: [{
+                            label: 'Neighborhood 1 - Avg ₪/Room',
+                            data: n1AvgPricePerRoom,
+                            borderColor: 'rgb(75, 192, 192)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                            borderWidth: 2,
+                            tension: 0.1,
+                            pointRadius: 3,
+                            pointHoverRadius: 5
+                        }, {
+                            label: 'Neighborhood 2 - Avg ₪/Room',
+                            data: n2AvgPricePerRoom,
+                            borderColor: 'rgb(255, 99, 132)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                            borderWidth: 2,
+                            tension: 0.1,
+                            pointRadius: 3,
+                            pointHoverRadius: 5
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            legend: {
+                                display: true
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        return context.dataset.label + ': ₪' + context.parsed.y.toLocaleString('en-US', {
+                                            minimumFractionDigits: 0,
+                                            maximumFractionDigits: 0
+                                        }) + '/room';
+                                    }
                                 }
                             }
-                        }
-                    },
-                    scales: {
-                        y: {
-                            beginAtZero: false,
-                            ticks: {
-                                callback: function(value) {
-                                    return '₪' + value.toLocaleString();
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: false,
+                                ticks: {
+                                    callback: function(value) {
+                                        return '₪' + value.toLocaleString();
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            });
+                });
 
-            return processedDeals;
+                return { n1: n1Data.processedDeals, n2: n2Data.processedDeals };
+            } else {
+                // Single mode - keep original logic with std dev bounds
+                const { processedDeals, yearlyData } = processDealsData(deals);
+                const years = Object.keys(yearlyData).sort();
+                const avgPricePerSqm = [];
+                const stdDevPricePerSqm = [];
+                const avgPricePerRoom = [];
+                const stdDevPricePerRoom = [];
+
+                years.forEach(year => {
+                    const data = yearlyData[year];
+
+                    if (data.pricePerSqmValues.length > 0) {
+                        const avg = data.pricePerSqmValues.reduce((sum, val) => sum + val, 0) / data.pricePerSqmValues.length;
+                        avgPricePerSqm.push(avg);
+                        stdDevPricePerSqm.push(calculateStdDev(data.pricePerSqmValues, avg));
+                    } else {
+                        avgPricePerSqm.push(0);
+                        stdDevPricePerSqm.push(0);
+                    }
+
+                    if (data.pricePerRoomValues.length > 0) {
+                        const avg = data.pricePerRoomValues.reduce((sum, val) => sum + val, 0) / data.pricePerRoomValues.length;
+                        avgPricePerRoom.push(avg);
+                        stdDevPricePerRoom.push(calculateStdDev(data.pricePerRoomValues, avg));
+                    } else {
+                        avgPricePerRoom.push(0);
+                        stdDevPricePerRoom.push(0);
+                    }
+                });
+
+                const upperBoundSqm = avgPricePerSqm.map((avg, i) => avg + stdDevPricePerSqm[i]);
+                const lowerBoundSqm = avgPricePerSqm.map((avg, i) => avg - stdDevPricePerSqm[i]);
+
+                const ctx1 = document.getElementById('pricePerSqmChart').getContext('2d');
+                pricePerSqmChart = new Chart(ctx1, {
+                    type: 'line',
+                    data: {
+                        labels: years,
+                        datasets: [{
+                            label: 'Upper Bound (Avg + StdDev)',
+                            data: upperBoundSqm,
+                            borderColor: 'rgba(75, 192, 192, 0.3)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                            borderWidth: 1,
+                            borderDash: [5, 5],
+                            fill: '+1',
+                            tension: 0.1,
+                            pointRadius: 0
+                        }, {
+                            label: 'Avg ₪/m²',
+                            data: avgPricePerSqm,
+                            borderColor: 'rgb(75, 192, 192)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                            borderWidth: 2,
+                            tension: 0.1,
+                            fill: false,
+                            pointRadius: 3,
+                            pointHoverRadius: 5
+                        }, {
+                            label: 'Lower Bound (Avg - StdDev)',
+                            data: lowerBoundSqm,
+                            borderColor: 'rgba(75, 192, 192, 0.3)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                            borderWidth: 1,
+                            borderDash: [5, 5],
+                            fill: false,
+                            tension: 0.1,
+                            pointRadius: 0
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            legend: {
+                                display: true
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        return '₪' + context.parsed.y.toLocaleString('en-US', {
+                                            minimumFractionDigits: 0,
+                                            maximumFractionDigits: 0
+                                        }) + '/m²';
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: false,
+                                ticks: {
+                                    callback: function(value) {
+                                        return '₪' + value.toLocaleString();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
+                const upperBoundRoom = avgPricePerRoom.map((avg, i) => avg + stdDevPricePerRoom[i]);
+                const lowerBoundRoom = avgPricePerRoom.map((avg, i) => avg - stdDevPricePerRoom[i]);
+
+                const ctx2 = document.getElementById('pricePerRoomChart').getContext('2d');
+                pricePerRoomChart = new Chart(ctx2, {
+                    type: 'line',
+                    data: {
+                        labels: years,
+                        datasets: [{
+                            label: 'Upper Bound (Avg + StdDev)',
+                            data: upperBoundRoom,
+                            borderColor: 'rgba(255, 99, 132, 0.3)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                            borderWidth: 1,
+                            borderDash: [5, 5],
+                            fill: '+1',
+                            tension: 0.1,
+                            pointRadius: 0
+                        }, {
+                            label: 'Avg ₪/Room',
+                            data: avgPricePerRoom,
+                            borderColor: 'rgb(255, 99, 132)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                            borderWidth: 2,
+                            tension: 0.1,
+                            fill: false,
+                            pointRadius: 3,
+                            pointHoverRadius: 5
+                        }, {
+                            label: 'Lower Bound (Avg - StdDev)',
+                            data: lowerBoundRoom,
+                            borderColor: 'rgba(255, 99, 132, 0.3)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                            borderWidth: 1,
+                            borderDash: [5, 5],
+                            fill: false,
+                            tension: 0.1,
+                            pointRadius: 0
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            legend: {
+                                display: true
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        return '₪' + context.parsed.y.toLocaleString('en-US', {
+                                            minimumFractionDigits: 0,
+                                            maximumFractionDigits: 0
+                                        }) + '/room';
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: false,
+                                ticks: {
+                                    callback: function(value) {
+                                        return '₪' + value.toLocaleString();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
+                return processedDeals;
+            }
         }
 
-        // Create table
+        // Create table (updated for comparison mode)
         function createTable(deals) {
             const tbody = document.getElementById('dealsTableBody');
             tbody.innerHTML = '';
 
             deals.forEach(deal => {
                 const row = document.createElement('tr');
+                const sourceCell = deal.source ? `<td style="background-color: ${deal.source === 'Neighborhood 1' ? 'rgba(75, 192, 192, 0.1)' : 'rgba(255, 99, 132, 0.1)'}; font-weight: bold;">${deal.source}</td>` : '';
+
                 row.innerHTML = `
+                    ${sourceCell}
                     <td>${deal.settlementNameHeb || 'N/A'}</td>
                     <td>${deal.streetNameHeb || 'N/A'}</td>
                     <td>${deal.houseNum || 'N/A'}</td>
@@ -686,6 +1032,50 @@
                 sortTable(th.dataset.column);
             });
         });
+
+        // Create comparison summary
+        function createComparisonSummary(n1Info, n1Deals, n2Info, n2Deals) {
+            const grid = document.getElementById('comparisonGrid');
+
+            // Calculate statistics for neighborhood 1
+            const n1AvgPrice = n1Deals.reduce((sum, deal) => sum + (deal.dealAmount || 0), 0) / n1Deals.length;
+            const n1AvgPricePerSqm = n1Deals.filter(d => d.pricePerSqm).reduce((sum, deal) => sum + deal.pricePerSqm, 0) / n1Deals.filter(d => d.pricePerSqm).length;
+            const n1AvgPricePerRoom = n1Deals.filter(d => d.pricePerRoom).reduce((sum, deal) => sum + deal.pricePerRoom, 0) / n1Deals.filter(d => d.pricePerRoom).length;
+            const n1AvgArea = n1Deals.filter(d => d.assetArea).reduce((sum, deal) => sum + deal.assetArea, 0) / n1Deals.filter(d => d.assetArea).length;
+            const n1AvgRooms = n1Deals.filter(d => d.assetRoomNum).reduce((sum, deal) => sum + deal.assetRoomNum, 0) / n1Deals.filter(d => d.assetRoomNum).length;
+
+            // Calculate statistics for neighborhood 2
+            const n2AvgPrice = n2Deals.reduce((sum, deal) => sum + (deal.dealAmount || 0), 0) / n2Deals.length;
+            const n2AvgPricePerSqm = n2Deals.filter(d => d.pricePerSqm).reduce((sum, deal) => sum + deal.pricePerSqm, 0) / n2Deals.filter(d => d.pricePerSqm).length;
+            const n2AvgPricePerRoom = n2Deals.filter(d => d.pricePerRoom).reduce((sum, deal) => sum + deal.pricePerRoom, 0) / n2Deals.filter(d => d.pricePerRoom).length;
+            const n2AvgArea = n2Deals.filter(d => d.assetArea).reduce((sum, deal) => sum + deal.assetArea, 0) / n2Deals.filter(d => d.assetArea).length;
+            const n2AvgRooms = n2Deals.filter(d => d.assetRoomNum).reduce((sum, deal) => sum + deal.assetRoomNum, 0) / n2Deals.filter(d => d.assetRoomNum).length;
+
+            grid.innerHTML = `
+                <div class="comparison-card neighborhood1">
+                    <h4>Neighborhood 1</h4>
+                    <p><strong>Settlement:</strong> ${n1Info.settlementNameHeb || 'N/A'}</p>
+                    <p><strong>Street:</strong> ${n1Info.streetNameHeb || 'N/A'}</p>
+                    <p><strong>Total Deals:</strong> ${formatNumber(n1Deals.length)}</p>
+                    <p><strong>Avg Price:</strong> ₪${formatNumber(Math.round(n1AvgPrice))}</p>
+                    <p><strong>Avg ₪/m²:</strong> ₪${formatNumber(Math.round(n1AvgPricePerSqm))}</p>
+                    <p><strong>Avg ₪/Room:</strong> ₪${formatNumber(Math.round(n1AvgPricePerRoom))}</p>
+                    <p><strong>Avg Area:</strong> ${Math.round(n1AvgArea)} m²</p>
+                    <p><strong>Avg Rooms:</strong> ${n1AvgRooms.toFixed(1)}</p>
+                </div>
+                <div class="comparison-card neighborhood2">
+                    <h4>Neighborhood 2</h4>
+                    <p><strong>Settlement:</strong> ${n2Info.settlementNameHeb || 'N/A'}</p>
+                    <p><strong>Street:</strong> ${n2Info.streetNameHeb || 'N/A'}</p>
+                    <p><strong>Total Deals:</strong> ${formatNumber(n2Deals.length)}</p>
+                    <p><strong>Avg Price:</strong> ₪${formatNumber(Math.round(n2AvgPrice))}</p>
+                    <p><strong>Avg ₪/m²:</strong> ₪${formatNumber(Math.round(n2AvgPricePerSqm))}</p>
+                    <p><strong>Avg ₪/Room:</strong> ₪${formatNumber(Math.round(n2AvgPricePerRoom))}</p>
+                    <p><strong>Avg Area:</strong> ${Math.round(n2AvgArea)} m²</p>
+                    <p><strong>Avg Rooms:</strong> ${n2AvgRooms.toFixed(1)}</p>
+                </div>
+            `;
+        }
 
         // Populate deal nature filter options
         function populateDealNatureFilter(deals) {
@@ -794,86 +1184,198 @@
             createTable(filteredDeals);
         }
 
-        // Handle map clicks
+        // Handle map clicks (updated for comparison mode)
         map.on('click', async function(e) {
             const lat = e.latlng.lat;
             const lon = e.latlng.lng;
 
-            // Add or update marker
-            if (currentMarker) {
-                map.removeLayer(currentMarker);
-            }
-            currentMarker = L.marker([lat, lon]).addTo(map);
-
-            // Convert to Web Mercator
-            const coords = latLonToWebMercator(lat, lon);
-            const randomNum = Math.random() * 10;
-
-            // Show loading
-            document.getElementById('loading').classList.add('active');
-            document.getElementById('loadingText').textContent = 'Fetching location data...';
-            document.getElementById('chartsContainer').classList.remove('active');
-            document.getElementById('filters').classList.remove('active');
-            document.getElementById('tableContainer').classList.remove('active');
-            document.getElementById('summary').classList.remove('active');
-
-            try {
-                // First API call
-                const url1 = `https://www.govmap.gov.il/api/real-estate/deals/${coords.x},${coords.y}/${randomNum}`;
-                const response1 = await fetch(url1);
-
-                if (!response1.ok) {
-                    throw new Error(`HTTP error! status: ${response1.status}`);
+            if (!comparisonMode) {
+                // SINGLE MODE
+                // Add or update marker
+                if (currentMarker) {
+                    map.removeLayer(currentMarker);
                 }
+                currentMarker = L.marker([lat, lon]).addTo(map);
 
-                const data1 = await response1.json();
+                // Convert to Web Mercator
+                const coords = latLonToWebMercator(lat, lon);
+                const randomNum = Math.random() * 10;
 
-                if (!data1 || data1.length === 0) {
-                    alert('No data found for this location. Try clicking on a different area.');
+                // Show loading
+                document.getElementById('loading').classList.add('active');
+                document.getElementById('loadingText').textContent = 'Fetching location data...';
+                document.getElementById('chartsContainer').classList.remove('active');
+                document.getElementById('filters').classList.remove('active');
+                document.getElementById('tableContainer').classList.remove('active');
+                document.getElementById('summary').classList.remove('active');
+
+                try {
+                    // First API call
+                    const url1 = `https://www.govmap.gov.il/api/real-estate/deals/${coords.x},${coords.y}/${randomNum}`;
+                    const response1 = await fetch(url1);
+
+                    if (!response1.ok) {
+                        throw new Error(`HTTP error! status: ${response1.status}`);
+                    }
+
+                    const data1 = await response1.json();
+
+                    if (!data1 || data1.length === 0) {
+                        alert('No data found for this location. Try clicking on a different area.');
+                        document.getElementById('loading').classList.remove('active');
+                        return;
+                    }
+
+                    const polygonId = data1[0].polygon_id;
+                    const locationInfo = data1[0];
+
+                    // Fetch all deals
+                    const deals = await fetchAllDeals(polygonId);
+
+                    if (deals.length === 0) {
+                        alert('No deals found for this area.');
+                        document.getElementById('loading').classList.remove('active');
+                        return;
+                    }
+
+                    // Process and display data
+                    const processedDeals = createCharts(deals);
+                    allDeals = processedDeals;
+                    filteredDeals = [...processedDeals];
+                    populateDealNatureFilter(processedDeals);
+                    createTable(filteredDeals);
+
+                    // Show summary
+                    const summaryEl = document.getElementById('summary');
+                    summaryEl.innerHTML = `
+                        <h3>Location Information</h3>
+                        <p><strong>Settlement:</strong> ${locationInfo.settlementNameHeb || 'N/A'}</p>
+                        <p><strong>Street:</strong> ${locationInfo.streetNameHeb || 'N/A'}</p>
+                        <p><strong>House Number:</strong> ${locationInfo.houseNum || 'N/A'}</p>
+                        <p><strong>Total Deals:</strong> ${deals.length}</p>
+                    `;
+
+                    // Show all elements
                     document.getElementById('loading').classList.remove('active');
-                    return;
-                }
+                    document.getElementById('summary').classList.add('active');
+                    document.getElementById('chartsContainer').classList.add('active');
+                    document.getElementById('filters').classList.add('active');
+                    document.getElementById('tableContainer').classList.add('active');
 
-                const polygonId = data1[0].polygon_id;
-                const locationInfo = data1[0];
-
-                // Fetch all deals
-                const deals = await fetchAllDeals(polygonId);
-
-                if (deals.length === 0) {
-                    alert('No deals found for this area.');
+                } catch (error) {
+                    console.error('Error:', error);
+                    alert(`Error: ${error.message}`);
                     document.getElementById('loading').classList.remove('active');
-                    return;
                 }
+            } else {
+                // COMPARISON MODE
+                const coords = latLonToWebMercator(lat, lon);
+                const randomNum = Math.random() * 10;
 
-                // Process and display data
-                const processedDeals = createCharts(deals);
-                allDeals = processedDeals;
-                filteredDeals = [...processedDeals];
-                populateDealNatureFilter(processedDeals);
-                createTable(filteredDeals);
+                // Show loading
+                document.getElementById('loading').classList.add('active');
+                document.getElementById('loadingText').textContent = 'Fetching location data...';
 
-                // Show summary
-                const summaryEl = document.getElementById('summary');
-                summaryEl.innerHTML = `
-                    <h3>Location Information</h3>
-                    <p><strong>Settlement:</strong> ${locationInfo.settlementNameHeb || 'N/A'}</p>
-                    <p><strong>Street:</strong> ${locationInfo.streetNameHeb || 'N/A'}</p>
-                    <p><strong>House Number:</strong> ${locationInfo.houseNum || 'N/A'}</p>
-                    <p><strong>Total Deals:</strong> ${deals.length}</p>
-                `;
+                try {
+                    // First API call
+                    const url1 = `https://www.govmap.gov.il/api/real-estate/deals/${coords.x},${coords.y}/${randomNum}`;
+                    const response1 = await fetch(url1);
 
-                // Show all elements
-                document.getElementById('loading').classList.remove('active');
-                document.getElementById('summary').classList.add('active');
-                document.getElementById('chartsContainer').classList.add('active');
-                document.getElementById('filters').classList.add('active');
-                document.getElementById('tableContainer').classList.add('active');
+                    if (!response1.ok) {
+                        throw new Error(`HTTP error! status: ${response1.status}`);
+                    }
 
-            } catch (error) {
-                console.error('Error:', error);
-                alert(`Error: ${error.message}`);
-                document.getElementById('loading').classList.remove('active');
+                    const data1 = await response1.json();
+
+                    if (!data1 || data1.length === 0) {
+                        alert('No data found for this location. Try clicking on a different area.');
+                        document.getElementById('loading').classList.remove('active');
+                        return;
+                    }
+
+                    const polygonId = data1[0].polygon_id;
+                    const locationInfo = data1[0];
+
+                    // Fetch all deals
+                    const deals = await fetchAllDeals(polygonId);
+
+                    if (deals.length === 0) {
+                        alert('No deals found for this area.');
+                        document.getElementById('loading').classList.remove('active');
+                        return;
+                    }
+
+                    if (!neighborhood1) {
+                        // First neighborhood selection
+                        neighborhood1 = {
+                            info: locationInfo,
+                            deals: deals
+                        };
+
+                        // Add marker with cyan color
+                        if (neighborhood1Marker) {
+                            map.removeLayer(neighborhood1Marker);
+                        }
+                        const cyanIcon = L.icon({
+                            iconUrl: 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="25" height="41" viewBox="0 0 25 41"><path fill="rgb(75, 192, 192)" d="M12.5 0C5.6 0 0 5.6 0 12.5c0 9.4 12.5 28.5 12.5 28.5S25 21.9 25 12.5C25 5.6 19.4 0 12.5 0z"/><circle fill="white" cx="12.5" cy="12.5" r="7"/></svg>'),
+                            iconSize: [25, 41],
+                            iconAnchor: [12, 41]
+                        });
+                        neighborhood1Marker = L.marker([lat, lon], { icon: cyanIcon }).addTo(map);
+
+                        // Update UI
+                        document.getElementById('neighborhoodSelectPrompt').textContent = 'the second neighborhood';
+                        document.getElementById('comparisonStatus').innerHTML = '<br><strong>Neighborhood 1 selected:</strong> ' + (locationInfo.settlementNameHeb || 'N/A');
+                        document.getElementById('loading').classList.remove('active');
+
+                    } else if (!neighborhood2) {
+                        // Second neighborhood selection
+                        neighborhood2 = {
+                            info: locationInfo,
+                            deals: deals
+                        };
+
+                        // Add marker with pink color
+                        if (neighborhood2Marker) {
+                            map.removeLayer(neighborhood2Marker);
+                        }
+                        const pinkIcon = L.icon({
+                            iconUrl: 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="25" height="41" viewBox="0 0 25 41"><path fill="rgb(255, 99, 132)" d="M12.5 0C5.6 0 0 5.6 0 12.5c0 9.4 12.5 28.5 12.5 28.5S25 21.9 25 12.5C25 5.6 19.4 0 12.5 0z"/><circle fill="white" cx="12.5" cy="12.5" r="7"/></svg>'),
+                            iconSize: [25, 41],
+                            iconAnchor: [12, 41]
+                        });
+                        neighborhood2Marker = L.marker([lat, lon], { icon: pinkIcon }).addTo(map);
+
+                        // Process and display comparison
+                        const chartsResult = createCharts(neighborhood1.deals, neighborhood2.deals);
+
+                        // Add source property to deals for table display
+                        const n1DealsWithSource = chartsResult.n1.map(deal => ({ ...deal, source: 'Neighborhood 1' }));
+                        const n2DealsWithSource = chartsResult.n2.map(deal => ({ ...deal, source: 'Neighborhood 2' }));
+                        const combinedDeals = [...n1DealsWithSource, ...n2DealsWithSource];
+
+                        allDeals = combinedDeals;
+                        filteredDeals = [...combinedDeals];
+                        createTable(combinedDeals);
+                        createComparisonSummary(neighborhood1.info, chartsResult.n1, neighborhood2.info, chartsResult.n2);
+
+                        // Update UI
+                        document.getElementById('loading').classList.remove('active');
+                        document.getElementById('comparisonSummary').classList.add('active');
+                        document.getElementById('chartsContainer').classList.add('active');
+                        document.getElementById('tableContainer').classList.add('active');
+                        document.getElementById('comparisonStatus').innerHTML = '<br><strong>Comparison ready!</strong> Click "Single Neighborhood" mode to reset.';
+                    } else {
+                        // Both neighborhoods already selected
+                        alert('Both neighborhoods are already selected. Switch to "Single Neighborhood" mode to reset.');
+                        document.getElementById('loading').classList.remove('active');
+                    }
+
+                } catch (error) {
+                    console.error('Error:', error);
+                    alert(`Error: ${error.message}`);
+                    document.getElementById('loading').classList.remove('active');
+                }
             }
         });
     </script>
