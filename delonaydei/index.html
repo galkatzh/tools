@@ -178,6 +178,9 @@
             border-radius: 4px;
             font-size: 14px;
         }
+        .filter-item select[multiple] {
+            min-height: 100px;
+        }
         .filter-actions {
             display: flex;
             gap: 10px;
@@ -249,6 +252,12 @@
             <div class="filter-item">
                 <label for="filterStreet">Street Name:</label>
                 <input type="text" id="filterStreet" placeholder="Search street...">
+            </div>
+            <div class="filter-item">
+                <label for="filterDealNature">Deal Nature:</label>
+                <select id="filterDealNature" multiple size="4">
+                    <option value="">Loading...</option>
+                </select>
             </div>
         </div>
         <div class="filter-actions">
@@ -678,6 +687,29 @@
             });
         });
 
+        // Populate deal nature filter options
+        function populateDealNatureFilter(deals) {
+            const dealNatureSelect = document.getElementById('filterDealNature');
+
+            // Get unique deal nature values
+            const uniqueDealNatures = [...new Set(
+                deals
+                    .map(deal => deal.dealNatureDescription)
+                    .filter(nature => nature) // Remove null/undefined
+            )].sort();
+
+            // Clear existing options
+            dealNatureSelect.innerHTML = '';
+
+            // Add options
+            uniqueDealNatures.forEach(nature => {
+                const option = document.createElement('option');
+                option.value = nature;
+                option.textContent = nature;
+                dealNatureSelect.appendChild(option);
+            });
+        }
+
         // Filter functions
         function applyFilters() {
             const roomsMin = document.getElementById('filterRoomsMin').value;
@@ -685,6 +717,12 @@
             const dateStart = document.getElementById('filterDateStart').value;
             const dateEnd = document.getElementById('filterDateEnd').value;
             const streetName = document.getElementById('filterStreet').value.toLowerCase().trim();
+
+            // Get selected deal nature values
+            const dealNatureSelect = document.getElementById('filterDealNature');
+            const selectedDealNatures = Array.from(dealNatureSelect.selectedOptions)
+                .map(option => option.value)
+                .filter(value => value !== ''); // Exclude empty values
 
             filteredDeals = allDeals.filter(deal => {
                 // Filter by number of rooms
@@ -717,8 +755,18 @@
                     }
                 }
 
+                // Filter by deal nature
+                if (selectedDealNatures.length > 0) {
+                    if (!deal.dealNatureDescription || !selectedDealNatures.includes(deal.dealNatureDescription)) {
+                        return false;
+                    }
+                }
+
                 return true;
             });
+
+            // Update the charts with filtered data
+            createCharts(filteredDeals);
 
             // Update the table with filtered data
             createTable(filteredDeals);
@@ -732,8 +780,15 @@
             document.getElementById('filterDateEnd').value = '';
             document.getElementById('filterStreet').value = '';
 
+            // Clear deal nature selection
+            const dealNatureSelect = document.getElementById('filterDealNature');
+            Array.from(dealNatureSelect.options).forEach(option => option.selected = false);
+
             // Reset filtered deals to all deals
             filteredDeals = [...allDeals];
+
+            // Update the charts with all data
+            createCharts(filteredDeals);
 
             // Update the table
             createTable(filteredDeals);
@@ -795,6 +850,7 @@
                 const processedDeals = createCharts(deals);
                 allDeals = processedDeals;
                 filteredDeals = [...processedDeals];
+                populateDealNatureFilter(processedDeals);
                 createTable(filteredDeals);
 
                 // Show summary
