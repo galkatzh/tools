@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Israel Real Estate Deals</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #333;
+        }
+        #map {
+            height: 500px;
+            width: 100%;
+            margin-bottom: 20px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+        }
+        .instructions {
+            background: #fff;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            background: #fff;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .loading.active {
+            display: block;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .charts-container {
+            display: none;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .charts-container.active {
+            display: grid;
+        }
+        .chart-wrapper {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .chart-wrapper h2 {
+            margin-bottom: 15px;
+            font-size: 18px;
+            color: #333;
+        }
+        #tableContainer {
+            display: none;
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow-x: auto;
+        }
+        #tableContainer.active {
+            display: block;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background: #3498db;
+            color: white;
+            cursor: pointer;
+            user-select: none;
+            position: sticky;
+            top: 0;
+        }
+        th:hover {
+            background: #2980b9;
+        }
+        th::after {
+            content: ' ⇅';
+            opacity: 0.5;
+        }
+        th.sort-asc::after {
+            content: ' ↑';
+            opacity: 1;
+        }
+        th.sort-desc::after {
+            content: ' ↓';
+            opacity: 1;
+        }
+        tr:hover {
+            background: #f5f5f5;
+        }
+        .summary {
+            display: none;
+            background: #fff;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .summary.active {
+            display: block;
+        }
+        .summary h3 {
+            margin-bottom: 10px;
+            color: #333;
+        }
+        @media (max-width: 768px) {
+            .charts-container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>Israel Real Estate Deals Explorer</h1>
+
+    <div class="instructions">
+        <strong>Instructions:</strong> Click on any location on the map to view real estate deals for that area.
+    </div>
+
+    <div id="map"></div>
+
+    <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <p id="loadingText">Loading data...</p>
+    </div>
+
+    <div class="summary" id="summary"></div>
+
+    <div class="charts-container" id="chartsContainer">
+        <div class="chart-wrapper">
+            <h2>Average Price per Square Meter Over Years</h2>
+            <canvas id="pricePerSqmChart"></canvas>
+        </div>
+        <div class="chart-wrapper">
+            <h2>Average Price per Room Over Years</h2>
+            <canvas id="pricePerRoomChart"></canvas>
+        </div>
+    </div>
+
+    <div id="tableContainer">
+        <h2>Real Estate Deals (<span id="recordCount">0</span> records)</h2>
+        <table id="dealsTable">
+            <thead>
+                <tr>
+                    <th data-column="settlementNameHeb">Settlement</th>
+                    <th data-column="streetNameHeb">Street</th>
+                    <th data-column="houseNum">House #</th>
+                    <th data-column="floorNo">Floor</th>
+                    <th data-column="assetArea">Area (m²)</th>
+                    <th data-column="assetRoomNum">Rooms</th>
+                    <th data-column="dealAmount">Price (₪)</th>
+                    <th data-column="pricePerSqm">₪/m²</th>
+                    <th data-column="pricePerRoom">₪/Room</th>
+                    <th data-column="propertyTypeDescription">Property Type</th>
+                    <th data-column="dealNatureDescription">Deal Nature</th>
+                    <th data-column="neighborhood">Neighborhood</th>
+                    <th data-column="dealDate">Deal Date</th>
+                </tr>
+            </thead>
+            <tbody id="dealsTableBody"></tbody>
+        </table>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+    <script>
+        // Initialize map centered on Israel
+        const map = L.map('map').setView([31.5, 34.9], 8);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        let currentMarker = null;
+        let pricePerSqmChart = null;
+        let pricePerRoomChart = null;
+        let allDeals = [];
+
+        // Convert WGS84 (lat/lon) to Web Mercator (EPSG:3857)
+        function latLonToWebMercator(lat, lon) {
+            const x = lon * 20037508.34 / 180;
+            const y = Math.log(Math.tan((90 + lat) * Math.PI / 360)) / (Math.PI / 180) * 20037508.34 / 180;
+            return { x, y };
+        }
+
+        // Sleep function
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        // Format number with commas
+        function formatNumber(num) {
+            if (num === null || num === undefined) return 'N/A';
+            return num.toLocaleString('en-US');
+        }
+
+        // Format date
+        function formatDate(dateStr) {
+            if (!dateStr) return 'N/A';
+            const date = new Date(dateStr);
+            return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+        }
+
+        // Fetch all deals data with pagination
+        async function fetchAllDeals(polygonId) {
+            const allData = [];
+            let offset = 0;
+            const limit = 1500;
+            let iteration = 0;
+
+            while (true) {
+                iteration++;
+                const url = `https://www.govmap.gov.il/api/real-estate/neighborhood-deals/${polygonId}?limit=${limit}&offset=${offset}&startDate=1998-01&endDate=2025-12`;
+
+                document.getElementById('loadingText').textContent =
+                    `Fetching data... (batch ${iteration}, ${allData.length} records so far)`;
+
+                try {
+                    const response = await fetch(url);
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    const result = await response.json();
+
+                    if (result.data && result.data.length > 0) {
+                        allData.push(...result.data);
+
+                        if (result.data.length < limit) {
+                            // Last batch
+                            break;
+                        }
+
+                        offset += limit;
+
+                        // Wait 3 seconds before next call
+                        await sleep(3000);
+                    } else {
+                        break;
+                    }
+                } catch (error) {
+                    console.error('Error fetching deals:', error);
+                    alert(`Error fetching data: ${error.message}`);
+                    break;
+                }
+            }
+
+            return allData;
+        }
+
+        // Process data and create charts
+        function createCharts(deals) {
+            // Calculate price per sqm and price per room for each deal
+            const processedDeals = deals.map(deal => {
+                const pricePerSqm = deal.assetArea ? deal.dealAmount / deal.assetArea : null;
+                const pricePerRoom = deal.assetRoomNum ? deal.dealAmount / deal.assetRoomNum : null;
+                const year = deal.dealDate ? new Date(deal.dealDate).getFullYear() : null;
+                return { ...deal, pricePerSqm, pricePerRoom, year };
+            }).filter(deal => deal.year !== null);
+
+            // Group by year
+            const yearlyData = {};
+            processedDeals.forEach(deal => {
+                if (!yearlyData[deal.year]) {
+                    yearlyData[deal.year] = {
+                        pricePerSqmSum: 0,
+                        pricePerSqmCount: 0,
+                        pricePerRoomSum: 0,
+                        pricePerRoomCount: 0
+                    };
+                }
+                if (deal.pricePerSqm) {
+                    yearlyData[deal.year].pricePerSqmSum += deal.pricePerSqm;
+                    yearlyData[deal.year].pricePerSqmCount++;
+                }
+                if (deal.pricePerRoom) {
+                    yearlyData[deal.year].pricePerRoomSum += deal.pricePerRoom;
+                    yearlyData[deal.year].pricePerRoomCount++;
+                }
+            });
+
+            // Calculate averages
+            const years = Object.keys(yearlyData).sort();
+            const avgPricePerSqm = years.map(year => {
+                const data = yearlyData[year];
+                return data.pricePerSqmCount > 0 ? data.pricePerSqmSum / data.pricePerSqmCount : 0;
+            });
+            const avgPricePerRoom = years.map(year => {
+                const data = yearlyData[year];
+                return data.pricePerRoomCount > 0 ? data.pricePerRoomSum / data.pricePerRoomCount : 0;
+            });
+
+            // Destroy existing charts if they exist
+            if (pricePerSqmChart) {
+                pricePerSqmChart.destroy();
+            }
+            if (pricePerRoomChart) {
+                pricePerRoomChart.destroy();
+            }
+
+            // Create price per sqm chart
+            const ctx1 = document.getElementById('pricePerSqmChart').getContext('2d');
+            pricePerSqmChart = new Chart(ctx1, {
+                type: 'line',
+                data: {
+                    labels: years,
+                    datasets: [{
+                        label: 'Avg ₪/m²',
+                        data: avgPricePerSqm,
+                        borderColor: 'rgb(75, 192, 192)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        tension: 0.1,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            display: true
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return '₪' + context.parsed.y.toLocaleString('en-US', {
+                                        minimumFractionDigits: 0,
+                                        maximumFractionDigits: 0
+                                    }) + '/m²';
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: false,
+                            ticks: {
+                                callback: function(value) {
+                                    return '₪' + value.toLocaleString();
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Create price per room chart
+            const ctx2 = document.getElementById('pricePerRoomChart').getContext('2d');
+            pricePerRoomChart = new Chart(ctx2, {
+                type: 'line',
+                data: {
+                    labels: years,
+                    datasets: [{
+                        label: 'Avg ₪/Room',
+                        data: avgPricePerRoom,
+                        borderColor: 'rgb(255, 99, 132)',
+                        backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                        tension: 0.1,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            display: true
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return '₪' + context.parsed.y.toLocaleString('en-US', {
+                                        minimumFractionDigits: 0,
+                                        maximumFractionDigits: 0
+                                    }) + '/room';
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: false,
+                            ticks: {
+                                callback: function(value) {
+                                    return '₪' + value.toLocaleString();
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            return processedDeals;
+        }
+
+        // Create table
+        function createTable(deals) {
+            const tbody = document.getElementById('dealsTableBody');
+            tbody.innerHTML = '';
+
+            deals.forEach(deal => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${deal.settlementNameHeb || 'N/A'}</td>
+                    <td>${deal.streetNameHeb || 'N/A'}</td>
+                    <td>${deal.houseNum || 'N/A'}</td>
+                    <td>${deal.floorNo || 'N/A'}</td>
+                    <td>${formatNumber(deal.assetArea)}</td>
+                    <td>${deal.assetRoomNum || 'N/A'}</td>
+                    <td>${formatNumber(deal.dealAmount)}</td>
+                    <td>${deal.pricePerSqm ? formatNumber(Math.round(deal.pricePerSqm)) : 'N/A'}</td>
+                    <td>${deal.pricePerRoom ? formatNumber(Math.round(deal.pricePerRoom)) : 'N/A'}</td>
+                    <td>${deal.propertyTypeDescription || 'N/A'}</td>
+                    <td>${deal.dealNatureDescription || 'N/A'}</td>
+                    <td>${deal.neighborhood || 'N/A'}</td>
+                    <td>${formatDate(deal.dealDate)}</td>
+                `;
+                tbody.appendChild(row);
+            });
+
+            document.getElementById('recordCount').textContent = deals.length;
+        }
+
+        // Sort table
+        let sortColumn = null;
+        let sortDirection = 'asc';
+
+        function sortTable(column) {
+            if (sortColumn === column) {
+                sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+            } else {
+                sortColumn = column;
+                sortDirection = 'asc';
+            }
+
+            // Update header indicators
+            document.querySelectorAll('th').forEach(th => {
+                th.classList.remove('sort-asc', 'sort-desc');
+            });
+            const header = document.querySelector(`th[data-column="${column}"]`);
+            header.classList.add(sortDirection === 'asc' ? 'sort-asc' : 'sort-desc');
+
+            // Sort data
+            const sortedDeals = [...allDeals].sort((a, b) => {
+                let aVal = a[column];
+                let bVal = b[column];
+
+                // Handle null/undefined
+                if (aVal === null || aVal === undefined) return 1;
+                if (bVal === null || bVal === undefined) return -1;
+
+                // Convert to numbers if possible
+                if (!isNaN(aVal) && !isNaN(bVal)) {
+                    aVal = parseFloat(aVal);
+                    bVal = parseFloat(bVal);
+                }
+
+                if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
+                if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
+                return 0;
+            });
+
+            createTable(sortedDeals);
+        }
+
+        // Add click handlers to table headers
+        document.querySelectorAll('th[data-column]').forEach(th => {
+            th.addEventListener('click', () => {
+                sortTable(th.dataset.column);
+            });
+        });
+
+        // Handle map clicks
+        map.on('click', async function(e) {
+            const lat = e.latlng.lat;
+            const lon = e.latlng.lng;
+
+            // Add or update marker
+            if (currentMarker) {
+                map.removeLayer(currentMarker);
+            }
+            currentMarker = L.marker([lat, lon]).addTo(map);
+
+            // Convert to Web Mercator
+            const coords = latLonToWebMercator(lat, lon);
+            const randomNum = Math.random() * 10;
+
+            // Show loading
+            document.getElementById('loading').classList.add('active');
+            document.getElementById('loadingText').textContent = 'Fetching location data...';
+            document.getElementById('chartsContainer').classList.remove('active');
+            document.getElementById('tableContainer').classList.remove('active');
+            document.getElementById('summary').classList.remove('active');
+
+            try {
+                // First API call
+                const url1 = `https://www.govmap.gov.il/api/real-estate/deals/${coords.x},${coords.y}/${randomNum}`;
+                const response1 = await fetch(url1);
+
+                if (!response1.ok) {
+                    throw new Error(`HTTP error! status: ${response1.status}`);
+                }
+
+                const data1 = await response1.json();
+
+                if (!data1 || data1.length === 0) {
+                    alert('No data found for this location. Try clicking on a different area.');
+                    document.getElementById('loading').classList.remove('active');
+                    return;
+                }
+
+                const polygonId = data1[0].polygon_id;
+                const locationInfo = data1[0];
+
+                // Fetch all deals
+                const deals = await fetchAllDeals(polygonId);
+
+                if (deals.length === 0) {
+                    alert('No deals found for this area.');
+                    document.getElementById('loading').classList.remove('active');
+                    return;
+                }
+
+                // Process and display data
+                const processedDeals = createCharts(deals);
+                allDeals = processedDeals;
+                createTable(processedDeals);
+
+                // Show summary
+                const summaryEl = document.getElementById('summary');
+                summaryEl.innerHTML = `
+                    <h3>Location Information</h3>
+                    <p><strong>Settlement:</strong> ${locationInfo.settlementNameHeb || 'N/A'}</p>
+                    <p><strong>Street:</strong> ${locationInfo.streetNameHeb || 'N/A'}</p>
+                    <p><strong>House Number:</strong> ${locationInfo.houseNum || 'N/A'}</p>
+                    <p><strong>Total Deals:</strong> ${deals.length}</p>
+                `;
+
+                // Show all elements
+                document.getElementById('loading').classList.remove('active');
+                document.getElementById('summary').classList.add('active');
+                document.getElementById('chartsContainer').classList.add('active');
+                document.getElementById('tableContainer').classList.add('active');
+
+            } catch (error) {
+                console.error('Error:', error);
+                alert(`Error: ${error.message}`);
+                document.getElementById('loading').classList.remove('active');
+            }
+        });
+    </script>
+</body>
+</html>
