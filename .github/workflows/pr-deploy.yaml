@@ -1,5 +1,4 @@
 name: PR Preview - Cloudflare Pages
-id: pages
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -18,6 +17,7 @@ jobs:
       # No build step needed for plain HTML/JS
 
       - name: Publish to Cloudflare Pages
+        id: pages
         uses: cloudflare/pages-action@v1
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
