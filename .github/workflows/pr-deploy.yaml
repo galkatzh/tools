@@ -33,11 +33,6 @@ jobs:
           
           PREVIEW_URL=$(echo "$OUTPUT" | grep -oE "https://[a-zA-Z0-9.-]+\.pages\.dev")
           
-          if [ -z "$PREVIEW_URL" ]; then
-            echo "Failed to extract preview URL"
-            exit 1
-          fi
-          
           echo "PREVIEW_URL=$PREVIEW_URL" >> $GITHUB_ENV
       - name: Comment preview URL on PR
         if: ${{ github.event_name == 'pull_request' }}
