@@ -23,17 +23,13 @@ jobs:
           OUTPUT=$(wrangler pages deploy . \
             --project-name ${{ secrets.CLOUDFLARE_PAGES_PROJECT }} \
             --branch "pr-${{ github.event.number }}" 2>&1)
-          
+
           echo "$OUTPUT"
-          
-          if [[ "$OUTPUT" == *"error"* ]]; then
-            echo "Wrangler deployment failed."
-            exit 1
-          fi
-          
+
+          # Extract preview URL (wrangler prints something like: "Preview available at https://xxxx.pages.dev")
           PREVIEW_URL=$(echo "$OUTPUT" | grep -oE "https://[a-zA-Z0-9.-]+\.pages\.dev")
-          
           echo "PREVIEW_URL=$PREVIEW_URL" >> $GITHUB_ENV
+
       - name: Comment preview URL on PR
         if: ${{ github.event_name == 'pull_request' }}
         uses: mshick/add-pr-comment@v2
