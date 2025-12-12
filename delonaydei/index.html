@@ -142,6 +142,68 @@
             margin-bottom: 10px;
             color: #333;
         }
+        .filters {
+            display: none;
+            background: #fff;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .filters.active {
+            display: block;
+        }
+        .filters h3 {
+            margin-bottom: 15px;
+            color: #333;
+        }
+        .filter-group {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        .filter-item {
+            display: flex;
+            flex-direction: column;
+        }
+        .filter-item label {
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+        .filter-item input, .filter-item select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .filter-actions {
+            display: flex;
+            gap: 10px;
+        }
+        .filter-actions button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .filter-actions button.apply {
+            background: #3498db;
+            color: white;
+        }
+        .filter-actions button.apply:hover {
+            background: #2980b9;
+        }
+        .filter-actions button.reset {
+            background: #95a5a6;
+            color: white;
+        }
+        .filter-actions button.reset:hover {
+            background: #7f8c8d;
+        }
         @media (max-width: 768px) {
             .charts-container {
                 grid-template-columns: 1fr;
@@ -164,6 +226,36 @@
     </div>
 
     <div class="summary" id="summary"></div>
+
+    <div class="filters" id="filters">
+        <h3>Filters</h3>
+        <div class="filter-group">
+            <div class="filter-item">
+                <label for="filterRoomsMin">Min Rooms:</label>
+                <input type="number" id="filterRoomsMin" placeholder="e.g., 2" min="0" step="0.5">
+            </div>
+            <div class="filter-item">
+                <label for="filterRoomsMax">Max Rooms:</label>
+                <input type="number" id="filterRoomsMax" placeholder="e.g., 5" min="0" step="0.5">
+            </div>
+            <div class="filter-item">
+                <label for="filterDateStart">Start Date:</label>
+                <input type="date" id="filterDateStart">
+            </div>
+            <div class="filter-item">
+                <label for="filterDateEnd">End Date:</label>
+                <input type="date" id="filterDateEnd">
+            </div>
+            <div class="filter-item">
+                <label for="filterStreet">Street Name:</label>
+                <input type="text" id="filterStreet" placeholder="Search street...">
+            </div>
+        </div>
+        <div class="filter-actions">
+            <button class="apply" onclick="applyFilters()">Apply Filters</button>
+            <button class="reset" onclick="resetFilters()">Reset</button>
+        </div>
+    </div>
 
     <div class="charts-container" id="chartsContainer">
         <div class="chart-wrapper">
@@ -214,6 +306,7 @@
         let pricePerSqmChart = null;
         let pricePerRoomChart = null;
         let allDeals = [];
+        let filteredDeals = [];
 
         // Convert WGS84 (lat/lon) to Web Mercator (EPSG:3857)
         function latLonToWebMercator(lat, lon) {
@@ -286,6 +379,14 @@
             return allData;
         }
 
+        // Calculate standard deviation
+        function calculateStdDev(values, mean) {
+            if (values.length === 0) return 0;
+            const squareDiffs = values.map(value => Math.pow(value - mean, 2));
+            const avgSquareDiff = squareDiffs.reduce((sum, val) => sum + val, 0) / values.length;
+            return Math.sqrt(avgSquareDiff);
+        }
+
         // Process data and create charts
         function createCharts(deals) {
             // Calculate price per sqm and price per room for each deal
@@ -301,31 +402,47 @@
             processedDeals.forEach(deal => {
                 if (!yearlyData[deal.year]) {
                     yearlyData[deal.year] = {
-                        pricePerSqmSum: 0,
-                        pricePerSqmCount: 0,
-                        pricePerRoomSum: 0,
-                        pricePerRoomCount: 0
+                        pricePerSqmValues: [],
+                        pricePerRoomValues: []
                     };
                 }
                 if (deal.pricePerSqm) {
-                    yearlyData[deal.year].pricePerSqmSum += deal.pricePerSqm;
-                    yearlyData[deal.year].pricePerSqmCount++;
+                    yearlyData[deal.year].pricePerSqmValues.push(deal.pricePerSqm);
                 }
                 if (deal.pricePerRoom) {
-                    yearlyData[deal.year].pricePerRoomSum += deal.pricePerRoom;
-                    yearlyData[deal.year].pricePerRoomCount++;
+                    yearlyData[deal.year].pricePerRoomValues.push(deal.pricePerRoom);
                 }
             });
 
-            // Calculate averages
+            // Calculate averages and standard deviations
             const years = Object.keys(yearlyData).sort();
-            const avgPricePerSqm = years.map(year => {
+            const avgPricePerSqm = [];
+            const stdDevPricePerSqm = [];
+            const avgPricePerRoom = [];
+            const stdDevPricePerRoom = [];
+
+            years.forEach(year => {
                 const data = yearlyData[year];
-                return data.pricePerSqmCount > 0 ? data.pricePerSqmSum / data.pricePerSqmCount : 0;
-            });
-            const avgPricePerRoom = years.map(year => {
-                const data = yearlyData[year];
-                return data.pricePerRoomCount > 0 ? data.pricePerRoomSum / data.pricePerRoomCount : 0;
+
+                // Price per sqm
+                if (data.pricePerSqmValues.length > 0) {
+                    const avg = data.pricePerSqmValues.reduce((sum, val) => sum + val, 0) / data.pricePerSqmValues.length;
+                    avgPricePerSqm.push(avg);
+                    stdDevPricePerSqm.push(calculateStdDev(data.pricePerSqmValues, avg));
+                } else {
+                    avgPricePerSqm.push(0);
+                    stdDevPricePerSqm.push(0);
+                }
+
+                // Price per room
+                if (data.pricePerRoomValues.length > 0) {
+                    const avg = data.pricePerRoomValues.reduce((sum, val) => sum + val, 0) / data.pricePerRoomValues.length;
+                    avgPricePerRoom.push(avg);
+                    stdDevPricePerRoom.push(calculateStdDev(data.pricePerRoomValues, avg));
+                } else {
+                    avgPricePerRoom.push(0);
+                    stdDevPricePerRoom.push(0);
+                }
             });
 
             // Destroy existing charts if they exist
@@ -336,6 +453,10 @@
                 pricePerRoomChart.destroy();
             }
 
+            // Calculate error bounds for price per sqm
+            const upperBoundSqm = avgPricePerSqm.map((avg, i) => avg + stdDevPricePerSqm[i]);
+            const lowerBoundSqm = avgPricePerSqm.map((avg, i) => avg - stdDevPricePerSqm[i]);
+
             // Create price per sqm chart
             const ctx1 = document.getElementById('pricePerSqmChart').getContext('2d');
             pricePerSqmChart = new Chart(ctx1, {
@@ -343,12 +464,35 @@
                 data: {
                     labels: years,
                     datasets: [{
+                        label: 'Upper Bound (Avg + StdDev)',
+                        data: upperBoundSqm,
+                        borderColor: 'rgba(75, 192, 192, 0.3)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                        borderWidth: 1,
+                        borderDash: [5, 5],
+                        fill: '+1',
+                        tension: 0.1,
+                        pointRadius: 0
+                    }, {
                         label: 'Avg ₪/m²',
                         data: avgPricePerSqm,
                         borderColor: 'rgb(75, 192, 192)',
                         backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        borderWidth: 2,
                         tension: 0.1,
-                        fill: true
+                        fill: false,
+                        pointRadius: 3,
+                        pointHoverRadius: 5
+                    }, {
+                        label: 'Lower Bound (Avg - StdDev)',
+                        data: lowerBoundSqm,
+                        borderColor: 'rgba(75, 192, 192, 0.3)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                        borderWidth: 1,
+                        borderDash: [5, 5],
+                        fill: false,
+                        tension: 0.1,
+                        pointRadius: 0
                     }]
                 },
                 options: {
@@ -381,6 +525,10 @@
                 }
             });
 
+            // Calculate error bounds for price per room
+            const upperBoundRoom = avgPricePerRoom.map((avg, i) => avg + stdDevPricePerRoom[i]);
+            const lowerBoundRoom = avgPricePerRoom.map((avg, i) => avg - stdDevPricePerRoom[i]);
+
             // Create price per room chart
             const ctx2 = document.getElementById('pricePerRoomChart').getContext('2d');
             pricePerRoomChart = new Chart(ctx2, {
@@ -388,12 +536,35 @@
                 data: {
                     labels: years,
                     datasets: [{
+                        label: 'Upper Bound (Avg + StdDev)',
+                        data: upperBoundRoom,
+                        borderColor: 'rgba(255, 99, 132, 0.3)',
+                        backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                        borderWidth: 1,
+                        borderDash: [5, 5],
+                        fill: '+1',
+                        tension: 0.1,
+                        pointRadius: 0
+                    }, {
                         label: 'Avg ₪/Room',
                         data: avgPricePerRoom,
                         borderColor: 'rgb(255, 99, 132)',
                         backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                        borderWidth: 2,
                         tension: 0.1,
-                        fill: true
+                        fill: false,
+                        pointRadius: 3,
+                        pointHoverRadius: 5
+                    }, {
+                        label: 'Lower Bound (Avg - StdDev)',
+                        data: lowerBoundRoom,
+                        borderColor: 'rgba(255, 99, 132, 0.3)',
+                        backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                        borderWidth: 1,
+                        borderDash: [5, 5],
+                        fill: false,
+                        tension: 0.1,
+                        pointRadius: 0
                     }]
                 },
                 options: {
@@ -476,8 +647,9 @@
             const header = document.querySelector(`th[data-column="${column}"]`);
             header.classList.add(sortDirection === 'asc' ? 'sort-asc' : 'sort-desc');
 
-            // Sort data
-            const sortedDeals = [...allDeals].sort((a, b) => {
+            // Sort data (use filteredDeals if filters are active, otherwise use allDeals)
+            const dataToSort = filteredDeals.length > 0 ? filteredDeals : allDeals;
+            const sortedDeals = [...dataToSort].sort((a, b) => {
                 let aVal = a[column];
                 let bVal = b[column];
 
@@ -506,6 +678,67 @@
             });
         });
 
+        // Filter functions
+        function applyFilters() {
+            const roomsMin = document.getElementById('filterRoomsMin').value;
+            const roomsMax = document.getElementById('filterRoomsMax').value;
+            const dateStart = document.getElementById('filterDateStart').value;
+            const dateEnd = document.getElementById('filterDateEnd').value;
+            const streetName = document.getElementById('filterStreet').value.toLowerCase().trim();
+
+            filteredDeals = allDeals.filter(deal => {
+                // Filter by number of rooms
+                if (roomsMin && deal.assetRoomNum < parseFloat(roomsMin)) {
+                    return false;
+                }
+                if (roomsMax && deal.assetRoomNum > parseFloat(roomsMax)) {
+                    return false;
+                }
+
+                // Filter by date
+                if (dateStart || dateEnd) {
+                    const dealDate = deal.dealDate ? new Date(deal.dealDate) : null;
+                    if (!dealDate) return false;
+
+                    if (dateStart) {
+                        const startDate = new Date(dateStart);
+                        if (dealDate < startDate) return false;
+                    }
+                    if (dateEnd) {
+                        const endDate = new Date(dateEnd);
+                        if (dealDate > endDate) return false;
+                    }
+                }
+
+                // Filter by street name
+                if (streetName && deal.streetNameHeb) {
+                    if (!deal.streetNameHeb.toLowerCase().includes(streetName)) {
+                        return false;
+                    }
+                }
+
+                return true;
+            });
+
+            // Update the table with filtered data
+            createTable(filteredDeals);
+        }
+
+        function resetFilters() {
+            // Clear all filter inputs
+            document.getElementById('filterRoomsMin').value = '';
+            document.getElementById('filterRoomsMax').value = '';
+            document.getElementById('filterDateStart').value = '';
+            document.getElementById('filterDateEnd').value = '';
+            document.getElementById('filterStreet').value = '';
+
+            // Reset filtered deals to all deals
+            filteredDeals = [...allDeals];
+
+            // Update the table
+            createTable(filteredDeals);
+        }
+
         // Handle map clicks
         map.on('click', async function(e) {
             const lat = e.latlng.lat;
@@ -525,6 +758,7 @@
             document.getElementById('loading').classList.add('active');
             document.getElementById('loadingText').textContent = 'Fetching location data...';
             document.getElementById('chartsContainer').classList.remove('active');
+            document.getElementById('filters').classList.remove('active');
             document.getElementById('tableContainer').classList.remove('active');
             document.getElementById('summary').classList.remove('active');
 
@@ -560,7 +794,8 @@
                 // Process and display data
                 const processedDeals = createCharts(deals);
                 allDeals = processedDeals;
-                createTable(processedDeals);
+                filteredDeals = [...processedDeals];
+                createTable(filteredDeals);
 
                 // Show summary
                 const summaryEl = document.getElementById('summary');
@@ -576,6 +811,7 @@
                 document.getElementById('loading').classList.remove('active');
                 document.getElementById('summary').classList.add('active');
                 document.getElementById('chartsContainer').classList.add('active');
+                document.getElementById('filters').classList.add('active');
                 document.getElementById('tableContainer').classList.add('active');
 
             } catch (error) {
