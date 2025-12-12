@@ -765,6 +765,9 @@
                 return true;
             });
 
+            // Update the charts with filtered data
+            createCharts(filteredDeals);
+
             // Update the table with filtered data
             createTable(filteredDeals);
         }
@@ -783,6 +786,9 @@
 
             // Reset filtered deals to all deals
             filteredDeals = [...allDeals];
+
+            // Update the charts with all data
+            createCharts(filteredDeals);
 
             // Update the table
             createTable(filteredDeals);
