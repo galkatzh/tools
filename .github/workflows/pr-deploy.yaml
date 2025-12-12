@@ -1,5 +1,5 @@
 name: PR Preview - Cloudflare Pages
-
+id: pages
 on:
   pull_request:
     types: [opened, synchronize, reopened]
