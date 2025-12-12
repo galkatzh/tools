@@ -210,15 +210,28 @@
         }
 
         // Use geolocation
-        function useMyLocation() {
+        async function useMyLocation() {
             if (!navigator.geolocation) {
                 alert('Geolocation is not supported by your browser / הדפדפן שלך לא תומך במיקום גיאוגרפי');
+                return;
+            }
+
+            // Check if we're in a secure context
+            if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+                alert('⚠️ Location access requires HTTPS. Please access this page via HTTPS.\n\nגישה למיקום דורשת HTTPS. אנא גש לדף זה דרך HTTPS.');
                 return;
             }
 
             const infoBox = document.getElementById('infoBox');
             infoBox.className = 'info-box';
             infoBox.innerHTML = '🔍 מאתר את מיקומך / Locating you...';
+
+            // Geolocation options
+            const options = {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0
+            };
 
             navigator.geolocation.getCurrentPosition(
                 (position) => {
@@ -233,27 +246,39 @@
                 },
                 (error) => {
                     let errorMsg = 'לא ניתן לקבל את המיקום שלך / Unable to get your location';
+                    let detailMsg = '';
 
                     switch(error.code) {
                         case error.PERMISSION_DENIED:
-                            errorMsg = 'הרשאה נדחתה / Permission denied';
+                            errorMsg = '🚫 הרשאה נדחתה / Permission denied';
+                            detailMsg = '\n\nPlease enable location permissions in your browser settings:\n' +
+                                       '• Chrome/Safari: Click the lock icon in the address bar\n' +
+                                       '• Firefox: Click the shield icon\n' +
+                                       '• Mobile: Check Settings > Safari/Chrome > Location Services\n\n' +
+                                       'אנא אפשר הרשאות מיקום בהגדרות הדפדפן שלך';
                             break;
                         case error.POSITION_UNAVAILABLE:
-                            errorMsg = 'מיקום לא זמין / Position unavailable';
+                            errorMsg = '📍 מיקום לא זמין / Position unavailable';
+                            detailMsg = '\n\nLocation information is unavailable. Please check:\n' +
+                                       '• Location services are enabled on your device\n' +
+                                       '• You have a GPS signal (if outdoors)\n\n' +
+                                       'מידע מיקום אינו זמין. אנא בדוק שירותי מיקום במכשירך';
                             break;
                         case error.TIMEOUT:
-                            errorMsg = 'תם הזמן / Request timeout';
+                            errorMsg = '⏱️ תם הזמן / Request timeout';
+                            detailMsg = '\n\nThe request timed out. Please try again.\n\nהבקשה פגה. אנא נסה שוב.';
                             break;
                     }
 
-                    alert(errorMsg);
+                    alert(errorMsg + detailMsg);
 
                     infoBox.className = 'info-box';
                     infoBox.innerHTML = `
                         לחץ על המפה לבחירת מיקום או השתמש במיקום הנוכחי שלך<br>
                         Click on the map to select a location or use your current location
                     `;
-                }
+                },
+                options
             );
         }
 
