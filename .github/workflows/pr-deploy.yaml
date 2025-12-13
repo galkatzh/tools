@@ -29,13 +29,3 @@ jobs:
           directory: .               # folder with your index.html
           branch: pr-${{ github.event.number }}
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}  # creates a GitHub Deployment
-
-
-      - name: Comment preview URL on PR
-        uses: mshick/add-pr-comment@v2
-        if: ${{ github.event_name == 'pull_request' }}
-        with:
-          message: |
-            🚀 Cloudflare Pages preview deployed!
-      
-            👉 **Preview URL:** ${{ steps.pages.outputs.url }}
