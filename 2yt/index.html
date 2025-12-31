@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Video Crossfader</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>YouTube Video Crossfader</h1>
+
+        <div class="players-container">
+            <div class="player-wrapper" id="player1-wrapper">
+                <div id="player1"></div>
+                <label>Video 1</label>
+            </div>
+            <div class="player-wrapper" id="player2-wrapper">
+                <div id="player2"></div>
+                <label>Video 2</label>
+            </div>
+        </div>
+
+        <div class="controls">
+            <div class="crossfader-container">
+                <label for="crossfader">Crossfader</label>
+                <div class="fader-wrapper">
+                    <span class="label-left">Video 1</span>
+                    <input
+                        type="range"
+                        id="crossfader"
+                        min="0"
+                        max="100"
+                        value="50"
+                        step="1"
+                    >
+                    <span class="label-right">Video 2</span>
+                </div>
+                <div class="value-display">
+                    <span id="video1-volume">Volume 1: 50%</span>
+                    <span id="video2-volume">Volume 2: 50%</span>
+                </div>
+            </div>
+
+            <div class="video-inputs">
+                <div class="input-group">
+                    <label for="video1-id">Video 1 ID:</label>
+                    <input
+                        type="text"
+                        id="video1-id"
+                        placeholder="dQw4w9WgXcQ"
+                        value="dQw4w9WgXcQ"
+                    >
+                    <button onclick="app.loadVideo(1)">Load</button>
+                </div>
+                <div class="input-group">
+                    <label for="video2-id">Video 2 ID:</label>
+                    <input
+                        type="text"
+                        id="video2-id"
+                        placeholder="jNQXAC9IVRw"
+                        value="jNQXAC9IVRw"
+                    >
+                    <button onclick="app.loadVideo(2)">Load</button>
+                </div>
+            </div>
+
+            <div class="playback-controls">
+                <button onclick="app.playBoth()">▶ Play Both</button>
+                <button onclick="app.pauseBoth()">⏸ Pause Both</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://www.youtube.com/iframe_api"></script>
+    <script src="app.js"></script>
+</body>
+</html>
