@@ -7,6 +7,7 @@ const app = {
         player2: false
     },
     isMuted: false,
+    syncInProgress: false,
 
     init() {
         // This will be called when the YouTube IFrame API is ready
@@ -69,7 +70,8 @@ const app = {
 
         // YT.PlayerState.PLAYING = 1
         // When one video starts playing, try to start the other
-        if (event.data === 1) {
+        // But only if we're not already in the middle of a sync operation
+        if (event.data === 1 && !this.syncInProgress) {
             const otherPlayerNum = playerNum === 1 ? 2 : 1;
             const otherPlayer = this[`player${otherPlayerNum}`];
 
@@ -79,8 +81,13 @@ const app = {
                 // YT.PlayerState: -1 (unstarted), 0 (ended), 2 (paused), 3 (buffering), 5 (cued)
                 if (otherState !== 1 && otherState !== 3) {
                     console.log(`Auto-starting player ${otherPlayerNum} to sync with player ${playerNum}`);
+                    this.syncInProgress = true;
                     setTimeout(() => {
                         otherPlayer.playVideo();
+                        // Reset the flag after a delay to allow the sync to complete
+                        setTimeout(() => {
+                            this.syncInProgress = false;
+                        }, 500);
                     }, 100);
                 }
             }
