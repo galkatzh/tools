@@ -6,6 +6,7 @@ const app = {
         player1: false,
         player2: false
     },
+    isMuted: false,
 
     init() {
         // This will be called when the YouTube IFrame API is ready
@@ -23,7 +24,8 @@ const app = {
             playerVars: {
                 'autoplay': 0,
                 'controls': 1,
-                'rel': 0
+                'rel': 0,
+                'enablejsapi': 1
             },
             events: {
                 'onReady': (event) => this.onPlayerReady(event, 1),
@@ -38,7 +40,8 @@ const app = {
             playerVars: {
                 'autoplay': 0,
                 'controls': 1,
-                'rel': 0
+                'rel': 0,
+                'enablejsapi': 1
             },
             events: {
                 'onReady': (event) => this.onPlayerReady(event, 2),
@@ -63,6 +66,25 @@ const app = {
 
     onPlayerStateChange(event, playerNum) {
         console.log(`Player ${playerNum} state changed:`, event.data);
+
+        // YT.PlayerState.PLAYING = 1
+        // When one video starts playing, try to start the other
+        if (event.data === 1) {
+            const otherPlayerNum = playerNum === 1 ? 2 : 1;
+            const otherPlayer = this[`player${otherPlayerNum}`];
+
+            // If the other player is paused or not playing, start it
+            if (otherPlayer && this.ready[`player${otherPlayerNum}`]) {
+                const otherState = otherPlayer.getPlayerState();
+                // YT.PlayerState: -1 (unstarted), 0 (ended), 2 (paused), 3 (buffering), 5 (cued)
+                if (otherState !== 1 && otherState !== 3) {
+                    console.log(`Auto-starting player ${otherPlayerNum} to sync with player ${playerNum}`);
+                    setTimeout(() => {
+                        otherPlayer.playVideo();
+                    }, 100);
+                }
+            }
+        }
     },
 
     updateVolumes() {
@@ -109,13 +131,36 @@ const app = {
         }
     },
 
-    playBoth() {
+    async playBoth() {
+        console.log('Attempting to play both videos...');
+
+        // Play first video
         if (this.player1 && this.ready.player1) {
-            this.player1.playVideo();
+            try {
+                this.player1.playVideo();
+                console.log('Started player 1');
+            } catch (error) {
+                console.error('Error playing video 1:', error);
+            }
         }
+
+        // Small delay to help with browser autoplay policies
+        await new Promise(resolve => setTimeout(resolve, 150));
+
+        // Play second video
         if (this.player2 && this.ready.player2) {
-            this.player2.playVideo();
+            try {
+                this.player2.playVideo();
+                console.log('Started player 2');
+            } catch (error) {
+                console.error('Error playing video 2:', error);
+            }
         }
+
+        // Update volumes after both are playing
+        setTimeout(() => {
+            this.updateVolumes();
+        }, 300);
     },
 
     pauseBoth() {
@@ -125,6 +170,27 @@ const app = {
         if (this.player2 && this.ready.player2) {
             this.player2.pauseVideo();
         }
+    },
+
+    muteBoth() {
+        if (this.player1 && this.ready.player1) {
+            this.player1.mute();
+        }
+        if (this.player2 && this.ready.player2) {
+            this.player2.mute();
+        }
+        this.isMuted = true;
+    },
+
+    unmuteBoth() {
+        if (this.player1 && this.ready.player1) {
+            this.player1.unMute();
+        }
+        if (this.player2 && this.ready.player2) {
+            this.player2.unMute();
+        }
+        this.isMuted = false;
+        this.updateVolumes();
     }
 };
 
