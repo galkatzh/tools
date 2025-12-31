@@ -131,6 +131,30 @@ const app = {
         }
     },
 
+    play(playerNum) {
+        const player = this[`player${playerNum}`];
+        if (player && this.ready[`player${playerNum}`]) {
+            try {
+                player.playVideo();
+                console.log(`Playing video ${playerNum}`);
+            } catch (error) {
+                console.error(`Error playing video ${playerNum}:`, error);
+            }
+        } else {
+            console.error(`Player ${playerNum} not ready`);
+        }
+    },
+
+    pause(playerNum) {
+        const player = this[`player${playerNum}`];
+        if (player && this.ready[`player${playerNum}`]) {
+            player.pauseVideo();
+            console.log(`Paused video ${playerNum}`);
+        } else {
+            console.error(`Player ${playerNum} not ready`);
+        }
+    },
+
     async playBoth() {
         console.log('Attempting to play both videos...');
 

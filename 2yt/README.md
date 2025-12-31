@@ -9,6 +9,7 @@ A vanilla JavaScript application that allows you to play two YouTube videos simu
 - **Dynamic Volume**: Real-time volume adjustment based on crossfader position
 - **Visual Feedback**: Player opacity changes to reflect the current mix
 - **Custom Videos**: Load any YouTube video by entering its video ID
+- **Individual Controls**: Play or pause each video separately
 - **Synchronized Controls**: Play or pause both videos simultaneously
 - **Auto-Sync**: Automatically starts the second video when the first one plays
 - **Mute/Unmute**: Control both videos' mute state together
@@ -26,7 +27,10 @@ A vanilla JavaScript application that allows you to play two YouTube videos simu
    - Enter a YouTube video ID in the input fields
    - Click "Load" to change the video
    - Example video IDs: `dQw4w9WgXcQ`, `jNQXAC9IVRw`
-5. **Playback Controls**:
+5. **Individual Playback Controls**:
+   - Use "Video 1 Controls" to play or pause video 1 independently
+   - Use "Video 2 Controls" to play or pause video 2 independently
+6. **Synchronized Controls**:
    - Click "Play Both" to start both videos
    - Click "Pause Both" to pause both videos
    - Click "Mute Both" or "Unmute Both" to control sound

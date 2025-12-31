@@ -166,7 +166,56 @@ h1 {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 20px;
+    margin-bottom: 25px;
+}
+
+.individual-controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
     margin-bottom: 20px;
+}
+
+.player-controls {
+    background: #fff;
+    padding: 15px;
+    border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.player-controls h3 {
+    margin: 0 0 12px 0;
+    color: #333;
+    font-size: 1.1em;
+    text-align: center;
+}
+
+.control-buttons {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+}
+
+.control-buttons button {
+    flex: 1;
+    padding: 10px 15px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 1em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.control-buttons button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+.control-buttons button:active {
+    transform: translateY(0);
 }
 
 .input-group {
@@ -266,6 +315,10 @@ h1 {
     }
 
     .video-inputs {
+        grid-template-columns: 1fr;
+    }
+
+    .individual-controls {
         grid-template-columns: 1fr;
     }
 }
