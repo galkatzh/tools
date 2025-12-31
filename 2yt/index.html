@@ -437,6 +437,7 @@
                 },
                 events: {
                     'onReady': () => onPlayerReady('A'),
+                    'onStateChange': onPlayerStateChange,
                     'onError': (e) => console.error('Player A error:', e)
                 }
             });
@@ -452,9 +453,17 @@
                 },
                 events: {
                     'onReady': () => onPlayerReady('B'),
+                    'onStateChange': onPlayerStateChange,
                     'onError': (e) => console.error('Player B error:', e)
                 }
             });
+        }
+
+        // Reapply volume whenever a video starts playing
+        function onPlayerStateChange(event) {
+            if (event.data === YT.PlayerState.PLAYING) {
+                updateVolumes(document.getElementById('crossfader').value);
+            }
         }
 
         function onPlayerReady(player) {
