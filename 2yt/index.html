@@ -9,6 +9,10 @@
     <script>eruda.init();</script>
     <!-- Google Programmable Search Engine -->
     <script async src="https://cse.google.com/cse.js?cx=02fb01f38773740c6"></script>
+    <!-- Retro 8-bit Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
     <style>
         * {
             margin: 0;
@@ -17,21 +21,69 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            font-family: 'Press Start 2P', cursive;
+            background: #0f0f1e;
             min-height: 100vh;
-            color: #fff;
+            color: #00ff00;
             padding: 20px;
+            position: relative;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+
+        /* Scanline effect */
+        body::before {
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: repeating-linear-gradient(
+                0deg,
+                rgba(0, 255, 0, 0.03) 0px,
+                rgba(0, 255, 0, 0.03) 1px,
+                transparent 1px,
+                transparent 2px
+            );
+            pointer-events: none;
+            z-index: 1000;
+        }
+
+        /* CRT flicker */
+        @keyframes flicker {
+            0% { opacity: 0.97; }
+            50% { opacity: 1; }
+            100% { opacity: 0.97; }
+        }
+
+        body::after {
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(15, 15, 30, 0.1);
+            pointer-events: none;
+            animation: flicker 0.15s infinite;
+            z-index: 999;
         }
 
         h1 {
             text-align: center;
             margin-bottom: 30px;
-            font-size: 2rem;
-            background: linear-gradient(90deg, #ff6b6b, #4ecdc4);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
+            font-size: 1.5rem;
+            color: #ff00ff;
+            text-shadow:
+                3px 3px 0px #00ffff,
+                6px 6px 0px rgba(0, 255, 255, 0.3);
+            animation: glitch 3s infinite;
+        }
+
+        @keyframes glitch {
+            0%, 90%, 100% { text-shadow: 3px 3px 0px #00ffff, 6px 6px 0px rgba(0, 255, 255, 0.3); }
+            95% { text-shadow: -3px 3px 0px #ff00ff, -6px 6px 0px rgba(255, 0, 255, 0.3); }
         }
 
         .container {
@@ -55,13 +107,13 @@
 
         .video-container h2 {
             margin-bottom: 10px;
-            font-size: 1.1rem;
-            color: #aaa;
+            font-size: 0.9rem;
+            color: #00ffff;
+            text-transform: uppercase;
         }
 
         .video-container h2 span {
-            color: #4ecdc4;
-            font-weight: bold;
+            color: #ff00ff;
         }
 
         .video-frame {
@@ -69,8 +121,11 @@
             padding-bottom: 56.25%;
             height: 0;
             overflow: hidden;
-            border-radius: 12px;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+            border: 4px solid #00ff00;
+            box-shadow:
+                0 0 10px #00ff00,
+                inset 0 0 10px rgba(0, 255, 0, 0.2);
+            image-rendering: pixelated;
         }
 
         .video-frame iframe {
@@ -82,54 +137,23 @@
             border: none;
         }
 
-        .url-input {
-            margin-top: 10px;
-            display: flex;
-            gap: 10px;
-        }
-
-        .url-input input {
-            flex: 1;
-            padding: 10px 15px;
-            border: none;
-            border-radius: 8px;
-            background: rgba(255, 255, 255, 0.1);
-            color: #fff;
-            font-size: 0.9rem;
-        }
-
-        .url-input input::placeholder {
-            color: rgba(255, 255, 255, 0.5);
-        }
-
-        .url-input button {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 8px;
-            background: #4ecdc4;
-            color: #1a1a2e;
-            font-weight: bold;
-            cursor: pointer;
-            transition: transform 0.2s, background 0.2s;
-        }
-
-        .url-input button:hover {
-            background: #3dbdb5;
-            transform: scale(1.05);
-        }
-
         .crossfader-section {
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 20px;
+            background: #1a1a2e;
+            border: 4px solid #00ffff;
             padding: 30px;
             max-width: 600px;
             margin: 0 auto 40px;
+            box-shadow:
+                0 0 20px rgba(0, 255, 255, 0.3),
+                inset 0 0 20px rgba(0, 255, 255, 0.1);
         }
 
         .crossfader-section h3 {
             text-align: center;
             margin-bottom: 20px;
-            color: #4ecdc4;
+            color: #ff00ff;
+            font-size: 1rem;
+            text-transform: uppercase;
         }
 
         .crossfader-container {
@@ -139,17 +163,18 @@
         }
 
         .volume-indicator {
-            font-size: 1.5rem;
+            font-size: 1.2rem;
             min-width: 60px;
             text-align: center;
+            font-weight: bold;
         }
 
         .volume-indicator.left {
-            color: #ff6b6b;
+            color: #ff00ff;
         }
 
         .volume-indicator.right {
-            color: #4ecdc4;
+            color: #00ffff;
         }
 
         .slider-wrapper {
@@ -159,29 +184,35 @@
 
         .crossfader-slider {
             width: 100%;
-            height: 12px;
+            height: 20px;
             -webkit-appearance: none;
             appearance: none;
-            background: linear-gradient(90deg, #ff6b6b 0%, #4ecdc4 100%);
-            border-radius: 6px;
+            background: linear-gradient(90deg, #ff00ff 0%, #00ffff 100%);
+            border: 2px solid #00ff00;
             outline: none;
             cursor: pointer;
+            box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
         }
 
         .crossfader-slider::-webkit-slider-thumb {
             -webkit-appearance: none;
             appearance: none;
-            width: 28px;
-            height: 28px;
-            background: #fff;
-            border-radius: 50%;
+            width: 32px;
+            height: 32px;
+            background: #00ff00;
+            border: 3px solid #0f0f1e;
             cursor: grab;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            box-shadow:
+                0 0 15px #00ff00,
+                inset 0 0 5px rgba(0, 0, 0, 0.5);
             transition: transform 0.2s;
         }
 
         .crossfader-slider::-webkit-slider-thumb:hover {
             transform: scale(1.1);
+            box-shadow:
+                0 0 20px #00ff00,
+                inset 0 0 5px rgba(0, 0, 0, 0.5);
         }
 
         .crossfader-slider::-webkit-slider-thumb:active {
@@ -189,21 +220,23 @@
         }
 
         .crossfader-slider::-moz-range-thumb {
-            width: 28px;
-            height: 28px;
-            background: #fff;
-            border-radius: 50%;
+            width: 32px;
+            height: 32px;
+            background: #00ff00;
+            border: 3px solid #0f0f1e;
             cursor: grab;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
-            border: none;
+            box-shadow:
+                0 0 15px #00ff00,
+                inset 0 0 5px rgba(0, 0, 0, 0.5);
         }
 
         .labels {
             display: flex;
             justify-content: space-between;
             margin-top: 10px;
-            font-size: 0.85rem;
-            color: #888;
+            font-size: 0.6rem;
+            color: #00ff00;
+            text-transform: uppercase;
         }
 
         .controls {
@@ -214,47 +247,64 @@
         }
 
         .controls button {
-            padding: 12px 30px;
-            border: none;
-            border-radius: 25px;
-            font-size: 1rem;
+            padding: 15px;
+            border: 3px solid;
+            font-size: 1.5rem;
             font-weight: bold;
             cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
+            transition: all 0.2s;
+            min-width: 60px;
+            min-height: 60px;
+            font-family: 'Press Start 2P', cursive;
+            background: #1a1a2e;
+            position: relative;
         }
 
         .controls button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.3);
+            transform: scale(1.1);
+        }
+
+        .controls button:active {
+            transform: scale(0.95);
         }
 
         .play-btn {
-            background: linear-gradient(135deg, #4ecdc4, #44a08d);
-            color: #fff;
+            border-color: #00ff00;
+            color: #00ff00;
+            box-shadow: 0 0 15px rgba(0, 255, 0, 0.5);
+        }
+
+        .play-btn:hover {
+            box-shadow: 0 0 25px rgba(0, 255, 0, 0.8);
         }
 
         .pause-btn {
-            background: linear-gradient(135deg, #ff6b6b, #ee5a5a);
-            color: #fff;
+            border-color: #ff00ff;
+            color: #ff00ff;
+            box-shadow: 0 0 15px rgba(255, 0, 255, 0.5);
         }
 
-        .reset-btn {
-            background: rgba(255, 255, 255, 0.1);
-            color: #fff;
+        .pause-btn:hover {
+            box-shadow: 0 0 25px rgba(255, 0, 255, 0.8);
         }
 
         /* Search Section */
         .search-section {
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 20px;
+            background: #1a1a2e;
+            border: 4px solid #ff00ff;
             padding: 30px;
             margin-bottom: 40px;
+            box-shadow:
+                0 0 20px rgba(255, 0, 255, 0.3),
+                inset 0 0 20px rgba(255, 0, 255, 0.1);
         }
 
         .search-section h3 {
             text-align: center;
             margin-bottom: 20px;
-            color: #4ecdc4;
+            color: #00ffff;
+            font-size: 1rem;
+            text-transform: uppercase;
         }
 
         /* Override Google CSE styling */
@@ -262,49 +312,57 @@
             background: transparent !important;
             border: none !important;
             padding: 0 !important;
+            font-family: 'Press Start 2P', cursive !important;
         }
 
         .gsc-input-box {
-            background: rgba(255, 255, 255, 0.1) !important;
-            border: none !important;
-            border-radius: 8px !important;
+            background: #0f0f1e !important;
+            border: 2px solid #00ff00 !important;
         }
 
         .gsc-input {
             background: transparent !important;
-            color: #fff !important;
+            color: #00ff00 !important;
+            font-family: 'Press Start 2P', cursive !important;
+            font-size: 10px !important;
         }
 
         .gsc-search-button-v2 {
-            background: #4ecdc4 !important;
-            border: none !important;
-            border-radius: 8px !important;
+            background: #00ff00 !important;
+            border: 2px solid #00ff00 !important;
             padding: 10px 15px !important;
+            box-shadow: 0 0 10px rgba(0, 255, 0, 0.5) !important;
         }
 
         .gsc-results-wrapper-overlay,
         .gsc-results-wrapper-visible {
-            background: #1a1a2e !important;
+            background: #0f0f1e !important;
         }
 
         .gsc-webResult.gsc-result {
-            background: rgba(255, 255, 255, 0.05) !important;
-            border: none !important;
-            border-radius: 10px !important;
+            background: #1a1a2e !important;
+            border: 2px solid #00ffff !important;
             margin-bottom: 15px !important;
             padding: 15px !important;
         }
 
         .gs-title, .gs-title * {
-            color: #4ecdc4 !important;
+            color: #ff00ff !important;
+            font-family: 'Press Start 2P', cursive !important;
+            font-size: 10px !important;
         }
 
         .gs-snippet {
-            color: #aaa !important;
+            color: #00ff00 !important;
+            font-family: 'Press Start 2P', cursive !important;
+            font-size: 8px !important;
+            line-height: 1.6 !important;
         }
 
         .gsc-url-top, .gs-visibleUrl {
-            color: #666 !important;
+            color: #00ffff !important;
+            font-family: 'Press Start 2P', cursive !important;
+            font-size: 7px !important;
         }
 
         /* Injected load buttons */
@@ -315,17 +373,23 @@
         }
 
         .load-btn {
-            padding: 8px 16px;
-            border: none;
-            border-radius: 6px;
+            padding: 10px;
+            border: 3px solid;
             font-weight: bold;
             cursor: pointer;
-            font-size: 0.85rem;
-            transition: transform 0.2s, opacity 0.2s;
+            font-size: 1rem;
+            transition: all 0.2s;
+            font-family: 'Press Start 2P', cursive;
+            background: #1a1a2e;
+            min-width: 50px;
+            min-height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         .load-btn:hover {
-            transform: scale(1.05);
+            transform: scale(1.1);
         }
 
         .load-btn:active {
@@ -333,26 +397,37 @@
         }
 
         .load-btn-a {
-            background: #ff6b6b;
-            color: #fff;
+            border-color: #ff00ff;
+            color: #ff00ff;
+            box-shadow: 0 0 10px rgba(255, 0, 255, 0.5);
+        }
+
+        .load-btn-a:hover {
+            box-shadow: 0 0 20px rgba(255, 0, 255, 0.8);
         }
 
         .load-btn-b {
-            background: #4ecdc4;
-            color: #1a1a2e;
+            border-color: #00ffff;
+            color: #00ffff;
+            box-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+        }
+
+        .load-btn-b:hover {
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.8);
         }
 
         .instructions {
             text-align: center;
             margin-top: 30px;
-            color: #666;
-            font-size: 0.9rem;
+            color: #00ff00;
+            font-size: 0.6rem;
+            line-height: 1.6;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>YouTube Crossfader</h1>
+        <h1>YouTube DJ</h1>
 
         <div class="videos-wrapper">
             <div class="video-container">
@@ -360,20 +435,12 @@
                 <div class="video-frame">
                     <div id="playerA"></div>
                 </div>
-                <div class="url-input">
-                    <input type="text" id="urlA" placeholder="Paste YouTube URL...">
-                    <button onclick="loadVideo('A')">Load</button>
-                </div>
             </div>
 
             <div class="video-container">
                 <h2>Video B <span id="volumeB">0%</span></h2>
                 <div class="video-frame">
                     <div id="playerB"></div>
-                </div>
-                <div class="url-input">
-                    <input type="text" id="urlB" placeholder="Paste YouTube URL...">
-                    <button onclick="loadVideo('B')">Load</button>
                 </div>
             </div>
         </div>
@@ -393,9 +460,8 @@
             </div>
 
             <div class="controls">
-                <button class="play-btn" onclick="playBoth()">Play Both</button>
-                <button class="pause-btn" onclick="pauseBoth()">Pause Both</button>
-                <button class="reset-btn" onclick="resetCrossfader()">Center</button>
+                <button class="play-btn" onclick="playBoth()">▶</button>
+                <button class="pause-btn" onclick="pauseBoth()">❚❚</button>
             </div>
         </div>
 
@@ -405,7 +471,7 @@
         </div>
 
         <p class="instructions">
-            Search for videos above. Click "Load A" or "Load B" to load them into the players.
+            Search for videos above. Click "A" or "B" to load them into the players.
         </p>
     </div>
 
@@ -513,18 +579,6 @@
             }
         }
 
-        function loadVideo(player) {
-            const input = document.getElementById(`url${player}`);
-            const videoId = extractVideoId(input.value.trim());
-
-            if (!videoId) {
-                alert('Please enter a valid YouTube URL');
-                return;
-            }
-
-            loadVideoById(player, videoId);
-        }
-
         function updateVolumes(crossfaderValue) {
             const value = parseInt(crossfaderValue);
             const volumeA = 100 - value;
@@ -551,23 +605,9 @@
             if (playerB && playersReady.B) playerB.pauseVideo();
         }
 
-        function resetCrossfader() {
-            const slider = document.getElementById('crossfader');
-            slider.value = 50;
-            updateVolumes(50);
-        }
-
         // Crossfader event listener
         document.getElementById('crossfader').addEventListener('input', (e) => {
             updateVolumes(e.target.value);
-        });
-
-        // Allow Enter key to load videos
-        document.getElementById('urlA').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') loadVideo('A');
-        });
-        document.getElementById('urlB').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') loadVideo('B');
         });
 
         // ============================================
@@ -599,7 +639,7 @@
                 // Create Load A button
                 const btnA = document.createElement('button');
                 btnA.className = 'load-btn load-btn-a';
-                btnA.textContent = 'Load A';
+                btnA.textContent = 'A';
                 btnA.onclick = (e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -609,7 +649,7 @@
                 // Create Load B button
                 const btnB = document.createElement('button');
                 btnB.className = 'load-btn load-btn-b';
-                btnB.textContent = 'Load B';
+                btnB.textContent = 'B';
                 btnB.onclick = (e) => {
                     e.preventDefault();
                     e.stopPropagation();
