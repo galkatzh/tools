@@ -1,0 +1,1022 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oura Sleep Tracker</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #fff;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            text-align: center;
+            padding: 40px 0;
+        }
+
+        header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(90deg, #a78bfa, #60a5fa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        header p {
+            color: #94a3b8;
+            font-size: 1.1rem;
+        }
+
+        /* Login Section */
+        .login-section {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 60px 20px;
+        }
+
+        .login-card {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 40px;
+            text-align: center;
+            max-width: 400px;
+        }
+
+        .login-card h2 {
+            margin-bottom: 20px;
+            color: #e2e8f0;
+        }
+
+        .login-card p {
+            color: #94a3b8;
+            margin-bottom: 30px;
+            line-height: 1.6;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 14px 32px;
+            font-size: 1rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #8b5cf6, #6366f1);
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 40px rgba(139, 92, 246, 0.3);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: #e2e8f0;
+            margin-left: 10px;
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .btn-danger {
+            background: rgba(239, 68, 68, 0.2);
+            color: #f87171;
+        }
+
+        .btn-danger:hover {
+            background: rgba(239, 68, 68, 0.3);
+        }
+
+        /* Dashboard */
+        .dashboard {
+            display: none;
+        }
+
+        .dashboard.active {
+            display: block;
+        }
+
+        .user-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding: 15px 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+        }
+
+        .user-info {
+            color: #94a3b8;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .date-range {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .date-range label {
+            color: #94a3b8;
+            font-size: 0.9rem;
+        }
+
+        .date-range input {
+            padding: 8px 12px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            font-size: 0.9rem;
+        }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 24px;
+            transition: transform 0.3s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-4px);
+        }
+
+        .stat-card.deep {
+            border-left: 4px solid #8b5cf6;
+        }
+
+        .stat-card.light {
+            border-left: 4px solid #60a5fa;
+        }
+
+        .stat-card.rem {
+            border-left: 4px solid #34d399;
+        }
+
+        .stat-card.awake {
+            border-left: 4px solid #f87171;
+        }
+
+        .stat-card h3 {
+            color: #94a3b8;
+            font-size: 0.9rem;
+            font-weight: 500;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-card .value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .stat-card.deep .value { color: #a78bfa; }
+        .stat-card.light .value { color: #60a5fa; }
+        .stat-card.rem .value { color: #34d399; }
+        .stat-card.awake .value { color: #f87171; }
+
+        .stat-card .subtitle {
+            color: #64748b;
+            font-size: 0.85rem;
+        }
+
+        /* Detailed Stats */
+        .detailed-stats {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 30px;
+        }
+
+        .detailed-stats h2 {
+            margin-bottom: 20px;
+            color: #e2e8f0;
+            font-size: 1.3rem;
+        }
+
+        .stats-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .stats-table th,
+        .stats-table td {
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .stats-table th {
+            color: #94a3b8;
+            font-weight: 500;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+        }
+
+        .stats-table td {
+            color: #e2e8f0;
+        }
+
+        .stats-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        /* Sleep Sessions */
+        .sessions-section {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 24px;
+        }
+
+        .sessions-section h2 {
+            margin-bottom: 20px;
+            color: #e2e8f0;
+            font-size: 1.3rem;
+        }
+
+        .session-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 15px;
+        }
+
+        .session-card:last-child {
+            margin-bottom: 0;
+        }
+
+        .session-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .session-date {
+            font-weight: 600;
+            color: #e2e8f0;
+        }
+
+        .session-score {
+            background: linear-gradient(135deg, #8b5cf6, #6366f1);
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .session-bars {
+            display: flex;
+            height: 24px;
+            border-radius: 6px;
+            overflow: hidden;
+            margin-bottom: 15px;
+        }
+
+        .session-bars .bar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .bar.deep { background: #8b5cf6; }
+        .bar.light { background: #60a5fa; }
+        .bar.rem { background: #34d399; }
+        .bar.awake { background: #f87171; }
+
+        .session-details {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+        }
+
+        .session-detail {
+            text-align: center;
+        }
+
+        .session-detail .label {
+            color: #64748b;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .session-detail .val {
+            color: #e2e8f0;
+            font-weight: 600;
+        }
+
+        /* Hypnogram */
+        .hypnogram {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .hypnogram-label {
+            color: #64748b;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .hypnogram-chart {
+            display: flex;
+            height: 40px;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .hypnogram-chart .segment {
+            min-width: 2px;
+        }
+
+        .segment.deep { background: #8b5cf6; }
+        .segment.light { background: #60a5fa; }
+        .segment.rem { background: #34d399; }
+        .segment.awake { background: #f87171; }
+
+        /* Loading */
+        .loading {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 60px;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-top-color: #8b5cf6;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .loading p {
+            margin-top: 20px;
+            color: #94a3b8;
+        }
+
+        /* Error */
+        .error-message {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            border-radius: 12px;
+            padding: 20px;
+            color: #f87171;
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            header h1 {
+                font-size: 1.8rem;
+            }
+
+            .user-bar {
+                flex-direction: column;
+                gap: 15px;
+            }
+
+            .controls {
+                flex-direction: column;
+                width: 100%;
+            }
+
+            .date-range {
+                flex-wrap: wrap;
+                justify-content: center;
+            }
+
+            .session-details {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Oura Sleep Tracker</h1>
+            <p>Track your deep sleep episodes and sleep quality</p>
+        </header>
+
+        <!-- Login Section -->
+        <div id="login-section" class="login-section">
+            <div class="login-card">
+                <h2>Connect Your Oura Ring</h2>
+                <p>Authorize access to your sleep data to view detailed statistics about your deep sleep episodes, REM cycles, and more.</p>
+                <button id="login-btn" class="btn btn-primary">Connect with Oura</button>
+            </div>
+        </div>
+
+        <!-- Dashboard -->
+        <div id="dashboard" class="dashboard">
+            <div class="user-bar">
+                <div class="user-info">
+                    <span id="user-email">Loading...</span>
+                </div>
+                <div class="controls">
+                    <div class="date-range">
+                        <label>From:</label>
+                        <input type="date" id="start-date">
+                        <label>To:</label>
+                        <input type="date" id="end-date">
+                        <button id="fetch-btn" class="btn btn-primary">Fetch Data</button>
+                    </div>
+                    <button id="logout-btn" class="btn btn-danger">Logout</button>
+                </div>
+            </div>
+
+            <div id="loading" class="loading" style="display: none;">
+                <div class="spinner"></div>
+                <p>Fetching your sleep data...</p>
+            </div>
+
+            <div id="error" class="error-message" style="display: none;"></div>
+
+            <div id="stats-content">
+                <!-- Overview Stats -->
+                <div class="stats-grid">
+                    <div class="stat-card deep">
+                        <h3>Deep Sleep Episodes</h3>
+                        <div class="value" id="deep-episodes">--</div>
+                        <div class="subtitle">Average per night</div>
+                    </div>
+                    <div class="stat-card deep">
+                        <h3>Avg Deep Sleep Duration</h3>
+                        <div class="value" id="deep-duration">--</div>
+                        <div class="subtitle">Per episode</div>
+                    </div>
+                    <div class="stat-card deep">
+                        <h3>Total Deep Sleep</h3>
+                        <div class="value" id="deep-total">--</div>
+                        <div class="subtitle">Average per night</div>
+                    </div>
+                    <div class="stat-card rem">
+                        <h3>REM Sleep</h3>
+                        <div class="value" id="rem-total">--</div>
+                        <div class="subtitle">Average per night</div>
+                    </div>
+                    <div class="stat-card light">
+                        <h3>Light Sleep</h3>
+                        <div class="value" id="light-total">--</div>
+                        <div class="subtitle">Average per night</div>
+                    </div>
+                    <div class="stat-card awake">
+                        <h3>Awake Time</h3>
+                        <div class="value" id="awake-total">--</div>
+                        <div class="subtitle">Average per night</div>
+                    </div>
+                </div>
+
+                <!-- Detailed Stats Table -->
+                <div class="detailed-stats">
+                    <h2>Deep Sleep Episode Analysis</h2>
+                    <table class="stats-table">
+                        <thead>
+                            <tr>
+                                <th>Metric</th>
+                                <th>Value</th>
+                            </tr>
+                        </thead>
+                        <tbody id="detailed-stats-body">
+                            <tr><td>Total nights analyzed</td><td id="stat-nights">--</td></tr>
+                            <tr><td>Total deep sleep episodes</td><td id="stat-total-episodes">--</td></tr>
+                            <tr><td>Average episodes per night</td><td id="stat-avg-episodes">--</td></tr>
+                            <tr><td>Shortest episode</td><td id="stat-min-episode">--</td></tr>
+                            <tr><td>Longest episode</td><td id="stat-max-episode">--</td></tr>
+                            <tr><td>Average episode duration</td><td id="stat-avg-duration">--</td></tr>
+                            <tr><td>Deep sleep % of total sleep</td><td id="stat-deep-percent">--</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Sleep Sessions -->
+                <div class="sessions-section">
+                    <h2>Recent Sleep Sessions</h2>
+                    <div id="sessions-list"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const CONFIG = {
+            clientId: '64bbdab4-dd3d-4ec9-ba98-05f19e766384',
+            redirectUri: 'https://tools.galk.cc/oura',
+            authUrl: 'https://cloud.ouraring.com/oauth/authorize',
+            apiBase: 'https://api.ouraring.com/v2',
+            scopes: 'personal daily sleep',
+            storageKeys: {
+                token: 'oura_access_token',
+                tokenExpiry: 'oura_token_expiry',
+                sleepData: 'oura_sleep_data',
+                lastFetch: 'oura_last_fetch'
+            }
+        };
+
+        // Sleep phase mapping
+        const SLEEP_PHASES = {
+            '1': 'deep',
+            '2': 'light',
+            '3': 'rem',
+            '4': 'awake'
+        };
+
+        // DOM Elements
+        const elements = {
+            loginSection: document.getElementById('login-section'),
+            dashboard: document.getElementById('dashboard'),
+            loginBtn: document.getElementById('login-btn'),
+            logoutBtn: document.getElementById('logout-btn'),
+            fetchBtn: document.getElementById('fetch-btn'),
+            startDate: document.getElementById('start-date'),
+            endDate: document.getElementById('end-date'),
+            loading: document.getElementById('loading'),
+            error: document.getElementById('error'),
+            statsContent: document.getElementById('stats-content'),
+            userEmail: document.getElementById('user-email'),
+            sessionsList: document.getElementById('sessions-list')
+        };
+
+        // Initialize app
+        function init() {
+            // Check for OAuth callback
+            if (window.location.hash) {
+                handleOAuthCallback();
+            }
+
+            // Check for existing token
+            const token = getToken();
+            if (token) {
+                showDashboard();
+                loadData();
+            } else {
+                showLogin();
+            }
+
+            // Set default dates (last 14 days)
+            const today = new Date();
+            const twoWeeksAgo = new Date(today);
+            twoWeeksAgo.setDate(today.getDate() - 14);
+
+            elements.endDate.value = formatDate(today);
+            elements.startDate.value = formatDate(twoWeeksAgo);
+
+            // Event listeners
+            elements.loginBtn.addEventListener('click', login);
+            elements.logoutBtn.addEventListener('click', logout);
+            elements.fetchBtn.addEventListener('click', fetchSleepData);
+        }
+
+        // OAuth login
+        function login() {
+            const state = generateState();
+            sessionStorage.setItem('oauth_state', state);
+
+            const authUrl = new URL(CONFIG.authUrl);
+            authUrl.searchParams.set('response_type', 'token');
+            authUrl.searchParams.set('client_id', CONFIG.clientId);
+            authUrl.searchParams.set('redirect_uri', CONFIG.redirectUri);
+            authUrl.searchParams.set('scope', CONFIG.scopes);
+            authUrl.searchParams.set('state', state);
+
+            window.location.href = authUrl.toString();
+        }
+
+        // Handle OAuth callback
+        function handleOAuthCallback() {
+            const hash = window.location.hash.substring(1);
+            const params = new URLSearchParams(hash);
+
+            const accessToken = params.get('access_token');
+            const state = params.get('state');
+            const expiresIn = params.get('expires_in');
+            const error = params.get('error');
+
+            // Clear the hash
+            history.replaceState(null, '', window.location.pathname);
+
+            if (error) {
+                showError('Authentication failed: ' + error);
+                return;
+            }
+
+            // Verify state
+            const savedState = sessionStorage.getItem('oauth_state');
+            if (state !== savedState) {
+                showError('Invalid state parameter. Please try again.');
+                return;
+            }
+
+            if (accessToken) {
+                // Calculate expiry
+                const expiry = Date.now() + (parseInt(expiresIn) * 1000);
+
+                localStorage.setItem(CONFIG.storageKeys.token, accessToken);
+                localStorage.setItem(CONFIG.storageKeys.tokenExpiry, expiry.toString());
+
+                showDashboard();
+                fetchSleepData();
+            }
+        }
+
+        // Token management
+        function getToken() {
+            const token = localStorage.getItem(CONFIG.storageKeys.token);
+            const expiry = localStorage.getItem(CONFIG.storageKeys.tokenExpiry);
+
+            if (!token || !expiry) return null;
+
+            if (Date.now() > parseInt(expiry)) {
+                logout();
+                return null;
+            }
+
+            return token;
+        }
+
+        function logout() {
+            localStorage.removeItem(CONFIG.storageKeys.token);
+            localStorage.removeItem(CONFIG.storageKeys.tokenExpiry);
+            localStorage.removeItem(CONFIG.storageKeys.sleepData);
+            localStorage.removeItem(CONFIG.storageKeys.lastFetch);
+            showLogin();
+        }
+
+        // UI helpers
+        function showLogin() {
+            elements.loginSection.style.display = 'flex';
+            elements.dashboard.classList.remove('active');
+        }
+
+        function showDashboard() {
+            elements.loginSection.style.display = 'none';
+            elements.dashboard.classList.add('active');
+        }
+
+        function showLoading(show) {
+            elements.loading.style.display = show ? 'flex' : 'none';
+            elements.statsContent.style.display = show ? 'none' : 'block';
+        }
+
+        function showError(message) {
+            elements.error.textContent = message;
+            elements.error.style.display = 'block';
+            setTimeout(() => {
+                elements.error.style.display = 'none';
+            }, 5000);
+        }
+
+        // API calls
+        async function fetchSleepData() {
+            const token = getToken();
+            if (!token) {
+                showLogin();
+                return;
+            }
+
+            const startDate = elements.startDate.value;
+            const endDate = elements.endDate.value;
+
+            if (!startDate || !endDate) {
+                showError('Please select a date range');
+                return;
+            }
+
+            showLoading(true);
+
+            try {
+                // Fetch sleep sessions
+                const sleepUrl = `${CONFIG.apiBase}/usercollection/sleep?start_date=${startDate}&end_date=${endDate}`;
+                const response = await fetch(sleepUrl, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (!response.ok) {
+                    if (response.status === 401) {
+                        logout();
+                        showError('Session expired. Please log in again.');
+                        return;
+                    }
+                    throw new Error(`API error: ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                // Save to localStorage
+                const cacheData = {
+                    sleepSessions: data.data,
+                    startDate,
+                    endDate,
+                    fetchedAt: Date.now()
+                };
+                localStorage.setItem(CONFIG.storageKeys.sleepData, JSON.stringify(cacheData));
+
+                // Process and display
+                processAndDisplayData(data.data);
+
+                // Also fetch user info
+                fetchUserInfo(token);
+
+            } catch (err) {
+                showError('Failed to fetch sleep data: ' + err.message);
+                console.error(err);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        async function fetchUserInfo(token) {
+            try {
+                const response = await fetch(`${CONFIG.apiBase}/usercollection/personal_info`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    elements.userEmail.textContent = data.email || 'Oura User';
+                }
+            } catch (err) {
+                elements.userEmail.textContent = 'Oura User';
+            }
+        }
+
+        function loadData() {
+            const cached = localStorage.getItem(CONFIG.storageKeys.sleepData);
+            if (cached) {
+                const data = JSON.parse(cached);
+                elements.startDate.value = data.startDate;
+                elements.endDate.value = data.endDate;
+                processAndDisplayData(data.sleepSessions);
+            }
+
+            // Fetch user info
+            const token = getToken();
+            if (token) {
+                fetchUserInfo(token);
+            }
+        }
+
+        // Data processing
+        function parseHypnogram(sleepPhase5Min) {
+            if (!sleepPhase5Min) return { episodes: { deep: [], light: [], rem: [], awake: [] }, phases: [] };
+
+            const phases = sleepPhase5Min.split('');
+            const episodes = { deep: [], light: [], rem: [], awake: [] };
+
+            let currentPhase = null;
+            let episodeStart = 0;
+
+            phases.forEach((phase, index) => {
+                const phaseName = SLEEP_PHASES[phase];
+
+                if (phaseName !== currentPhase) {
+                    if (currentPhase !== null) {
+                        const duration = (index - episodeStart) * 5; // 5 minutes per segment
+                        episodes[currentPhase].push({
+                            start: episodeStart * 5,
+                            duration: duration
+                        });
+                    }
+                    currentPhase = phaseName;
+                    episodeStart = index;
+                }
+            });
+
+            // Don't forget the last episode
+            if (currentPhase !== null) {
+                const duration = (phases.length - episodeStart) * 5;
+                episodes[currentPhase].push({
+                    start: episodeStart * 5,
+                    duration: duration
+                });
+            }
+
+            return { episodes, phases };
+        }
+
+        function processAndDisplayData(sessions) {
+            if (!sessions || sessions.length === 0) {
+                showError('No sleep data found for the selected date range');
+                return;
+            }
+
+            // Process all sessions
+            let totalDeepEpisodes = 0;
+            let allDeepDurations = [];
+            let totalDeepDuration = 0;
+            let totalRemDuration = 0;
+            let totalLightDuration = 0;
+            let totalAwakeDuration = 0;
+            let totalSleepDuration = 0;
+
+            const processedSessions = sessions.map(session => {
+                const hypnogramData = parseHypnogram(session.sleep_phase_5_min);
+                const deepEpisodes = hypnogramData.episodes.deep;
+
+                totalDeepEpisodes += deepEpisodes.length;
+                deepEpisodes.forEach(ep => allDeepDurations.push(ep.duration));
+
+                totalDeepDuration += session.deep_sleep_duration || 0;
+                totalRemDuration += session.rem_sleep_duration || 0;
+                totalLightDuration += session.light_sleep_duration || 0;
+                totalAwakeDuration += session.awake_time || 0;
+                totalSleepDuration += session.total_sleep_duration || 0;
+
+                return {
+                    ...session,
+                    hypnogramData,
+                    deepEpisodeCount: deepEpisodes.length,
+                    deepEpisodes
+                };
+            });
+
+            const nightCount = sessions.length;
+
+            // Calculate averages
+            const avgDeepEpisodes = (totalDeepEpisodes / nightCount).toFixed(1);
+            const avgDeepDuration = allDeepDurations.length > 0
+                ? (allDeepDurations.reduce((a, b) => a + b, 0) / allDeepDurations.length)
+                : 0;
+            const minDeepDuration = allDeepDurations.length > 0 ? Math.min(...allDeepDurations) : 0;
+            const maxDeepDuration = allDeepDurations.length > 0 ? Math.max(...allDeepDurations) : 0;
+
+            // Update overview stats
+            document.getElementById('deep-episodes').textContent = avgDeepEpisodes;
+            document.getElementById('deep-duration').textContent = formatMinutes(avgDeepDuration);
+            document.getElementById('deep-total').textContent = formatMinutes(totalDeepDuration / nightCount / 60);
+            document.getElementById('rem-total').textContent = formatMinutes(totalRemDuration / nightCount / 60);
+            document.getElementById('light-total').textContent = formatMinutes(totalLightDuration / nightCount / 60);
+            document.getElementById('awake-total').textContent = formatMinutes(totalAwakeDuration / nightCount / 60);
+
+            // Update detailed stats
+            document.getElementById('stat-nights').textContent = nightCount;
+            document.getElementById('stat-total-episodes').textContent = totalDeepEpisodes;
+            document.getElementById('stat-avg-episodes').textContent = avgDeepEpisodes;
+            document.getElementById('stat-min-episode').textContent = formatMinutes(minDeepDuration);
+            document.getElementById('stat-max-episode').textContent = formatMinutes(maxDeepDuration);
+            document.getElementById('stat-avg-duration').textContent = formatMinutes(avgDeepDuration);
+
+            const deepPercent = totalSleepDuration > 0
+                ? ((totalDeepDuration / totalSleepDuration) * 100).toFixed(1) + '%'
+                : '--';
+            document.getElementById('stat-deep-percent').textContent = deepPercent;
+
+            // Render sessions
+            renderSessions(processedSessions);
+        }
+
+        function renderSessions(sessions) {
+            // Sort by date descending
+            sessions.sort((a, b) => new Date(b.day) - new Date(a.day));
+
+            elements.sessionsList.innerHTML = sessions.map(session => {
+                const deepDuration = (session.deep_sleep_duration || 0) / 60;
+                const lightDuration = (session.light_sleep_duration || 0) / 60;
+                const remDuration = (session.rem_sleep_duration || 0) / 60;
+                const awakeDuration = (session.awake_time || 0) / 60;
+                const totalDuration = deepDuration + lightDuration + remDuration + awakeDuration;
+
+                const deepPercent = totalDuration > 0 ? (deepDuration / totalDuration * 100) : 0;
+                const lightPercent = totalDuration > 0 ? (lightDuration / totalDuration * 100) : 0;
+                const remPercent = totalDuration > 0 ? (remDuration / totalDuration * 100) : 0;
+                const awakePercent = totalDuration > 0 ? (awakeDuration / totalDuration * 100) : 0;
+
+                // Build hypnogram
+                const hypnogramHtml = session.hypnogramData.phases.map(phase => {
+                    const phaseName = SLEEP_PHASES[phase] || 'light';
+                    return `<div class="segment ${phaseName}"></div>`;
+                }).join('');
+
+                return `
+                    <div class="session-card">
+                        <div class="session-header">
+                            <span class="session-date">${formatSessionDate(session.day)}</span>
+                        </div>
+                        <div class="session-bars">
+                            <div class="bar deep" style="width: ${deepPercent}%">${deepPercent > 10 ? Math.round(deepPercent) + '%' : ''}</div>
+                            <div class="bar light" style="width: ${lightPercent}%">${lightPercent > 10 ? Math.round(lightPercent) + '%' : ''}</div>
+                            <div class="bar rem" style="width: ${remPercent}%">${remPercent > 10 ? Math.round(remPercent) + '%' : ''}</div>
+                            <div class="bar awake" style="width: ${awakePercent}%">${awakePercent > 10 ? Math.round(awakePercent) + '%' : ''}</div>
+                        </div>
+                        <div class="session-details">
+                            <div class="session-detail">
+                                <div class="label">Deep</div>
+                                <div class="val">${formatMinutes(deepDuration)}</div>
+                            </div>
+                            <div class="session-detail">
+                                <div class="label">Light</div>
+                                <div class="val">${formatMinutes(lightDuration)}</div>
+                            </div>
+                            <div class="session-detail">
+                                <div class="label">REM</div>
+                                <div class="val">${formatMinutes(remDuration)}</div>
+                            </div>
+                            <div class="session-detail">
+                                <div class="label">Episodes</div>
+                                <div class="val">${session.deepEpisodeCount} deep</div>
+                            </div>
+                        </div>
+                        <div class="hypnogram">
+                            <div class="hypnogram-label">Sleep Stages Timeline</div>
+                            <div class="hypnogram-chart">${hypnogramHtml}</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Utility functions
+        function formatDate(date) {
+            return date.toISOString().split('T')[0];
+        }
+
+        function formatMinutes(minutes) {
+            if (minutes < 60) {
+                return Math.round(minutes) + 'm';
+            }
+            const hours = Math.floor(minutes / 60);
+            const mins = Math.round(minutes % 60);
+            return `${hours}h ${mins}m`;
+        }
+
+        function formatSessionDate(dateStr) {
+            const date = new Date(dateStr);
+            return date.toLocaleDateString('en-US', {
+                weekday: 'short',
+                month: 'short',
+                day: 'numeric'
+            });
+        }
+
+        function generateState() {
+            const array = new Uint8Array(16);
+            crypto.getRandomValues(array);
+            return Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        // Start the app
+        init();
+    </script>
+</body>
+</html>
