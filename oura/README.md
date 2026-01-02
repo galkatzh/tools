@@ -81,9 +81,29 @@ Check that:
 ### CORS / Load Failed Error
 
 The Oura API doesn't support browser CORS. Solutions:
-1. Cloudflare Worker proxy
+1. **Cloudflare Worker proxy** (recommended - see below)
 2. Backend server to forward requests
 3. Use a server-side application instead
+
+## Deploying the Cloudflare Worker Proxy
+
+A `cloudflare-worker.js` file is included that proxies requests to the Oura API and adds CORS headers.
+
+### Steps:
+
+1. Go to [Cloudflare Dashboard](https://dash.cloudflare.com/)
+2. Navigate to **Workers & Pages** → **Create Worker**
+3. Name it something like `oura-proxy`
+4. Paste the contents of `cloudflare-worker.js`
+5. Click **Deploy**
+6. Your worker will be available at `https://oura-proxy.YOUR-SUBDOMAIN.workers.dev`
+7. Update `CONFIG.apiBase` in `index.html` to use your worker URL
+
+### Custom Domain (Optional):
+
+1. In Workers, go to your worker → **Settings** → **Triggers**
+2. Add a **Custom Domain** like `oura-api.tools.galk.cc`
+3. Update `CONFIG.apiBase` to use the custom domain
 
 ## Configuration
 
