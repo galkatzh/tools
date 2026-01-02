@@ -747,11 +747,17 @@
             try {
                 // Fetch sleep sessions
                 const sleepUrl = `${CONFIG.apiBase}/usercollection/sleep?start_date=${startDate}&end_date=${endDate}`;
+                console.log('Fetching:', sleepUrl);
+
                 const response = await fetch(sleepUrl, {
+                    method: 'GET',
                     headers: {
                         'Authorization': `Bearer ${token}`
-                    }
+                    },
+                    mode: 'cors'
                 });
+
+                console.log('Response status:', response.status);
 
                 if (!response.ok) {
                     if (response.status === 401) {
@@ -759,7 +765,9 @@
                         showError('Session expired. Please log in again.');
                         return;
                     }
-                    throw new Error(`API error: ${response.status}`);
+                    const errorText = await response.text();
+                    console.log('Error response:', errorText);
+                    throw new Error(`API error: ${response.status} - ${errorText}`);
                 }
 
                 const data = await response.json();
@@ -780,8 +788,16 @@
                 fetchUserInfo(token);
 
             } catch (err) {
-                showError('Failed to fetch sleep data: ' + err.message);
-                console.error(err);
+                console.error('Fetch error:', err);
+                console.error('Error name:', err.name);
+                console.error('Error message:', err.message);
+
+                // Check if it's a CORS error
+                if (err instanceof TypeError && err.message.includes('Load failed')) {
+                    showError('CORS Error: The Oura API does not allow browser requests. A backend proxy is needed.');
+                } else {
+                    showError('Failed to fetch: ' + err.name + ' - ' + err.message);
+                }
             } finally {
                 showLoading(false);
             }
