@@ -494,13 +494,14 @@
             <div id="stats-content">
                 <!-- Overview Stats -->
                 <div class="stats-grid">
+                    <!-- Deep Sleep -->
                     <div class="stat-card deep">
                         <h3>Deep Sleep Episodes</h3>
                         <div class="value" id="deep-episodes">--</div>
                         <div class="subtitle">Average per night</div>
                     </div>
                     <div class="stat-card deep">
-                        <h3>Avg Deep Sleep Duration</h3>
+                        <h3>Avg Deep Episode Duration</h3>
                         <div class="value" id="deep-duration">--</div>
                         <div class="subtitle">Per episode</div>
                     </div>
@@ -509,24 +510,73 @@
                         <div class="value" id="deep-total">--</div>
                         <div class="subtitle">Average per night</div>
                     </div>
-                    <div class="stat-card rem">
-                        <h3>REM Sleep</h3>
-                        <div class="value" id="rem-total">--</div>
+                    <!-- Light Sleep -->
+                    <div class="stat-card light">
+                        <h3>Light Sleep Episodes</h3>
+                        <div class="value" id="light-episodes">--</div>
                         <div class="subtitle">Average per night</div>
                     </div>
                     <div class="stat-card light">
-                        <h3>Light Sleep</h3>
+                        <h3>Avg Light Episode Duration</h3>
+                        <div class="value" id="light-duration">--</div>
+                        <div class="subtitle">Per episode</div>
+                    </div>
+                    <div class="stat-card light">
+                        <h3>Total Light Sleep</h3>
                         <div class="value" id="light-total">--</div>
                         <div class="subtitle">Average per night</div>
                     </div>
+                    <!-- REM Sleep -->
+                    <div class="stat-card rem">
+                        <h3>REM Sleep Episodes</h3>
+                        <div class="value" id="rem-episodes">--</div>
+                        <div class="subtitle">Average per night</div>
+                    </div>
+                    <div class="stat-card rem">
+                        <h3>Avg REM Episode Duration</h3>
+                        <div class="value" id="rem-duration">--</div>
+                        <div class="subtitle">Per episode</div>
+                    </div>
+                    <div class="stat-card rem">
+                        <h3>Total REM Sleep</h3>
+                        <div class="value" id="rem-total">--</div>
+                        <div class="subtitle">Average per night</div>
+                    </div>
+                    <!-- Awake -->
                     <div class="stat-card awake">
-                        <h3>Awake Time</h3>
+                        <h3>Awake Episodes</h3>
+                        <div class="value" id="awake-episodes">--</div>
+                        <div class="subtitle">Average per night</div>
+                    </div>
+                    <div class="stat-card awake">
+                        <h3>Avg Awake Episode Duration</h3>
+                        <div class="value" id="awake-duration">--</div>
+                        <div class="subtitle">Per episode</div>
+                    </div>
+                    <div class="stat-card awake">
+                        <h3>Total Awake Time</h3>
                         <div class="value" id="awake-total">--</div>
                         <div class="subtitle">Average per night</div>
                     </div>
                 </div>
 
-                <!-- Detailed Stats Table -->
+                <!-- Overview Stats Table -->
+                <div class="detailed-stats">
+                    <h2>Sleep Overview</h2>
+                    <table class="stats-table">
+                        <thead>
+                            <tr>
+                                <th>Metric</th>
+                                <th>Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr><td>Total nights analyzed</td><td id="stat-nights">--</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Deep Sleep Episode Analysis -->
                 <div class="detailed-stats">
                     <h2>Deep Sleep Episode Analysis</h2>
                     <table class="stats-table">
@@ -536,14 +586,76 @@
                                 <th>Value</th>
                             </tr>
                         </thead>
-                        <tbody id="detailed-stats-body">
-                            <tr><td>Total nights analyzed</td><td id="stat-nights">--</td></tr>
-                            <tr><td>Total deep sleep episodes</td><td id="stat-total-episodes">--</td></tr>
-                            <tr><td>Average episodes per night</td><td id="stat-avg-episodes">--</td></tr>
-                            <tr><td>Shortest episode</td><td id="stat-min-episode">--</td></tr>
-                            <tr><td>Longest episode</td><td id="stat-max-episode">--</td></tr>
-                            <tr><td>Average episode duration</td><td id="stat-avg-duration">--</td></tr>
-                            <tr><td>Deep sleep % of total sleep</td><td id="stat-deep-percent">--</td></tr>
+                        <tbody>
+                            <tr><td>Total episodes</td><td id="stat-deep-total-episodes">--</td></tr>
+                            <tr><td>Average episodes per night</td><td id="stat-deep-avg-episodes">--</td></tr>
+                            <tr><td>Shortest episode</td><td id="stat-deep-min-episode">--</td></tr>
+                            <tr><td>Longest episode</td><td id="stat-deep-max-episode">--</td></tr>
+                            <tr><td>Average episode duration</td><td id="stat-deep-avg-duration">--</td></tr>
+                            <tr><td>% of total sleep</td><td id="stat-deep-percent">--</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Light Sleep Episode Analysis -->
+                <div class="detailed-stats">
+                    <h2>Light Sleep Episode Analysis</h2>
+                    <table class="stats-table">
+                        <thead>
+                            <tr>
+                                <th>Metric</th>
+                                <th>Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr><td>Total episodes</td><td id="stat-light-total-episodes">--</td></tr>
+                            <tr><td>Average episodes per night</td><td id="stat-light-avg-episodes">--</td></tr>
+                            <tr><td>Shortest episode</td><td id="stat-light-min-episode">--</td></tr>
+                            <tr><td>Longest episode</td><td id="stat-light-max-episode">--</td></tr>
+                            <tr><td>Average episode duration</td><td id="stat-light-avg-duration">--</td></tr>
+                            <tr><td>% of total sleep</td><td id="stat-light-percent">--</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- REM Sleep Episode Analysis -->
+                <div class="detailed-stats">
+                    <h2>REM Sleep Episode Analysis</h2>
+                    <table class="stats-table">
+                        <thead>
+                            <tr>
+                                <th>Metric</th>
+                                <th>Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr><td>Total episodes</td><td id="stat-rem-total-episodes">--</td></tr>
+                            <tr><td>Average episodes per night</td><td id="stat-rem-avg-episodes">--</td></tr>
+                            <tr><td>Shortest episode</td><td id="stat-rem-min-episode">--</td></tr>
+                            <tr><td>Longest episode</td><td id="stat-rem-max-episode">--</td></tr>
+                            <tr><td>Average episode duration</td><td id="stat-rem-avg-duration">--</td></tr>
+                            <tr><td>% of total sleep</td><td id="stat-rem-percent">--</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Awake Episode Analysis -->
+                <div class="detailed-stats">
+                    <h2>Awake Episode Analysis</h2>
+                    <table class="stats-table">
+                        <thead>
+                            <tr>
+                                <th>Metric</th>
+                                <th>Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr><td>Total episodes</td><td id="stat-awake-total-episodes">--</td></tr>
+                            <tr><td>Average episodes per night</td><td id="stat-awake-avg-episodes">--</td></tr>
+                            <tr><td>Shortest episode</td><td id="stat-awake-min-episode">--</td></tr>
+                            <tr><td>Longest episode</td><td id="stat-awake-max-episode">--</td></tr>
+                            <tr><td>Average episode duration</td><td id="stat-awake-avg-duration">--</td></tr>
+                            <tr><td>% of total sleep</td><td id="stat-awake-percent">--</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -881,9 +993,15 @@
                 return;
             }
 
-            // Process all sessions
+            // Process all sessions - track episodes for all sleep phases
             let totalDeepEpisodes = 0;
+            let totalLightEpisodes = 0;
+            let totalRemEpisodes = 0;
+            let totalAwakeEpisodes = 0;
             let allDeepDurations = [];
+            let allLightDurations = [];
+            let allRemDurations = [];
+            let allAwakeDurations = [];
             let totalDeepDuration = 0;
             let totalRemDuration = 0;
             let totalLightDuration = 0;
@@ -893,9 +1011,25 @@
             const processedSessions = sessions.map(session => {
                 const hypnogramData = parseHypnogram(session.sleep_phase_5_min);
                 const deepEpisodes = hypnogramData.episodes.deep;
+                const lightEpisodes = hypnogramData.episodes.light;
+                const remEpisodes = hypnogramData.episodes.rem;
+                const awakeEpisodes = hypnogramData.episodes.awake;
 
+                // Deep sleep episodes
                 totalDeepEpisodes += deepEpisodes.length;
                 deepEpisodes.forEach(ep => allDeepDurations.push(ep.duration));
+
+                // Light sleep episodes
+                totalLightEpisodes += lightEpisodes.length;
+                lightEpisodes.forEach(ep => allLightDurations.push(ep.duration));
+
+                // REM sleep episodes
+                totalRemEpisodes += remEpisodes.length;
+                remEpisodes.forEach(ep => allRemDurations.push(ep.duration));
+
+                // Awake episodes
+                totalAwakeEpisodes += awakeEpisodes.length;
+                awakeEpisodes.forEach(ep => allAwakeDurations.push(ep.duration));
 
                 totalDeepDuration += session.deep_sleep_duration || 0;
                 totalRemDuration += session.rem_sleep_duration || 0;
@@ -907,40 +1041,101 @@
                     ...session,
                     hypnogramData,
                     deepEpisodeCount: deepEpisodes.length,
-                    deepEpisodes
+                    lightEpisodeCount: lightEpisodes.length,
+                    remEpisodeCount: remEpisodes.length,
+                    awakeEpisodeCount: awakeEpisodes.length,
+                    deepEpisodes,
+                    lightEpisodes,
+                    remEpisodes,
+                    awakeEpisodes
                 };
             });
 
             const nightCount = sessions.length;
 
-            // Calculate averages
-            const avgDeepEpisodes = (totalDeepEpisodes / nightCount).toFixed(1);
-            const avgDeepDuration = allDeepDurations.length > 0
-                ? (allDeepDurations.reduce((a, b) => a + b, 0) / allDeepDurations.length)
-                : 0;
-            const minDeepDuration = allDeepDurations.length > 0 ? Math.min(...allDeepDurations) : 0;
-            const maxDeepDuration = allDeepDurations.length > 0 ? Math.max(...allDeepDurations) : 0;
+            // Helper function to calculate episode stats
+            function calcEpisodeStats(allDurations, totalEpisodes) {
+                const avgEpisodes = (totalEpisodes / nightCount).toFixed(1);
+                const avgDuration = allDurations.length > 0
+                    ? (allDurations.reduce((a, b) => a + b, 0) / allDurations.length)
+                    : 0;
+                const minDuration = allDurations.length > 0 ? Math.min(...allDurations) : 0;
+                const maxDuration = allDurations.length > 0 ? Math.max(...allDurations) : 0;
+                return { avgEpisodes, avgDuration, minDuration, maxDuration, totalEpisodes };
+            }
 
-            // Update overview stats
-            document.getElementById('deep-episodes').textContent = avgDeepEpisodes;
-            document.getElementById('deep-duration').textContent = formatMinutes(avgDeepDuration);
+            // Calculate stats for each sleep phase
+            const deepStats = calcEpisodeStats(allDeepDurations, totalDeepEpisodes);
+            const lightStats = calcEpisodeStats(allLightDurations, totalLightEpisodes);
+            const remStats = calcEpisodeStats(allRemDurations, totalRemEpisodes);
+            const awakeStats = calcEpisodeStats(allAwakeDurations, totalAwakeEpisodes);
+
+            // Update overview stats - Deep
+            document.getElementById('deep-episodes').textContent = deepStats.avgEpisodes;
+            document.getElementById('deep-duration').textContent = formatMinutes(deepStats.avgDuration);
             document.getElementById('deep-total').textContent = formatMinutes(totalDeepDuration / nightCount / 60);
-            document.getElementById('rem-total').textContent = formatMinutes(totalRemDuration / nightCount / 60);
+
+            // Update overview stats - Light
+            document.getElementById('light-episodes').textContent = lightStats.avgEpisodes;
+            document.getElementById('light-duration').textContent = formatMinutes(lightStats.avgDuration);
             document.getElementById('light-total').textContent = formatMinutes(totalLightDuration / nightCount / 60);
+
+            // Update overview stats - REM
+            document.getElementById('rem-episodes').textContent = remStats.avgEpisodes;
+            document.getElementById('rem-duration').textContent = formatMinutes(remStats.avgDuration);
+            document.getElementById('rem-total').textContent = formatMinutes(totalRemDuration / nightCount / 60);
+
+            // Update overview stats - Awake
+            document.getElementById('awake-episodes').textContent = awakeStats.avgEpisodes;
+            document.getElementById('awake-duration').textContent = formatMinutes(awakeStats.avgDuration);
             document.getElementById('awake-total').textContent = formatMinutes(totalAwakeDuration / nightCount / 60);
 
-            // Update detailed stats
+            // Update overview table
             document.getElementById('stat-nights').textContent = nightCount;
-            document.getElementById('stat-total-episodes').textContent = totalDeepEpisodes;
-            document.getElementById('stat-avg-episodes').textContent = avgDeepEpisodes;
-            document.getElementById('stat-min-episode').textContent = formatMinutes(minDeepDuration);
-            document.getElementById('stat-max-episode').textContent = formatMinutes(maxDeepDuration);
-            document.getElementById('stat-avg-duration').textContent = formatMinutes(avgDeepDuration);
 
+            // Update deep sleep detailed stats
+            document.getElementById('stat-deep-total-episodes').textContent = deepStats.totalEpisodes;
+            document.getElementById('stat-deep-avg-episodes').textContent = deepStats.avgEpisodes;
+            document.getElementById('stat-deep-min-episode').textContent = formatMinutes(deepStats.minDuration);
+            document.getElementById('stat-deep-max-episode').textContent = formatMinutes(deepStats.maxDuration);
+            document.getElementById('stat-deep-avg-duration').textContent = formatMinutes(deepStats.avgDuration);
             const deepPercent = totalSleepDuration > 0
                 ? ((totalDeepDuration / totalSleepDuration) * 100).toFixed(1) + '%'
                 : '--';
             document.getElementById('stat-deep-percent').textContent = deepPercent;
+
+            // Update light sleep detailed stats
+            document.getElementById('stat-light-total-episodes').textContent = lightStats.totalEpisodes;
+            document.getElementById('stat-light-avg-episodes').textContent = lightStats.avgEpisodes;
+            document.getElementById('stat-light-min-episode').textContent = formatMinutes(lightStats.minDuration);
+            document.getElementById('stat-light-max-episode').textContent = formatMinutes(lightStats.maxDuration);
+            document.getElementById('stat-light-avg-duration').textContent = formatMinutes(lightStats.avgDuration);
+            const lightPercent = totalSleepDuration > 0
+                ? ((totalLightDuration / totalSleepDuration) * 100).toFixed(1) + '%'
+                : '--';
+            document.getElementById('stat-light-percent').textContent = lightPercent;
+
+            // Update REM sleep detailed stats
+            document.getElementById('stat-rem-total-episodes').textContent = remStats.totalEpisodes;
+            document.getElementById('stat-rem-avg-episodes').textContent = remStats.avgEpisodes;
+            document.getElementById('stat-rem-min-episode').textContent = formatMinutes(remStats.minDuration);
+            document.getElementById('stat-rem-max-episode').textContent = formatMinutes(remStats.maxDuration);
+            document.getElementById('stat-rem-avg-duration').textContent = formatMinutes(remStats.avgDuration);
+            const remPercent = totalSleepDuration > 0
+                ? ((totalRemDuration / totalSleepDuration) * 100).toFixed(1) + '%'
+                : '--';
+            document.getElementById('stat-rem-percent').textContent = remPercent;
+
+            // Update awake detailed stats
+            document.getElementById('stat-awake-total-episodes').textContent = awakeStats.totalEpisodes;
+            document.getElementById('stat-awake-avg-episodes').textContent = awakeStats.avgEpisodes;
+            document.getElementById('stat-awake-min-episode').textContent = formatMinutes(awakeStats.minDuration);
+            document.getElementById('stat-awake-max-episode').textContent = formatMinutes(awakeStats.maxDuration);
+            document.getElementById('stat-awake-avg-duration').textContent = formatMinutes(awakeStats.avgDuration);
+            const awakePercent = totalSleepDuration > 0
+                ? ((totalAwakeDuration / totalSleepDuration) * 100).toFixed(1) + '%'
+                : '--';
+            document.getElementById('stat-awake-percent').textContent = awakePercent;
 
             // Render sessions
             renderSessions(processedSessions);
@@ -982,19 +1177,19 @@
                         <div class="session-details">
                             <div class="session-detail">
                                 <div class="label">Deep</div>
-                                <div class="val">${formatMinutes(deepDuration)}</div>
+                                <div class="val">${formatMinutes(deepDuration)} (${session.deepEpisodeCount})</div>
                             </div>
                             <div class="session-detail">
                                 <div class="label">Light</div>
-                                <div class="val">${formatMinutes(lightDuration)}</div>
+                                <div class="val">${formatMinutes(lightDuration)} (${session.lightEpisodeCount})</div>
                             </div>
                             <div class="session-detail">
                                 <div class="label">REM</div>
-                                <div class="val">${formatMinutes(remDuration)}</div>
+                                <div class="val">${formatMinutes(remDuration)} (${session.remEpisodeCount})</div>
                             </div>
                             <div class="session-detail">
-                                <div class="label">Episodes</div>
-                                <div class="val">${session.deepEpisodeCount} deep</div>
+                                <div class="label">Awake</div>
+                                <div class="val">${formatMinutes(awakeDuration)} (${session.awakeEpisodeCount})</div>
                             </div>
                         </div>
                         <div class="hypnogram">
