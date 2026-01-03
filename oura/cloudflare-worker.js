@@ -7,12 +7,7 @@
  * Deployment:
  * 1. Go to https://dash.cloudflare.com/
  * 2. Workers & Pages → Create Worker
- * 3. Paste this code and deploy
- * 4. (Optional) Set up a custom route like api.tools.galk.cc/*
- *
- * Usage:
- * Instead of: https://api.ouraring.com/v2/usercollection/sleep
- * Use:        https://your-worker.workers.dev/v2/usercollection/sleep
+ * 3. Click "Edit code", paste this, and Deploy
  */
 
 const OURA_API_BASE = 'https://api.ouraring.com';
@@ -24,58 +19,60 @@ const ALLOWED_ORIGINS = [
   'http://127.0.0.1:8080',
 ];
 
-export default {
-  async fetch(request, env, ctx) {
-    // Handle CORS preflight
-    if (request.method === 'OPTIONS') {
-      return handleCORS(request);
-    }
+addEventListener('fetch', event => {
+  event.respondWith(handleRequest(event.request));
+});
 
-    const url = new URL(request.url);
-    const origin = request.headers.get('Origin');
+async function handleRequest(request) {
+  // Handle CORS preflight
+  if (request.method === 'OPTIONS') {
+    return handleCORS(request);
+  }
 
-    // Build the Oura API URL
-    const ouraUrl = OURA_API_BASE + url.pathname + url.search;
+  const url = new URL(request.url);
+  const origin = request.headers.get('Origin');
 
-    // Forward the request to Oura API
-    const ouraRequest = new Request(ouraUrl, {
-      method: request.method,
-      headers: {
-        'Authorization': request.headers.get('Authorization') || '',
-        'Content-Type': 'application/json',
-      },
-      body: request.method !== 'GET' ? request.body : undefined,
+  // Build the Oura API URL
+  const ouraUrl = OURA_API_BASE + url.pathname + url.search;
+
+  // Forward the request to Oura API
+  const ouraRequest = new Request(ouraUrl, {
+    method: request.method,
+    headers: {
+      'Authorization': request.headers.get('Authorization') || '',
+      'Content-Type': 'application/json',
+    },
+    body: request.method !== 'GET' ? request.body : undefined,
+  });
+
+  try {
+    const response = await fetch(ouraRequest);
+
+    // Create new response with CORS headers
+    const corsOrigin = isAllowedOrigin(origin) ? origin : ALLOWED_ORIGINS[0];
+
+    const newHeaders = new Headers(response.headers);
+    newHeaders.set('Access-Control-Allow-Origin', corsOrigin);
+    newHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    newHeaders.set('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+    newHeaders.set('Access-Control-Max-Age', '86400');
+
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: newHeaders,
     });
-
-    try {
-      const response = await fetch(ouraRequest);
-
-      // Clone the response and add CORS headers
-      const newResponse = new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers,
-      });
-
-      // Add CORS headers
-      const corsOrigin = isAllowedOrigin(origin) ? origin : ALLOWED_ORIGINS[0];
-      newResponse.headers.set('Access-Control-Allow-Origin', corsOrigin);
-      newResponse.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      newResponse.headers.set('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-      newResponse.headers.set('Access-Control-Max-Age', '86400');
-
-      return newResponse;
-    } catch (error) {
-      return new Response(JSON.stringify({ error: error.message }), {
-        status: 500,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': isAllowedOrigin(origin) ? origin : ALLOWED_ORIGINS[0],
-        },
-      });
-    }
-  },
-};
+  } catch (error) {
+    const corsOrigin = isAllowedOrigin(origin) ? origin : ALLOWED_ORIGINS[0];
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 500,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': corsOrigin,
+      },
+    });
+  }
+}
 
 function handleCORS(request) {
   const origin = request.headers.get('Origin');
