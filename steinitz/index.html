@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Restaurant Finder</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🍽️ Restaurant Finder</h1>
+            <button id="apiKeyBtn" class="btn-secondary">⚙️ API Key</button>
+        </header>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="radius">Search Radius:</label>
+                <select id="radius">
+                    <option value="500">500m</option>
+                    <option value="1000" selected>1km</option>
+                    <option value="2000">2km</option>
+                    <option value="5000">5km</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label for="sortBy">Sort by:</label>
+                <select id="sortBy">
+                    <option value="rating">Highest Rating</option>
+                    <option value="ratingCount">Most Reviews</option>
+                    <option value="name">Name (A-Z)</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label for="minRating">Min Rating:</label>
+                <select id="minRating">
+                    <option value="0">All</option>
+                    <option value="3">3+ ⭐</option>
+                    <option value="3.5">3.5+ ⭐</option>
+                    <option value="4" selected>4+ ⭐</option>
+                    <option value="4.5">4.5+ ⭐</option>
+                </select>
+            </div>
+
+            <button id="searchBtn" class="btn-primary">Search</button>
+        </div>
+
+        <div class="main-content">
+            <div id="map"></div>
+            <div class="results-panel">
+                <h2>Results <span id="resultCount">(0)</span></h2>
+                <div id="results"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- API Key Modal -->
+    <div id="apiKeyModal" class="modal">
+        <div class="modal-content">
+            <h2>Google Places API Key</h2>
+            <p>Please enter your Google Places API key to use this app.</p>
+            <p class="info">Get your API key from <a href="https://developers.google.com/maps/documentation/places/web-service/get-api-key" target="_blank">Google Cloud Console</a></p>
+            <input type="text" id="apiKeyInput" placeholder="Enter API key">
+            <div class="modal-actions">
+                <button id="saveApiKey" class="btn-primary">Save</button>
+                <button id="cancelApiKey" class="btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
