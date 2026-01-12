@@ -4,6 +4,7 @@ let googleApiKey = '';
 let map = null;
 let markers = [];
 let placesData = [];
+let loadedMapName = '';
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', () => {
@@ -36,6 +37,8 @@ function setupEventListeners() {
     document.getElementById('save-google').addEventListener('click', saveGoogleKey);
     document.getElementById('extract-places').addEventListener('click', extractAndMapPlaces);
     document.getElementById('download-map').addEventListener('click', downloadMapData);
+    document.getElementById('load-map-btn').addEventListener('click', loadMapFromFile);
+    document.getElementById('clear-map').addEventListener('click', clearMap);
 }
 
 // Save OpenRouter API key
@@ -109,7 +112,8 @@ async function extractAndMapPlaces() {
 
         // Step 3: Geocode places with Google Places API
         showLoading(true, 'Geocoding places...');
-        await geocodePlaces(places);
+        const appendMode = placesData.length > 0; // Append if we already have places
+        await geocodePlaces(places, appendMode);
 
         // Step 4: Display results
         showLoading(false);
@@ -312,12 +316,25 @@ ${content.substring(0, 8000)}`;
 }
 
 // Geocode places using Google Places API
-async function geocodePlaces(places) {
-    placesData = [];
+async function geocodePlaces(places, appendMode = false) {
+    if (!appendMode) {
+        placesData = [];
+    }
 
     const service = new google.maps.places.PlacesService(document.createElement('div'));
+    const newPlaces = [];
 
     for (const place of places) {
+        // Check if place already exists in placesData
+        const exists = placesData.some(p =>
+            p.name.toLowerCase() === place.name.toLowerCase()
+        );
+
+        if (exists && appendMode) {
+            console.log(`Skipping duplicate place: ${place.name}`);
+            continue;
+        }
+
         try {
             const location = await new Promise((resolve, reject) => {
                 const request = {
@@ -334,24 +351,36 @@ async function geocodePlaces(places) {
                 });
             });
 
-            placesData.push({
+            const newPlace = {
                 ...place,
                 lat: location.geometry.location.lat(),
                 lng: location.geometry.location.lng(),
                 address: location.formatted_address,
                 placeId: location.place_id,
-                found: true
-            });
+                found: true,
+                source: 'extracted',
+                addedDate: new Date().toISOString()
+            };
+
+            newPlaces.push(newPlace);
 
         } catch (error) {
             // Add place even if geocoding failed
-            placesData.push({
+            const newPlace = {
                 ...place,
                 error: error.message,
-                found: false
-            });
+                found: false,
+                source: 'extracted',
+                addedDate: new Date().toISOString()
+            };
+
+            newPlaces.push(newPlace);
         }
     }
+
+    // Add new places to existing data
+    placesData.push(...newPlaces);
+    updateLoadedMapInfo();
 }
 
 // Display places list
@@ -361,7 +390,13 @@ function displayPlaces() {
 
     placesData.forEach((place, index) => {
         const placeItem = document.createElement('div');
-        placeItem.className = `place-item ${place.found ? '' : 'error'}`;
+        const classNames = ['place-item'];
+        if (!place.found) classNames.push('error');
+        if (place.source === 'loaded') classNames.push('loaded');
+
+        placeItem.className = classNames.join(' ');
+
+        const sourceLabel = place.source === 'loaded' ? '(from loaded map)' : '(newly extracted)';
 
         placeItem.innerHTML = `
             <h3>${index + 1}. ${place.name}</h3>
@@ -369,6 +404,7 @@ function displayPlaces() {
             ${place.description ? `<p><strong>Description:</strong> ${place.description}</p>` : ''}
             ${place.address ? `<p><strong>Address:</strong> ${place.address}</p>` : ''}
             ${place.error ? `<p style="color: #f44336;"><strong>Error:</strong> ${place.error}</p>` : ''}
+            <p class="place-source">${sourceLabel}</p>
         `;
 
         placesList.appendChild(placeItem);
@@ -475,5 +511,103 @@ function showLoading(show, message = 'Processing...') {
     } else {
         loading.classList.add('hidden');
         document.getElementById('extract-places').disabled = false;
+    }
+}
+
+// Load map from JSON file
+function loadMapFromFile() {
+    const fileInput = document.getElementById('load-map-file');
+    const file = fileInput.files[0];
+
+    if (!file) {
+        alert('Please select a JSON file to load');
+        return;
+    }
+
+    const reader = new FileReader();
+
+    reader.onload = (e) => {
+        try {
+            const data = JSON.parse(e.target.result);
+
+            // Validate the data structure
+            if (!data.places || !Array.isArray(data.places)) {
+                throw new Error('Invalid map file format');
+            }
+
+            // Mark all loaded places with source 'loaded'
+            const loadedPlaces = data.places.map(place => ({
+                ...place,
+                source: 'loaded'
+            }));
+
+            // Replace current places data with loaded data
+            placesData = loadedPlaces;
+            loadedMapName = file.name;
+
+            // Update UI
+            updateLoadedMapInfo();
+            displayPlaces();
+            displayMap();
+
+            document.getElementById('load-map-status').textContent = '✓ Loaded';
+            document.getElementById('load-map-status').className = 'status success';
+
+            // Reset file input
+            fileInput.value = '';
+
+        } catch (error) {
+            alert(`Failed to load map: ${error.message}`);
+            document.getElementById('load-map-status').textContent = '✗ Failed';
+            document.getElementById('load-map-status').className = 'status error';
+        }
+    };
+
+    reader.onerror = () => {
+        alert('Failed to read file');
+        document.getElementById('load-map-status').textContent = '✗ Failed';
+        document.getElementById('load-map-status').className = 'status error';
+    };
+
+    reader.readAsText(file);
+}
+
+// Clear current map
+function clearMap() {
+    if (placesData.length === 0) {
+        return;
+    }
+
+    if (confirm('Are you sure you want to clear the current map? This cannot be undone.')) {
+        placesData = [];
+        loadedMapName = '';
+
+        // Clear markers
+        markers.forEach(marker => marker.setMap(null));
+        markers = [];
+
+        // Update UI
+        updateLoadedMapInfo();
+        document.getElementById('results-section').classList.add('hidden');
+        document.getElementById('map-section').classList.add('hidden');
+        document.getElementById('load-map-status').textContent = '';
+        document.getElementById('load-map-status').className = 'status';
+    }
+}
+
+// Update loaded map info display
+function updateLoadedMapInfo() {
+    const infoSection = document.getElementById('loaded-map-info');
+    const mapNameElement = document.getElementById('loaded-map-name');
+    const mapCountElement = document.getElementById('loaded-map-count');
+
+    if (placesData.length > 0) {
+        infoSection.classList.remove('hidden');
+        mapNameElement.textContent = loadedMapName || 'Current session';
+        mapCountElement.textContent = placesData.length;
+    } else {
+        infoSection.classList.add('hidden');
+        mapNameElement.textContent = 'None';
+        mapCountElement.textContent = '0';
     }
 }
