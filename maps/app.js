@@ -1,0 +1,479 @@
+// Global variables
+let openRouterApiKey = '';
+let googleApiKey = '';
+let map = null;
+let markers = [];
+let placesData = [];
+
+// Initialize app
+document.addEventListener('DOMContentLoaded', () => {
+    loadApiKeys();
+    setupEventListeners();
+});
+
+// Load API keys from localStorage
+function loadApiKeys() {
+    openRouterApiKey = localStorage.getItem('openRouterApiKey') || '';
+    googleApiKey = localStorage.getItem('googleApiKey') || '';
+
+    if (openRouterApiKey) {
+        document.getElementById('openrouter-key').value = openRouterApiKey;
+        document.getElementById('openrouter-status').textContent = '✓ Saved';
+        document.getElementById('openrouter-status').className = 'status success';
+    }
+
+    if (googleApiKey) {
+        document.getElementById('google-key').value = googleApiKey;
+        document.getElementById('google-status').textContent = '✓ Saved';
+        document.getElementById('google-status').className = 'status success';
+        loadGoogleMapsScript();
+    }
+}
+
+// Setup event listeners
+function setupEventListeners() {
+    document.getElementById('save-openrouter').addEventListener('click', saveOpenRouterKey);
+    document.getElementById('save-google').addEventListener('click', saveGoogleKey);
+    document.getElementById('extract-places').addEventListener('click', extractAndMapPlaces);
+    document.getElementById('download-map').addEventListener('click', downloadMapData);
+}
+
+// Save OpenRouter API key
+function saveOpenRouterKey() {
+    openRouterApiKey = document.getElementById('openrouter-key').value.trim();
+    if (openRouterApiKey) {
+        localStorage.setItem('openRouterApiKey', openRouterApiKey);
+        document.getElementById('openrouter-status').textContent = '✓ Saved';
+        document.getElementById('openrouter-status').className = 'status success';
+    } else {
+        document.getElementById('openrouter-status').textContent = '✗ Invalid key';
+        document.getElementById('openrouter-status').className = 'status error';
+    }
+}
+
+// Save Google API key
+function saveGoogleKey() {
+    googleApiKey = document.getElementById('google-key').value.trim();
+    if (googleApiKey) {
+        localStorage.setItem('googleApiKey', googleApiKey);
+        document.getElementById('google-status').textContent = '✓ Saved';
+        document.getElementById('google-status').className = 'status success';
+        loadGoogleMapsScript();
+    } else {
+        document.getElementById('google-status').textContent = '✗ Invalid key';
+        document.getElementById('google-status').className = 'status error';
+    }
+}
+
+// Load Google Maps script dynamically
+function loadGoogleMapsScript() {
+    if (document.querySelector('script[src*="maps.googleapis.com"]')) {
+        return;
+    }
+
+    const script = document.createElement('script');
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${googleApiKey}&libraries=places`;
+    script.async = true;
+    script.defer = true;
+    document.head.appendChild(script);
+}
+
+// Main function to extract and map places
+async function extractAndMapPlaces() {
+    const url = document.getElementById('content-url').value.trim();
+
+    if (!url) {
+        alert('Please enter a URL');
+        return;
+    }
+
+    if (!openRouterApiKey) {
+        alert('Please save your OpenRouter API key first');
+        return;
+    }
+
+    if (!googleApiKey) {
+        alert('Please save your Google Places API key first');
+        return;
+    }
+
+    showLoading(true, 'Fetching content...');
+
+    try {
+        // Step 1: Extract content from URL
+        const content = await extractContentFromUrl(url);
+
+        // Step 2: Extract places using OpenRouter
+        showLoading(true, 'Extracting places with AI...');
+        const places = await extractPlacesWithAI(content);
+
+        // Step 3: Geocode places with Google Places API
+        showLoading(true, 'Geocoding places...');
+        await geocodePlaces(places);
+
+        // Step 4: Display results
+        showLoading(false);
+        displayPlaces();
+        displayMap();
+
+    } catch (error) {
+        showLoading(false);
+        alert(`Error: ${error.message}`);
+        console.error('Error:', error);
+    }
+}
+
+// Extract content from URL
+async function extractContentFromUrl(url) {
+    // Check if it's a Reddit post
+    if (url.includes('reddit.com')) {
+        return await extractRedditContent(url);
+    } else {
+        return await extractGenericContent(url);
+    }
+}
+
+// Extract Reddit content including all comments
+async function extractRedditContent(url) {
+    try {
+        // Convert to JSON API URL
+        let jsonUrl = url;
+        if (!jsonUrl.endsWith('.json')) {
+            jsonUrl = url.replace(/\/$/, '') + '.json';
+        }
+
+        showLoading(true, 'Fetching Reddit post and comments...');
+
+        const response = await fetch(jsonUrl);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch Reddit content: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        // Extract post content
+        const post = data[0].data.children[0].data;
+        let content = `Title: ${post.title}\n\n`;
+
+        if (post.selftext) {
+            content += `Post: ${post.selftext}\n\n`;
+        }
+
+        content += 'Comments:\n\n';
+
+        // Extract all comments recursively
+        const comments = data[1].data.children;
+        content += extractComments(comments);
+
+        return content;
+
+    } catch (error) {
+        throw new Error(`Failed to extract Reddit content: ${error.message}`);
+    }
+}
+
+// Recursively extract comments and replies
+function extractComments(comments, depth = 0) {
+    let text = '';
+
+    for (const comment of comments) {
+        if (comment.kind === 't1' && comment.data.body) {
+            const indent = '  '.repeat(depth);
+            text += `${indent}${comment.data.body}\n\n`;
+
+            // Process replies
+            if (comment.data.replies && comment.data.replies.data) {
+                text += extractComments(comment.data.replies.data.children, depth + 1);
+            }
+        }
+    }
+
+    return text;
+}
+
+// Extract content from generic URL
+async function extractGenericContent(url) {
+    try {
+        // For CORS reasons, we'll use a proxy or fetch directly
+        // This is a simple implementation - in production you'd want a backend proxy
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch content: ${response.status}`);
+        }
+
+        const html = await response.text();
+
+        // Extract text from HTML (basic implementation)
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+
+        // Remove script and style elements
+        const scripts = doc.querySelectorAll('script, style');
+        scripts.forEach(el => el.remove());
+
+        // Get text content
+        const text = doc.body.textContent || '';
+
+        // Clean up whitespace
+        return text.replace(/\s+/g, ' ').trim();
+
+    } catch (error) {
+        // If direct fetch fails due to CORS, try using a CORS proxy
+        try {
+            const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+            const response = await fetch(proxyUrl);
+            if (!response.ok) {
+                throw new Error(`Failed to fetch via proxy: ${response.status}`);
+            }
+
+            const html = await response.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+
+            const scripts = doc.querySelectorAll('script, style');
+            scripts.forEach(el => el.remove());
+
+            const text = doc.body.textContent || '';
+            return text.replace(/\s+/g, ' ').trim();
+
+        } catch (proxyError) {
+            throw new Error(`Failed to extract content: ${proxyError.message}`);
+        }
+    }
+}
+
+// Extract places using OpenRouter AI
+async function extractPlacesWithAI(content) {
+    const prompt = `You are a helpful assistant that extracts place recommendations from text.
+
+Analyze the following content and extract all mentioned places, restaurants, cafes, attractions, hotels, or any locations that are recommended or discussed.
+
+For each place, provide:
+1. Name of the place
+2. Type (restaurant, cafe, hotel, attraction, etc.)
+3. Any additional context or description mentioned
+
+Format your response as a JSON array of objects with fields: name, type, description
+
+Content:
+${content.substring(0, 8000)}`;
+
+    try {
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${openRouterApiKey}`,
+                'HTTP-Referer': window.location.origin,
+                'X-Title': 'Place Recommendation Mapper'
+            },
+            body: JSON.stringify({
+                model: 'openai/gpt-3.5-turbo',
+                messages: [
+                    {
+                        role: 'user',
+                        content: prompt
+                    }
+                ]
+            })
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`OpenRouter API error: ${response.status} - ${errorText}`);
+        }
+
+        const data = await response.json();
+        const responseText = data.choices[0].message.content;
+
+        // Try to parse JSON from response
+        let places;
+        try {
+            // Extract JSON from markdown code blocks if present
+            const jsonMatch = responseText.match(/```json\n?([\s\S]*?)\n?```/) ||
+                            responseText.match(/```\n?([\s\S]*?)\n?```/) ||
+                            [null, responseText];
+            places = JSON.parse(jsonMatch[1]);
+        } catch (e) {
+            // If parsing fails, try to extract places manually
+            places = [];
+            console.warn('Failed to parse JSON, response:', responseText);
+        }
+
+        if (!Array.isArray(places) || places.length === 0) {
+            throw new Error('No places found in the content');
+        }
+
+        return places;
+
+    } catch (error) {
+        throw new Error(`Failed to extract places with AI: ${error.message}`);
+    }
+}
+
+// Geocode places using Google Places API
+async function geocodePlaces(places) {
+    placesData = [];
+
+    const service = new google.maps.places.PlacesService(document.createElement('div'));
+
+    for (const place of places) {
+        try {
+            const location = await new Promise((resolve, reject) => {
+                const request = {
+                    query: place.name,
+                    fields: ['name', 'geometry', 'formatted_address', 'place_id', 'types']
+                };
+
+                service.findPlaceFromQuery(request, (results, status) => {
+                    if (status === google.maps.places.PlacesServiceStatus.OK && results && results[0]) {
+                        resolve(results[0]);
+                    } else {
+                        reject(new Error(`Place not found: ${place.name}`));
+                    }
+                });
+            });
+
+            placesData.push({
+                ...place,
+                lat: location.geometry.location.lat(),
+                lng: location.geometry.location.lng(),
+                address: location.formatted_address,
+                placeId: location.place_id,
+                found: true
+            });
+
+        } catch (error) {
+            // Add place even if geocoding failed
+            placesData.push({
+                ...place,
+                error: error.message,
+                found: false
+            });
+        }
+    }
+}
+
+// Display places list
+function displayPlaces() {
+    const placesList = document.getElementById('places-list');
+    placesList.innerHTML = '';
+
+    placesData.forEach((place, index) => {
+        const placeItem = document.createElement('div');
+        placeItem.className = `place-item ${place.found ? '' : 'error'}`;
+
+        placeItem.innerHTML = `
+            <h3>${index + 1}. ${place.name}</h3>
+            <p><strong>Type:</strong> ${place.type || 'N/A'}</p>
+            ${place.description ? `<p><strong>Description:</strong> ${place.description}</p>` : ''}
+            ${place.address ? `<p><strong>Address:</strong> ${place.address}</p>` : ''}
+            ${place.error ? `<p style="color: #f44336;"><strong>Error:</strong> ${place.error}</p>` : ''}
+        `;
+
+        placesList.appendChild(placeItem);
+    });
+
+    document.getElementById('results-section').classList.remove('hidden');
+}
+
+// Display map with markers
+function displayMap() {
+    const mapSection = document.getElementById('map-section');
+    mapSection.classList.remove('hidden');
+
+    const validPlaces = placesData.filter(p => p.found);
+
+    if (validPlaces.length === 0) {
+        document.getElementById('map').innerHTML = '<p style="padding: 20px; text-align: center;">No places could be mapped</p>';
+        return;
+    }
+
+    // Calculate center of all places
+    const avgLat = validPlaces.reduce((sum, p) => sum + p.lat, 0) / validPlaces.length;
+    const avgLng = validPlaces.reduce((sum, p) => sum + p.lng, 0) / validPlaces.length;
+
+    // Initialize map
+    map = new google.maps.Map(document.getElementById('map'), {
+        center: { lat: avgLat, lng: avgLng },
+        zoom: 12
+    });
+
+    // Clear existing markers
+    markers.forEach(marker => marker.setMap(null));
+    markers = [];
+
+    // Add markers for each place
+    validPlaces.forEach((place, index) => {
+        const marker = new google.maps.Marker({
+            position: { lat: place.lat, lng: place.lng },
+            map: map,
+            title: place.name,
+            label: (index + 1).toString()
+        });
+
+        const infoWindow = new google.maps.InfoWindow({
+            content: `
+                <div style="padding: 10px;">
+                    <h3>${place.name}</h3>
+                    <p><strong>Type:</strong> ${place.type || 'N/A'}</p>
+                    ${place.description ? `<p>${place.description}</p>` : ''}
+                    <p><strong>Address:</strong> ${place.address}</p>
+                </div>
+            `
+        });
+
+        marker.addListener('click', () => {
+            infoWindow.open(map, marker);
+        });
+
+        markers.push(marker);
+    });
+
+    // Fit bounds to show all markers
+    if (validPlaces.length > 1) {
+        const bounds = new google.maps.LatLngBounds();
+        validPlaces.forEach(place => {
+            bounds.extend({ lat: place.lat, lng: place.lng });
+        });
+        map.fitBounds(bounds);
+    }
+}
+
+// Download map data
+function downloadMapData() {
+    const data = {
+        exportDate: new Date().toISOString(),
+        places: placesData,
+        summary: {
+            total: placesData.length,
+            mapped: placesData.filter(p => p.found).length,
+            failed: placesData.filter(p => !p.found).length
+        }
+    };
+
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `places-map-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// Show/hide loading indicator
+function showLoading(show, message = 'Processing...') {
+    const loading = document.getElementById('loading');
+    const loadingMessage = document.getElementById('loading-message');
+
+    if (show) {
+        loading.classList.remove('hidden');
+        loadingMessage.textContent = message;
+        document.getElementById('extract-places').disabled = true;
+    } else {
+        loading.classList.add('hidden');
+        document.getElementById('extract-places').disabled = false;
+    }
+}

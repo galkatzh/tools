@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Place Recommendation Mapper</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Place Recommendation Mapper</h1>
+
+        <!-- API Keys Section -->
+        <div class="section api-keys-section">
+            <h2>API Configuration</h2>
+            <div class="form-group">
+                <label for="openrouter-key">OpenRouter API Key:</label>
+                <input type="password" id="openrouter-key" placeholder="Enter your OpenRouter API key">
+                <button id="save-openrouter">Save</button>
+                <span class="status" id="openrouter-status"></span>
+            </div>
+            <div class="form-group">
+                <label for="google-key">Google Places API Key:</label>
+                <input type="password" id="google-key" placeholder="Enter your Google Places API key">
+                <button id="save-google">Save</button>
+                <span class="status" id="google-status"></span>
+            </div>
+        </div>
+
+        <!-- URL Input Section -->
+        <div class="section url-section">
+            <h2>Extract Places from URL</h2>
+            <div class="form-group">
+                <label for="content-url">Website URL:</label>
+                <input type="text" id="content-url" placeholder="Paste URL (Reddit, blog, etc.)">
+                <button id="extract-places">Extract & Map Places</button>
+            </div>
+            <div id="loading" class="loading hidden">
+                <div class="spinner"></div>
+                <p id="loading-message">Processing...</p>
+            </div>
+        </div>
+
+        <!-- Results Section -->
+        <div class="section results-section hidden" id="results-section">
+            <h2>Extracted Places</h2>
+            <div id="places-list"></div>
+            <button id="download-map">Download Map Data</button>
+        </div>
+
+        <!-- Map Section -->
+        <div class="section map-section hidden" id="map-section">
+            <h2>Map</h2>
+            <div id="map"></div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
