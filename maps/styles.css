@@ -50,13 +50,18 @@ label {
 }
 
 input[type="text"],
-input[type="password"] {
+input[type="password"],
+input[type="file"] {
     width: 100%;
     padding: 10px;
     border: 1px solid #ddd;
     border-radius: 5px;
     font-size: 14px;
     margin-bottom: 10px;
+}
+
+input[type="file"] {
+    cursor: pointer;
 }
 
 button {
@@ -171,4 +176,73 @@ button:disabled {
 #loading-message {
     color: #666;
     margin-top: 10px;
+}
+
+.loaded-map-info {
+    background: #e3f2fd;
+    padding: 15px;
+    border-radius: 5px;
+    margin-top: 15px;
+    border: 1px solid #2196F3;
+}
+
+.loaded-map-info p {
+    margin: 5px 0;
+    color: #333;
+}
+
+.loaded-map-info button {
+    background-color: #ff9800;
+    margin-top: 10px;
+}
+
+.loaded-map-info button:hover {
+    background-color: #f57c00;
+}
+
+.info-text {
+    color: #666;
+    font-size: 14px;
+    margin-top: 10px;
+    font-style: italic;
+}
+
+#clear-map {
+    background-color: #f44336;
+    margin-top: 10px;
+}
+
+#clear-map:hover {
+    background-color: #d32f2f;
+}
+
+.place-item.loaded {
+    background: #e3f2fd;
+    border-color: #2196F3;
+}
+
+.place-item .place-source {
+    font-size: 12px;
+    color: #999;
+    font-style: italic;
+    margin-top: 5px;
+}
+
+.loaded-map-info {
+    background: white;
+    padding: 15px;
+    border-radius: 5px;
+    margin-top: 15px;
+}
+
+.loaded-map-info p {
+    margin: 5px 0;
+    color: #666;
+}
+
+.info-text {
+    color: #666;
+    font-size: 14px;
+    font-style: italic;
+    margin-top: 5px;
 }

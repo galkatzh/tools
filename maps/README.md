@@ -9,6 +9,8 @@ A vanilla JavaScript app that extracts place recommendations from web content (R
 - AI-powered place extraction using OpenRouter
 - Automatic geocoding with Google Places API
 - Interactive map visualization
+- Load existing map data and add new places to it
+- Duplicate detection when adding places
 - Download extracted places as JSON
 - Local storage for API keys
 
@@ -34,23 +36,50 @@ You'll need two API keys:
    - Enter your OpenRouter API key and click "Save"
    - Enter your Google Places API key and click "Save"
 
-2. **Extract Places**:
+2. **Load Existing Map (Optional)**:
+   - Click "Choose File" to select a previously saved map JSON file
+   - Click "Load Map" to import the places
+   - The loaded map info will show how many places are currently loaded
+   - Click "Clear Map" to start fresh
+
+3. **Extract Places**:
    - Paste a URL into the "Website URL" field
    - Supported URLs:
      - Reddit posts (includes all comments)
      - Blog posts
      - Articles
      - Any web page with place recommendations
-   - Click "Extract & Map Places"
+   - Click "Extract & Add Places"
+   - New places will be automatically added to your current map
+   - Duplicates are automatically detected and skipped
 
-3. **View Results**:
-   - The app will display a list of extracted places
+4. **View Results**:
+   - The app will display a list of all places (loaded + newly extracted)
+   - Places are marked as "(from loaded map)" or "(newly extracted)"
    - An interactive map will show all successfully geocoded places
    - Click markers on the map for more information
 
-4. **Download Data**:
-   - Click "Download Map Data" to save the results as JSON
+5. **Download Data**:
+   - Click "Download Map Data" to save all places as JSON
    - The file includes all places, coordinates, and metadata
+   - You can later reload this file to continue adding more places
+
+## Workflow Example
+
+Build a comprehensive map over multiple sessions:
+
+1. **Session 1**: Extract places from a Reddit post about Tokyo restaurants
+   - Download the map as `tokyo-restaurants.json`
+
+2. **Session 2**: Load `tokyo-restaurants.json`
+   - Add places from a blog post about Tokyo cafes
+   - Download the updated map
+
+3. **Session 3**: Load the updated map
+   - Add places from another Reddit thread
+   - Continue building your comprehensive Tokyo places map
+
+Each time you add places, duplicates are automatically detected and skipped.
 
 ## How It Works
 
@@ -77,7 +106,10 @@ You'll need two API keys:
 - Some websites may block content extraction due to CORS policies
 - The app uses a public CORS proxy as fallback
 - All API keys are stored locally in your browser
-- Downloaded JSON files can be imported into other mapping tools
+- Downloaded JSON files can be re-loaded to continue building maps
+- Duplicate places are detected by name (case-insensitive)
+- Loaded places are preserved when adding new ones
+- The current map state is only in memory - remember to download before closing
 
 ## Troubleshooting
 

@@ -27,14 +27,31 @@
             </div>
         </div>
 
+        <!-- Load Existing Map Section -->
+        <div class="section load-map-section">
+            <h2>Load Existing Map</h2>
+            <div class="form-group">
+                <label for="load-map-file">Load Map JSON:</label>
+                <input type="file" id="load-map-file" accept=".json">
+                <button id="load-map-btn">Load Map</button>
+                <span class="status" id="load-map-status"></span>
+            </div>
+            <div id="loaded-map-info" class="loaded-map-info hidden">
+                <p><strong>Current Map:</strong> <span id="loaded-map-name">None</span></p>
+                <p><strong>Places in map:</strong> <span id="loaded-map-count">0</span></p>
+                <button id="clear-map">Clear Map</button>
+            </div>
+        </div>
+
         <!-- URL Input Section -->
         <div class="section url-section">
             <h2>Extract Places from URL</h2>
             <div class="form-group">
                 <label for="content-url">Website URL:</label>
                 <input type="text" id="content-url" placeholder="Paste URL (Reddit, blog, etc.)">
-                <button id="extract-places">Extract & Map Places</button>
+                <button id="extract-places">Extract & Add Places</button>
             </div>
+            <p class="info-text">New places will be added to your current map</p>
             <div id="loading" class="loading hidden">
                 <div class="spinner"></div>
                 <p id="loading-message">Processing...</p>
