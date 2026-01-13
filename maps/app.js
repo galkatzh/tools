@@ -1,6 +1,7 @@
 // Global variables
 let openRouterApiKey = '';
 let googleApiKey = '';
+let openRouterModel = '';
 let map = null;
 let markers = [];
 let placesData = [];
@@ -16,11 +17,18 @@ document.addEventListener('DOMContentLoaded', () => {
 function loadApiKeys() {
     openRouterApiKey = localStorage.getItem('openRouterApiKey') || '';
     googleApiKey = localStorage.getItem('googleApiKey') || '';
+    openRouterModel = localStorage.getItem('openRouterModel') || 'moonshotai/kimi-k2:free';
 
     if (openRouterApiKey) {
         document.getElementById('openrouter-key').value = openRouterApiKey;
         document.getElementById('openrouter-status').textContent = '✓ Saved';
         document.getElementById('openrouter-status').className = 'status success';
+    }
+
+    if (openRouterModel) {
+        document.getElementById('openrouter-model').value = openRouterModel;
+        document.getElementById('model-status').textContent = '✓ Saved';
+        document.getElementById('model-status').className = 'status success';
     }
 
     if (googleApiKey) {
@@ -34,6 +42,7 @@ function loadApiKeys() {
 // Setup event listeners
 function setupEventListeners() {
     document.getElementById('save-openrouter').addEventListener('click', saveOpenRouterKey);
+    document.getElementById('save-model').addEventListener('click', saveOpenRouterModel);
     document.getElementById('save-google').addEventListener('click', saveGoogleKey);
     document.getElementById('extract-places').addEventListener('click', extractAndMapPlaces);
     document.getElementById('download-map').addEventListener('click', downloadMapData);
@@ -51,6 +60,23 @@ function saveOpenRouterKey() {
     } else {
         document.getElementById('openrouter-status').textContent = '✗ Invalid key';
         document.getElementById('openrouter-status').className = 'status error';
+    }
+}
+
+// Save OpenRouter Model
+function saveOpenRouterModel() {
+    openRouterModel = document.getElementById('openrouter-model').value.trim();
+    if (openRouterModel) {
+        localStorage.setItem('openRouterModel', openRouterModel);
+        document.getElementById('model-status').textContent = '✓ Saved';
+        document.getElementById('model-status').className = 'status success';
+    } else {
+        // If empty, use default
+        openRouterModel = 'moonshotai/kimi-k2:free';
+        localStorage.setItem('openRouterModel', openRouterModel);
+        document.getElementById('openrouter-model').value = openRouterModel;
+        document.getElementById('model-status').textContent = '✓ Using default';
+        document.getElementById('model-status').className = 'status success';
     }
 }
 
@@ -272,7 +298,7 @@ ${content.substring(0, 8000)}`;
                 'X-Title': 'Place Recommendation Mapper'
             },
             body: JSON.stringify({
-                model: 'moonshotai/kimi-k2:free',  // Free model on OpenRouter
+                model: openRouterModel || 'moonshotai/kimi-k2:free',
                 messages: [
                     {
                         role: 'user',
