@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Place Recommendation Mapper</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <h1>Place Mapper</h1>
+            <button id="settings-toggle" class="settings-toggle" aria-label="Toggle settings">
+                <span class="hamburger"></span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Settings Sidebar -->
+    <aside id="settings-panel" class="settings-panel">
+        <div class="settings-header">
+            <h2>Settings</h2>
+            <button id="settings-close" class="close-btn" aria-label="Close settings">&times;</button>
+        </div>
+
+        <div class="settings-content">
+            <!-- API Configuration -->
+            <div class="settings-section">
+                <h3>API Configuration</h3>
+                <div class="form-group">
+                    <label for="openrouter-key">OpenRouter API Key</label>
+                    <input type="password" id="openrouter-key" placeholder="sk-or-...">
+                    <button id="save-openrouter" class="btn-secondary">Save</button>
+                    <span class="status" id="openrouter-status"></span>
+                </div>
+                <div class="form-group">
+                    <label for="openrouter-model">Model</label>
+                    <input type="text" id="openrouter-model" placeholder="moonshotai/kimi-k2:free">
+                    <button id="save-model" class="btn-secondary">Save</button>
+                    <span class="status" id="model-status"></span>
+                    <p class="help-text"><a href="https://openrouter.ai/models" target="_blank">Browse models</a></p>
+                </div>
+                <div class="form-group">
+                    <label for="google-key">Google Places API Key</label>
+                    <input type="password" id="google-key" placeholder="AIza...">
+                    <button id="save-google" class="btn-secondary">Save</button>
+                    <span class="status" id="google-status"></span>
+                </div>
+            </div>
+
+            <!-- Map Management -->
+            <div class="settings-section">
+                <h3>Map Management</h3>
+                <div class="form-group">
+                    <label for="load-map-file">Load Existing Map</label>
+                    <input type="file" id="load-map-file" accept=".json">
+                    <button id="load-map-btn" class="btn-secondary">Load</button>
+                    <span class="status" id="load-map-status"></span>
+                </div>
+                <div id="loaded-map-info" class="map-info hidden">
+                    <p><strong>Current:</strong> <span id="loaded-map-name">None</span></p>
+                    <p><strong>Places:</strong> <span id="loaded-map-count">0</span></p>
+                    <button id="clear-map" class="btn-danger">Clear Map</button>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <!-- Extract Section -->
+        <section class="extract-section">
+            <div class="input-group">
+                <input type="text" id="content-url" placeholder="Paste URL (Reddit, blog, etc.)" class="url-input">
+                <button id="extract-places" class="btn-primary">Extract</button>
+            </div>
+            <div id="loading" class="loading hidden">
+                <div class="spinner"></div>
+                <p id="loading-message">Processing...</p>
+            </div>
+        </section>
+
+        <!-- Debug Section -->
+        <section id="debug-section" class="debug-section hidden">
+            <div class="debug-header">
+                <h3>Debug: Extracted Content</h3>
+                <button id="debug-close" class="close-btn">&times;</button>
+            </div>
+            <div class="debug-content">
+                <pre id="debug-text"></pre>
+            </div>
+        </section>
+
+        <!-- Results Section -->
+        <section id="results-section" class="results-section hidden">
+            <div class="results-header">
+                <h2>Places (<span id="place-count">0</span>)</h2>
+                <div class="results-actions">
+                    <button id="show-debug" class="btn-text">View Debug</button>
+                    <button id="download-map" class="btn-secondary">Download</button>
+                </div>
+            </div>
+            <div id="places-list" class="places-list"></div>
+        </section>
+
+        <!-- Map Section -->
+        <section id="map-section" class="map-section hidden">
+            <div id="map" class="map"></div>
+        </section>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>
