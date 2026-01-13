@@ -6,6 +6,7 @@ let map = null;
 let markers = [];
 let placesData = [];
 let loadedMapName = '';
+let extractedContent = ''; // For debugging
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', () => {
@@ -41,13 +42,50 @@ function loadApiKeys() {
 
 // Setup event listeners
 function setupEventListeners() {
+    // Settings panel
+    document.getElementById('settings-toggle').addEventListener('click', toggleSettings);
+    document.getElementById('settings-close').addEventListener('click', closeSettings);
+
+    // API configuration
     document.getElementById('save-openrouter').addEventListener('click', saveOpenRouterKey);
     document.getElementById('save-model').addEventListener('click', saveOpenRouterModel);
     document.getElementById('save-google').addEventListener('click', saveGoogleKey);
-    document.getElementById('extract-places').addEventListener('click', extractAndMapPlaces);
-    document.getElementById('download-map').addEventListener('click', downloadMapData);
+
+    // Map management
     document.getElementById('load-map-btn').addEventListener('click', loadMapFromFile);
     document.getElementById('clear-map').addEventListener('click', clearMap);
+
+    // Extract and results
+    document.getElementById('extract-places').addEventListener('click', extractAndMapPlaces);
+    document.getElementById('download-map').addEventListener('click', downloadMapData);
+    document.getElementById('show-debug').addEventListener('click', showDebug);
+    document.getElementById('debug-close').addEventListener('click', hideDebug);
+}
+
+// Toggle settings panel
+function toggleSettings() {
+    const panel = document.getElementById('settings-panel');
+    panel.classList.toggle('open');
+}
+
+// Close settings panel
+function closeSettings() {
+    const panel = document.getElementById('settings-panel');
+    panel.classList.remove('open');
+}
+
+// Show debug panel
+function showDebug() {
+    const debugSection = document.getElementById('debug-section');
+    const debugText = document.getElementById('debug-text');
+    debugText.textContent = extractedContent || 'No content extracted yet';
+    debugSection.classList.remove('hidden');
+    debugSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// Hide debug panel
+function hideDebug() {
+    document.getElementById('debug-section').classList.add('hidden');
 }
 
 // Save OpenRouter API key
@@ -131,6 +169,7 @@ async function extractAndMapPlaces() {
     try {
         // Step 1: Extract content from URL
         const content = await extractContentFromUrl(url);
+        extractedContent = content; // Store for debugging
 
         // Step 2: Extract places using OpenRouter
         showLoading(true, 'Extracting places with AI...');
@@ -145,6 +184,7 @@ async function extractAndMapPlaces() {
         showLoading(false);
         displayPlaces();
         displayMap();
+        updatePlaceCount();
 
     } catch (error) {
         showLoading(false);
@@ -635,5 +675,15 @@ function updateLoadedMapInfo() {
         infoSection.classList.add('hidden');
         mapNameElement.textContent = 'None';
         mapCountElement.textContent = '0';
+    }
+
+    updatePlaceCount();
+}
+
+// Update place count in results header
+function updatePlaceCount() {
+    const countElement = document.getElementById('place-count');
+    if (countElement) {
+        countElement.textContent = placesData.length;
     }
 }
