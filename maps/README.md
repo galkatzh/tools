@@ -1,18 +1,20 @@
 # Place Recommendation Mapper
 
-A vanilla JavaScript app that extracts place recommendations from web content (Reddit posts, blogs, etc.) and maps them using Google Maps.
+A minimalistic vanilla JavaScript app that extracts place recommendations from web content and maps them using Google Maps. Clean, mobile-friendly interface with settings in a collapsible panel.
 
 ## Features
 
-- Extract place recommendations from any web URL
-- Special support for Reddit posts (includes all comments)
-- AI-powered place extraction using OpenRouter
-- Automatic geocoding with Google Places API
-- Interactive map visualization
-- Load existing map data and add new places to it
-- Duplicate detection when adding places
-- Download extracted places as JSON
-- Local storage for API keys
+- **Modern UI**: Minimalistic design with mobile-first responsive layout
+- **Settings Panel**: Collapsible sidebar for configuration (hamburger menu)
+- **Extract Places**: From any web URL (Reddit posts, blogs, articles)
+- **Reddit Support**: Special handling for Reddit posts (includes all comments)
+- **AI-Powered**: Configurable OpenRouter model for place extraction
+- **Auto-Geocoding**: Google Places API integration for coordinates
+- **Interactive Map**: Visual display with numbered markers
+- **Map Management**: Load, append, and save map data as JSON
+- **Duplicate Detection**: Prevents duplicate places when appending
+- **Debug View**: Inspect extracted content sent to AI
+- **Local Storage**: API keys and preferences persist across sessions
 
 ## Setup
 
@@ -32,41 +34,59 @@ You'll need two API keys:
 
 ## Usage
 
-1. **Configure API Keys**:
-   - Enter your OpenRouter API key and click "Save"
-   - Enter your preferred OpenRouter model (default: `moonshotai/kimi-k2:free`)
-     - Browse available models at [OpenRouter Models](https://openrouter.ai/models)
-     - Popular free options: `moonshotai/kimi-k2:free`, `google/gemini-flash-1.5:free`
-     - Click "Save" to store your model preference
-   - Enter your Google Places API key and click "Save"
+### Quick Start
 
-2. **Load Existing Map (Optional)**:
-   - Click "Choose File" to select a previously saved map JSON file
-   - Click "Load Map" to import the places
-   - The loaded map info will show how many places are currently loaded
-   - Click "Clear Map" to start fresh
+1. **Open Settings** (click hamburger menu in top-right)
+2. **Configure API Keys**:
+   - Enter your OpenRouter API key → Save
+   - (Optional) Change the model from default `moonshotai/kimi-k2:free` → Save
+   - Enter your Google Places API key → Save
+3. **Close Settings** (click × or outside the panel)
+4. **Paste URL** in the main input field
+5. **Click "Extract"** and wait for results
 
-3. **Extract Places**:
-   - Paste a URL into the "Website URL" field
-   - Supported URLs:
-     - Reddit posts (includes all comments)
-     - Blog posts
-     - Articles
-     - Any web page with place recommendations
-   - Click "Extract & Add Places"
-   - New places will be automatically added to your current map
-   - Duplicates are automatically detected and skipped
+### Detailed Guide
 
-4. **View Results**:
-   - The app will display a list of all places (loaded + newly extracted)
-   - Places are marked as "(from loaded map)" or "(newly extracted)"
-   - An interactive map will show all successfully geocoded places
-   - Click markers on the map for more information
+**Settings Panel (hamburger menu)**
 
-5. **Download Data**:
-   - Click "Download Map Data" to save all places as JSON
-   - The file includes all places, coordinates, and metadata
-   - You can later reload this file to continue adding more places
+- **API Configuration**:
+  - OpenRouter API Key (required for AI extraction)
+  - Model selection (browse [OpenRouter Models](https://openrouter.ai/models))
+  - Google Places API Key (required for geocoding)
+
+- **Map Management**:
+  - Load existing map JSON files
+  - View current map info (filename, place count)
+  - Clear map to start fresh
+
+**Main Interface**
+
+- **Extract Places**:
+  - Paste any URL (Reddit, blogs, articles, etc.)
+  - Click "Extract" button
+  - New places append to current map
+  - Duplicates auto-detected and skipped
+
+- **View Results**:
+  - Places list shows all locations
+  - Color-coded: loaded (blue) vs extracted (grey)
+  - Failed geocoding shown in red with error message
+  - Place count displayed in header
+
+- **Debug View** (click "View Debug"):
+  - Inspect exact text sent to AI
+  - Useful for troubleshooting extraction issues
+  - Shows full content including Reddit comments
+
+- **Download**:
+  - Click "Download" in results header
+  - Saves JSON with all places and metadata
+  - Can be reloaded in future sessions
+
+- **Interactive Map**:
+  - Numbered markers for each place
+  - Click markers for place details
+  - Auto-zooms to fit all locations
 
 ## Workflow Example
 
