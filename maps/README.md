@@ -34,6 +34,10 @@ You'll need two API keys:
 
 1. **Configure API Keys**:
    - Enter your OpenRouter API key and click "Save"
+   - Enter your preferred OpenRouter model (default: `moonshotai/kimi-k2:free`)
+     - Browse available models at [OpenRouter Models](https://openrouter.ai/models)
+     - Popular free options: `moonshotai/kimi-k2:free`, `google/gemini-flash-1.5:free`
+     - Click "Save" to store your model preference
    - Enter your Google Places API key and click "Save"
 
 2. **Load Existing Map (Optional)**:
@@ -88,7 +92,7 @@ Each time you add places, duplicates are automatically detected and skipped.
    - For other URLs: Extracts text content (with CORS proxy fallback)
 
 2. **AI Processing**:
-   - Sends content to OpenRouter (Kimi K2 - free model)
+   - Sends content to your chosen OpenRouter model (default: Kimi K2 free model)
    - AI extracts place names, types, and descriptions
 
 3. **Geocoding**:
@@ -105,7 +109,9 @@ Each time you add places, duplicates are automatically detected and skipped.
 - Reddit URLs work best with direct post links
 - Some websites may block content extraction due to CORS policies
 - The app uses a public CORS proxy as fallback
-- All API keys are stored locally in your browser
+- All API keys and model preferences are stored locally in your browser
+- You can use any OpenRouter model by entering its model ID
+- Free models recommended: `moonshotai/kimi-k2:free`, `google/gemini-flash-1.5:free`
 - Downloaded JSON files can be re-loaded to continue building maps
 - Duplicate places are detected by name (case-insensitive)
 - Loaded places are preserved when adding new ones

@@ -20,6 +20,13 @@
                 <span class="status" id="openrouter-status"></span>
             </div>
             <div class="form-group">
+                <label for="openrouter-model">OpenRouter Model:</label>
+                <input type="text" id="openrouter-model" placeholder="e.g., moonshotai/kimi-k2:free">
+                <button id="save-model">Save</button>
+                <span class="status" id="model-status"></span>
+                <p class="info-text">Default: moonshotai/kimi-k2:free (free model). See <a href="https://openrouter.ai/models" target="_blank">OpenRouter models</a></p>
+            </div>
+            <div class="form-group">
                 <label for="google-key">Google Places API Key:</label>
                 <input type="password" id="google-key" placeholder="Enter your Google Places API key">
                 <button id="save-google">Save</button>

@@ -246,3 +246,12 @@ button:disabled {
     font-style: italic;
     margin-top: 5px;
 }
+
+.info-text a {
+    color: #2196F3;
+    text-decoration: none;
+}
+
+.info-text a:hover {
+    text-decoration: underline;
+}
