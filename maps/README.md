@@ -88,7 +88,7 @@ Each time you add places, duplicates are automatically detected and skipped.
    - For other URLs: Extracts text content (with CORS proxy fallback)
 
 2. **AI Processing**:
-   - Sends content to OpenRouter (GPT-3.5-turbo)
+   - Sends content to OpenRouter (Kimi K2 - free model)
    - AI extracts place names, types, and descriptions
 
 3. **Geocoding**:

@@ -272,7 +272,7 @@ ${content.substring(0, 8000)}`;
                 'X-Title': 'Place Recommendation Mapper'
             },
             body: JSON.stringify({
-                model: 'openai/gpt-3.5-turbo',
+                model: 'moonshotai/kimi-k2:free',  // Free model on OpenRouter
                 messages: [
                     {
                         role: 'user',
