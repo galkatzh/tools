@@ -205,23 +205,16 @@ async function extractContentFromUrl(url) {
 
 // Extract Reddit content including all comments
 async function extractRedditContent(url) {
-    try {
-        // Convert to JSON API URL
-        let jsonUrl = url;
-        if (!jsonUrl.endsWith('.json')) {
-            jsonUrl = url.replace(/\/$/, '') + '.json';
-        }
+    // Convert to JSON API URL
+    let jsonUrl = url;
+    if (!jsonUrl.endsWith('.json')) {
+        jsonUrl = url.replace(/\/$/, '') + '.json';
+    }
 
-        showLoading(true, 'Fetching Reddit post and comments...');
+    showLoading(true, 'Fetching Reddit post and comments...');
 
-        const response = await fetch(jsonUrl);
-        if (!response.ok) {
-            throw new Error(`Failed to fetch Reddit content: ${response.status}`);
-        }
-
-        const data = await response.json();
-
-        // Extract post content
+    // Helper function to parse Reddit JSON response
+    const parseRedditData = (data) => {
         const post = data[0].data.children[0].data;
         let content = `Title: ${post.title}\n\n`;
 
@@ -236,9 +229,32 @@ async function extractRedditContent(url) {
         content += extractComments(comments);
 
         return content;
+    };
 
-    } catch (error) {
-        throw new Error(`Failed to extract Reddit content: ${error.message}`);
+    // Try direct fetch first
+    try {
+        const response = await fetch(jsonUrl);
+        if (response.ok) {
+            const data = await response.json();
+            return parseRedditData(data);
+        }
+    } catch (directError) {
+        console.log('Direct Reddit fetch failed, trying CORS proxy...', directError.message);
+    }
+
+    // Fallback to CORS proxy
+    try {
+        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(jsonUrl)}`;
+        const response = await fetch(proxyUrl);
+        if (!response.ok) {
+            throw new Error(`Proxy fetch failed: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return parseRedditData(data);
+
+    } catch (proxyError) {
+        throw new Error(`Failed to extract Reddit content: ${proxyError.message}`);
     }
 }
 
