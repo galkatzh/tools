@@ -38,6 +38,54 @@ function loadApiKeys() {
         document.getElementById('google-status').className = 'status success';
         loadGoogleMapsScript();
     }
+
+    // Load saved places from localStorage
+    loadPlacesFromStorage();
+}
+
+// Save places to localStorage
+function savePlacesToStorage() {
+    const data = {
+        places: placesData,
+        mapName: loadedMapName,
+        lastSaved: new Date().toISOString()
+    };
+    localStorage.setItem('savedPlaces', JSON.stringify(data));
+}
+
+// Load places from localStorage
+function loadPlacesFromStorage() {
+    const savedData = localStorage.getItem('savedPlaces');
+    if (savedData) {
+        try {
+            const data = JSON.parse(savedData);
+            if (data.places && Array.isArray(data.places) && data.places.length > 0) {
+                placesData = data.places;
+                loadedMapName = data.mapName || 'Saved session';
+
+                // Update UI after Google Maps script loads
+                if (googleApiKey) {
+                    // Wait for Google Maps to load, then display
+                    const checkGoogleMaps = setInterval(() => {
+                        if (typeof google !== 'undefined' && google.maps) {
+                            clearInterval(checkGoogleMaps);
+                            updateLoadedMapInfo();
+                            displayPlaces();
+                            displayMap();
+                        }
+                    }, 100);
+
+                    // Timeout after 10 seconds
+                    setTimeout(() => clearInterval(checkGoogleMaps), 10000);
+                } else {
+                    updateLoadedMapInfo();
+                    displayPlaces();
+                }
+            }
+        } catch (e) {
+            console.error('Failed to load saved places:', e);
+        }
+    }
 }
 
 // Setup event listeners
@@ -60,6 +108,23 @@ function setupEventListeners() {
     document.getElementById('download-map').addEventListener('click', downloadMapData);
     document.getElementById('show-debug').addEventListener('click', showDebug);
     document.getElementById('debug-close').addEventListener('click', hideDebug);
+
+    // Export dropdown
+    document.getElementById('export-dropdown-btn').addEventListener('click', toggleExportDropdown);
+    document.getElementById('open-google-maps').addEventListener('click', openInGoogleMaps);
+    document.getElementById('open-apple-maps').addEventListener('click', openInAppleMaps);
+
+    // Clear list button in results section
+    document.getElementById('clear-list').addEventListener('click', clearMap);
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+        const dropdown = document.getElementById('export-dropdown');
+        const toggle = document.getElementById('export-dropdown-btn');
+        if (!dropdown.contains(e.target) && !toggle.contains(e.target)) {
+            dropdown.classList.add('hidden');
+        }
+    });
 }
 
 // Toggle settings panel
@@ -554,6 +619,7 @@ async function geocodePlaces(places, appendMode = false) {
     // Add new places to existing data
     placesData.push(...newPlaces);
     updateLoadedMapInfo();
+    savePlacesToStorage();
 }
 
 // Display places list
@@ -718,6 +784,9 @@ function loadMapFromFile() {
             placesData = loadedPlaces;
             loadedMapName = file.name;
 
+            // Save to localStorage
+            savePlacesToStorage();
+
             // Update UI
             updateLoadedMapInfo();
             displayPlaces();
@@ -759,6 +828,9 @@ function clearMap() {
         markers.forEach(marker => marker.setMap(null));
         markers = [];
 
+        // Clear localStorage
+        localStorage.removeItem('savedPlaces');
+
         // Update UI
         updateLoadedMapInfo();
         document.getElementById('results-section').classList.add('hidden');
@@ -792,5 +864,102 @@ function updatePlaceCount() {
     const countElement = document.getElementById('place-count');
     if (countElement) {
         countElement.textContent = placesData.length;
+    }
+}
+
+// Toggle export dropdown
+function toggleExportDropdown() {
+    const dropdown = document.getElementById('export-dropdown');
+    dropdown.classList.toggle('hidden');
+}
+
+// Open places in Google Maps
+function openInGoogleMaps() {
+    const validPlaces = placesData.filter(p => p.found && p.lat && p.lng);
+
+    if (validPlaces.length === 0) {
+        alert('No valid places to show on map');
+        return;
+    }
+
+    // Close dropdown
+    document.getElementById('export-dropdown').classList.add('hidden');
+
+    // Google Maps can handle directions with waypoints (max ~10 waypoints in URL)
+    // For more places, we'll create a route-like URL
+    if (validPlaces.length === 1) {
+        // Single place - open place page
+        const place = validPlaces[0];
+        const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place.name)}&query_place_id=${place.placeId || ''}`;
+        window.open(url, '_blank');
+    } else if (validPlaces.length <= 10) {
+        // Multiple places - create directions with waypoints
+        const origin = `${validPlaces[0].lat},${validPlaces[0].lng}`;
+        const destination = `${validPlaces[validPlaces.length - 1].lat},${validPlaces[validPlaces.length - 1].lng}`;
+        const waypoints = validPlaces.slice(1, -1).map(p => `${p.lat},${p.lng}`).join('|');
+
+        let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}`;
+        if (waypoints) {
+            url += `&waypoints=${encodeURIComponent(waypoints)}`;
+        }
+        window.open(url, '_blank');
+    } else {
+        // More than 10 places - show first 10 as route, notify user
+        const first10 = validPlaces.slice(0, 10);
+        const origin = `${first10[0].lat},${first10[0].lng}`;
+        const destination = `${first10[first10.length - 1].lat},${first10[first10.length - 1].lng}`;
+        const waypoints = first10.slice(1, -1).map(p => `${p.lat},${p.lng}`).join('|');
+
+        let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}`;
+        if (waypoints) {
+            url += `&waypoints=${encodeURIComponent(waypoints)}`;
+        }
+
+        alert(`Google Maps URL can only include up to 10 places. Showing first 10 of ${validPlaces.length} places.`);
+        window.open(url, '_blank');
+    }
+}
+
+// Open places in Apple Maps
+function openInAppleMaps() {
+    const validPlaces = placesData.filter(p => p.found && p.lat && p.lng);
+
+    if (validPlaces.length === 0) {
+        alert('No valid places to show on map');
+        return;
+    }
+
+    // Close dropdown
+    document.getElementById('export-dropdown').classList.add('hidden');
+
+    if (validPlaces.length === 1) {
+        // Single place
+        const place = validPlaces[0];
+        const url = `https://maps.apple.com/?q=${encodeURIComponent(place.name)}&ll=${place.lat},${place.lng}`;
+        window.open(url, '_blank');
+    } else if (validPlaces.length <= 10) {
+        // Multiple places - Apple Maps directions
+        const origin = `${validPlaces[0].lat},${validPlaces[0].lng}`;
+        const destination = `${validPlaces[validPlaces.length - 1].lat},${validPlaces[validPlaces.length - 1].lng}`;
+
+        // Apple Maps URL for directions
+        let url = `https://maps.apple.com/?saddr=${origin}&daddr=${destination}`;
+
+        // Apple Maps doesn't support waypoints in URL as easily, but we can chain daddr
+        if (validPlaces.length > 2) {
+            // For multiple stops, chain the addresses
+            const addresses = validPlaces.map(p => `${p.lat},${p.lng}`).join('+to:');
+            url = `https://maps.apple.com/?daddr=${addresses}`;
+        }
+
+        window.open(url, '_blank');
+    } else {
+        // More than 10 places
+        const first10 = validPlaces.slice(0, 10);
+        const addresses = first10.map(p => `${p.lat},${p.lng}`).join('+to:');
+        const url = `https://maps.apple.com/?daddr=${addresses}`;
+
+        alert(`Apple Maps URL can only include up to 10 places. Showing first 10 of ${validPlaces.length} places.`);
+        window.open(url, '_blank');
     }
 }
