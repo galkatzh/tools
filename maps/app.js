@@ -250,7 +250,33 @@ async function extractRedditContent(url) {
             throw new Error(`Proxy fetch failed: ${response.status}`);
         }
 
-        const data = await response.json();
+        // Get response as text first to validate it
+        const responseText = await response.text();
+
+        // Store raw response for debugging
+        extractedContent = `[DEBUG] Raw Reddit API Response:\n${responseText.substring(0, 2000)}...\n\n`;
+
+        // Try to parse as JSON
+        let data;
+        try {
+            data = JSON.parse(responseText);
+        } catch (parseError) {
+            throw new Error(`Invalid JSON response from Reddit API. Response starts with: ${responseText.substring(0, 200)}`);
+        }
+
+        // Validate the expected Reddit structure
+        if (!Array.isArray(data) || data.length < 2) {
+            throw new Error(`Unexpected Reddit response structure. Expected array with 2 elements, got: ${typeof data}`);
+        }
+
+        if (!data[0]?.data?.children?.[0]?.data) {
+            throw new Error('Reddit post data not found in expected location');
+        }
+
+        if (!data[1]?.data?.children) {
+            throw new Error('Reddit comments data not found in expected location');
+        }
+
         return parseRedditData(data);
 
     } catch (proxyError) {
