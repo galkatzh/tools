@@ -98,7 +98,15 @@
                 <h2>Places (<span id="place-count">0</span>)</h2>
                 <div class="results-actions">
                     <button id="show-debug" class="btn-text">View Debug</button>
-                    <button id="download-map" class="btn-secondary">Download</button>
+                    <div class="dropdown">
+                        <button id="export-dropdown-btn" class="btn-secondary dropdown-toggle">Export</button>
+                        <div id="export-dropdown" class="dropdown-menu hidden">
+                            <button id="download-map" class="dropdown-item">Download JSON</button>
+                            <button id="open-google-maps" class="dropdown-item">Open in Google Maps</button>
+                            <button id="open-apple-maps" class="dropdown-item">Open in Apple Maps</button>
+                        </div>
+                    </div>
+                    <button id="clear-list" class="btn-danger">Clear List</button>
                 </div>
             </div>
             <div id="places-list" class="places-list"></div>
@@ -113,8 +121,8 @@
     <!-- Version Footer -->
     <footer class="version-footer">
         <div class="version-info">
-            <p><strong>Latest Update:</strong> Improved Reddit error diagnostics</p>
-            <p class="version-date">2026-01-17 • Shows which proxy failed and why</p>
+            <p><strong>Latest Update:</strong> Local storage + Google/Apple Maps export</p>
+            <p class="version-date">2026-01-17 • Places auto-save locally, export to Google Maps or Apple Maps</p>
         </div>
     </footer>
 
