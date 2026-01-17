@@ -69,15 +69,14 @@ function loadPlacesFromStorage() {
                     const checkGoogleMaps = setInterval(() => {
                         if (typeof google !== 'undefined' && google.maps) {
                             clearInterval(checkGoogleMaps);
-                            updateLoadedMapInfo();
-                            displayPlaces();
-                            displayMap();
+                            refreshUI();
                         }
                     }, 100);
 
                     // Timeout after 10 seconds
                     setTimeout(() => clearInterval(checkGoogleMaps), 10000);
                 } else {
+                    // Show list without map if no Google API key
                     updateLoadedMapInfo();
                     displayPlaces();
                 }
@@ -264,9 +263,7 @@ async function extractAndMapPlaces() {
 
         // Step 4: Display results
         showLoading(false);
-        displayPlaces();
-        displayMap();
-        updatePlaceCount();
+        refreshUI();
 
     } catch (error) {
         showLoading(false);
@@ -789,9 +786,7 @@ function loadMapFromFile() {
             savePlacesToStorage();
 
             // Update UI
-            updateLoadedMapInfo();
-            displayPlaces();
-            displayMap();
+            refreshUI();
 
             document.getElementById('load-map-status').textContent = '✓ Loaded';
             document.getElementById('load-map-status').className = 'status success';
@@ -833,9 +828,7 @@ function clearMap() {
         localStorage.removeItem('savedPlaces');
 
         // Update UI
-        updateLoadedMapInfo();
-        document.getElementById('results-section').classList.add('hidden');
-        document.getElementById('map-section').classList.add('hidden');
+        refreshUI();
         document.getElementById('load-map-status').textContent = '';
         document.getElementById('load-map-status').className = 'status';
     }
@@ -866,6 +859,22 @@ function updatePlaceCount() {
     if (countElement) {
         countElement.textContent = placesData.length;
     }
+}
+
+// Refresh the entire UI (list and map) when data changes
+function refreshUI() {
+    if (placesData.length > 0) {
+        displayPlaces();
+        // Only display map if Google Maps is loaded
+        if (typeof google !== 'undefined' && google.maps) {
+            displayMap();
+        }
+    } else {
+        // Hide sections when no data
+        document.getElementById('results-section').classList.add('hidden');
+        document.getElementById('map-section').classList.add('hidden');
+    }
+    updateLoadedMapInfo();
 }
 
 // Toggle export dropdown
