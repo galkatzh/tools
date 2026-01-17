@@ -526,6 +526,30 @@ button:disabled {
     display: none !important;
 }
 
+/* Version Footer */
+.version-footer {
+    margin-top: 3rem;
+    padding: 1.5rem 1rem;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    text-align: center;
+}
+
+.version-info p {
+    font-size: 0.75rem;
+    color: var(--text-light);
+    margin: 0.25rem 0;
+}
+
+.version-info p strong {
+    color: var(--text);
+}
+
+.version-date {
+    font-size: 0.6875rem !important;
+    opacity: 0.8;
+}
+
 /* Mobile Responsiveness */
 @media (max-width: 640px) {
     .header h1 {
