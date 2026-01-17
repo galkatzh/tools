@@ -111,6 +111,7 @@ function setupEventListeners() {
 
     // Export dropdown
     document.getElementById('export-dropdown-btn').addEventListener('click', toggleExportDropdown);
+    document.getElementById('download-kml').addEventListener('click', downloadKML);
     document.getElementById('open-google-maps').addEventListener('click', openInGoogleMaps);
     document.getElementById('open-apple-maps').addEventListener('click', openInAppleMaps);
 
@@ -871,6 +872,64 @@ function updatePlaceCount() {
 function toggleExportDropdown() {
     const dropdown = document.getElementById('export-dropdown');
     dropdown.classList.toggle('hidden');
+}
+
+// Download KML file for Google My Maps import
+function downloadKML() {
+    const validPlaces = placesData.filter(p => p.found && p.lat && p.lng);
+
+    if (validPlaces.length === 0) {
+        alert('No valid places to export');
+        return;
+    }
+
+    // Close dropdown
+    document.getElementById('export-dropdown').classList.add('hidden');
+
+    // Build KML content
+    const placemarks = validPlaces.map((place, index) => `
+    <Placemark>
+      <name>${escapeXml(place.name)}</name>
+      <description><![CDATA[
+        <b>Type:</b> ${escapeXml(place.type || 'N/A')}<br>
+        ${place.description ? `<b>Description:</b> ${escapeXml(place.description)}<br>` : ''}
+        <b>Address:</b> ${escapeXml(place.address || 'N/A')}
+      ]]></description>
+      <Point>
+        <coordinates>${place.lng},${place.lat},0</coordinates>
+      </Point>
+    </Placemark>`).join('\n');
+
+    const kml = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Places Map - ${new Date().toLocaleDateString()}</name>
+    <description>Exported from Place Mapper</description>
+${placemarks}
+  </Document>
+</kml>`;
+
+    // Download the file
+    const blob = new Blob([kml], { type: 'application/vnd.google-earth.kml+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `places-map-${Date.now()}.kml`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// Escape XML special characters
+function escapeXml(str) {
+    if (!str) return '';
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
 }
 
 // Open places in Google Maps
