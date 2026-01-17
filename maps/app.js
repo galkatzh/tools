@@ -221,10 +221,13 @@ async function extractContentFromUrl(url) {
 
 // Extract Reddit content including all comments
 async function extractRedditContent(url) {
-    // Convert to JSON API URL
-    let jsonUrl = url;
+    // Convert to old.reddit.com JSON API URL (more reliable for API access)
+    let jsonUrl = url
+        .replace('www.reddit.com', 'old.reddit.com')
+        .replace('://reddit.com', '://old.reddit.com');
+
     if (!jsonUrl.endsWith('.json')) {
-        jsonUrl = url.replace(/\/$/, '') + '.json';
+        jsonUrl = jsonUrl.replace(/\/$/, '') + '.json';
     }
 
     showLoading(true, 'Fetching Reddit post and comments...');
@@ -247,32 +250,13 @@ async function extractRedditContent(url) {
         return content;
     };
 
-    // Try direct fetch first
-    try {
-        const response = await fetch(jsonUrl);
-        if (response.ok) {
-            const data = await response.json();
-            return parseRedditData(data);
-        }
-    } catch (directError) {
-        console.log('Direct Reddit fetch failed, trying CORS proxy...', directError.message);
-    }
-
-    // Fallback to CORS proxy
-    try {
-        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(jsonUrl)}`;
-        const response = await fetch(proxyUrl);
-        if (!response.ok) {
-            throw new Error(`Proxy fetch failed: ${response.status}`);
+    // Helper to validate and parse Reddit response
+    const parseAndValidateResponse = (responseText) => {
+        // Check if response looks like HTML (Reddit blocking page)
+        if (responseText.trim().startsWith('<') || responseText.includes('<!DOCTYPE')) {
+            throw new Error('Reddit returned HTML instead of JSON. The request may be blocked.');
         }
 
-        // Get response as text first to validate it
-        const responseText = await response.text();
-
-        // Store raw response for debugging
-        extractedContent = `[DEBUG] Raw Reddit API Response:\n${responseText.substring(0, 2000)}...\n\n`;
-
-        // Try to parse as JSON
         let data;
         try {
             data = JSON.parse(responseText);
@@ -293,11 +277,57 @@ async function extractRedditContent(url) {
             throw new Error('Reddit comments data not found in expected location');
         }
 
-        return parseRedditData(data);
+        return data;
+    };
 
-    } catch (proxyError) {
-        throw new Error(`Failed to extract Reddit content: ${proxyError.message}`);
+    // Try direct fetch first
+    try {
+        const response = await fetch(jsonUrl);
+        if (response.ok) {
+            const responseText = await response.text();
+            const data = parseAndValidateResponse(responseText);
+            return parseRedditData(data);
+        }
+    } catch (directError) {
+        console.log('Direct Reddit fetch failed, trying CORS proxies...', directError.message);
     }
+
+    // List of CORS proxies to try
+    const corsProxies = [
+        (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+        (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+        (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
+    ];
+
+    let lastError = null;
+
+    for (const proxyFn of corsProxies) {
+        try {
+            const proxyUrl = proxyFn(jsonUrl);
+            console.log(`Trying CORS proxy: ${proxyUrl.substring(0, 50)}...`);
+
+            const response = await fetch(proxyUrl);
+            if (!response.ok) {
+                throw new Error(`Proxy fetch failed: ${response.status}`);
+            }
+
+            // Get response as text first to validate it
+            const responseText = await response.text();
+
+            // Store raw response for debugging
+            extractedContent = `[DEBUG] Raw Reddit API Response:\n${responseText.substring(0, 2000)}...\n\n`;
+
+            const data = parseAndValidateResponse(responseText);
+            return parseRedditData(data);
+
+        } catch (proxyError) {
+            console.log(`Proxy failed: ${proxyError.message}`);
+            lastError = proxyError;
+            continue;
+        }
+    }
+
+    throw new Error(`Failed to extract Reddit content: ${lastError?.message || 'All CORS proxies failed'}. Reddit may be blocking automated requests.`);
 }
 
 // Recursively extract comments and replies
