@@ -88,6 +88,22 @@ function hideDebug() {
     document.getElementById('debug-section').classList.add('hidden');
 }
 
+// Show error in debug panel
+function showError(error) {
+    const debugSection = document.getElementById('debug-section');
+    const debugText = document.getElementById('debug-text');
+
+    // Format error for easy reading and copying
+    const errorText = `ERROR:\n${error.message || error}\n\n` +
+                     `Stack trace:\n${error.stack || 'No stack trace available'}\n\n` +
+                     `Time: ${new Date().toLocaleString()}\n\n` +
+                     `You can copy this entire message by selecting and copying this text.`;
+
+    debugText.textContent = errorText;
+    debugSection.classList.remove('hidden');
+    debugSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 // Save OpenRouter API key
 function saveOpenRouterKey() {
     openRouterApiKey = document.getElementById('openrouter-key').value.trim();
@@ -188,7 +204,7 @@ async function extractAndMapPlaces() {
 
     } catch (error) {
         showLoading(false);
-        alert(`Error: ${error.message}`);
+        showError(error);
         console.error('Error:', error);
     }
 }
@@ -665,14 +681,14 @@ function loadMapFromFile() {
             fileInput.value = '';
 
         } catch (error) {
-            alert(`Failed to load map: ${error.message}`);
+            showError(error);
             document.getElementById('load-map-status').textContent = '✗ Failed';
             document.getElementById('load-map-status').className = 'status error';
         }
     };
 
-    reader.onerror = () => {
-        alert('Failed to read file');
+    reader.onerror = (error) => {
+        showError(new Error('Failed to read file'));
         document.getElementById('load-map-status').textContent = '✗ Failed';
         document.getElementById('load-map-status').className = 'status error';
     };

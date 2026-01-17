@@ -407,17 +407,21 @@ button:disabled {
 
 .debug-content {
     padding: 1rem;
-    max-height: 300px;
+    max-height: 500px;
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
 }
 
 .debug-content pre {
     font-family: 'Courier New', monospace;
-    font-size: 0.75rem;
-    line-height: 1.5;
+    font-size: 0.8125rem;
+    line-height: 1.6;
     color: var(--text);
     white-space: pre-wrap;
     word-wrap: break-word;
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
 }
 
 /* Results Section */
