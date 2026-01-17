@@ -306,6 +306,48 @@ button:disabled {
     cursor: not-allowed;
 }
 
+/* Dropdown */
+.dropdown {
+    position: relative;
+    display: inline-block;
+}
+
+.dropdown-toggle::after {
+    content: ' ▼';
+    font-size: 0.625rem;
+}
+
+.dropdown-menu {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    min-width: 180px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: var(--shadow-lg);
+    z-index: 50;
+    margin-top: 4px;
+    padding: 0.5rem 0;
+}
+
+.dropdown-item {
+    display: block;
+    width: 100%;
+    padding: 0.625rem 1rem;
+    text-align: left;
+    background: none;
+    border: none;
+    font-size: 0.875rem;
+    color: var(--text);
+    cursor: pointer;
+    border-radius: 0;
+}
+
+.dropdown-item:hover {
+    background: var(--background);
+}
+
 /* Status */
 .status {
     display: inline-block;
