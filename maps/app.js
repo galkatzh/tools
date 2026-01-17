@@ -250,84 +250,103 @@ async function extractRedditContent(url) {
         return content;
     };
 
+    // Helper to detect HTML responses
+    const isHtmlResponse = (text) => {
+        const start = text.substring(0, 500).toLowerCase();
+        return start.includes('<!doctype') ||
+               start.includes('<html') ||
+               start.includes('<head') ||
+               start.includes('<body') ||
+               start.includes('theme-beta') ||
+               start.includes('theme-light') ||
+               (text.trim().startsWith('<') && !text.trim().startsWith('['));
+    };
+
     // Helper to validate and parse Reddit response
-    const parseAndValidateResponse = (responseText) => {
+    const parseAndValidateResponse = (responseText, source) => {
         // Check if response looks like HTML (Reddit blocking page)
-        if (responseText.trim().startsWith('<') || responseText.includes('<!DOCTYPE')) {
-            throw new Error('Reddit returned HTML instead of JSON. The request may be blocked.');
+        if (isHtmlResponse(responseText)) {
+            throw new Error(`[${source}] Reddit returned HTML blocking page instead of JSON`);
         }
 
         let data;
         try {
             data = JSON.parse(responseText);
         } catch (parseError) {
-            throw new Error(`Invalid JSON response from Reddit API. Response starts with: ${responseText.substring(0, 200)}`);
+            const preview = responseText.substring(0, 100).replace(/\s+/g, ' ');
+            throw new Error(`[${source}] Invalid JSON. Preview: "${preview}..."`);
         }
 
         // Validate the expected Reddit structure
         if (!Array.isArray(data) || data.length < 2) {
-            throw new Error(`Unexpected Reddit response structure. Expected array with 2 elements, got: ${typeof data}`);
+            throw new Error(`[${source}] Unexpected response structure (not a Reddit post array)`);
         }
 
         if (!data[0]?.data?.children?.[0]?.data) {
-            throw new Error('Reddit post data not found in expected location');
+            throw new Error(`[${source}] Reddit post data missing from response`);
         }
 
         if (!data[1]?.data?.children) {
-            throw new Error('Reddit comments data not found in expected location');
+            throw new Error(`[${source}] Reddit comments data missing from response`);
         }
 
         return data;
     };
+
+    const errors = [];
 
     // Try direct fetch first
     try {
         const response = await fetch(jsonUrl);
         if (response.ok) {
             const responseText = await response.text();
-            const data = parseAndValidateResponse(responseText);
+            const data = parseAndValidateResponse(responseText, 'Direct');
             return parseRedditData(data);
+        } else {
+            errors.push(`Direct: HTTP ${response.status}`);
         }
     } catch (directError) {
-        console.log('Direct Reddit fetch failed, trying CORS proxies...', directError.message);
+        errors.push(`Direct: ${directError.message}`);
+        console.log('Direct Reddit fetch failed:', directError.message);
     }
 
     // List of CORS proxies to try
     const corsProxies = [
-        (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-        (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-        (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
+        { name: 'corsproxy.io', fn: (url) => `https://corsproxy.io/?${encodeURIComponent(url)}` },
+        { name: 'allorigins.win', fn: (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}` },
+        { name: 'codetabs.com', fn: (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}` }
     ];
 
-    let lastError = null;
-
-    for (const proxyFn of corsProxies) {
+    for (const proxy of corsProxies) {
         try {
-            const proxyUrl = proxyFn(jsonUrl);
-            console.log(`Trying CORS proxy: ${proxyUrl.substring(0, 50)}...`);
+            const proxyUrl = proxy.fn(jsonUrl);
+            console.log(`Trying ${proxy.name}...`);
 
             const response = await fetch(proxyUrl);
             if (!response.ok) {
-                throw new Error(`Proxy fetch failed: ${response.status}`);
+                errors.push(`${proxy.name}: HTTP ${response.status}`);
+                continue;
             }
 
             // Get response as text first to validate it
             const responseText = await response.text();
 
             // Store raw response for debugging
-            extractedContent = `[DEBUG] Raw Reddit API Response:\n${responseText.substring(0, 2000)}...\n\n`;
+            extractedContent = `[DEBUG] Proxy: ${proxy.name}\nURL: ${jsonUrl}\n\nRaw Response (first 2000 chars):\n${responseText.substring(0, 2000)}`;
 
-            const data = parseAndValidateResponse(responseText);
+            const data = parseAndValidateResponse(responseText, proxy.name);
             return parseRedditData(data);
 
         } catch (proxyError) {
-            console.log(`Proxy failed: ${proxyError.message}`);
-            lastError = proxyError;
+            errors.push(proxyError.message);
+            console.log(`${proxy.name} failed:`, proxyError.message);
             continue;
         }
     }
 
-    throw new Error(`Failed to extract Reddit content: ${lastError?.message || 'All CORS proxies failed'}. Reddit may be blocking automated requests.`);
+    // Build detailed error message
+    const errorSummary = errors.map((e, i) => `  ${i + 1}. ${e}`).join('\n');
+    throw new Error(`Failed to fetch Reddit post.\n\nURL attempted: ${jsonUrl}\n\nAll attempts failed:\n${errorSummary}\n\nReddit may be blocking automated requests. Try opening the URL directly in your browser.`);
 }
 
 // Recursively extract comments and replies
