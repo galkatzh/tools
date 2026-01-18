@@ -7,6 +7,7 @@ let markers = [];
 let placesData = [];
 let loadedMapName = '';
 let extractedContent = ''; // For debugging
+let userLocationMarker = null; // Marker for user's current location
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', () => {
@@ -116,6 +117,9 @@ function setupEventListeners() {
 
     // Clear list button in results section
     document.getElementById('clear-list').addEventListener('click', clearMap);
+
+    // My Location button
+    document.getElementById('my-location-btn').addEventListener('click', shareMyLocation);
 
     // Close dropdown when clicking outside
     document.addEventListener('click', (e) => {
@@ -824,6 +828,15 @@ function clearMap() {
         markers.forEach(marker => marker.setMap(null));
         markers = [];
 
+        // Clear user location marker
+        if (userLocationMarker) {
+            if (userLocationMarker.accuracyCircle) {
+                userLocationMarker.accuracyCircle.setMap(null);
+            }
+            userLocationMarker.setMap(null);
+            userLocationMarker = null;
+        }
+
         // Clear localStorage
         localStorage.removeItem('savedPlaces');
 
@@ -1030,4 +1043,121 @@ function openInAppleMaps() {
         alert(`Apple Maps URL can only include up to 10 places. Showing first 10 of ${validPlaces.length} places.`);
         window.open(url, '_blank');
     }
+}
+
+// Share and show user's current location on the map
+function shareMyLocation() {
+    // Check if map exists
+    if (!map) {
+        alert('Please wait for the map to load first, or add some places to display the map.');
+        return;
+    }
+
+    // Check if geolocation is supported
+    if (!navigator.geolocation) {
+        alert('Geolocation is not supported by your browser.');
+        return;
+    }
+
+    // Show loading state on button
+    const btn = document.getElementById('my-location-btn');
+    const originalText = btn.textContent;
+    btn.textContent = 'Locating...';
+    btn.disabled = true;
+
+    navigator.geolocation.getCurrentPosition(
+        (position) => {
+            const { latitude, longitude } = position.coords;
+            showUserLocation(latitude, longitude);
+            btn.textContent = originalText;
+            btn.disabled = false;
+        },
+        (error) => {
+            btn.textContent = originalText;
+            btn.disabled = false;
+
+            let message = 'Unable to get your location. ';
+            switch (error.code) {
+                case error.PERMISSION_DENIED:
+                    message += 'Please allow location access in your browser settings.';
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    message += 'Location information is unavailable.';
+                    break;
+                case error.TIMEOUT:
+                    message += 'The request timed out. Please try again.';
+                    break;
+                default:
+                    message += 'An unknown error occurred.';
+            }
+            alert(message);
+        },
+        {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 60000
+        }
+    );
+}
+
+// Display user location on the map with a marker and zoom to it
+function showUserLocation(lat, lng) {
+    // Remove existing user location marker if any
+    if (userLocationMarker) {
+        userLocationMarker.setMap(null);
+    }
+
+    // Create a custom marker icon for user location (blue dot)
+    const userLocationIcon = {
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: 10,
+        fillColor: '#4285F4',
+        fillOpacity: 1,
+        strokeColor: '#ffffff',
+        strokeWeight: 3
+    };
+
+    // Create the marker
+    userLocationMarker = new google.maps.Marker({
+        position: { lat, lng },
+        map: map,
+        icon: userLocationIcon,
+        title: 'Your Location',
+        zIndex: 1000 // Ensure it's on top
+    });
+
+    // Add a pulsing circle around the location
+    const accuracyCircle = new google.maps.Circle({
+        strokeColor: '#4285F4',
+        strokeOpacity: 0.4,
+        strokeWeight: 2,
+        fillColor: '#4285F4',
+        fillOpacity: 0.15,
+        map: map,
+        center: { lat, lng },
+        radius: 100 // 100 meters accuracy indicator
+    });
+
+    // Create info window for user location
+    const infoWindow = new google.maps.InfoWindow({
+        content: `
+            <div style="padding: 10px;">
+                <h3>Your Location</h3>
+                <p style="margin: 5px 0; font-size: 12px; color: #666;">
+                    ${lat.toFixed(6)}, ${lng.toFixed(6)}
+                </p>
+            </div>
+        `
+    });
+
+    userLocationMarker.addListener('click', () => {
+        infoWindow.open(map, userLocationMarker);
+    });
+
+    // Zoom and center the map on user's location
+    map.setCenter({ lat, lng });
+    map.setZoom(15);
+
+    // Store accuracy circle reference on the marker for cleanup
+    userLocationMarker.accuracyCircle = accuracyCircle;
 }
