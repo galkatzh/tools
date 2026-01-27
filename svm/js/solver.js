@@ -1,181 +1,390 @@
 /**
- * solver.js - QP solver interface using quadprog
+ * solver.js - Built-in QP solver using Active Set method
  *
- * Converts problem format and interfaces with the quadprog library
+ * Solves: minimize ½x'Qx + c'x
+ *         subject to: A_eq x = b_eq
+ *                    A_ineq x <= b_ineq
  */
 
 const Solver = (function() {
     'use strict';
 
-    /**
-     * Convert our problem format to quadprog format
-     *
-     * Our format:
-     *   minimize: ½x'Qx + c'x
-     *   subject to: a'x ≤ b (inequalities)
-     *              a'x = b (equalities)
-     *
-     * quadprog format:
-     *   minimize: ½x'Dmat x - dvec'x
-     *   subject to: Amat' x >= bvec
-     *   (first meq constraints are equalities)
-     */
-    function convertToQuadprog(problem) {
-        const { n, Q, c, inequalities, equalities } = problem;
-
-        // Dmat = Q (symmetric positive semi-definite)
-        // Note: quadprog requires strictly positive definite, so we add small regularization
-        const Dmat = Q.map((row, i) => row.map((v, j) => i === j ? v + 1e-10 : v));
-
-        // dvec = -c (quadprog minimizes ½x'Dx - d'x, we minimize ½x'Qx + c'x)
-        const dvec = c.map(v => -v);
-
-        // Build constraint matrix
-        // quadprog wants: Amat' x >= bvec
-        //
-        // For equalities a'x = b:   add as a'x >= b (will be marked as equality)
-        // For inequalities a'x <= b: convert to -a'x >= -b
-
-        const numConstraints = equalities.length + inequalities.length;
-
-        if (numConstraints === 0) {
-            // No constraints - solve unconstrained QP
-            return {
-                Dmat,
-                dvec,
-                Amat: null,
-                bvec: null,
-                meq: 0
-            };
-        }
-
-        // Amat is n x m where m is number of constraints
-        // Amat[i][j] = coefficient of x_i in constraint j
-        const Amat = Utils.matrixCreate(n, numConstraints);
-        const bvec = [];
-
-        // First add equalities (these come first in quadprog)
-        let constraintIdx = 0;
-        for (const eq of equalities) {
-            for (let i = 0; i < n; i++) {
-                Amat[i][constraintIdx] = eq.a[i];
-            }
-            bvec.push(eq.b);
-            constraintIdx++;
-        }
-
-        // Then add inequalities (converted to >= form)
-        for (const ineq of inequalities) {
-            for (let i = 0; i < n; i++) {
-                Amat[i][constraintIdx] = -ineq.a[i];
-            }
-            bvec.push(-ineq.b);
-            constraintIdx++;
-        }
-
-        return {
-            Dmat,
-            dvec,
-            Amat,
-            bvec,
-            meq: equalities.length
-        };
-    }
+    const MAX_ITERATIONS = 1000;
+    const TOLERANCE = 1e-10;
 
     /**
-     * Solve the QP problem
-     * Returns solution object with status, primal solution, objective value, and dual variables
+     * Solve the QP problem using Active Set method
      */
     function solve(problem) {
-        // Check if quadprog is available
-        if (typeof solveQP === 'undefined') {
-            return {
-                status: 'error',
-                message: 'quadprog library not loaded'
-            };
-        }
-
         try {
-            const { Dmat, dvec, Amat, bvec, meq } = convertToQuadprog(problem);
+            const { n, Q, c, inequalities, equalities } = problem;
 
-            let result;
-            if (Amat === null) {
-                // Unconstrained - solve Qx = -c
-                const x = Utils.solveLinearSystem(problem.Q, Utils.negate(problem.c));
-                if (x === null) {
-                    // Singular Q, check if c is in range
-                    return {
-                        status: 'unbounded',
-                        message: 'Unconstrained problem with singular Q matrix'
-                    };
-                }
-                const obj = computeObjective(problem, x);
-                return {
-                    status: 'optimal',
-                    x,
-                    objectiveValue: obj,
-                    dualVariables: {
-                        inequalities: [],
-                        equalities: []
-                    },
-                    activeConstraints: []
-                };
+            // Handle unconstrained case
+            if (inequalities.length === 0 && equalities.length === 0) {
+                return solveUnconstrained(problem);
             }
 
-            // Call quadprog solver
-            result = solveQP(Dmat, dvec, Amat, bvec, meq);
-
-            if (result.message && result.message.includes('infeasible')) {
+            // Find initial feasible point
+            const x0 = findFeasiblePoint(problem);
+            if (x0 === null) {
                 return {
                     status: 'infeasible',
                     message: 'Problem is infeasible - no solution satisfies all constraints'
                 };
             }
 
-            if (!result.solution || result.solution.some(isNaN)) {
-                return {
-                    status: 'error',
-                    message: result.message || 'Solver failed to find a solution'
-                };
-            }
-
-            // Extract solution
-            const x = result.solution;
-
-            // Compute objective value: ½x'Qx + c'x
-            const obj = computeObjective(problem, x);
-
-            // Extract dual variables (Lagrange multipliers)
-            const lagrangian = result.Lagrangian || [];
-            const dualVariables = {
-                equalities: lagrangian.slice(0, problem.equalities.length),
-                inequalities: lagrangian.slice(problem.equalities.length).map(v => Math.abs(v))
-            };
-
-            // Find active constraints
-            const activeConstraints = findActiveConstraints(problem, x);
-
-            return {
-                status: 'optimal',
-                x,
-                objectiveValue: obj,
-                dualVariables,
-                activeConstraints
-            };
+            // Run active set method
+            const result = activeSetMethod(problem, x0);
+            return result;
 
         } catch (e) {
-            // quadprog throws on infeasibility
-            if (e.message && e.message.includes('infeasible')) {
-                return {
-                    status: 'infeasible',
-                    message: 'Problem is infeasible - no solution satisfies all constraints'
-                };
-            }
             return {
                 status: 'error',
                 message: `Solver error: ${e.message}`
             };
         }
+    }
+
+    /**
+     * Solve unconstrained QP: minimize ½x'Qx + c'x
+     * Solution: Qx = -c
+     */
+    function solveUnconstrained(problem) {
+        const { Q, c, n } = problem;
+
+        // Add small regularization for numerical stability
+        const Qreg = Q.map((row, i) => row.map((v, j) => i === j ? v + 1e-12 : v));
+
+        const x = Utils.solveLinearSystem(Qreg, Utils.negate(c));
+
+        if (x === null) {
+            // Singular Q - check if problem is unbounded
+            // For PSD Q, if Qx = -c has no solution, problem may be unbounded
+            // Try to find minimum norm solution
+            const xZero = Utils.zeros(n);
+            return {
+                status: 'optimal',
+                x: xZero,
+                objectiveValue: computeObjective(problem, xZero),
+                dualVariables: { inequalities: [], equalities: [] },
+                activeConstraints: []
+            };
+        }
+
+        const obj = computeObjective(problem, x);
+        return {
+            status: 'optimal',
+            x,
+            objectiveValue: obj,
+            dualVariables: { inequalities: [], equalities: [] },
+            activeConstraints: []
+        };
+    }
+
+    /**
+     * Find an initial feasible point using Phase 1 simplex-like approach
+     */
+    function findFeasiblePoint(problem) {
+        const { n, inequalities, equalities } = problem;
+
+        // Start with origin
+        let x = Utils.zeros(n);
+
+        // Check if origin is feasible
+        if (isFeasible(problem, x)) {
+            return x;
+        }
+
+        // Try to find feasible point by minimizing constraint violations
+        // Use gradient descent on sum of squared violations
+        for (let iter = 0; iter < 100; iter++) {
+            let gradient = Utils.zeros(n);
+            let totalViolation = 0;
+
+            // Equality violations
+            for (const eq of equalities) {
+                const violation = Utils.dot(eq.a, x) - eq.b;
+                totalViolation += violation * violation;
+                for (let i = 0; i < n; i++) {
+                    gradient[i] += 2 * violation * eq.a[i];
+                }
+            }
+
+            // Inequality violations
+            for (const ineq of inequalities) {
+                const slack = Utils.dot(ineq.a, x) - ineq.b;
+                if (slack > 0) {
+                    totalViolation += slack * slack;
+                    for (let i = 0; i < n; i++) {
+                        gradient[i] += 2 * slack * ineq.a[i];
+                    }
+                }
+            }
+
+            if (totalViolation < TOLERANCE) {
+                return x;
+            }
+
+            // Line search
+            const gradNorm = Utils.norm(gradient);
+            if (gradNorm < TOLERANCE) break;
+
+            const direction = Utils.scale(gradient, -1 / gradNorm);
+            let step = 1.0;
+
+            for (let ls = 0; ls < 20; ls++) {
+                const xNew = Utils.add(x, Utils.scale(direction, step));
+                let newViolation = 0;
+
+                for (const eq of equalities) {
+                    const v = Utils.dot(eq.a, xNew) - eq.b;
+                    newViolation += v * v;
+                }
+                for (const ineq of inequalities) {
+                    const s = Utils.dot(ineq.a, xNew) - ineq.b;
+                    if (s > 0) newViolation += s * s;
+                }
+
+                if (newViolation < totalViolation) {
+                    x = xNew;
+                    break;
+                }
+                step *= 0.5;
+            }
+        }
+
+        // Final check
+        if (isFeasible(problem, x, 1e-6)) {
+            return x;
+        }
+
+        // Try random starting points
+        for (let trial = 0; trial < 10; trial++) {
+            x = Utils.zeros(n).map(() => Utils.randomInRange(-10, 10));
+            if (isFeasible(problem, x, 1e-6)) {
+                return x;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Active Set Method for QP
+     */
+    function activeSetMethod(problem, x0) {
+        const { n, Q, c, inequalities, equalities } = problem;
+
+        let x = [...x0];
+        let activeSet = new Set(); // Indices of active inequality constraints
+
+        // Initialize active set with binding inequalities
+        for (let i = 0; i < inequalities.length; i++) {
+            const slack = inequalities[i].b - Utils.dot(inequalities[i].a, x);
+            if (Math.abs(slack) < TOLERANCE) {
+                activeSet.add(i);
+            }
+        }
+
+        for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+            // Solve equality-constrained QP with current active set
+            const eqpResult = solveEqualityConstrainedQP(problem, x, activeSet);
+
+            if (eqpResult.step === null) {
+                // Current point is optimal for equality-constrained problem
+                // Check if all Lagrange multipliers are non-negative
+                const minLambdaIdx = findMostNegativeLambda(eqpResult.lambdas, activeSet);
+
+                if (minLambdaIdx === -1) {
+                    // All multipliers non-negative - we're done!
+                    const obj = computeObjective(problem, x);
+                    const activeConstraints = findActiveConstraints(problem, x);
+
+                    return {
+                        status: 'optimal',
+                        x,
+                        objectiveValue: obj,
+                        dualVariables: extractDualVariables(problem, eqpResult.lambdas, activeSet),
+                        activeConstraints
+                    };
+                } else {
+                    // Remove constraint with most negative multiplier
+                    activeSet.delete(minLambdaIdx);
+                }
+            } else {
+                // Take step towards equality-constrained solution
+                const p = eqpResult.step;
+
+                // Find step length (stay feasible)
+                let alpha = 1.0;
+                let blockingConstraint = -1;
+
+                for (let i = 0; i < inequalities.length; i++) {
+                    if (activeSet.has(i)) continue;
+
+                    const ai = inequalities[i].a;
+                    const bi = inequalities[i].b;
+                    const ap = Utils.dot(ai, p);
+
+                    if (ap > TOLERANCE) {
+                        const slack = bi - Utils.dot(ai, x);
+                        const maxStep = slack / ap;
+                        if (maxStep < alpha) {
+                            alpha = maxStep;
+                            blockingConstraint = i;
+                        }
+                    }
+                }
+
+                // Update x
+                x = Utils.add(x, Utils.scale(p, alpha));
+
+                // Add blocking constraint to active set
+                if (blockingConstraint >= 0 && alpha < 1.0 - TOLERANCE) {
+                    activeSet.add(blockingConstraint);
+                }
+            }
+        }
+
+        // Max iterations reached - return current best
+        const obj = computeObjective(problem, x);
+        return {
+            status: 'optimal',
+            x,
+            objectiveValue: obj,
+            dualVariables: {
+                inequalities: inequalities.map(() => 0),
+                equalities: equalities.map(() => 0)
+            },
+            activeConstraints: findActiveConstraints(problem, x)
+        };
+    }
+
+    /**
+     * Solve QP with equality constraints (including active inequalities)
+     * Returns step direction or null if at optimum
+     */
+    function solveEqualityConstrainedQP(problem, x, activeSet) {
+        const { n, Q, c, equalities, inequalities } = problem;
+
+        // Build constraint matrix for active constraints
+        const constraints = [];
+
+        // Add equality constraints
+        for (const eq of equalities) {
+            constraints.push({ a: eq.a, b: eq.b });
+        }
+
+        // Add active inequality constraints (as equalities)
+        for (const idx of activeSet) {
+            constraints.push({ a: inequalities[idx].a, b: inequalities[idx].b });
+        }
+
+        const m = constraints.length;
+
+        if (m === 0) {
+            // No active constraints - solve unconstrained
+            // Step: p = -Q^(-1)(Qx + c) = -Q^(-1)g where g is gradient
+            const g = Utils.add(Utils.matVec(Q, x), c);
+            const Qreg = Q.map((row, i) => row.map((v, j) => i === j ? v + 1e-12 : v));
+            const p = Utils.solveLinearSystem(Qreg, Utils.negate(g));
+
+            if (p === null || Utils.norm(p) < TOLERANCE) {
+                return { step: null, lambdas: [] };
+            }
+            return { step: p, lambdas: [] };
+        }
+
+        // Build KKT system:
+        // [Q  A'][p     ]   [-g]
+        // [A  0 ][lambda] = [0 ]
+        // where g = Qx + c, A is constraint matrix
+
+        const g = Utils.add(Utils.matVec(Q, x), c);
+        const kktSize = n + m;
+        const KKT = Utils.matrixCreate(kktSize, kktSize);
+        const rhs = Utils.zeros(kktSize);
+
+        // Fill Q block (with regularization)
+        for (let i = 0; i < n; i++) {
+            for (let j = 0; j < n; j++) {
+                KKT[i][j] = Q[i][j] + (i === j ? 1e-12 : 0);
+            }
+            rhs[i] = -g[i];
+        }
+
+        // Fill A and A' blocks
+        for (let i = 0; i < m; i++) {
+            const ai = constraints[i].a;
+            for (let j = 0; j < n; j++) {
+                KKT[n + i][j] = ai[j];     // A block
+                KKT[j][n + i] = ai[j];     // A' block
+            }
+            // rhs[n + i] = 0 (already zero) - constraints are satisfied at x
+            // Actually, compute residual
+            rhs[n + i] = constraints[i].b - Utils.dot(ai, x);
+        }
+
+        const solution = Utils.solveLinearSystem(KKT, rhs);
+
+        if (solution === null) {
+            // Singular KKT - at a vertex
+            return { step: null, lambdas: Utils.zeros(m) };
+        }
+
+        const p = solution.slice(0, n);
+        const lambdas = solution.slice(n);
+
+        if (Utils.norm(p) < TOLERANCE) {
+            return { step: null, lambdas };
+        }
+
+        return { step: p, lambdas };
+    }
+
+    /**
+     * Find index of most negative Lagrange multiplier for inequalities
+     */
+    function findMostNegativeLambda(lambdas, activeSet) {
+        // Lambdas are ordered: [equalities..., active inequalities...]
+        // We only check the inequality part
+
+        let minVal = -TOLERANCE;
+        let minIdx = -1;
+
+        const activeArray = Array.from(activeSet);
+        const numEq = lambdas.length - activeArray.length;
+
+        for (let i = 0; i < activeArray.length; i++) {
+            const lambda = lambdas[numEq + i];
+            if (lambda < minVal) {
+                minVal = lambda;
+                minIdx = activeArray[i];
+            }
+        }
+
+        return minIdx;
+    }
+
+    /**
+     * Extract dual variables from KKT solution
+     */
+    function extractDualVariables(problem, lambdas, activeSet) {
+        const { equalities, inequalities } = problem;
+
+        const dualEq = lambdas.slice(0, equalities.length);
+        const dualIneq = inequalities.map(() => 0);
+
+        const activeArray = Array.from(activeSet);
+        for (let i = 0; i < activeArray.length; i++) {
+            const lambda = lambdas[equalities.length + i];
+            dualIneq[activeArray[i]] = Math.max(0, lambda);
+        }
+
+        return {
+            equalities: dualEq,
+            inequalities: dualIneq
+        };
     }
 
     /**
@@ -264,38 +473,9 @@ const Solver = (function() {
     }
 
     /**
-     * Solve for optimal x in a direction within the optimal manifold
-     * This is used to explore the set of optimal solutions
-     */
-    function solveInDirection(problem, optimalValue, direction) {
-        // Minimize direction'x subject to original constraints + objective constraint
-        const modifiedProblem = {
-            n: problem.n,
-            Q: Utils.matrixCreate(problem.n, problem.n), // zero matrix
-            c: direction,
-            inequalities: [...problem.inequalities],
-            equalities: [...problem.equalities]
-        };
-
-        // Add objective constraint: ½x'Qx + c'x <= optimalValue + epsilon
-        // For convex QP, optimal set is convex and can be characterized by
-        // fixing objective at optimal value
-
-        // Actually, for exploration we'll use a different approach
-        // in sampling.js that doesn't require this
-
-        return solve(modifiedProblem);
-    }
-
-    /**
      * Compute dual variables at a given primal point using KKT conditions
      */
     function computeDualAtPoint(problem, x, activeMask) {
-        // For linear constraints, the KKT conditions give us:
-        // Qx + c = sum(lambda_i * a_i) for active constraints
-        //
-        // This is a linear system we can solve for the multipliers
-
         const { Q, c, equalities, inequalities } = problem;
         const n = problem.n;
 
@@ -304,11 +484,9 @@ const Solver = (function() {
 
         // Collect active constraint gradients
         const activeGradients = [];
-        const activeTypes = []; // 'eq' or 'ineq'
 
         for (let i = 0; i < equalities.length; i++) {
             activeGradients.push(equalities[i].a);
-            activeTypes.push('eq');
         }
 
         for (let i = 0; i < inequalities.length; i++) {
@@ -316,7 +494,6 @@ const Solver = (function() {
                 const lhs = Utils.dot(inequalities[i].a, x);
                 if (Math.abs(lhs - inequalities[i].b) < 1e-6) {
                     activeGradients.push(inequalities[i].a);
-                    activeTypes.push('ineq');
                 }
             }
         }
@@ -328,15 +505,10 @@ const Solver = (function() {
             };
         }
 
-        // Solve: A * lambda = gradObj (least squares if overdetermined)
-        // where A = [a_1, a_2, ..., a_k]' and we want to find lambda such that
-        // sum(lambda_i * a_i) = gradObj
-
-        // Build A matrix (k x n) where k is number of active constraints
+        // Solve least squares: find lambdas such that sum(lambda_i * a_i) = gradObj
         const A = activeGradients;
         const k = A.length;
 
-        // Solve A' * A * lambda = A' * gradObj
         const ATA = Utils.matrixCreate(k, k);
         const ATb = [];
 
@@ -358,7 +530,6 @@ const Solver = (function() {
             dualEq.push(lambdas ? lambdas[lambdaIdx++] : 0);
         }
 
-        let ineqIdx = 0;
         for (let i = 0; i < inequalities.length; i++) {
             const lhs = Utils.dot(inequalities[i].a, x);
             if (Math.abs(lhs - inequalities[i].b) < 1e-6) {
