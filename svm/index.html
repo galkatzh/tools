@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Convex QP Visualizer</title>
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="css/style.css">
+
+    <!-- External Libraries (CDN) -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="https://unpkg.com/quadprog@1.6.1/quadprog.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <h1>Convex QP Visualizer</h1>
+            <div class="header-controls">
+                <select id="preset-select" class="form-input" style="width: auto;">
+                    <option value="">-- Load Preset --</option>
+                </select>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Left Panel: Inputs -->
+            <div class="input-panel">
+                <!-- Problem Definition -->
+                <div class="panel">
+                    <h2 class="panel-title">Problem Definition</h2>
+                    <p class="text-small text-muted mb-2">
+                        Minimize: &frac12;x'Qx + c'x subject to linear constraints
+                    </p>
+
+                    <div class="form-group">
+                        <label class="form-label">Number of variables (n):</label>
+                        <input type="number" id="n-input" class="form-input form-input-small"
+                               value="3" min="1" max="20">
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Q matrix (n&times;n symmetric PSD):</label>
+                        <textarea id="q-input" class="form-input tall"
+                                  placeholder="[[1, 0], [0, 1]]"></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">c vector (linear term):</label>
+                        <textarea id="c-input" class="form-input"
+                                  placeholder="[0, 0]"></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Inequality constraints (a'x &le; b):</label>
+                        <textarea id="ineq-input" class="form-input tall"
+                                  placeholder='[{"a": [1, 0], "b": 5}]'></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Equality constraints (a'x = b):</label>
+                        <textarea id="eq-input" class="form-input"
+                                  placeholder='[{"a": [1, 1], "b": 1}]'></textarea>
+                    </div>
+                </div>
+
+                <!-- Visualization Controls -->
+                <div class="panel">
+                    <h2 class="panel-title">Visualization Controls</h2>
+
+                    <div class="form-group">
+                        <label class="form-label">Projection method:</label>
+                        <div class="radio-group">
+                            <label class="radio-label">
+                                <input type="radio" name="projection" value="manual" checked>
+                                Manual
+                            </label>
+                            <label class="radio-label">
+                                <input type="radio" name="projection" value="pca">
+                                PCA
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Manual axes:</label>
+                        <div class="axis-selects">
+                            <div class="axis-select-group">
+                                <label>X:</label>
+                                <select id="axis-x" class="form-input">
+                                    <option value="0">x1</option>
+                                </select>
+                            </div>
+                            <div class="axis-select-group">
+                                <label>Y:</label>
+                                <select id="axis-y" class="form-input">
+                                    <option value="1">x2</option>
+                                </select>
+                            </div>
+                            <div class="axis-select-group">
+                                <label>Z:</label>
+                                <select id="axis-z" class="form-input">
+                                    <option value="2">x3</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Sample count:</label>
+                        <div class="slider-container">
+                            <input type="range" id="sample-slider" class="slider"
+                                   min="10" max="500" value="100" step="10">
+                            <span id="sample-value" class="slider-value">100</span>
+                        </div>
+                        <div class="slider-labels">
+                            <span>10</span>
+                            <span>500</span>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <div class="checkbox-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="show-hull" checked>
+                                Show convex hull of optimal set
+                            </label>
+                        </div>
+                        <div class="checkbox-group mt-2">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="show-polytope" checked>
+                                Show feasible polytope (n &le; 3)
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Solve Button -->
+                <button id="solve-button" class="btn btn-primary btn-full">
+                    Solve &amp; Visualize
+                </button>
+
+                <!-- Status -->
+                <div class="panel mt-2">
+                    <h2 class="panel-title">Status</h2>
+                    <div id="status-area" class="status-area status-info">
+                        Ready. Load a preset or enter a problem.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Panel: Visualization -->
+            <div class="visualization-panel">
+                <div id="plot-container" class="plot-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Scripts (order matters) -->
+    <script src="js/utils.js"></script>
+    <script src="js/solver.js"></script>
+    <script src="js/sampling.js"></script>
+    <script src="js/projection.js"></script>
+    <script src="js/polytope.js"></script>
+    <script src="js/visualization.js"></script>
+    <script src="js/presets.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
