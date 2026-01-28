@@ -68,7 +68,7 @@ const Visualization = (function() {
 
         const traces = [];
 
-        // Feasible region (polygon)
+        // Feasible region (polygon) - rendered first (background)
         if (showPolytope && polytopeVertices.length >= 3) {
             const polyX = [...polytopeVertices.map(v => v[0]), polytopeVertices[0][0]];
             const polyY = [...polytopeVertices.map(v => v[1]), polytopeVertices[0][1]];
@@ -106,7 +106,7 @@ const Visualization = (function() {
             });
         }
 
-        // Optimal points
+        // Optimal points - rendered LAST so they appear on top
         if (showPoints && projectedPoints.length > 0) {
             const hoverTexts = fullPointsData.map(d => formatHoverText(d));
 
@@ -116,9 +116,9 @@ const Visualization = (function() {
                 x: projectedPoints.map(p => p[0]),
                 y: projectedPoints.map(p => p[1]),
                 marker: {
-                    size: 8,
+                    size: 10,
                     color: COLORS.optimalPoints,
-                    line: { color: 'white', width: 1 }
+                    line: { color: 'white', width: 1.5 }
                 },
                 name: 'Optimal Points',
                 hoverinfo: 'text',
@@ -184,7 +184,7 @@ const Visualization = (function() {
                 i: polytopeFaces.map(f => f[0]),
                 j: polytopeFaces.map(f => f[1]),
                 k: polytopeFaces.map(f => f[2]),
-                opacity: 0.3,
+                opacity: 0.2,
                 color: COLORS.feasibleBorder,
                 name: 'Feasible Region',
                 hoverinfo: 'skip',
@@ -207,28 +207,23 @@ const Visualization = (function() {
             }
         }
 
-        // Convex hull of optimal points (3D)
-        if (showHull && projectedPoints.length >= 4) {
-            const hull = computeOptimalHull3D(projectedPoints);
-            if (hull.faces.length > 0) {
-                traces.push({
-                    type: 'mesh3d',
-                    x: projectedPoints.map(p => p[0]),
-                    y: projectedPoints.map(p => p[1]),
-                    z: projectedPoints.map(p => p[2]),
-                    i: hull.faces.map(f => f[0]),
-                    j: hull.faces.map(f => f[1]),
-                    k: hull.faces.map(f => f[2]),
-                    opacity: 0.5,
-                    color: '#f1c40f',
-                    name: 'Optimal Set Hull',
-                    hoverinfo: 'skip',
-                    flatshading: true
-                });
-            }
+        // Convex hull of optimal points (3D) - use Plotly's alphahull
+        if (showHull && projectedPoints.length >= 3) {
+            // Use alphahull=0 for convex hull
+            traces.push({
+                type: 'mesh3d',
+                x: projectedPoints.map(p => p[0]),
+                y: projectedPoints.map(p => p[1]),
+                z: projectedPoints.map(p => p[2]),
+                alphahull: 0,
+                opacity: 0.4,
+                color: '#f1c40f',
+                name: 'Optimal Set Hull',
+                hoverinfo: 'skip'
+            });
         }
 
-        // Optimal points
+        // Optimal points - rendered LAST so they appear on top
         if (showPoints && projectedPoints.length > 0) {
             const hoverTexts = fullPointsData.map(d => formatHoverText(d));
 
@@ -239,7 +234,7 @@ const Visualization = (function() {
                 y: projectedPoints.map(p => p[1]),
                 z: projectedPoints.map(p => p[2]),
                 marker: {
-                    size: 5,
+                    size: 6,
                     color: COLORS.optimalPoints,
                     line: { color: 'white', width: 1 }
                 },

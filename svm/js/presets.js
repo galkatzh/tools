@@ -274,18 +274,29 @@ const Presets = (function() {
 
     /**
      * Format a preset for display in the UI
+     * Matrices: one row per line
+     * Constraints: one constraint per line
      */
     function formatPresetForUI(preset) {
+        // Format matrix: one row per line
+        const formatMatrix = (matrix) => {
+            const rows = matrix.map(row => '  ' + JSON.stringify(row));
+            return '[\n' + rows.join(',\n') + '\n]';
+        };
+
+        // Format constraints: one per line
+        const formatConstraints = (constraints) => {
+            if (constraints.length === 0) return '[]';
+            const items = constraints.map(c => '  ' + JSON.stringify(c));
+            return '[\n' + items.join(',\n') + '\n]';
+        };
+
         return {
             n: preset.n.toString(),
-            Q: JSON.stringify(preset.Q, null, 2),
+            Q: formatMatrix(preset.Q),
             c: JSON.stringify(preset.c),
-            inequalities: preset.inequalities.length > 0
-                ? JSON.stringify(preset.inequalities, null, 2)
-                : '[]',
-            equalities: preset.equalities.length > 0
-                ? JSON.stringify(preset.equalities, null, 2)
-                : '[]'
+            inequalities: formatConstraints(preset.inequalities),
+            equalities: formatConstraints(preset.equalities)
         };
     }
 
