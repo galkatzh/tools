@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Create and manage expense reports with ease">
+    <meta name="theme-color" content="#2563eb">
+    <title>Expense Report Manager</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="apple-touch-icon" href="icons/icon-192.svg">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <header class="header">
+            <h1>Expense Report Manager</h1>
+            <button id="clearAllBtn" class="btn btn-danger" title="Clear all expenses">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                </svg>
+                Clear All
+            </button>
+        </header>
+
+        <main class="main-content">
+            <section class="add-expense-section">
+                <h2>Add New Expense</h2>
+                <form id="expenseForm" class="expense-form">
+                    <div class="form-group">
+                        <label for="expenseTitle">Title</label>
+                        <input type="text" id="expenseTitle" name="title" placeholder="Enter expense title...">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="expenseDate">Date</label>
+                        <input type="date" id="expenseDate" name="date" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="expenseFile">Upload File (Image or PDF)</label>
+                        <div class="file-input-wrapper">
+                            <input type="file" id="expenseFile" name="file" accept="image/*,.pdf" required>
+                            <div class="file-input-display">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                                </svg>
+                                <span id="fileLabel">Choose a file or drag it here</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="filePreview" class="file-preview hidden"></div>
+
+                    <button type="submit" class="btn btn-primary">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 5v14M5 12h14"/>
+                        </svg>
+                        Add Expense
+                    </button>
+                </form>
+            </section>
+
+            <section class="expenses-section">
+                <div class="expenses-header">
+                    <h2>Expenses (<span id="expenseCount">0</span>)</h2>
+                    <div class="export-controls">
+                        <input type="text" id="reportTitle" placeholder="Report title..." class="report-title-input">
+                        <button id="exportBtn" class="btn btn-success" disabled>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                            <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/>
+                        </svg>
+                        Export as PDF
+                    </button>
+                    </div>
+                </div>
+
+                <div id="expensesList" class="expenses-list">
+                    <div class="empty-state">
+                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M9 17h6M9 13h6M9 9h6M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z"/>
+                        </svg>
+                        <p>No expenses yet. Add your first expense above.</p>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <p>Expense Report Manager - Works offline</p>
+        </footer>
+    </div>
+
+    <div id="modal" class="modal hidden">
+        <div class="modal-content">
+            <h3 id="modalTitle">Confirm Action</h3>
+            <p id="modalMessage">Are you sure?</p>
+            <div class="modal-actions">
+                <button id="modalCancel" class="btn btn-secondary">Cancel</button>
+                <button id="modalConfirm" class="btn btn-danger">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <div id="loadingOverlay" class="loading-overlay hidden">
+        <div class="spinner"></div>
+        <p>Generating PDF...</p>
+    </div>
+
+    <!-- PDF libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
