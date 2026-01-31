@@ -1,5 +1,5 @@
 // Service Worker for Expense Report Manager PWA
-const CACHE_NAME = 'expense-report-v1';
+const CACHE_NAME = 'expense-report-v2';
 const STATIC_ASSETS = [
     '/',
     '/index.html',
@@ -13,7 +13,8 @@ const STATIC_ASSETS = [
 
 // External resources to cache
 const EXTERNAL_ASSETS = [
-    'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'
+    'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js'
 ];
 
 // Install event - cache static assets
