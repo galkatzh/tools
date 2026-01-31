@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Icon Generator</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: #f3f4f6;
+        }
+        h1 { color: #1f2937; }
+        .icon-preview {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            margin: 2rem 0;
+        }
+        .icon-item {
+            background: white;
+            padding: 1rem;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        .icon-item canvas {
+            display: block;
+            margin: 0 auto 0.5rem;
+        }
+        .icon-item a {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            background: #2563eb;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 0.875rem;
+        }
+        .icon-item a:hover {
+            background: #1d4ed8;
+        }
+        .instructions {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+        }
+    </style>
+</head>
+<body>
+    <h1>PWA Icon Generator</h1>
+
+    <div class="instructions">
+        <h3>Instructions</h3>
+        <p>Click "Download" on each icon size to save the PNG files to the icons folder.</p>
+        <p>Required sizes: 72, 96, 128, 144, 152, 192, 384, 512 pixels.</p>
+    </div>
+
+    <div class="icon-preview" id="icons"></div>
+
+    <script>
+        const sizes = [72, 96, 128, 144, 152, 192, 384, 512];
+
+        function drawIcon(canvas, size) {
+            const ctx = canvas.getContext('2d');
+            canvas.width = size;
+            canvas.height = size;
+
+            // Background gradient
+            const gradient = ctx.createLinearGradient(0, 0, size, size);
+            gradient.addColorStop(0, '#2563eb');
+            gradient.addColorStop(1, '#1d4ed8');
+
+            // Rounded rectangle background
+            const radius = size * 0.2;
+            ctx.beginPath();
+            ctx.moveTo(radius, 0);
+            ctx.lineTo(size - radius, 0);
+            ctx.quadraticCurveTo(size, 0, size, radius);
+            ctx.lineTo(size, size - radius);
+            ctx.quadraticCurveTo(size, size, size - radius, size);
+            ctx.lineTo(radius, size);
+            ctx.quadraticCurveTo(0, size, 0, size - radius);
+            ctx.lineTo(0, radius);
+            ctx.quadraticCurveTo(0, 0, radius, 0);
+            ctx.closePath();
+            ctx.fillStyle = gradient;
+            ctx.fill();
+
+            // Document icon
+            ctx.strokeStyle = 'white';
+            ctx.fillStyle = 'white';
+            ctx.lineWidth = size * 0.03;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            const docWidth = size * 0.4;
+            const docHeight = size * 0.5;
+            const docX = (size - docWidth) / 2;
+            const docY = (size - docHeight) / 2 - size * 0.02;
+            const foldSize = size * 0.1;
+
+            // Document outline
+            ctx.beginPath();
+            ctx.moveTo(docX, docY);
+            ctx.lineTo(docX + docWidth - foldSize, docY);
+            ctx.lineTo(docX + docWidth, docY + foldSize);
+            ctx.lineTo(docX + docWidth, docY + docHeight);
+            ctx.lineTo(docX, docY + docHeight);
+            ctx.closePath();
+            ctx.stroke();
+
+            // Fold
+            ctx.beginPath();
+            ctx.moveTo(docX + docWidth - foldSize, docY);
+            ctx.lineTo(docX + docWidth - foldSize, docY + foldSize);
+            ctx.lineTo(docX + docWidth, docY + foldSize);
+            ctx.stroke();
+
+            // Dollar sign
+            const dollarX = size / 2;
+            const dollarY = size / 2 + size * 0.08;
+            const dollarSize = size * 0.15;
+
+            ctx.font = `bold ${dollarSize}px Arial`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('$', dollarX, dollarY);
+
+            return canvas;
+        }
+
+        const container = document.getElementById('icons');
+
+        sizes.forEach(size => {
+            const item = document.createElement('div');
+            item.className = 'icon-item';
+
+            const canvas = document.createElement('canvas');
+            drawIcon(canvas, size);
+
+            const label = document.createElement('p');
+            label.textContent = `${size}x${size}`;
+
+            const link = document.createElement('a');
+            link.textContent = 'Download';
+            link.download = `icon-${size}.png`;
+            link.href = canvas.toDataURL('image/png');
+
+            item.appendChild(canvas);
+            item.appendChild(label);
+            item.appendChild(link);
+            container.appendChild(item);
+        });
+    </script>
+</body>
+</html>
