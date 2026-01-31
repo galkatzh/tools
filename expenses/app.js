@@ -54,9 +54,13 @@ class ExpenseManager {
             const request = store.getAll();
 
             request.onsuccess = () => {
-                this.expenses = request.result.sort((a, b) =>
-                    new Date(b.createdAt) - new Date(a.createdAt)
-                );
+                // Sort by order field if exists, otherwise by createdAt
+                this.expenses = request.result.sort((a, b) => {
+                    if (a.order !== undefined && b.order !== undefined) {
+                        return a.order - b.order;
+                    }
+                    return new Date(b.createdAt) - new Date(a.createdAt);
+                });
                 this.renderExpenses();
                 resolve();
             };
@@ -213,6 +217,7 @@ class ExpenseManager {
         const form = event.target;
         const title = form.title.value.trim();
         const date = form.date.value;
+        const time = form.time.value || null;
         const file = form.file.files[0];
 
         if (!file) {
@@ -228,10 +233,12 @@ class ExpenseManager {
                 id: Date.now().toString(),
                 title: title || '',
                 date: date,
+                time: time,
                 fileName: file.name,
                 fileType: file.type,
                 fileSize: file.size,
                 fileData: fileData,
+                order: this.expenses.length,
                 createdAt: new Date().toISOString()
             };
 
@@ -280,7 +287,7 @@ class ExpenseManager {
             return;
         }
 
-        list.innerHTML = this.expenses.map(expense => this.createExpenseCard(expense)).join('');
+        list.innerHTML = this.expenses.map((expense, index) => this.createExpenseCard(expense, index)).join('');
 
         // Add delete event listeners
         list.querySelectorAll('.delete-btn').forEach(btn => {
@@ -297,20 +304,135 @@ class ExpenseManager {
                 );
             });
         });
+
+        // Add drag and drop event listeners
+        this.setupDragAndDrop(list);
+    }
+
+    // Setup drag and drop for expense reordering
+    setupDragAndDrop(list) {
+        let draggedItem = null;
+        let draggedIndex = null;
+
+        const cards = list.querySelectorAll('.expense-card');
+
+        cards.forEach(card => {
+            card.addEventListener('dragstart', (e) => {
+                draggedItem = card;
+                draggedIndex = parseInt(card.dataset.index);
+                card.classList.add('dragging');
+                e.dataTransfer.effectAllowed = 'move';
+            });
+
+            card.addEventListener('dragend', () => {
+                card.classList.remove('dragging');
+                draggedItem = null;
+                draggedIndex = null;
+                // Remove all drop indicators
+                list.querySelectorAll('.expense-card').forEach(c => {
+                    c.classList.remove('drag-over', 'drag-over-top', 'drag-over-bottom');
+                });
+            });
+
+            card.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+
+                if (draggedItem && draggedItem !== card) {
+                    const rect = card.getBoundingClientRect();
+                    const midpoint = rect.top + rect.height / 2;
+
+                    card.classList.remove('drag-over-top', 'drag-over-bottom');
+                    if (e.clientY < midpoint) {
+                        card.classList.add('drag-over-top');
+                    } else {
+                        card.classList.add('drag-over-bottom');
+                    }
+                }
+            });
+
+            card.addEventListener('dragleave', () => {
+                card.classList.remove('drag-over', 'drag-over-top', 'drag-over-bottom');
+            });
+
+            card.addEventListener('drop', async (e) => {
+                e.preventDefault();
+                card.classList.remove('drag-over', 'drag-over-top', 'drag-over-bottom');
+
+                if (draggedItem && draggedItem !== card) {
+                    const targetIndex = parseInt(card.dataset.index);
+                    const rect = card.getBoundingClientRect();
+                    const midpoint = rect.top + rect.height / 2;
+                    const insertAfter = e.clientY >= midpoint;
+
+                    await this.reorderExpenses(draggedIndex, targetIndex, insertAfter);
+                }
+            });
+        });
+    }
+
+    // Reorder expenses and update IndexedDB
+    async reorderExpenses(fromIndex, toIndex, insertAfter) {
+        const item = this.expenses.splice(fromIndex, 1)[0];
+
+        // Calculate new index after removal
+        let newIndex = toIndex;
+        if (fromIndex < toIndex) {
+            newIndex = insertAfter ? toIndex : toIndex - 1;
+        } else {
+            newIndex = insertAfter ? toIndex + 1 : toIndex;
+        }
+
+        this.expenses.splice(newIndex, 0, item);
+
+        // Update order field for all expenses
+        const transaction = this.db.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+
+        for (let i = 0; i < this.expenses.length; i++) {
+            this.expenses[i].order = i;
+            store.put(this.expenses[i]);
+        }
+
+        await new Promise((resolve, reject) => {
+            transaction.oncomplete = resolve;
+            transaction.onerror = () => reject(transaction.error);
+        });
+
+        this.renderExpenses();
+    }
+
+    // Format time for display
+    formatTime(time) {
+        if (!time) return null;
+        const [hours, minutes] = time.split(':');
+        const hour = parseInt(hours);
+        const ampm = hour >= 12 ? 'PM' : 'AM';
+        const hour12 = hour % 12 || 12;
+        return `${hour12}:${minutes} ${ampm}`;
     }
 
     // Create expense card HTML
-    createExpenseCard(expense) {
+    createExpenseCard(expense, index) {
         const isImage = expense.fileType.startsWith('image/');
         const formattedDate = new Date(expense.date).toLocaleDateString('en-US', {
             year: 'numeric',
             month: 'long',
             day: 'numeric'
         });
+        const formattedTime = this.formatTime(expense.time);
+        const dateTimeDisplay = formattedTime ? `${formattedDate} at ${formattedTime}` : formattedDate;
         const fileSize = this.formatFileSize(expense.fileSize);
 
         return `
-            <div class="expense-card">
+            <div class="expense-card" draggable="true" data-id="${expense.id}" data-index="${index}">
+                <div class="drag-handle" title="Drag to reorder">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/>
+                        <circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/>
+                        <circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/>
+                    </svg>
+                </div>
                 <div class="expense-thumbnail ${isImage ? '' : 'pdf'}">
                     ${isImage
                         ? `<img src="${expense.fileData}" alt="${expense.title || 'Expense'}">`
@@ -324,7 +446,7 @@ class ExpenseManager {
                     <div class="expense-title ${expense.title ? '' : 'untitled'}">
                         ${expense.title || 'Untitled'}
                     </div>
-                    <div class="expense-date">${formattedDate}</div>
+                    <div class="expense-date">${dateTimeDisplay}</div>
                     <div class="expense-file-info">${expense.fileName} (${fileSize})</div>
                 </div>
                 <div class="expense-actions">
@@ -484,13 +606,15 @@ class ExpenseManager {
                     month: 'short',
                     day: 'numeric'
                 });
+                const formattedTime = this.formatTime(expense.time);
+                const dateTimeStr = formattedTime ? `${formattedDate} ${formattedTime}` : formattedDate;
                 const title = expense.title || 'Untitled';
                 const pageCount = expensePageCounts[i];
                 const pageInfo = pageCount > 1
                     ? `Pages ${expenseStartPages[i]}-${expenseStartPages[i] + pageCount - 1}`
                     : `Page ${expenseStartPages[i]}`;
 
-                const tocEntry = `${i + 1}. ${title} (${formattedDate})`;
+                const tocEntry = `${i + 1}. ${title} (${dateTimeStr})`;
 
                 titlePage.drawText(tocEntry, {
                     x: margin,
@@ -529,6 +653,8 @@ class ExpenseManager {
                     month: 'long',
                     day: 'numeric'
                 });
+                const formattedTimeForPage = this.formatTime(expense.time);
+                const dateTimeForPage = formattedTimeForPage ? `${formattedDate} at ${formattedTimeForPage}` : formattedDate;
                 const title = expense.title || 'Untitled';
 
                 if (expense.fileType === 'application/pdf') {
@@ -566,7 +692,7 @@ class ExpenseManager {
                                 color: rgb(0, 0, 0)
                             });
 
-                            addedPage.drawText(`Date: ${formattedDate}  |  File: ${expense.fileName}  |  Page ${j + 1} of ${sourcePages.length}`, {
+                            addedPage.drawText(`Date: ${dateTimeForPage}  |  File: ${expense.fileName}  |  Page ${j + 1} of ${sourcePages.length}`, {
                                 x: 40,
                                 y: height - 55,
                                 size: 9,
@@ -609,7 +735,7 @@ class ExpenseManager {
 
                     tempPdf.setFontSize(11);
                     tempPdf.setFont(undefined, 'normal');
-                    tempPdf.text(`Date: ${formattedDate}`, pdfMargin, pdfMargin + 14);
+                    tempPdf.text(`Date: ${dateTimeForPage}`, pdfMargin, pdfMargin + 14);
                     tempPdf.text(`File: ${expense.fileName}`, pdfMargin, pdfMargin + 21);
 
                     // Separator line
