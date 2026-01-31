@@ -54,9 +54,13 @@ class ExpenseManager {
             const request = store.getAll();
 
             request.onsuccess = () => {
-                this.expenses = request.result.sort((a, b) =>
-                    new Date(b.createdAt) - new Date(a.createdAt)
-                );
+                // Sort by order field if exists, otherwise by createdAt
+                this.expenses = request.result.sort((a, b) => {
+                    if (a.order !== undefined && b.order !== undefined) {
+                        return a.order - b.order;
+                    }
+                    return new Date(b.createdAt) - new Date(a.createdAt);
+                });
                 this.renderExpenses();
                 resolve();
             };
@@ -156,9 +160,26 @@ class ExpenseManager {
             );
         });
 
-        // Export button
+        // Export PDF button
         document.getElementById('exportBtn').addEventListener('click', () => {
             this.exportToPDF();
+        });
+
+        // Export ZIP button
+        document.getElementById('exportZipBtn').addEventListener('click', () => {
+            this.exportToZip();
+        });
+
+        // Import ZIP button
+        const importZipInput = document.getElementById('importZipInput');
+        document.getElementById('importZipBtn').addEventListener('click', () => {
+            importZipInput.click();
+        });
+        importZipInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                this.importFromZip(e.target.files[0]);
+                e.target.value = ''; // Reset for re-importing same file
+            }
         });
 
         // Modal buttons
@@ -213,6 +234,7 @@ class ExpenseManager {
         const form = event.target;
         const title = form.title.value.trim();
         const date = form.date.value;
+        const time = form.time.value || null;
         const file = form.file.files[0];
 
         if (!file) {
@@ -228,10 +250,12 @@ class ExpenseManager {
                 id: Date.now().toString(),
                 title: title || '',
                 date: date,
+                time: time,
                 fileName: file.name,
                 fileType: file.type,
                 fileSize: file.size,
                 fileData: fileData,
+                order: this.expenses.length,
                 createdAt: new Date().toISOString()
             };
 
@@ -264,9 +288,11 @@ class ExpenseManager {
         const list = document.getElementById('expensesList');
         const count = document.getElementById('expenseCount');
         const exportBtn = document.getElementById('exportBtn');
+        const exportZipBtn = document.getElementById('exportZipBtn');
 
         count.textContent = this.expenses.length;
         exportBtn.disabled = this.expenses.length === 0;
+        exportZipBtn.disabled = this.expenses.length === 0;
 
         if (this.expenses.length === 0) {
             list.innerHTML = `
@@ -280,7 +306,7 @@ class ExpenseManager {
             return;
         }
 
-        list.innerHTML = this.expenses.map(expense => this.createExpenseCard(expense)).join('');
+        list.innerHTML = this.expenses.map((expense, index) => this.createExpenseCard(expense, index)).join('');
 
         // Add delete event listeners
         list.querySelectorAll('.delete-btn').forEach(btn => {
@@ -297,20 +323,135 @@ class ExpenseManager {
                 );
             });
         });
+
+        // Add drag and drop event listeners
+        this.setupDragAndDrop(list);
+    }
+
+    // Setup drag and drop for expense reordering
+    setupDragAndDrop(list) {
+        let draggedItem = null;
+        let draggedIndex = null;
+
+        const cards = list.querySelectorAll('.expense-card');
+
+        cards.forEach(card => {
+            card.addEventListener('dragstart', (e) => {
+                draggedItem = card;
+                draggedIndex = parseInt(card.dataset.index);
+                card.classList.add('dragging');
+                e.dataTransfer.effectAllowed = 'move';
+            });
+
+            card.addEventListener('dragend', () => {
+                card.classList.remove('dragging');
+                draggedItem = null;
+                draggedIndex = null;
+                // Remove all drop indicators
+                list.querySelectorAll('.expense-card').forEach(c => {
+                    c.classList.remove('drag-over', 'drag-over-top', 'drag-over-bottom');
+                });
+            });
+
+            card.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+
+                if (draggedItem && draggedItem !== card) {
+                    const rect = card.getBoundingClientRect();
+                    const midpoint = rect.top + rect.height / 2;
+
+                    card.classList.remove('drag-over-top', 'drag-over-bottom');
+                    if (e.clientY < midpoint) {
+                        card.classList.add('drag-over-top');
+                    } else {
+                        card.classList.add('drag-over-bottom');
+                    }
+                }
+            });
+
+            card.addEventListener('dragleave', () => {
+                card.classList.remove('drag-over', 'drag-over-top', 'drag-over-bottom');
+            });
+
+            card.addEventListener('drop', async (e) => {
+                e.preventDefault();
+                card.classList.remove('drag-over', 'drag-over-top', 'drag-over-bottom');
+
+                if (draggedItem && draggedItem !== card) {
+                    const targetIndex = parseInt(card.dataset.index);
+                    const rect = card.getBoundingClientRect();
+                    const midpoint = rect.top + rect.height / 2;
+                    const insertAfter = e.clientY >= midpoint;
+
+                    await this.reorderExpenses(draggedIndex, targetIndex, insertAfter);
+                }
+            });
+        });
+    }
+
+    // Reorder expenses and update IndexedDB
+    async reorderExpenses(fromIndex, toIndex, insertAfter) {
+        const item = this.expenses.splice(fromIndex, 1)[0];
+
+        // Calculate new index after removal
+        let newIndex = toIndex;
+        if (fromIndex < toIndex) {
+            newIndex = insertAfter ? toIndex : toIndex - 1;
+        } else {
+            newIndex = insertAfter ? toIndex + 1 : toIndex;
+        }
+
+        this.expenses.splice(newIndex, 0, item);
+
+        // Update order field for all expenses
+        const transaction = this.db.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+
+        for (let i = 0; i < this.expenses.length; i++) {
+            this.expenses[i].order = i;
+            store.put(this.expenses[i]);
+        }
+
+        await new Promise((resolve, reject) => {
+            transaction.oncomplete = resolve;
+            transaction.onerror = () => reject(transaction.error);
+        });
+
+        this.renderExpenses();
+    }
+
+    // Format time for display
+    formatTime(time) {
+        if (!time) return null;
+        const [hours, minutes] = time.split(':');
+        const hour = parseInt(hours);
+        const ampm = hour >= 12 ? 'PM' : 'AM';
+        const hour12 = hour % 12 || 12;
+        return `${hour12}:${minutes} ${ampm}`;
     }
 
     // Create expense card HTML
-    createExpenseCard(expense) {
+    createExpenseCard(expense, index) {
         const isImage = expense.fileType.startsWith('image/');
         const formattedDate = new Date(expense.date).toLocaleDateString('en-US', {
             year: 'numeric',
             month: 'long',
             day: 'numeric'
         });
+        const formattedTime = this.formatTime(expense.time);
+        const dateTimeDisplay = formattedTime ? `${formattedDate} at ${formattedTime}` : formattedDate;
         const fileSize = this.formatFileSize(expense.fileSize);
 
         return `
-            <div class="expense-card">
+            <div class="expense-card" draggable="true" data-id="${expense.id}" data-index="${index}">
+                <div class="drag-handle" title="Drag to reorder">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/>
+                        <circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/>
+                        <circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/>
+                    </svg>
+                </div>
                 <div class="expense-thumbnail ${isImage ? '' : 'pdf'}">
                     ${isImage
                         ? `<img src="${expense.fileData}" alt="${expense.title || 'Expense'}">`
@@ -324,7 +465,7 @@ class ExpenseManager {
                     <div class="expense-title ${expense.title ? '' : 'untitled'}">
                         ${expense.title || 'Untitled'}
                     </div>
-                    <div class="expense-date">${formattedDate}</div>
+                    <div class="expense-date">${dateTimeDisplay}</div>
                     <div class="expense-file-info">${expense.fileName} (${fileSize})</div>
                 </div>
                 <div class="expense-actions">
@@ -484,13 +625,15 @@ class ExpenseManager {
                     month: 'short',
                     day: 'numeric'
                 });
+                const formattedTime = this.formatTime(expense.time);
+                const dateTimeStr = formattedTime ? `${formattedDate} ${formattedTime}` : formattedDate;
                 const title = expense.title || 'Untitled';
                 const pageCount = expensePageCounts[i];
                 const pageInfo = pageCount > 1
                     ? `Pages ${expenseStartPages[i]}-${expenseStartPages[i] + pageCount - 1}`
                     : `Page ${expenseStartPages[i]}`;
 
-                const tocEntry = `${i + 1}. ${title} (${formattedDate})`;
+                const tocEntry = `${i + 1}. ${title} (${dateTimeStr})`;
 
                 titlePage.drawText(tocEntry, {
                     x: margin,
@@ -529,6 +672,8 @@ class ExpenseManager {
                     month: 'long',
                     day: 'numeric'
                 });
+                const formattedTimeForPage = this.formatTime(expense.time);
+                const dateTimeForPage = formattedTimeForPage ? `${formattedDate} at ${formattedTimeForPage}` : formattedDate;
                 const title = expense.title || 'Untitled';
 
                 if (expense.fileType === 'application/pdf') {
@@ -566,7 +711,7 @@ class ExpenseManager {
                                 color: rgb(0, 0, 0)
                             });
 
-                            addedPage.drawText(`Date: ${formattedDate}  |  File: ${expense.fileName}  |  Page ${j + 1} of ${sourcePages.length}`, {
+                            addedPage.drawText(`Date: ${dateTimeForPage}  |  File: ${expense.fileName}  |  Page ${j + 1} of ${sourcePages.length}`, {
                                 x: 40,
                                 y: height - 55,
                                 size: 9,
@@ -609,7 +754,7 @@ class ExpenseManager {
 
                     tempPdf.setFontSize(11);
                     tempPdf.setFont(undefined, 'normal');
-                    tempPdf.text(`Date: ${formattedDate}`, pdfMargin, pdfMargin + 14);
+                    tempPdf.text(`Date: ${dateTimeForPage}`, pdfMargin, pdfMargin + 14);
                     tempPdf.text(`File: ${expense.fileName}`, pdfMargin, pdfMargin + 21);
 
                     // Separator line
@@ -684,6 +829,241 @@ class ExpenseManager {
             };
             img.onerror = reject;
             img.src = dataUrl;
+        });
+    }
+
+    // Export expenses to ZIP file
+    async exportToZip() {
+        if (this.expenses.length === 0) return;
+
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const loadingText = loadingOverlay.querySelector('p');
+        const originalText = loadingText.textContent;
+        loadingText.textContent = 'Creating ZIP archive...';
+        loadingOverlay.classList.remove('hidden');
+
+        try {
+            const zip = new JSZip();
+
+            // Create metadata JSON
+            const metadata = {
+                version: 1,
+                exportedAt: new Date().toISOString(),
+                expenses: this.expenses.map((expense, index) => ({
+                    id: expense.id,
+                    title: expense.title,
+                    date: expense.date,
+                    time: expense.time || null,
+                    order: index,
+                    fileName: expense.fileName,
+                    fileType: expense.fileType,
+                    fileSize: expense.fileSize,
+                    createdAt: expense.createdAt
+                }))
+            };
+
+            zip.file('expenses.json', JSON.stringify(metadata, null, 2));
+
+            // Add files folder
+            const filesFolder = zip.folder('files');
+
+            // Add each expense file
+            for (const expense of this.expenses) {
+                // Extract base64 data from data URL
+                const base64Data = expense.fileData.split(',')[1];
+                // Use expense ID + original extension for unique filename
+                const ext = expense.fileName.split('.').pop();
+                const zipFileName = `${expense.id}.${ext}`;
+                filesFolder.file(zipFileName, base64Data, { base64: true });
+            }
+
+            // Generate ZIP blob
+            const zipBlob = await zip.generateAsync({
+                type: 'blob',
+                compression: 'DEFLATE',
+                compressionOptions: { level: 6 }
+            });
+
+            // Download ZIP file
+            const url = URL.createObjectURL(zipBlob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `expense-report-${new Date().toISOString().split('T')[0]}.zip`;
+            link.click();
+            URL.revokeObjectURL(url);
+
+            this.showToast('Expenses exported to ZIP', 'success');
+        } catch (error) {
+            console.error('Error exporting to ZIP:', error);
+            this.showToast('Failed to export ZIP', 'error');
+        } finally {
+            loadingText.textContent = originalText;
+            loadingOverlay.classList.add('hidden');
+        }
+    }
+
+    // Import expenses from ZIP file
+    async importFromZip(file) {
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const loadingText = loadingOverlay.querySelector('p');
+        const originalText = loadingText.textContent;
+        loadingText.textContent = 'Importing from ZIP...';
+        loadingOverlay.classList.remove('hidden');
+
+        try {
+            const zip = await JSZip.loadAsync(file);
+
+            // Read metadata
+            const metadataFile = zip.file('expenses.json');
+            if (!metadataFile) {
+                throw new Error('Invalid ZIP: expenses.json not found');
+            }
+
+            const metadataJson = await metadataFile.async('string');
+            const metadata = JSON.parse(metadataJson);
+
+            if (!metadata.expenses || !Array.isArray(metadata.expenses)) {
+                throw new Error('Invalid ZIP: expenses data is missing or invalid');
+            }
+
+            // Check if user wants to replace or merge
+            const hasExisting = this.expenses.length > 0;
+
+            const doImport = async (replace) => {
+                if (replace) {
+                    await this.clearAllExpenses();
+                }
+
+                const startOrder = replace ? 0 : this.expenses.length;
+                let importCount = 0;
+
+                for (let i = 0; i < metadata.expenses.length; i++) {
+                    const expenseMeta = metadata.expenses[i];
+
+                    // Find the file in ZIP
+                    const ext = expenseMeta.fileName.split('.').pop();
+                    const zipFileName = `files/${expenseMeta.id}.${ext}`;
+                    const fileEntry = zip.file(zipFileName);
+
+                    if (!fileEntry) {
+                        console.warn(`File not found in ZIP: ${zipFileName}`);
+                        continue;
+                    }
+
+                    // Read file as base64
+                    const base64Data = await fileEntry.async('base64');
+                    const fileData = `data:${expenseMeta.fileType};base64,${base64Data}`;
+
+                    // Create expense object
+                    const expense = {
+                        id: replace ? expenseMeta.id : Date.now().toString() + i,
+                        title: expenseMeta.title || '',
+                        date: expenseMeta.date,
+                        time: expenseMeta.time || null,
+                        fileName: expenseMeta.fileName,
+                        fileType: expenseMeta.fileType,
+                        fileSize: expenseMeta.fileSize,
+                        fileData: fileData,
+                        order: startOrder + i,
+                        createdAt: expenseMeta.createdAt || new Date().toISOString()
+                    };
+
+                    await this.addExpenseWithoutRender(expense);
+                    importCount++;
+                }
+
+                await this.loadExpenses();
+                this.showToast(`Imported ${importCount} expense(s)`, 'success');
+            };
+
+            if (hasExisting) {
+                loadingOverlay.classList.add('hidden');
+                this.showImportModal(
+                    'Import Options',
+                    `You have ${this.expenses.length} existing expense(s). How would you like to import?`,
+                    async () => {
+                        loadingOverlay.classList.remove('hidden');
+                        await doImport(true);
+                        loadingOverlay.classList.add('hidden');
+                    },
+                    async () => {
+                        loadingOverlay.classList.remove('hidden');
+                        await doImport(false);
+                        loadingOverlay.classList.add('hidden');
+                    }
+                );
+            } else {
+                await doImport(true);
+                loadingOverlay.classList.add('hidden');
+            }
+        } catch (error) {
+            console.error('Error importing from ZIP:', error);
+            this.showToast(error.message || 'Failed to import ZIP', 'error');
+            loadingOverlay.classList.add('hidden');
+        } finally {
+            loadingText.textContent = originalText;
+        }
+    }
+
+    // Add expense without triggering render (for batch imports)
+    async addExpenseWithoutRender(expense) {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([STORE_NAME], 'readwrite');
+            const store = transaction.objectStore(STORE_NAME);
+            const request = store.add(expense);
+
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    // Show import modal with replace/merge options
+    showImportModal(title, message, onReplace, onMerge) {
+        const modal = document.getElementById('modal');
+        const modalTitle = document.getElementById('modalTitle');
+        const modalMessage = document.getElementById('modalMessage');
+        const modalActions = modal.querySelector('.modal-actions');
+
+        modalTitle.textContent = title;
+        modalMessage.textContent = message;
+
+        // Replace modal actions with three buttons
+        modalActions.innerHTML = `
+            <button id="modalCancel" class="btn btn-secondary">Cancel</button>
+            <button id="modalMerge" class="btn btn-primary">Add to existing</button>
+            <button id="modalReplace" class="btn btn-danger">Replace all</button>
+        `;
+
+        document.getElementById('modalCancel').addEventListener('click', () => {
+            this.hideModal();
+            this.restoreModalActions();
+        });
+
+        document.getElementById('modalMerge').addEventListener('click', async () => {
+            this.hideModal();
+            this.restoreModalActions();
+            await onMerge();
+        });
+
+        document.getElementById('modalReplace').addEventListener('click', async () => {
+            this.hideModal();
+            this.restoreModalActions();
+            await onReplace();
+        });
+
+        modal.classList.remove('hidden');
+    }
+
+    // Restore modal to default state
+    restoreModalActions() {
+        const modal = document.getElementById('modal');
+        const modalActions = modal.querySelector('.modal-actions');
+        modalActions.innerHTML = `
+            <button id="modalCancel" class="btn btn-secondary">Cancel</button>
+            <button id="modalConfirm" class="btn btn-danger">Confirm</button>
+        `;
+        document.getElementById('modalCancel').addEventListener('click', () => {
+            this.hideModal();
         });
     }
 
