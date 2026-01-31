@@ -375,6 +375,10 @@ class ExpenseManager {
         const loadingOverlay = document.getElementById('loadingOverlay');
         loadingOverlay.classList.remove('hidden');
 
+        // Get the report title from input
+        const reportTitleInput = document.getElementById('reportTitle');
+        const reportTitle = reportTitleInput.value.trim() || 'Expense Report';
+
         try {
             const { jsPDF } = window.jspdf;
             const { PDFDocument, rgb } = PDFLib;
@@ -430,9 +434,10 @@ class ExpenseManager {
             const helveticaBold = await finalPdf.embedFont(PDFLib.StandardFonts.HelveticaBold);
             const helvetica = await finalPdf.embedFont(PDFLib.StandardFonts.Helvetica);
 
-            // Title
-            titlePage.drawText('Expense Report', {
-                x: pageWidth / 2 - 80,
+            // Title - center based on text width
+            const titleWidth = helveticaBold.widthOfTextAtSize(reportTitle, 24);
+            titlePage.drawText(reportTitle, {
+                x: (pageWidth - titleWidth) / 2,
                 y: pageHeight - 113, // ~40mm from top
                 size: 24,
                 font: helveticaBold,
@@ -655,7 +660,8 @@ class ExpenseManager {
 
             const link = document.createElement('a');
             link.href = url;
-            link.download = `expense-report-${new Date().toISOString().split('T')[0]}.pdf`;
+            const safeTitle = reportTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+            link.download = `${safeTitle}-${new Date().toISOString().split('T')[0]}.pdf`;
             link.click();
 
             URL.revokeObjectURL(url);
