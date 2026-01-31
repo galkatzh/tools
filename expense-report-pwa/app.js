@@ -345,6 +345,29 @@ class ExpenseManager {
         return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     }
 
+    // Convert base64 data URL to Uint8Array
+    dataUrlToUint8Array(dataUrl) {
+        const base64 = dataUrl.split(',')[1];
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+        return bytes;
+    }
+
+    // Get page count for a PDF
+    async getPdfPageCount(dataUrl) {
+        try {
+            const pdfBytes = this.dataUrlToUint8Array(dataUrl);
+            const pdfDoc = await PDFLib.PDFDocument.load(pdfBytes);
+            return pdfDoc.getPageCount();
+        } catch (error) {
+            console.error('Error getting PDF page count:', error);
+            return 1;
+        }
+    }
+
     // Export to PDF
     async exportToPDF() {
         if (this.expenses.length === 0) return;
@@ -354,106 +377,246 @@ class ExpenseManager {
 
         try {
             const { jsPDF } = window.jspdf;
-            const pdf = new jsPDF('p', 'mm', 'a4');
-            const pageWidth = pdf.internal.pageSize.getWidth();
-            const pageHeight = pdf.internal.pageSize.getHeight();
-            const margin = 20;
-            const contentWidth = pageWidth - (margin * 2);
+            const { PDFDocument, rgb } = PDFLib;
 
             // Sort expenses by date
             const sortedExpenses = [...this.expenses].sort((a, b) =>
                 new Date(a.date) - new Date(b.date)
             );
 
-            // Title page
-            pdf.setFontSize(24);
-            pdf.setFont(undefined, 'bold');
-            pdf.text('Expense Report', pageWidth / 2, 40, { align: 'center' });
+            // First pass: Calculate page counts for each expense
+            const expensePageCounts = [];
+            for (const expense of sortedExpenses) {
+                if (expense.fileType === 'application/pdf') {
+                    const pageCount = await this.getPdfPageCount(expense.fileData);
+                    expensePageCounts.push(pageCount);
+                } else {
+                    expensePageCounts.push(1); // Images take 1 page
+                }
+            }
 
-            pdf.setFontSize(12);
-            pdf.setFont(undefined, 'normal');
+            // Calculate starting page for each expense
+            // Page 1 = Title/TOC, expenses start at page 2
+            const expenseStartPages = [];
+            let currentPage = 2;
+            for (const pageCount of expensePageCounts) {
+                expenseStartPages.push(currentPage);
+                currentPage += pageCount;
+            }
+            const totalPages = currentPage - 1;
+
+            // Create the final PDF document using pdf-lib
+            const finalPdf = await PDFDocument.create();
+            const pageWidth = 595.28; // A4 width in points
+            const pageHeight = 841.89; // A4 height in points
+            const margin = 56.69; // 20mm in points
+
+            // Helper to add text to a page
+            const addText = async (page, text, x, y, size = 12, bold = false) => {
+                const font = bold
+                    ? await finalPdf.embedFont(PDFLib.StandardFonts.HelveticaBold)
+                    : await finalPdf.embedFont(PDFLib.StandardFonts.Helvetica);
+                page.drawText(text, {
+                    x,
+                    y: pageHeight - y,
+                    size,
+                    font,
+                    color: rgb(0, 0, 0)
+                });
+            };
+
+            // Create title page with TOC
+            const titlePage = finalPdf.addPage([pageWidth, pageHeight]);
+            const helveticaBold = await finalPdf.embedFont(PDFLib.StandardFonts.HelveticaBold);
+            const helvetica = await finalPdf.embedFont(PDFLib.StandardFonts.Helvetica);
+
+            // Title
+            titlePage.drawText('Expense Report', {
+                x: pageWidth / 2 - 80,
+                y: pageHeight - 113, // ~40mm from top
+                size: 24,
+                font: helveticaBold,
+                color: rgb(0, 0, 0)
+            });
+
+            // Generated date
             const generatedDate = new Date().toLocaleDateString('en-US', {
                 year: 'numeric',
                 month: 'long',
                 day: 'numeric'
             });
-            pdf.text(`Generated: ${generatedDate}`, pageWidth / 2, 52, { align: 'center' });
-            pdf.text(`Total Expenses: ${sortedExpenses.length}`, pageWidth / 2, 60, { align: 'center' });
+            titlePage.drawText(`Generated: ${generatedDate}`, {
+                x: pageWidth / 2 - 60,
+                y: pageHeight - 147, // ~52mm
+                size: 12,
+                font: helvetica,
+                color: rgb(0, 0, 0)
+            });
 
-            // Table of Contents
-            let yPos = 85;
-            pdf.setFontSize(16);
-            pdf.setFont(undefined, 'bold');
-            pdf.text('Table of Contents', margin, yPos);
-            yPos += 10;
+            titlePage.drawText(`Total Expenses: ${sortedExpenses.length}`, {
+                x: pageWidth / 2 - 45,
+                y: pageHeight - 170, // ~60mm
+                size: 12,
+                font: helvetica,
+                color: rgb(0, 0, 0)
+            });
 
-            pdf.setFontSize(10);
-            pdf.setFont(undefined, 'normal');
+            // Table of Contents header
+            titlePage.drawText('Table of Contents', {
+                x: margin,
+                y: pageHeight - 241, // ~85mm
+                size: 16,
+                font: helveticaBold,
+                color: rgb(0, 0, 0)
+            });
 
-            // Track page numbers for each expense (starting after TOC)
-            const expensePages = [];
-            let currentPage = 2; // Page 2 is first expense page
-
-            sortedExpenses.forEach((expense, index) => {
+            // TOC entries
+            let yPos = 269; // Starting Y position for TOC entries (~95mm)
+            for (let i = 0; i < sortedExpenses.length; i++) {
+                const expense = sortedExpenses[i];
                 const formattedDate = new Date(expense.date).toLocaleDateString('en-US', {
                     year: 'numeric',
                     month: 'short',
                     day: 'numeric'
                 });
                 const title = expense.title || 'Untitled';
-                const tocEntry = `${index + 1}. ${title} (${formattedDate})`;
+                const pageCount = expensePageCounts[i];
+                const pageInfo = pageCount > 1
+                    ? `Pages ${expenseStartPages[i]}-${expenseStartPages[i] + pageCount - 1}`
+                    : `Page ${expenseStartPages[i]}`;
 
-                // Check if we need a new page for TOC
-                if (yPos > pageHeight - 30) {
-                    pdf.addPage();
-                    yPos = margin;
-                }
+                const tocEntry = `${i + 1}. ${title} (${formattedDate})`;
 
-                // Add TOC entry with page number
-                pdf.text(tocEntry, margin, yPos);
-                const pageNumText = `Page ${currentPage}`;
-                pdf.text(pageNumText, pageWidth - margin, yPos, { align: 'right' });
+                titlePage.drawText(tocEntry, {
+                    x: margin,
+                    y: pageHeight - yPos,
+                    size: 10,
+                    font: helvetica,
+                    color: rgb(0, 0, 0)
+                });
 
-                expensePages.push(currentPage);
-                currentPage++;
-                yPos += 7;
+                titlePage.drawText(pageInfo, {
+                    x: pageWidth - margin - 60,
+                    y: pageHeight - yPos,
+                    size: 10,
+                    font: helvetica,
+                    color: rgb(0.4, 0.4, 0.4)
+                });
+
+                yPos += 20;
+            }
+
+            // Page number on title page
+            titlePage.drawText(`Page 1 of ${totalPages}`, {
+                x: pageWidth / 2 - 30,
+                y: 28,
+                size: 9,
+                font: helvetica,
+                color: rgb(0.5, 0.5, 0.5)
             });
 
-            // Add expenses
+            // Add expense pages
+            let currentPageNum = 2;
             for (let i = 0; i < sortedExpenses.length; i++) {
                 const expense = sortedExpenses[i];
-                pdf.addPage();
-
-                // Header
-                pdf.setFontSize(16);
-                pdf.setFont(undefined, 'bold');
-                const title = expense.title || 'Untitled';
-                pdf.text(title, margin, margin + 5);
-
-                pdf.setFontSize(11);
-                pdf.setFont(undefined, 'normal');
                 const formattedDate = new Date(expense.date).toLocaleDateString('en-US', {
                     year: 'numeric',
                     month: 'long',
                     day: 'numeric'
                 });
-                pdf.text(`Date: ${formattedDate}`, margin, margin + 14);
-                pdf.text(`File: ${expense.fileName}`, margin, margin + 21);
+                const title = expense.title || 'Untitled';
 
-                // Separator line
-                pdf.setDrawColor(200);
-                pdf.line(margin, margin + 27, pageWidth - margin, margin + 27);
+                if (expense.fileType === 'application/pdf') {
+                    // Load the source PDF
+                    const pdfBytes = this.dataUrlToUint8Array(expense.fileData);
+                    const sourcePdf = await PDFDocument.load(pdfBytes);
+                    const sourcePages = await finalPdf.copyPages(sourcePdf, sourcePdf.getPageIndices());
 
-                // Add image or PDF indicator
-                const contentStartY = margin + 35;
-                const maxImageHeight = pageHeight - contentStartY - margin;
+                    // Add each page from the source PDF
+                    for (let j = 0; j < sourcePages.length; j++) {
+                        const page = sourcePages[j];
+                        finalPdf.addPage(page);
 
-                if (expense.fileType.startsWith('image/')) {
+                        // Get the page we just added to add header/footer
+                        const addedPage = finalPdf.getPage(finalPdf.getPageCount() - 1);
+                        const { width, height } = addedPage.getSize();
+
+                        // Add header on first page of this expense
+                        if (j === 0) {
+                            // Draw a white rectangle for header background
+                            addedPage.drawRectangle({
+                                x: 0,
+                                y: height - 85,
+                                width: width,
+                                height: 85,
+                                color: rgb(1, 1, 1),
+                                opacity: 0.9
+                            });
+
+                            addedPage.drawText(title, {
+                                x: 40,
+                                y: height - 35,
+                                size: 14,
+                                font: helveticaBold,
+                                color: rgb(0, 0, 0)
+                            });
+
+                            addedPage.drawText(`Date: ${formattedDate}  |  File: ${expense.fileName}  |  Page ${j + 1} of ${sourcePages.length}`, {
+                                x: 40,
+                                y: height - 55,
+                                size: 9,
+                                font: helvetica,
+                                color: rgb(0.3, 0.3, 0.3)
+                            });
+
+                            // Draw separator line
+                            addedPage.drawLine({
+                                start: { x: 40, y: height - 70 },
+                                end: { x: width - 40, y: height - 70 },
+                                thickness: 0.5,
+                                color: rgb(0.8, 0.8, 0.8)
+                            });
+                        }
+
+                        // Add page number footer
+                        addedPage.drawText(`Page ${currentPageNum} of ${totalPages}`, {
+                            x: width / 2 - 30,
+                            y: 20,
+                            size: 9,
+                            font: helvetica,
+                            color: rgb(0.5, 0.5, 0.5)
+                        });
+
+                        currentPageNum++;
+                    }
+                } else {
+                    // Image expense - create page using jsPDF then import
+                    const tempPdf = new jsPDF('p', 'mm', 'a4');
+                    const pdfPageWidth = tempPdf.internal.pageSize.getWidth();
+                    const pdfPageHeight = tempPdf.internal.pageSize.getHeight();
+                    const pdfMargin = 20;
+                    const contentWidth = pdfPageWidth - (pdfMargin * 2);
+
+                    // Header
+                    tempPdf.setFontSize(16);
+                    tempPdf.setFont(undefined, 'bold');
+                    tempPdf.text(title, pdfMargin, pdfMargin + 5);
+
+                    tempPdf.setFontSize(11);
+                    tempPdf.setFont(undefined, 'normal');
+                    tempPdf.text(`Date: ${formattedDate}`, pdfMargin, pdfMargin + 14);
+                    tempPdf.text(`File: ${expense.fileName}`, pdfMargin, pdfMargin + 21);
+
+                    // Separator line
+                    tempPdf.setDrawColor(200);
+                    tempPdf.line(pdfMargin, pdfMargin + 27, pdfPageWidth - pdfMargin, pdfMargin + 27);
+
+                    // Add image
+                    const contentStartY = pdfMargin + 35;
+                    const maxImageHeight = pdfPageHeight - contentStartY - pdfMargin - 15;
+
                     try {
-                        // Get image dimensions
                         const imgDimensions = await this.getImageDimensions(expense.fileData);
-
-                        // Calculate scaled dimensions to fit page
                         let imgWidth = contentWidth;
                         let imgHeight = (imgDimensions.height / imgDimensions.width) * imgWidth;
 
@@ -462,57 +625,40 @@ class ExpenseManager {
                             imgWidth = (imgDimensions.width / imgDimensions.height) * imgHeight;
                         }
 
-                        // Center the image horizontally
-                        const imgX = margin + (contentWidth - imgWidth) / 2;
-
-                        pdf.addImage(expense.fileData, 'JPEG', imgX, contentStartY, imgWidth, imgHeight);
+                        const imgX = pdfMargin + (contentWidth - imgWidth) / 2;
+                        tempPdf.addImage(expense.fileData, 'JPEG', imgX, contentStartY, imgWidth, imgHeight);
                     } catch (error) {
                         console.error('Error adding image to PDF:', error);
-                        pdf.setFontSize(12);
-                        pdf.text('Error loading image', margin, contentStartY + 10);
+                        tempPdf.setFontSize(12);
+                        tempPdf.text('Error loading image', pdfMargin, contentStartY + 10);
                     }
-                } else {
-                    // PDF file indicator
-                    pdf.setFontSize(12);
-                    pdf.setTextColor(100);
-                    pdf.text('PDF Attachment:', margin, contentStartY);
-                    pdf.text(expense.fileName, margin, contentStartY + 8);
-                    pdf.setTextColor(0);
 
-                    // Note about attached PDF
-                    pdf.setFontSize(10);
-                    pdf.setTextColor(128);
-                    pdf.text('(PDF files are referenced but not embedded in this report)', margin, contentStartY + 20);
-                    pdf.setTextColor(0);
-                }
+                    // Page number footer
+                    tempPdf.setFontSize(9);
+                    tempPdf.setTextColor(128);
+                    tempPdf.text(`Page ${currentPageNum} of ${totalPages}`, pdfPageWidth / 2, pdfPageHeight - 10, { align: 'center' });
 
-                // Page number footer
-                pdf.setFontSize(9);
-                pdf.setTextColor(128);
-                pdf.text(
-                    `Page ${pdf.internal.getNumberOfPages()}`,
-                    pageWidth / 2,
-                    pageHeight - 10,
-                    { align: 'center' }
-                );
-                pdf.setTextColor(0);
-            }
+                    // Convert jsPDF to bytes and import into final PDF
+                    const tempPdfBytes = tempPdf.output('arraybuffer');
+                    const tempPdfDoc = await PDFDocument.load(tempPdfBytes);
+                    const [importedPage] = await finalPdf.copyPages(tempPdfDoc, [0]);
+                    finalPdf.addPage(importedPage);
 
-            // Add page numbers to TOC pages
-            const totalPages = pdf.internal.getNumberOfPages();
-            for (let i = 1; i <= totalPages; i++) {
-                pdf.setPage(i);
-                if (i === 1) {
-                    pdf.setFontSize(9);
-                    pdf.setTextColor(128);
-                    pdf.text(`Page 1 of ${totalPages}`, pageWidth / 2, pageHeight - 10, { align: 'center' });
-                    pdf.setTextColor(0);
+                    currentPageNum++;
                 }
             }
 
-            // Save PDF
-            const fileName = `expense-report-${new Date().toISOString().split('T')[0]}.pdf`;
-            pdf.save(fileName);
+            // Save the final PDF
+            const pdfBytes = await finalPdf.save();
+            const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+            const url = URL.createObjectURL(blob);
+
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `expense-report-${new Date().toISOString().split('T')[0]}.pdf`;
+            link.click();
+
+            URL.revokeObjectURL(url);
 
             this.showToast('PDF exported successfully', 'success');
         } catch (error) {
