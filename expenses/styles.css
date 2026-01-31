@@ -63,6 +63,26 @@ body {
     font-weight: 600;
 }
 
+.header-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.header-actions .btn-secondary {
+    background-color: rgba(255, 255, 255, 0.15);
+    color: var(--white);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.header-actions .btn-secondary:hover:not(:disabled) {
+    background-color: rgba(255, 255, 255, 0.25);
+}
+
+.header-actions .btn-secondary:disabled {
+    opacity: 0.4;
+}
+
 /* Buttons */
 .btn {
     display: inline-flex;
@@ -596,15 +616,39 @@ body {
 @media (max-width: 600px) {
     .header {
         padding: 1rem;
+        flex-direction: column;
+        gap: 0.75rem;
     }
 
     .header h1 {
         font-size: 1rem;
     }
 
+    .header-actions {
+        width: 100%;
+        justify-content: center;
+        flex-wrap: wrap;
+    }
+
+    .header-actions .btn {
+        flex: 1;
+        min-width: 80px;
+        justify-content: center;
+    }
+
     .btn {
         padding: 0.5rem 0.75rem;
         font-size: 0.8125rem;
+    }
+
+    .modal-actions {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .modal-actions .btn {
+        width: 100%;
+        justify-content: center;
     }
 
     .main-content {

@@ -160,9 +160,26 @@ class ExpenseManager {
             );
         });
 
-        // Export button
+        // Export PDF button
         document.getElementById('exportBtn').addEventListener('click', () => {
             this.exportToPDF();
+        });
+
+        // Export ZIP button
+        document.getElementById('exportZipBtn').addEventListener('click', () => {
+            this.exportToZip();
+        });
+
+        // Import ZIP button
+        const importZipInput = document.getElementById('importZipInput');
+        document.getElementById('importZipBtn').addEventListener('click', () => {
+            importZipInput.click();
+        });
+        importZipInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                this.importFromZip(e.target.files[0]);
+                e.target.value = ''; // Reset for re-importing same file
+            }
         });
 
         // Modal buttons
@@ -271,9 +288,11 @@ class ExpenseManager {
         const list = document.getElementById('expensesList');
         const count = document.getElementById('expenseCount');
         const exportBtn = document.getElementById('exportBtn');
+        const exportZipBtn = document.getElementById('exportZipBtn');
 
         count.textContent = this.expenses.length;
         exportBtn.disabled = this.expenses.length === 0;
+        exportZipBtn.disabled = this.expenses.length === 0;
 
         if (this.expenses.length === 0) {
             list.innerHTML = `
@@ -810,6 +829,241 @@ class ExpenseManager {
             };
             img.onerror = reject;
             img.src = dataUrl;
+        });
+    }
+
+    // Export expenses to ZIP file
+    async exportToZip() {
+        if (this.expenses.length === 0) return;
+
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const loadingText = loadingOverlay.querySelector('p');
+        const originalText = loadingText.textContent;
+        loadingText.textContent = 'Creating ZIP archive...';
+        loadingOverlay.classList.remove('hidden');
+
+        try {
+            const zip = new JSZip();
+
+            // Create metadata JSON
+            const metadata = {
+                version: 1,
+                exportedAt: new Date().toISOString(),
+                expenses: this.expenses.map((expense, index) => ({
+                    id: expense.id,
+                    title: expense.title,
+                    date: expense.date,
+                    time: expense.time || null,
+                    order: index,
+                    fileName: expense.fileName,
+                    fileType: expense.fileType,
+                    fileSize: expense.fileSize,
+                    createdAt: expense.createdAt
+                }))
+            };
+
+            zip.file('expenses.json', JSON.stringify(metadata, null, 2));
+
+            // Add files folder
+            const filesFolder = zip.folder('files');
+
+            // Add each expense file
+            for (const expense of this.expenses) {
+                // Extract base64 data from data URL
+                const base64Data = expense.fileData.split(',')[1];
+                // Use expense ID + original extension for unique filename
+                const ext = expense.fileName.split('.').pop();
+                const zipFileName = `${expense.id}.${ext}`;
+                filesFolder.file(zipFileName, base64Data, { base64: true });
+            }
+
+            // Generate ZIP blob
+            const zipBlob = await zip.generateAsync({
+                type: 'blob',
+                compression: 'DEFLATE',
+                compressionOptions: { level: 6 }
+            });
+
+            // Download ZIP file
+            const url = URL.createObjectURL(zipBlob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `expense-report-${new Date().toISOString().split('T')[0]}.zip`;
+            link.click();
+            URL.revokeObjectURL(url);
+
+            this.showToast('Expenses exported to ZIP', 'success');
+        } catch (error) {
+            console.error('Error exporting to ZIP:', error);
+            this.showToast('Failed to export ZIP', 'error');
+        } finally {
+            loadingText.textContent = originalText;
+            loadingOverlay.classList.add('hidden');
+        }
+    }
+
+    // Import expenses from ZIP file
+    async importFromZip(file) {
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const loadingText = loadingOverlay.querySelector('p');
+        const originalText = loadingText.textContent;
+        loadingText.textContent = 'Importing from ZIP...';
+        loadingOverlay.classList.remove('hidden');
+
+        try {
+            const zip = await JSZip.loadAsync(file);
+
+            // Read metadata
+            const metadataFile = zip.file('expenses.json');
+            if (!metadataFile) {
+                throw new Error('Invalid ZIP: expenses.json not found');
+            }
+
+            const metadataJson = await metadataFile.async('string');
+            const metadata = JSON.parse(metadataJson);
+
+            if (!metadata.expenses || !Array.isArray(metadata.expenses)) {
+                throw new Error('Invalid ZIP: expenses data is missing or invalid');
+            }
+
+            // Check if user wants to replace or merge
+            const hasExisting = this.expenses.length > 0;
+
+            const doImport = async (replace) => {
+                if (replace) {
+                    await this.clearAllExpenses();
+                }
+
+                const startOrder = replace ? 0 : this.expenses.length;
+                let importCount = 0;
+
+                for (let i = 0; i < metadata.expenses.length; i++) {
+                    const expenseMeta = metadata.expenses[i];
+
+                    // Find the file in ZIP
+                    const ext = expenseMeta.fileName.split('.').pop();
+                    const zipFileName = `files/${expenseMeta.id}.${ext}`;
+                    const fileEntry = zip.file(zipFileName);
+
+                    if (!fileEntry) {
+                        console.warn(`File not found in ZIP: ${zipFileName}`);
+                        continue;
+                    }
+
+                    // Read file as base64
+                    const base64Data = await fileEntry.async('base64');
+                    const fileData = `data:${expenseMeta.fileType};base64,${base64Data}`;
+
+                    // Create expense object
+                    const expense = {
+                        id: replace ? expenseMeta.id : Date.now().toString() + i,
+                        title: expenseMeta.title || '',
+                        date: expenseMeta.date,
+                        time: expenseMeta.time || null,
+                        fileName: expenseMeta.fileName,
+                        fileType: expenseMeta.fileType,
+                        fileSize: expenseMeta.fileSize,
+                        fileData: fileData,
+                        order: startOrder + i,
+                        createdAt: expenseMeta.createdAt || new Date().toISOString()
+                    };
+
+                    await this.addExpenseWithoutRender(expense);
+                    importCount++;
+                }
+
+                await this.loadExpenses();
+                this.showToast(`Imported ${importCount} expense(s)`, 'success');
+            };
+
+            if (hasExisting) {
+                loadingOverlay.classList.add('hidden');
+                this.showImportModal(
+                    'Import Options',
+                    `You have ${this.expenses.length} existing expense(s). How would you like to import?`,
+                    async () => {
+                        loadingOverlay.classList.remove('hidden');
+                        await doImport(true);
+                        loadingOverlay.classList.add('hidden');
+                    },
+                    async () => {
+                        loadingOverlay.classList.remove('hidden');
+                        await doImport(false);
+                        loadingOverlay.classList.add('hidden');
+                    }
+                );
+            } else {
+                await doImport(true);
+                loadingOverlay.classList.add('hidden');
+            }
+        } catch (error) {
+            console.error('Error importing from ZIP:', error);
+            this.showToast(error.message || 'Failed to import ZIP', 'error');
+            loadingOverlay.classList.add('hidden');
+        } finally {
+            loadingText.textContent = originalText;
+        }
+    }
+
+    // Add expense without triggering render (for batch imports)
+    async addExpenseWithoutRender(expense) {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([STORE_NAME], 'readwrite');
+            const store = transaction.objectStore(STORE_NAME);
+            const request = store.add(expense);
+
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    // Show import modal with replace/merge options
+    showImportModal(title, message, onReplace, onMerge) {
+        const modal = document.getElementById('modal');
+        const modalTitle = document.getElementById('modalTitle');
+        const modalMessage = document.getElementById('modalMessage');
+        const modalActions = modal.querySelector('.modal-actions');
+
+        modalTitle.textContent = title;
+        modalMessage.textContent = message;
+
+        // Replace modal actions with three buttons
+        modalActions.innerHTML = `
+            <button id="modalCancel" class="btn btn-secondary">Cancel</button>
+            <button id="modalMerge" class="btn btn-primary">Add to existing</button>
+            <button id="modalReplace" class="btn btn-danger">Replace all</button>
+        `;
+
+        document.getElementById('modalCancel').addEventListener('click', () => {
+            this.hideModal();
+            this.restoreModalActions();
+        });
+
+        document.getElementById('modalMerge').addEventListener('click', async () => {
+            this.hideModal();
+            this.restoreModalActions();
+            await onMerge();
+        });
+
+        document.getElementById('modalReplace').addEventListener('click', async () => {
+            this.hideModal();
+            this.restoreModalActions();
+            await onReplace();
+        });
+
+        modal.classList.remove('hidden');
+    }
+
+    // Restore modal to default state
+    restoreModalActions() {
+        const modal = document.getElementById('modal');
+        const modalActions = modal.querySelector('.modal-actions');
+        modalActions.innerHTML = `
+            <button id="modalCancel" class="btn btn-secondary">Cancel</button>
+            <button id="modalConfirm" class="btn btn-danger">Confirm</button>
+        `;
+        document.getElementById('modalCancel').addEventListener('click', () => {
+            this.hideModal();
         });
     }
 
