@@ -1,14 +1,14 @@
 // Service Worker for Expense Report Manager PWA
 const CACHE_NAME = 'expense-report-v2';
 const STATIC_ASSETS = [
-    '/',
-    '/index.html',
-    '/styles.css',
-    '/app.js',
-    '/manifest.json',
-    '/favicon.svg',
-    '/icons/icon-192.svg',
-    '/icons/icon-512.svg'
+    './',
+    './index.html',
+    './styles.css',
+    './app.js',
+    './manifest.json',
+    './favicon.svg',
+    './icons/icon-192.svg',
+    './icons/icon-512.svg'
 ];
 
 // External resources to cache
