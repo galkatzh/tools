@@ -1112,7 +1112,7 @@ class ExpenseManager {
     async registerServiceWorker() {
         if ('serviceWorker' in navigator) {
             try {
-                const registration = await navigator.serviceWorker.register('sw.js');
+                const registration = await navigator.serviceWorker.register('/expenses/sw.js');
                 console.log('Service Worker registered:', registration.scope);
             } catch (error) {
                 console.error('Service Worker registration failed:', error);
