@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Meme Maker</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>Meme Maker</h1>
+    </header>
+
+    <div id="toolbar">
+      <div class="tool-group">
+        <button id="btn-select" class="tool-btn active" data-tool="select" title="Select/Move">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></svg>
+        </button>
+        <button id="btn-text" class="tool-btn" data-tool="text" title="Add Text">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M5 4v3h5.5v12h3V7H19V4H5z"/></svg>
+        </button>
+        <button id="btn-draw" class="tool-btn" data-tool="draw" title="Draw/Scribble">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+        </button>
+      </div>
+
+      <div class="tool-group">
+        <button id="btn-undo" class="tool-btn" title="Undo" disabled>
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12.5 8c-2.65 0-5.05 1.04-6.83 2.73L2 7v9h9l-3.62-3.62A8.46 8.46 0 0112.5 10c3.73 0 6.84 2.55 7.67 6l2.17-.56A10.5 10.5 0 0012.5 8z"/></svg>
+        </button>
+        <button id="btn-redo" class="tool-btn" title="Redo" disabled>
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16a8.5 8.5 0 018.1-5.95c2.03 0 3.88.72 5.32 1.93L13.5 16H22V7l-3.6 3.6z"/></svg>
+        </button>
+      </div>
+
+      <div class="tool-group">
+        <button id="btn-search" class="tool-btn" title="Search Meme Templates">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+        </button>
+        <button id="btn-upload" class="tool-btn" title="Upload Image">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 7v2.99s-1.99.01-2 0V7h-3s.01-1.99 0-2h3V2h2v3h3v2h-3zm-3 4V8h-3V5H5c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-8h-3zM5 19l3-4 2 3 3-4 4 5H5z"/></svg>
+        </button>
+        <button id="btn-save" class="tool-btn" title="Save as Image">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 12v7H5v-7H3v7c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-7h-2zm-6 .67l2.59-2.58L17 11.5l-5 5-5-5 1.41-1.41L11 12.67V3h2v9.67z"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Drawing options bar -->
+    <div id="options-bar" class="hidden">
+      <div id="draw-options" class="option-set hidden">
+        <label>
+          Color:
+          <input type="color" id="draw-color" value="#ff0000">
+        </label>
+        <label>
+          Width:
+          <input type="range" id="draw-width" min="1" max="20" value="3">
+          <span id="draw-width-val">3</span>
+        </label>
+      </div>
+      <div id="text-options" class="option-set hidden">
+        <label>
+          Color:
+          <input type="color" id="text-color" value="#ffffff">
+        </label>
+        <label>
+          Size:
+          <input type="range" id="text-size" min="12" max="120" value="40">
+          <span id="text-size-val">40</span>
+        </label>
+        <label>
+          Outline:
+          <input type="color" id="text-outline" value="#000000">
+        </label>
+        <button id="btn-delete-text" class="small-btn danger" style="display:none;">Delete</button>
+      </div>
+    </div>
+
+    <!-- Canvas area -->
+    <div id="canvas-container">
+      <canvas id="meme-canvas"></canvas>
+      <div id="empty-state">
+        <p>Search for a meme template or upload an image to get started</p>
+        <button id="btn-get-started" class="primary-btn">Search Templates</button>
+      </div>
+    </div>
+
+    <!-- Search modal -->
+    <div id="search-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Search Meme Templates</h2>
+          <button id="btn-close-search" class="close-btn">&times;</button>
+        </div>
+        <div class="modal-body" id="search-body">
+          <div id="cse-container">
+            <script async src="https://cse.google.com/cse.js?cx=262c9d0e5c0b94398"></script>
+            <div class="gcse-search"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Text edit modal -->
+    <div id="text-edit-modal" class="modal hidden">
+      <div class="modal-content modal-small">
+        <div class="modal-header">
+          <h2>Edit Text</h2>
+          <button id="btn-close-text-edit" class="close-btn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <textarea id="text-input" placeholder="Enter meme text..." rows="3"></textarea>
+          <div class="text-edit-options">
+            <label>
+              Color:
+              <input type="color" id="modal-text-color" value="#ffffff">
+            </label>
+            <label>
+              Outline:
+              <input type="color" id="modal-text-outline" value="#000000">
+            </label>
+            <label>
+              Size:
+              <input type="range" id="modal-text-size" min="12" max="120" value="40">
+              <span id="modal-text-size-val">40</span>
+            </label>
+          </div>
+          <button id="btn-add-text" class="primary-btn">Add Text</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hidden file input -->
+    <input type="file" id="file-input" accept="image/*" style="display:none">
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

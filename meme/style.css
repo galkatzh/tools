@@ -1,0 +1,433 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #1a1a2e;
+  --bg-light: #16213e;
+  --surface: #0f3460;
+  --primary: #e94560;
+  --primary-hover: #ff6b81;
+  --text: #eee;
+  --text-dim: #aaa;
+  --border: #333;
+  --toolbar-h: 48px;
+  --options-h: 44px;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+input, textarea, [contenteditable] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  background: var(--bg-light);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+header h1 {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+/* Toolbar */
+#toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg-light);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  min-height: var(--toolbar-h);
+}
+
+.tool-group {
+  display: flex;
+  gap: 2px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.tool-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 36px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.tool-btn:hover {
+  background: rgba(255,255,255,0.1);
+  color: var(--text);
+}
+
+.tool-btn.active {
+  background: var(--primary);
+  color: #fff;
+}
+
+.tool-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.tool-btn:disabled:hover {
+  background: transparent;
+  color: var(--text-dim);
+}
+
+/* Options bar */
+#options-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 6px 12px;
+  background: var(--bg-light);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  min-height: var(--options-h);
+  flex-wrap: wrap;
+}
+
+#options-bar.hidden {
+  display: none;
+}
+
+.option-set {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.option-set.hidden {
+  display: none;
+}
+
+.option-set label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.option-set input[type="color"] {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.option-set input[type="range"] {
+  width: 70px;
+  accent-color: var(--primary);
+}
+
+.option-set span {
+  min-width: 20px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.small-btn {
+  padding: 4px 10px;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.small-btn.danger {
+  background: #c0392b;
+  color: #fff;
+}
+
+/* Canvas container */
+#canvas-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+  background: #111;
+}
+
+#meme-canvas {
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+#empty-state {
+  position: absolute;
+  text-align: center;
+  padding: 24px;
+}
+
+#empty-state p {
+  color: var(--text-dim);
+  margin-bottom: 16px;
+  font-size: 14px;
+}
+
+.primary-btn {
+  padding: 10px 24px;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.primary-btn:hover {
+  background: var(--primary-hover);
+}
+
+/* Modal */
+.modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 20px;
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+
+.modal.hidden {
+  display: none;
+}
+
+.modal-content {
+  background: var(--bg-light);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 700px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-small {
+  max-width: 400px;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.modal-header h2 {
+  font-size: 16px;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.modal-body {
+  padding: 16px;
+  overflow-y: auto;
+  flex: 1;
+  touch-action: pan-y;
+}
+
+/* CSE styling overrides */
+#cse-container {
+  background: #fff;
+  border-radius: 8px;
+  padding: 8px;
+  min-height: 200px;
+}
+
+/* Make CSE search results images clickable - visual cue */
+#cse-container .gs-image-box {
+  cursor: pointer;
+  transition: transform 0.15s;
+}
+
+#cse-container .gs-image-box:hover {
+  transform: scale(1.05);
+}
+
+/* Text edit modal */
+#text-input {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 16px;
+  resize: vertical;
+  font-family: inherit;
+  margin-bottom: 12px;
+}
+
+.text-edit-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.text-edit-options label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.text-edit-options input[type="color"] {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.text-edit-options input[type="range"] {
+  width: 80px;
+  accent-color: var(--primary);
+}
+
+#btn-add-text {
+  width: 100%;
+}
+
+/* Selection handles */
+.text-selected-indicator {
+  position: absolute;
+  border: 2px dashed var(--primary);
+  pointer-events: none;
+}
+
+/* Mobile tweaks */
+@media (max-width: 480px) {
+  header h1 {
+    font-size: 14px;
+  }
+
+  #toolbar {
+    gap: 4px;
+    padding: 4px;
+  }
+
+  .tool-btn {
+    width: 34px;
+    height: 32px;
+  }
+
+  .option-set label {
+    font-size: 11px;
+  }
+
+  .option-set input[type="range"] {
+    width: 55px;
+  }
+
+  #options-bar {
+    gap: 6px;
+    padding: 4px 8px;
+  }
+}
+
+/* Loading overlay for image load */
+#canvas-container .loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 16px;
+  z-index: 10;
+}
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(255,255,255,0.2);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-right: 10px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
