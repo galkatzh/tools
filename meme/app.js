@@ -744,6 +744,7 @@
       '.gs-image-popup-box',
       '.gsc-modal-background-image-visible',
       '.gs-result-image-popup',
+      '.gs-imagePreviewArea',
     ];
     for (var s = 0; s < selectors.length; s++) {
       var panels = cse.querySelectorAll(selectors[s]);
