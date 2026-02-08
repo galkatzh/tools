@@ -548,12 +548,15 @@
 
   function loadImage(src, _proxyIndex) {
     const proxyIndex = _proxyIndex || 0;
+    console.log('[Meme] loadImage called | proxyIndex:', proxyIndex, '| url:', src.substring(0, 150));
     showLoading();
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
-      // Reject tiny placeholder images (< 50x50) when we expect real content
+      console.log('[Meme] Image loaded | natural:', img.naturalWidth, 'x', img.naturalHeight, '| url:', src.substring(0, 150));
+      // Reject tiny placeholder images (< 10x10) when we expect real content
       if (img.naturalWidth < 10 || img.naturalHeight < 10) {
+        console.log('[Meme] Rejected: image too small');
         img.onerror();
         return;
       }
@@ -567,6 +570,7 @@
         state.canvasW = Math.round(state.canvasW * ratio);
         state.canvasH = Math.round(state.canvasH * ratio);
       }
+      console.log('[Meme] Canvas size set to:', state.canvasW, 'x', state.canvasH);
       state.imageLoaded = true;
       state.texts = [];
       state.drawings = [];
@@ -580,15 +584,16 @@
       snapshot();
     };
     img.onerror = () => {
+      console.log('[Meme] Image load error | proxyIndex:', proxyIndex, '| url:', src.substring(0, 150));
       // If this was a direct load (no proxy yet), try proxies in order
       if (!_proxyIndex && proxyIndex === 0 && !src.startsWith('data:')) {
+        console.log('[Meme] Retrying with proxy 0');
         loadImage(CORS_PROXIES[0](src), 1);
         return;
       }
       // Try next proxy
       if (_proxyIndex && _proxyIndex < CORS_PROXIES.length) {
-        // Get the original URL back from the proxied URL for the next proxy
-        // Since we don't have it easily, store it
+        console.log('[Meme] Retrying with proxy', _proxyIndex);
         loadImage(CORS_PROXIES[_proxyIndex](state._originalLoadUrl || src), _proxyIndex + 1);
         return;
       }
@@ -650,13 +655,19 @@
     resultEl.dataset.memeProcessed = 'true';
 
     var imageUrl = (data && data.imageUrl) || (data && data.thumbnailUrl) || null;
+    var urlSource = data && data.imageUrl ? 'cseImage/og:image' : (data && data.thumbnailUrl ? 'cseThumbnail' : null);
 
     // If no data from ready callback, try to get thumbnail from the DOM
     if (!imageUrl) {
       var thumb = resultEl.querySelector('img.gs-image, .gs-image-box img, img');
-      if (thumb) imageUrl = thumb.getAttribute('data-src') || thumb.src || null;
+      if (thumb) {
+        imageUrl = thumb.getAttribute('data-src') || thumb.src || null;
+        urlSource = 'DOM fallback';
+      }
     }
     if (!imageUrl) return;
+
+    console.log('[MemeCSE] Button attached | source:', urlSource, '| url:', imageUrl);
 
     var btn = document.createElement('button');
     btn.textContent = 'Use as Template';
