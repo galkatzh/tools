@@ -634,12 +634,11 @@
   });
 
   // ========== CSE Integration ==========
-  // Intercept CSE search results and add "Use as Template" buttons.
-  // Google CSE web results only provide: page URL + a low-res Google thumbnail.
-  // The original image URL is NOT in the DOM for web results.
-  // Strategy: extract the page URL, try to derive the source image URL from it
-  // (common meme sites use predictable image URL patterns), and fall back to
-  // loading the thumbnail via CORS proxy.
+  // Google CSE web results only provide: a page URL + a low-res Google thumbnail.
+  // The original image URL is NOT in the DOM.
+  // Strategy: when the user picks a result, fetch the actual page HTML via CORS
+  // proxy and extract the og:image / twitter:image meta tag, which nearly every
+  // meme site includes with the full-resolution source image URL.
 
   let cseObserver = null;
 
@@ -649,143 +648,182 @@
     return /\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?.*)?$/i.test(url);
   }
 
-  // Try to derive a direct image URL from a meme site page URL
-  function deriveImageUrl(pageUrl) {
-    if (!pageUrl) return null;
-    try {
-      const u = new URL(pageUrl);
+  // Fetch a page via CORS proxy and scrape the best image URL from meta tags
+  function scrapeImageFromPage(pageUrl) {
+    const proxyUrl = 'https://corsproxy.io/?' + encodeURIComponent(pageUrl);
+    return fetch(proxyUrl)
+      .then(function (res) {
+        if (!res.ok) throw new Error('fetch failed');
+        return res.text();
+      })
+      .then(function (html) {
+        // Try og:image (most reliable - nearly all meme sites have this)
+        var m = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
+             || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+        if (m && m[1]) return m[1];
 
-      // imgflip.com/meme/SLUG or imgflip.com/i/ID
-      if (u.hostname.includes('imgflip.com')) {
-        // /i/abcdef -> direct image
-        const iMatch = u.pathname.match(/\/i\/([a-z0-9]+)/i);
-        if (iMatch) return 'https://i.imgflip.com/' + iMatch[1] + '.jpg';
-        // /meme/SLUG -> template image (ID is not in URL, can't derive)
-      }
+        // Try twitter:image
+        m = html.match(/<meta[^>]+name=["']twitter:image(?::src)?["'][^>]+content=["']([^"']+)["']/i)
+         || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image(?::src)?["']/i);
+        if (m && m[1]) return m[1];
 
-      // i.imgflip.com is already a direct image
-      if (u.hostname === 'i.imgflip.com') return pageUrl;
+        // Try itemprop image
+        m = html.match(/<meta[^>]+itemprop=["']image["'][^>]+content=["']([^"']+)["']/i);
+        if (m && m[1]) return m[1];
 
-      // Know Your Meme - images hosted on kym-cdn
-      if (u.hostname.includes('knowyourmeme.com') || u.hostname.includes('kym-cdn.com')) {
-        if (looksLikeImageUrl(pageUrl)) return pageUrl;
-      }
+        // Try link rel="image_src"
+        m = html.match(/<link[^>]+rel=["']image_src["'][^>]+href=["']([^"']+)["']/i);
+        if (m && m[1]) return m[1];
 
-      // memegenerator.net
-      if (u.hostname.includes('memegenerator.net')) {
-        if (looksLikeImageUrl(pageUrl)) return pageUrl;
-      }
-
-      // Pinterest - can't easily derive
-      // Reddit - thumbnails only
-
-      // If URL itself is an image, use it directly
-      if (looksLikeImageUrl(pageUrl)) return pageUrl;
-    } catch (e) {
-      // invalid URL
-    }
-    return null;
+        return null;
+      })
+      .catch(function () {
+        // Try alternate proxy
+        var proxyUrl2 = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(pageUrl);
+        return fetch(proxyUrl2)
+          .then(function (res) { return res.ok ? res.text() : null; })
+          .then(function (html) {
+            if (!html) return null;
+            var m = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
+                 || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+            return m ? m[1] : null;
+          })
+          .catch(function () { return null; });
+      });
   }
 
-  // Extract the best image URL from a CSE result element
-  function extractImageUrl(resultEl) {
-    // 1. Look for data-ctorig on <img> elements (image search mode gives original URLs here)
-    const imgs = resultEl.querySelectorAll('img[data-ctorig]');
-    for (const img of imgs) {
-      const ctorig = img.getAttribute('data-ctorig');
-      if (ctorig && looksLikeImageUrl(ctorig)) return { url: ctorig, type: 'original' };
-    }
+  // Extract info from a CSE result element
+  function extractResultInfo(resultEl) {
+    var pageUrl = null;
+    var thumbnailUrl = null;
+    var directImageUrl = null;
 
-    // 2. Check all <a> href attributes for direct image URLs
-    const anchors = resultEl.querySelectorAll('a[href]');
-    for (const a of anchors) {
-      if (looksLikeImageUrl(a.href)) return { url: a.href, type: 'original' };
-    }
-
-    // 3. Check all data-ctorig attributes for image URLs
-    const ctorigEls = resultEl.querySelectorAll('[data-ctorig]');
-    for (const el of ctorigEls) {
-      const val = el.getAttribute('data-ctorig');
-      if (looksLikeImageUrl(val)) return { url: val, type: 'original' };
-    }
-
-    // 4. Try to derive image URL from the page URL
-    const pageLink = resultEl.querySelector('a.gs-title, .gs-title a, a[data-ctorig]');
+    // Get the page URL from the title link
+    var pageLink = resultEl.querySelector('a.gs-title, .gs-title a, a[data-ctorig]');
     if (pageLink) {
-      const pageUrl = pageLink.getAttribute('data-ctorig') || pageLink.href;
-      const derived = deriveImageUrl(pageUrl);
-      if (derived) return { url: derived, type: 'derived' };
+      pageUrl = pageLink.getAttribute('data-ctorig') || pageLink.href;
     }
 
-    // 5. Fall back to the thumbnail image (Google's cached low-res version)
-    const thumb = resultEl.querySelector('.gs-image-box img, .gs-image img, img.gs-image, img');
+    // Check if any element has a direct image URL (image search mode)
+    var imgs = resultEl.querySelectorAll('img[data-ctorig]');
+    for (var i = 0; i < imgs.length; i++) {
+      var val = imgs[i].getAttribute('data-ctorig');
+      if (val && looksLikeImageUrl(val)) { directImageUrl = val; break; }
+    }
+    if (!directImageUrl) {
+      var anchors = resultEl.querySelectorAll('a[href]');
+      for (var i = 0; i < anchors.length; i++) {
+        if (looksLikeImageUrl(anchors[i].href)) { directImageUrl = anchors[i].href; break; }
+      }
+    }
+
+    // Get the thumbnail
+    var thumb = resultEl.querySelector('.gs-image-box img, .gs-image img, img.gs-image, img');
     if (thumb) {
-      const src = thumb.getAttribute('data-src') || thumb.src;
-      if (src && src.startsWith('http')) return { url: src, type: 'thumbnail' };
+      thumbnailUrl = thumb.getAttribute('data-src') || thumb.src || null;
     }
 
-    return null;
+    return { pageUrl: pageUrl, thumbnailUrl: thumbnailUrl, directImageUrl: directImageUrl };
+  }
+
+  // Load the best available image for a CSE result
+  function loadResultImage(info) {
+    // 1. If we have a direct image URL (rare, image search mode), use it
+    if (info.directImageUrl) {
+      loadImage(info.directImageUrl);
+      return;
+    }
+
+    // 2. If we have a page URL, scrape og:image from it (this is the main path)
+    if (info.pageUrl) {
+      showLoading();
+      scrapeImageFromPage(info.pageUrl)
+        .then(function (imageUrl) {
+          if (imageUrl) {
+            // Make relative URLs absolute
+            if (imageUrl.startsWith('//')) {
+              imageUrl = 'https:' + imageUrl;
+            } else if (imageUrl.startsWith('/')) {
+              try {
+                var base = new URL(info.pageUrl);
+                imageUrl = base.origin + imageUrl;
+              } catch (e) { /* use as-is */ }
+            }
+            hideLoading();
+            loadImage(imageUrl);
+          } else {
+            // og:image not found, fall back to thumbnail
+            hideLoading();
+            if (info.thumbnailUrl) {
+              loadImage(info.thumbnailUrl);
+            } else {
+              alert('Could not extract image from this page.');
+            }
+          }
+        });
+      return;
+    }
+
+    // 3. Last resort: thumbnail
+    if (info.thumbnailUrl) {
+      loadImage(info.thumbnailUrl);
+      return;
+    }
+
+    alert('No image found for this result.');
   }
 
   function setupCSEImageInterception() {
-    const cseContainer = document.getElementById('cse-container');
+    var cseContainer = document.getElementById('cse-container');
 
     function processResults() {
-      // Target top-level result containers only (use :scope > to avoid nesting duplication)
-      // gsc-webResult is the standard wrapper; gsc-imageResult for image-mode CSE
-      const allResults = cseContainer.querySelectorAll('.gsc-webResult.gsc-result, .gsc-imageResult');
-      allResults.forEach((result) => {
+      var allResults = cseContainer.querySelectorAll('.gsc-webResult.gsc-result, .gsc-imageResult');
+      allResults.forEach(function (result) {
         if (result.dataset.memeProcessed) return;
         result.dataset.memeProcessed = 'true';
 
-        const extracted = extractImageUrl(result);
-        if (!extracted) return;
+        var info = extractResultInfo(result);
+        if (!info.pageUrl && !info.thumbnailUrl && !info.directImageUrl) return;
 
         // Create a single "Use as Template" button
-        const btn = document.createElement('button');
+        var btn = document.createElement('button');
         btn.textContent = 'Use as Template';
-        btn.style.cssText = `
-          display: block; margin: 6px 0 2px;
-          background: #e94560; color: #fff; border: none;
-          padding: 8px 12px; border-radius: 6px; font-size: 13px;
-          font-weight: bold; cursor: pointer; width: 100%;
-          transition: background 0.15s;
-        `;
-        btn.addEventListener('mouseenter', () => { btn.style.background = '#ff6b81'; });
-        btn.addEventListener('mouseleave', () => { btn.style.background = '#e94560'; });
+        btn.style.cssText = [
+          'display: block; margin: 6px 0 2px;',
+          'background: #e94560; color: #fff; border: none;',
+          'padding: 8px 12px; border-radius: 6px; font-size: 13px;',
+          'font-weight: bold; cursor: pointer; width: 100%;',
+          'transition: background 0.15s;',
+        ].join('');
+        btn.addEventListener('mouseenter', function () { btn.style.background = '#ff6b81'; });
+        btn.addEventListener('mouseleave', function () { btn.style.background = '#e94560'; });
 
-        btn.addEventListener('click', (e) => {
+        function handlePick(e) {
           e.preventDefault();
           e.stopPropagation();
           closeSearchModal();
-          loadImage(extracted.url);
-        });
+          loadResultImage(info);
+        }
 
+        btn.addEventListener('click', handlePick);
         result.appendChild(btn);
 
-        // Also intercept clicks on the result's links to prevent navigation
-        const links = result.querySelectorAll('a');
-        links.forEach((link) => {
+        // Intercept clicks on result links to prevent navigation away
+        var links = result.querySelectorAll('a');
+        links.forEach(function (link) {
           if (link.dataset.memeIntercepted) return;
           link.dataset.memeIntercepted = 'true';
-          link.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            closeSearchModal();
-            loadImage(extracted.url);
-          });
+          link.addEventListener('click', handlePick);
         });
       });
     }
 
-    // Use MutationObserver to catch dynamically loaded results
     if (cseObserver) cseObserver.disconnect();
-    cseObserver = new MutationObserver(() => {
+    cseObserver = new MutationObserver(function () {
       processResults();
     });
     cseObserver.observe(cseContainer, { childList: true, subtree: true });
 
-    // Run once now
     processResults();
   }
 
