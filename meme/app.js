@@ -540,11 +540,23 @@
     if (overlay) overlay.remove();
   }
 
-  function loadImage(src) {
+  // CORS proxy chain - try each in order on failure
+  const CORS_PROXIES = [
+    (url) => 'https://corsproxy.io/?' + encodeURIComponent(url),
+    (url) => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
+  ];
+
+  function loadImage(src, _proxyIndex) {
+    const proxyIndex = _proxyIndex || 0;
     showLoading();
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
+      // Reject tiny placeholder images (< 50x50) when we expect real content
+      if (img.naturalWidth < 10 || img.naturalHeight < 10) {
+        img.onerror();
+        return;
+      }
       state.bgImage = img;
       state.canvasW = img.naturalWidth;
       state.canvasH = img.naturalHeight;
@@ -568,14 +580,25 @@
       snapshot();
     };
     img.onerror = () => {
-      hideLoading();
-      // Try proxy fallback for CORS issues
-      if (!src.includes('images1-focus-opensocial') && !src.includes('corsproxy') && !src.startsWith('data:')) {
-        loadImage('https://corsproxy.io/?' + encodeURIComponent(src));
-      } else {
-        alert('Failed to load image. The image may be protected or unavailable.');
+      // If this was a direct load (no proxy yet), try proxies in order
+      if (!_proxyIndex && proxyIndex === 0 && !src.startsWith('data:')) {
+        loadImage(CORS_PROXIES[0](src), 1);
+        return;
       }
+      // Try next proxy
+      if (_proxyIndex && _proxyIndex < CORS_PROXIES.length) {
+        // Get the original URL back from the proxied URL for the next proxy
+        // Since we don't have it easily, store it
+        loadImage(CORS_PROXIES[_proxyIndex](state._originalLoadUrl || src), _proxyIndex + 1);
+        return;
+      }
+      hideLoading();
+      alert('Failed to load image. The image may be protected or unavailable. Try uploading the image directly instead.');
     };
+    // Store original URL for proxy chain
+    if (!_proxyIndex) {
+      state._originalLoadUrl = src;
+    }
     img.src = src;
   }
 
@@ -611,104 +634,146 @@
   });
 
   // ========== CSE Integration ==========
-  // The key challenge: intercept clicks on CSE image results and load them onto canvas
-  // We use a MutationObserver to watch for search results and inject click handlers
+  // Intercept CSE search results and add "Use as Template" buttons.
+  // Google CSE web results only provide: page URL + a low-res Google thumbnail.
+  // The original image URL is NOT in the DOM for web results.
+  // Strategy: extract the page URL, try to derive the source image URL from it
+  // (common meme sites use predictable image URL patterns), and fall back to
+  // loading the thumbnail via CORS proxy.
 
   let cseObserver = null;
+
+  // Check if a URL points directly to an image file
+  function looksLikeImageUrl(url) {
+    if (!url) return false;
+    return /\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?.*)?$/i.test(url);
+  }
+
+  // Try to derive a direct image URL from a meme site page URL
+  function deriveImageUrl(pageUrl) {
+    if (!pageUrl) return null;
+    try {
+      const u = new URL(pageUrl);
+
+      // imgflip.com/meme/SLUG or imgflip.com/i/ID
+      if (u.hostname.includes('imgflip.com')) {
+        // /i/abcdef -> direct image
+        const iMatch = u.pathname.match(/\/i\/([a-z0-9]+)/i);
+        if (iMatch) return 'https://i.imgflip.com/' + iMatch[1] + '.jpg';
+        // /meme/SLUG -> template image (ID is not in URL, can't derive)
+      }
+
+      // i.imgflip.com is already a direct image
+      if (u.hostname === 'i.imgflip.com') return pageUrl;
+
+      // Know Your Meme - images hosted on kym-cdn
+      if (u.hostname.includes('knowyourmeme.com') || u.hostname.includes('kym-cdn.com')) {
+        if (looksLikeImageUrl(pageUrl)) return pageUrl;
+      }
+
+      // memegenerator.net
+      if (u.hostname.includes('memegenerator.net')) {
+        if (looksLikeImageUrl(pageUrl)) return pageUrl;
+      }
+
+      // Pinterest - can't easily derive
+      // Reddit - thumbnails only
+
+      // If URL itself is an image, use it directly
+      if (looksLikeImageUrl(pageUrl)) return pageUrl;
+    } catch (e) {
+      // invalid URL
+    }
+    return null;
+  }
+
+  // Extract the best image URL from a CSE result element
+  function extractImageUrl(resultEl) {
+    // 1. Look for data-ctorig on <img> elements (image search mode gives original URLs here)
+    const imgs = resultEl.querySelectorAll('img[data-ctorig]');
+    for (const img of imgs) {
+      const ctorig = img.getAttribute('data-ctorig');
+      if (ctorig && looksLikeImageUrl(ctorig)) return { url: ctorig, type: 'original' };
+    }
+
+    // 2. Check all <a> href attributes for direct image URLs
+    const anchors = resultEl.querySelectorAll('a[href]');
+    for (const a of anchors) {
+      if (looksLikeImageUrl(a.href)) return { url: a.href, type: 'original' };
+    }
+
+    // 3. Check all data-ctorig attributes for image URLs
+    const ctorigEls = resultEl.querySelectorAll('[data-ctorig]');
+    for (const el of ctorigEls) {
+      const val = el.getAttribute('data-ctorig');
+      if (looksLikeImageUrl(val)) return { url: val, type: 'original' };
+    }
+
+    // 4. Try to derive image URL from the page URL
+    const pageLink = resultEl.querySelector('a.gs-title, .gs-title a, a[data-ctorig]');
+    if (pageLink) {
+      const pageUrl = pageLink.getAttribute('data-ctorig') || pageLink.href;
+      const derived = deriveImageUrl(pageUrl);
+      if (derived) return { url: derived, type: 'derived' };
+    }
+
+    // 5. Fall back to the thumbnail image (Google's cached low-res version)
+    const thumb = resultEl.querySelector('.gs-image-box img, .gs-image img, img.gs-image, img');
+    if (thumb) {
+      const src = thumb.getAttribute('data-src') || thumb.src;
+      if (src && src.startsWith('http')) return { url: src, type: 'thumbnail' };
+    }
+
+    return null;
+  }
 
   function setupCSEImageInterception() {
     const cseContainer = document.getElementById('cse-container');
 
-    // Inject a "Use this image" button overlay on image results
     function processResults() {
-      // Target image result thumbnails in CSE
-      const images = cseContainer.querySelectorAll('.gs-image-box img, .gs-image img, img.gs-image');
-      images.forEach((img) => {
-        if (img.dataset.memeProcessed) return;
-        img.dataset.memeProcessed = 'true';
+      // Target top-level result containers only (use :scope > to avoid nesting duplication)
+      // gsc-webResult is the standard wrapper; gsc-imageResult for image-mode CSE
+      const allResults = cseContainer.querySelectorAll('.gsc-webResult.gsc-result, .gsc-imageResult');
+      allResults.forEach((result) => {
+        if (result.dataset.memeProcessed) return;
+        result.dataset.memeProcessed = 'true';
 
-        // Wrap or add click handler
-        const wrapper = img.closest('a') || img.parentElement;
-        const useBtn = document.createElement('div');
-        useBtn.textContent = '✓ Use';
-        useBtn.style.cssText = `
-          position: absolute; bottom: 2px; right: 2px;
-          background: #e94560; color: #fff; padding: 2px 8px;
-          border-radius: 4px; font-size: 11px; font-weight: bold;
-          cursor: pointer; z-index: 100; opacity: 0.9;
-          pointer-events: auto;
+        const extracted = extractImageUrl(result);
+        if (!extracted) return;
+
+        // Create a single "Use as Template" button
+        const btn = document.createElement('button');
+        btn.textContent = 'Use as Template';
+        btn.style.cssText = `
+          display: block; margin: 6px 0 2px;
+          background: #e94560; color: #fff; border: none;
+          padding: 8px 12px; border-radius: 6px; font-size: 13px;
+          font-weight: bold; cursor: pointer; width: 100%;
+          transition: background 0.15s;
         `;
+        btn.addEventListener('mouseenter', () => { btn.style.background = '#ff6b81'; });
+        btn.addEventListener('mouseleave', () => { btn.style.background = '#e94560'; });
 
-        // Make parent positioned
-        const parent = img.parentElement;
-        if (parent) {
-          parent.style.position = 'relative';
-          parent.appendChild(useBtn);
-        }
-
-        function loadFromResult(e) {
+        btn.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
-          // Try to get the full-res image URL
-          // CSE stores the original URL in data attributes or parent anchor href
-          let fullUrl = '';
-          const anchor = img.closest('a[href]');
-          if (anchor) {
-            // The href might be google redirect, try to extract image URL
-            const href = anchor.href;
-            // Check for direct image link
-            if (/\.(jpg|jpeg|png|gif|webp|bmp)/i.test(href)) {
-              fullUrl = href;
-            }
-          }
-          // Try data-ctorig (original image URL from CSE)
-          if (!fullUrl) {
-            const ctorigEl = img.closest('[data-ctorig]') || img.closest('.gsc-result, .gs-result');
-            if (ctorigEl) {
-              const ctorig = ctorigEl.getAttribute('data-ctorig');
-              if (ctorig) fullUrl = ctorig;
-            }
-          }
-          // Fallback: use the thumbnail src or data-src
-          if (!fullUrl) {
-            fullUrl = img.getAttribute('data-ctorig') || img.getAttribute('data-src') || img.src;
-          }
-          // CSE thumbnails are often encoded.google.com URLs, get original
-          if (fullUrl.includes('encrypted-tbn') || fullUrl.includes('gstatic.com')) {
-            // Try to find the link to the actual page with image
-            const resultParent = img.closest('.gsc-result, .gs-result, [data-cturl]');
-            if (resultParent) {
-              const dataUrl = resultParent.getAttribute('data-cturl');
-              if (dataUrl) fullUrl = dataUrl;
-            }
-          }
-
-          if (fullUrl) {
-            closeSearchModal();
-            loadImage(fullUrl);
-          }
-        }
-
-        useBtn.addEventListener('click', loadFromResult);
-        useBtn.addEventListener('touchend', (e) => {
-          e.preventDefault();
-          loadFromResult(e);
+          closeSearchModal();
+          loadImage(extracted.url);
         });
-      });
 
-      // Also intercept full result links for image loading
-      const resultLinks = cseContainer.querySelectorAll('a.gs-title, a.gs-image');
-      resultLinks.forEach((link) => {
-        if (link.dataset.memeProcessed) return;
-        link.dataset.memeProcessed = 'true';
-        link.addEventListener('click', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const imgUrl = link.getAttribute('data-ctorig') || link.href;
-          if (imgUrl) {
+        result.appendChild(btn);
+
+        // Also intercept clicks on the result's links to prevent navigation
+        const links = result.querySelectorAll('a');
+        links.forEach((link) => {
+          if (link.dataset.memeIntercepted) return;
+          link.dataset.memeIntercepted = 'true';
+          link.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
             closeSearchModal();
-            loadImage(imgUrl);
-          }
+            loadImage(extracted.url);
+          });
         });
       });
     }
@@ -717,93 +782,11 @@
     if (cseObserver) cseObserver.disconnect();
     cseObserver = new MutationObserver(() => {
       processResults();
-      injectCSEResultHandlers();
     });
     cseObserver.observe(cseContainer, { childList: true, subtree: true });
 
-    // Also run once now
+    // Run once now
     processResults();
-    injectCSEResultHandlers();
-  }
-
-  // Deeper integration: override CSE result rendering to add load-to-canvas buttons
-  function injectCSEResultHandlers() {
-    const cseContainer = document.getElementById('cse-container');
-
-    // Find all search result items and intercept their clicks
-    const results = cseContainer.querySelectorAll('.gsc-thumbnail-inside a[data-ctorig], .gs-title a, .gsc-url-top a');
-    results.forEach((a) => {
-      if (a.dataset.memeHandled) return;
-      a.dataset.memeHandled = 'true';
-      a.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const imgUrl = a.getAttribute('data-ctorig') || a.href;
-        if (imgUrl) {
-          closeSearchModal();
-          loadImage(imgUrl);
-        }
-      });
-    });
-
-    // The most reliable approach: find all visible images and their parent result
-    // containers, and add "Use as Template" buttons
-    const allResults = cseContainer.querySelectorAll('.gsc-webResult, .gsc-imageResult, .gs-webResult, .gs-imageResult');
-    allResults.forEach((result) => {
-      if (result.dataset.memeBtn) return;
-      result.dataset.memeBtn = 'true';
-
-      // Find image in this result
-      const img = result.querySelector('img');
-      const titleLink = result.querySelector('a[data-ctorig]') || result.querySelector('a.gs-title') || result.querySelector('a');
-
-      if (!img && !titleLink) return;
-
-      const btn = document.createElement('button');
-      btn.textContent = 'Use as Template';
-      btn.style.cssText = `
-        display: block; margin: 4px 0;
-        background: #e94560; color: #fff; border: none;
-        padding: 6px 12px; border-radius: 4px; font-size: 12px;
-        font-weight: bold; cursor: pointer; width: 100%;
-      `;
-
-      btn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-
-        let imgUrl = '';
-
-        // Strategy 1: Get original image URL from data attributes
-        if (titleLink) {
-          imgUrl = titleLink.getAttribute('data-ctorig') || titleLink.href || '';
-        }
-
-        // Strategy 2: Use img src
-        if (!imgUrl && img) {
-          imgUrl = img.getAttribute('data-src') || img.src;
-        }
-
-        // Strategy 3: Find any image URL in the result
-        if (!imgUrl) {
-          const allAnchors = result.querySelectorAll('a[href]');
-          for (const a of allAnchors) {
-            if (/\.(jpg|jpeg|png|gif|webp)/i.test(a.href)) {
-              imgUrl = a.href;
-              break;
-            }
-          }
-        }
-
-        if (imgUrl) {
-          closeSearchModal();
-          loadImage(imgUrl);
-        }
-      });
-
-      // Insert button after the result content
-      result.appendChild(btn);
-    });
   }
 
   // ========== Keyboard shortcuts ==========
