@@ -638,125 +638,224 @@
   });
 
   // ========== CSE Integration ==========
-  // Two-pronged approach:
-  // 1. Use __gcse searchCallbacks.web.ready to capture the raw result objects
-  //    which contain richSnippet.cseImage.src (original full-res image URL).
-  // 2. Use a MutationObserver to detect when result DOM elements appear and
-  //    attach "Use as Template" buttons, pairing each DOM result with its
-  //    data from the ready callback by index.
-  // This is robust: the MutationObserver always works for button injection,
-  // and the ready callback provides the high-quality image URLs.
+  // Strategy: Let users interact with CSE results normally. When they click
+  // a result, CSE shows an expanded preview panel with a larger image and
+  // (often) the original image link. We detect these preview panels via
+  // MutationObserver and inject "Use as Template" buttons that extract the
+  // full-resolution image URL from the preview.
 
   var cseResultsData = [];
 
-  // Attach a "Use as Template" button to a rendered CSE result element
-  function attachTemplateButton(resultEl, data) {
-    if (!resultEl || resultEl.dataset.memeProcessed) return;
-    resultEl.dataset.memeProcessed = 'true';
-
-    var imageUrl = (data && data.imageUrl) || (data && data.thumbnailUrl) || null;
-    var urlSource = data && data.imageUrl ? 'cseImage/og:image' : (data && data.thumbnailUrl ? 'cseThumbnail' : null);
-
-    // If no data from ready callback, try to get thumbnail from the DOM
-    if (!imageUrl) {
-      var thumb = resultEl.querySelector('img.gs-image, .gs-image-box img, img');
-      if (thumb) {
-        imageUrl = thumb.getAttribute('data-src') || thumb.src || null;
-        urlSource = 'DOM fallback';
+  /**
+   * Find the best (original, full-res) image URL within a DOM container.
+   * Priority: direct image file links > data-ctorig > largest non-cached img.
+   */
+  function findOriginalImageUrl(container) {
+    // 1. <a> links pointing directly to image files
+    var links = container.querySelectorAll('a[href]');
+    for (var i = 0; i < links.length; i++) {
+      var href = links[i].href || '';
+      if (/\.(jpe?g|png|gif|webp|bmp|svg)(\?.*)?$/i.test(href) &&
+          !href.includes('encrypted-tbn') && !href.includes('gstatic.com/images')) {
+        console.log('[MemeCSE] Found direct image link:', href.substring(0, 120));
+        return href;
       }
     }
-    if (!imageUrl) return;
 
-    console.log('[MemeCSE] Button attached | source:', urlSource, '| url:', imageUrl);
+    // 2. Images with data-ctorig that looks like an image URL
+    var allImgs = container.querySelectorAll('img');
+    for (var i = 0; i < allImgs.length; i++) {
+      var ctorig = allImgs[i].getAttribute('data-ctorig') || '';
+      if (/\.(jpe?g|png|gif|webp|bmp|svg)(\?.*)?$/i.test(ctorig)) {
+        console.log('[MemeCSE] Found data-ctorig image:', ctorig.substring(0, 120));
+        return ctorig;
+      }
+    }
+
+    // 3. Largest non-Google-cached <img> by rendered or natural size
+    var best = null, bestArea = 0;
+    for (var i = 0; i < allImgs.length; i++) {
+      var src = allImgs[i].getAttribute('data-src') || allImgs[i].src || '';
+      if (!src || src.includes('encrypted-tbn') || src.includes('gstatic.com/images')) continue;
+      var w = allImgs[i].naturalWidth || allImgs[i].width || 0;
+      var h = allImgs[i].naturalHeight || allImgs[i].height || 0;
+      var area = w * h;
+      if (area > bestArea) {
+        bestArea = area;
+        best = src;
+      }
+    }
+    if (best) {
+      console.log('[MemeCSE] Found best image by size:', best.substring(0, 120), '| area:', bestArea);
+      return best;
+    }
+
+    // 4. Fallback: any non-Google-cached image
+    for (var i = 0; i < allImgs.length; i++) {
+      var src = allImgs[i].getAttribute('data-src') || allImgs[i].src || '';
+      if (src && !src.includes('encrypted-tbn') && !src.includes('gstatic.com/images') && !src.startsWith('data:')) {
+        console.log('[MemeCSE] Fallback image:', src.substring(0, 120));
+        return src;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Create and inject a "Use as Meme Template" button into a container.
+   */
+  function injectTemplateButton(imageUrl, parent) {
+    if (!imageUrl || !parent) return;
+    if (parent.querySelector('.meme-template-btn')) return;
 
     var btn = document.createElement('button');
-    btn.textContent = 'Use as Template';
+    btn.className = 'meme-template-btn';
+    btn.textContent = 'Use as Meme Template';
     btn.style.cssText = [
-      'display: block; margin: 6px 0 2px;',
-      'background: #e94560; color: #fff; border: none;',
-      'padding: 8px 12px; border-radius: 6px; font-size: 13px;',
-      'font-weight: bold; cursor: pointer; width: 100%;',
-      'transition: background 0.15s;',
+      'display:block; margin:8px auto; background:#e94560; color:#fff;',
+      'border:none; padding:10px 16px; border-radius:6px; font-size:14px;',
+      'font-weight:bold; cursor:pointer; transition:background 0.15s;',
+      'z-index:100; position:relative;',
     ].join('');
-    btn.addEventListener('mouseenter', function () { btn.style.background = '#ff6b81'; });
-    btn.addEventListener('mouseleave', function () { btn.style.background = '#e94560'; });
-
-    function handlePick(e) {
+    btn.onmouseenter = function () { btn.style.background = '#ff6b81'; };
+    btn.onmouseleave = function () { btn.style.background = '#e94560'; };
+    btn.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
       closeSearchModal();
       loadImage(imageUrl);
-    }
-
-    btn.addEventListener('click', handlePick);
-    resultEl.appendChild(btn);
-
-    // Intercept clicks on all links inside this result to prevent navigation
-    var links = resultEl.querySelectorAll('a');
-    links.forEach(function (link) {
-      if (link.dataset.memeIntercepted) return;
-      link.dataset.memeIntercepted = 'true';
-      link.addEventListener('click', handlePick);
     });
+    parent.appendChild(btn);
+    console.log('[MemeCSE] Injected template button | url:', imageUrl.substring(0, 120));
   }
 
-  // MutationObserver: watches the CSE container for newly rendered results
-  // and attaches buttons. Pairs DOM results with cseResultsData by index.
-  function setupCSEObserver() {
-    var cseContainer = document.getElementById('cse-container');
-    if (!cseContainer) return;
+  /**
+   * Scan the CSE container for expanded preview panels and inject buttons.
+   * Targets: expansion areas, image popups, any element with large images.
+   */
+  function scanForPreviews() {
+    var cse = document.getElementById('cse-container');
+    if (!cse) return;
 
-    function processVisibleResults() {
-      var results = cseContainer.querySelectorAll('.gsc-webResult.gsc-result, .gsc-imageResult');
-      for (var i = 0; i < results.length; i++) {
-        attachTemplateButton(results[i], cseResultsData[i] || {});
+    // 1. Check known CSE expansion/preview selectors
+    var selectors = [
+      '.gsc-expansionArea',
+      '.gs-image-popup-box',
+      '.gsc-modal-background-image-visible',
+      '.gs-result-image-popup',
+    ];
+    for (var s = 0; s < selectors.length; s++) {
+      var panels = cse.querySelectorAll(selectors[s]);
+      for (var i = 0; i < panels.length; i++) {
+        if (panels[i].dataset.memeBtnScanned) continue;
+        panels[i].dataset.memeBtnScanned = 'true';
+        console.log('[MemeCSE] Found preview panel:', selectors[s]);
+        var url = findOriginalImageUrl(panels[i]);
+        if (url) injectTemplateButton(url, panels[i]);
       }
     }
 
-    var observer = new MutationObserver(function () {
-      processVisibleResults();
+    // 2. Check for any element that contains a large, non-cached image
+    //    (catches preview panels with unexpected class names)
+    var allImgs = cse.querySelectorAll('img');
+    for (var i = 0; i < allImgs.length; i++) {
+      var img = allImgs[i];
+      if (img.dataset.memeBtnScanned) continue;
+      var w = img.naturalWidth || img.width || 0;
+      var h = img.naturalHeight || img.height || 0;
+      if (w > 300 || h > 300) {
+        var src = img.getAttribute('data-ctorig') || img.getAttribute('data-src') || img.src || '';
+        if (src && !src.includes('encrypted-tbn') && !src.includes('gstatic.com/images')) {
+          img.dataset.memeBtnScanned = 'true';
+          var parent = img.closest('.gsc-expansionArea') ||
+                       img.closest('.gs-result') ||
+                       img.closest('.gsc-webResult') ||
+                       img.parentElement;
+          if (parent) {
+            console.log('[MemeCSE] Large image found:', w, 'x', h, '| src:', src.substring(0, 80));
+            injectTemplateButton(src, parent);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Log all CSE-related elements for debugging (helps identify the exact
+   * class names used for preview panels).
+   */
+  function logCSEElement(node) {
+    if (!node.className) return;
+    var cls = node.className.toString();
+    if (cls.includes('gsc-') || cls.includes('gs-')) {
+      var imgCount = node.querySelectorAll ? node.querySelectorAll('img').length : 0;
+      var linkCount = node.querySelectorAll ? node.querySelectorAll('a').length : 0;
+      console.log('[MemeCSE] DOM+', node.tagName, cls.substring(0, 100),
+        '| imgs:', imgCount, '| links:', linkCount,
+        '| size:', node.offsetWidth, 'x', node.offsetHeight);
+    }
+  }
+
+  function setupCSEObserver() {
+    var cse = document.getElementById('cse-container');
+    if (!cse) return;
+
+    var scanTimer = null;
+    function debouncedScan() {
+      if (scanTimer) clearTimeout(scanTimer);
+      scanTimer = setTimeout(scanForPreviews, 150);
+    }
+
+    // MutationObserver: watches for DOM changes in the CSE container
+    var observer = new MutationObserver(function (mutations) {
+      var dominated = false;
+      for (var m = 0; m < mutations.length; m++) {
+        var added = mutations[m].addedNodes;
+        for (var n = 0; n < added.length; n++) {
+          var node = added[n];
+          if (node.nodeType !== 1) continue;
+          dominated = true;
+          logCSEElement(node);
+        }
+      }
+      if (dominated) debouncedScan();
     });
-    observer.observe(cseContainer, { childList: true, subtree: true });
+    observer.observe(cse, { childList: true, subtree: true });
+
+    // Also scan on clicks (catches preview panels shown via CSS, not DOM changes)
+    cse.addEventListener('click', function () {
+      setTimeout(scanForPreviews, 300);
+      setTimeout(scanForPreviews, 800);
+    }, true);
+
+    console.log('[MemeCSE] Observer active');
   }
 
   // Configure __gcse BEFORE loading the CSE script.
   window.__gcse = {
     parsetags: 'onready',
     callback: function () {
-      // CSE is ready — start the MutationObserver
       setupCSEObserver();
+      console.log('[MemeCSE] CSE ready');
     },
     searchCallbacks: {
       web: {
-        // 'ready' fires with the raw result objects (before DOM rendering).
+        // 'ready' fires with raw result objects — store data for reference
         ready: function (_name, _q, _promos, results) {
-          console.log('[MemeCSE] ready callback fired, results:', results && results.length);
+          console.log('[MemeCSE] ready:', results && results.length, 'results');
           cseResultsData = (results || []).map(function (r) {
             var img = null;
-            try { img = r.richSnippet.cseImage.src; } catch (e) { /* */ }
-            if (!img) {
-              try { img = r.richSnippet.metatags['og:image']; } catch (e) { /* */ }
-            }
-            if (!img) {
-              try { img = r.richSnippet.metatags['twitter:image']; } catch (e) { /* */ }
-            }
+            try { img = r.richSnippet.cseImage.src; } catch (e) {}
+            if (!img) { try { img = r.richSnippet.metatags['og:image']; } catch (e) {} }
+            if (!img) { try { img = r.richSnippet.metatags['twitter:image']; } catch (e) {} }
             var thumb = null;
-            try { thumb = r.richSnippet.cseThumbnail.src; } catch (e) { /* */ }
-            console.log('[MemeCSE] result:', r.unescapedUrl || r.url, '-> image:', img, 'thumb:', thumb);
-            return {
-              imageUrl: img,
-              thumbnailUrl: thumb,
-              pageUrl: r.unescapedUrl || r.url || null,
-            };
+            try { thumb = r.richSnippet.cseThumbnail.src; } catch (e) {}
+            console.log('[MemeCSE] result:', (r.unescapedUrl || r.url || '').substring(0, 80),
+              '| img:', img ? img.substring(0, 80) : 'null',
+              '| thumb:', thumb ? thumb.substring(0, 80) : 'null');
+            return { imageUrl: img, thumbnailUrl: thumb, pageUrl: r.unescapedUrl || r.url };
           });
-        },
-        // 'rendered' fires after the DOM is built — also try to attach here.
-        rendered: function (_name, _q, _promoElts, resultElts) {
-          console.log('[MemeCSE] rendered callback fired, resultElts:', resultElts && resultElts.length);
-          if (!resultElts) return;
-          for (var i = 0; i < resultElts.length; i++) {
-            attachTemplateButton(resultElts[i], cseResultsData[i] || {});
-          }
         },
       },
     },
