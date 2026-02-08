@@ -621,7 +621,6 @@
 
   function openSearchModal() {
     searchModal.classList.remove('hidden');
-    setupCSEImageInterception();
   }
 
   function closeSearchModal() {
@@ -634,198 +633,105 @@
   });
 
   // ========== CSE Integration ==========
-  // Google CSE web results only provide: a page URL + a low-res Google thumbnail.
-  // The original image URL is NOT in the DOM.
-  // Strategy: when the user picks a result, fetch the actual page HTML via CORS
-  // proxy and extract the og:image / twitter:image meta tag, which nearly every
-  // meme site includes with the full-resolution source image URL.
+  // Use Google CSE's programmatic JavaScript API to access the raw result
+  // objects. The search-ready callback receives structured data including
+  // richSnippet.cseImage.src (the original full-resolution image URL) and
+  // richSnippet.metatags with og:image — data that never appears in the DOM.
+  // The search-rendered callback gives us the result DOM elements in the
+  // same order, so we can attach "Use as Template" buttons with the correct
+  // image URLs with a simple index match.
 
-  let cseObserver = null;
+  var cseResultsData = [];
 
-  // Check if a URL points directly to an image file
-  function looksLikeImageUrl(url) {
-    if (!url) return false;
-    return /\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?.*)?$/i.test(url);
-  }
+  // Attach a "Use as Template" button to a rendered CSE result element
+  function attachTemplateButton(resultEl, data) {
+    if (!resultEl || resultEl.dataset.memeProcessed) return;
+    resultEl.dataset.memeProcessed = 'true';
 
-  // Fetch a page via CORS proxy and scrape the best image URL from meta tags
-  function scrapeImageFromPage(pageUrl) {
-    const proxyUrl = 'https://corsproxy.io/?' + encodeURIComponent(pageUrl);
-    return fetch(proxyUrl)
-      .then(function (res) {
-        if (!res.ok) throw new Error('fetch failed');
-        return res.text();
-      })
-      .then(function (html) {
-        // Try og:image (most reliable - nearly all meme sites have this)
-        var m = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
-             || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
-        if (m && m[1]) return m[1];
+    var imageUrl = data.imageUrl || data.thumbnailUrl || null;
+    if (!imageUrl) return;
 
-        // Try twitter:image
-        m = html.match(/<meta[^>]+name=["']twitter:image(?::src)?["'][^>]+content=["']([^"']+)["']/i)
-         || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image(?::src)?["']/i);
-        if (m && m[1]) return m[1];
+    var btn = document.createElement('button');
+    btn.textContent = 'Use as Template';
+    btn.style.cssText = [
+      'display: block; margin: 6px 0 2px;',
+      'background: #e94560; color: #fff; border: none;',
+      'padding: 8px 12px; border-radius: 6px; font-size: 13px;',
+      'font-weight: bold; cursor: pointer; width: 100%;',
+      'transition: background 0.15s;',
+    ].join('');
+    btn.addEventListener('mouseenter', function () { btn.style.background = '#ff6b81'; });
+    btn.addEventListener('mouseleave', function () { btn.style.background = '#e94560'; });
 
-        // Try itemprop image
-        m = html.match(/<meta[^>]+itemprop=["']image["'][^>]+content=["']([^"']+)["']/i);
-        if (m && m[1]) return m[1];
-
-        // Try link rel="image_src"
-        m = html.match(/<link[^>]+rel=["']image_src["'][^>]+href=["']([^"']+)["']/i);
-        if (m && m[1]) return m[1];
-
-        return null;
-      })
-      .catch(function () {
-        // Try alternate proxy
-        var proxyUrl2 = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(pageUrl);
-        return fetch(proxyUrl2)
-          .then(function (res) { return res.ok ? res.text() : null; })
-          .then(function (html) {
-            if (!html) return null;
-            var m = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
-                 || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
-            return m ? m[1] : null;
-          })
-          .catch(function () { return null; });
-      });
-  }
-
-  // Extract info from a CSE result element
-  function extractResultInfo(resultEl) {
-    var pageUrl = null;
-    var thumbnailUrl = null;
-    var directImageUrl = null;
-
-    // Get the page URL from the title link
-    var pageLink = resultEl.querySelector('a.gs-title, .gs-title a, a[data-ctorig]');
-    if (pageLink) {
-      pageUrl = pageLink.getAttribute('data-ctorig') || pageLink.href;
+    function handlePick(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeSearchModal();
+      loadImage(imageUrl);
     }
 
-    // Check if any element has a direct image URL (image search mode)
-    var imgs = resultEl.querySelectorAll('img[data-ctorig]');
-    for (var i = 0; i < imgs.length; i++) {
-      var val = imgs[i].getAttribute('data-ctorig');
-      if (val && looksLikeImageUrl(val)) { directImageUrl = val; break; }
-    }
-    if (!directImageUrl) {
-      var anchors = resultEl.querySelectorAll('a[href]');
-      for (var i = 0; i < anchors.length; i++) {
-        if (looksLikeImageUrl(anchors[i].href)) { directImageUrl = anchors[i].href; break; }
-      }
-    }
+    btn.addEventListener('click', handlePick);
+    resultEl.appendChild(btn);
 
-    // Get the thumbnail
-    var thumb = resultEl.querySelector('.gs-image-box img, .gs-image img, img.gs-image, img');
-    if (thumb) {
-      thumbnailUrl = thumb.getAttribute('data-src') || thumb.src || null;
-    }
-
-    return { pageUrl: pageUrl, thumbnailUrl: thumbnailUrl, directImageUrl: directImageUrl };
-  }
-
-  // Load the best available image for a CSE result
-  function loadResultImage(info) {
-    // 1. If we have a direct image URL (rare, image search mode), use it
-    if (info.directImageUrl) {
-      loadImage(info.directImageUrl);
-      return;
-    }
-
-    // 2. If we have a page URL, scrape og:image from it (this is the main path)
-    if (info.pageUrl) {
-      showLoading();
-      scrapeImageFromPage(info.pageUrl)
-        .then(function (imageUrl) {
-          if (imageUrl) {
-            // Make relative URLs absolute
-            if (imageUrl.startsWith('//')) {
-              imageUrl = 'https:' + imageUrl;
-            } else if (imageUrl.startsWith('/')) {
-              try {
-                var base = new URL(info.pageUrl);
-                imageUrl = base.origin + imageUrl;
-              } catch (e) { /* use as-is */ }
-            }
-            hideLoading();
-            loadImage(imageUrl);
-          } else {
-            // og:image not found, fall back to thumbnail
-            hideLoading();
-            if (info.thumbnailUrl) {
-              loadImage(info.thumbnailUrl);
-            } else {
-              alert('Could not extract image from this page.');
-            }
-          }
-        });
-      return;
-    }
-
-    // 3. Last resort: thumbnail
-    if (info.thumbnailUrl) {
-      loadImage(info.thumbnailUrl);
-      return;
-    }
-
-    alert('No image found for this result.');
-  }
-
-  function setupCSEImageInterception() {
-    var cseContainer = document.getElementById('cse-container');
-
-    function processResults() {
-      var allResults = cseContainer.querySelectorAll('.gsc-webResult.gsc-result, .gsc-imageResult');
-      allResults.forEach(function (result) {
-        if (result.dataset.memeProcessed) return;
-        result.dataset.memeProcessed = 'true';
-
-        var info = extractResultInfo(result);
-        if (!info.pageUrl && !info.thumbnailUrl && !info.directImageUrl) return;
-
-        // Create a single "Use as Template" button
-        var btn = document.createElement('button');
-        btn.textContent = 'Use as Template';
-        btn.style.cssText = [
-          'display: block; margin: 6px 0 2px;',
-          'background: #e94560; color: #fff; border: none;',
-          'padding: 8px 12px; border-radius: 6px; font-size: 13px;',
-          'font-weight: bold; cursor: pointer; width: 100%;',
-          'transition: background 0.15s;',
-        ].join('');
-        btn.addEventListener('mouseenter', function () { btn.style.background = '#ff6b81'; });
-        btn.addEventListener('mouseleave', function () { btn.style.background = '#e94560'; });
-
-        function handlePick(e) {
-          e.preventDefault();
-          e.stopPropagation();
-          closeSearchModal();
-          loadResultImage(info);
-        }
-
-        btn.addEventListener('click', handlePick);
-        result.appendChild(btn);
-
-        // Intercept clicks on result links to prevent navigation away
-        var links = result.querySelectorAll('a');
-        links.forEach(function (link) {
-          if (link.dataset.memeIntercepted) return;
-          link.dataset.memeIntercepted = 'true';
-          link.addEventListener('click', handlePick);
-        });
-      });
-    }
-
-    if (cseObserver) cseObserver.disconnect();
-    cseObserver = new MutationObserver(function () {
-      processResults();
+    // Intercept clicks on all links inside this result to prevent navigation
+    var links = resultEl.querySelectorAll('a');
+    links.forEach(function (link) {
+      if (link.dataset.memeIntercepted) return;
+      link.dataset.memeIntercepted = 'true';
+      link.addEventListener('click', handlePick);
     });
-    cseObserver.observe(cseContainer, { childList: true, subtree: true });
-
-    processResults();
   }
+
+  // Configure __gcse BEFORE loading the CSE script.
+  // parsetags: 'onready' lets CSE auto-render the .gcse-search div,
+  // then our searchCallbacks fire on every search.
+  window.__gcse = {
+    parsetags: 'onready',
+    searchCallbacks: {
+      web: {
+        // 'ready' fires with the raw result objects (before DOM rendering).
+        // Each result has richSnippet.cseImage.src with the original image URL.
+        ready: function (_name, _q, _promos, results) {
+          cseResultsData = (results || []).map(function (r) {
+            var img = null;
+            // Primary: cseImage.src is the full-res original
+            try { img = r.richSnippet.cseImage.src; } catch (e) { /* */ }
+            // Fallback: og:image from metatags
+            if (!img) {
+              try { img = r.richSnippet.metatags['og:image']; } catch (e) { /* */ }
+            }
+            // Fallback: twitter:image
+            if (!img) {
+              try { img = r.richSnippet.metatags['twitter:image']; } catch (e) { /* */ }
+            }
+            var thumb = null;
+            try { thumb = r.richSnippet.cseThumbnail.src; } catch (e) { /* */ }
+            return {
+              imageUrl: img,
+              thumbnailUrl: thumb,
+              pageUrl: r.unescapedUrl || r.url || null,
+            };
+          });
+        },
+        // 'rendered' fires after the DOM is built. resultElts and
+        // cseResultsData are in the same order so we index-match.
+        rendered: function (_name, _q, _promoElts, resultElts) {
+          if (!resultElts) return;
+          for (var i = 0; i < resultElts.length; i++) {
+            attachTemplateButton(resultElts[i], cseResultsData[i] || {});
+          }
+        },
+      },
+    },
+  };
+
+  // Dynamically load the CSE script (must happen AFTER __gcse is set)
+  (function () {
+    var s = document.createElement('script');
+    s.src = 'https://cse.google.com/cse.js?cx=262c9d0e5c0b94398';
+    s.async = true;
+    document.head.appendChild(s);
+  })();
 
   // ========== Keyboard shortcuts ==========
   document.addEventListener('keydown', (e) => {
