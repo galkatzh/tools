@@ -633,13 +633,14 @@
   });
 
   // ========== CSE Integration ==========
-  // Use Google CSE's programmatic JavaScript API to access the raw result
-  // objects. The search-ready callback receives structured data including
-  // richSnippet.cseImage.src (the original full-resolution image URL) and
-  // richSnippet.metatags with og:image — data that never appears in the DOM.
-  // The search-rendered callback gives us the result DOM elements in the
-  // same order, so we can attach "Use as Template" buttons with the correct
-  // image URLs with a simple index match.
+  // Two-pronged approach:
+  // 1. Use __gcse searchCallbacks.web.ready to capture the raw result objects
+  //    which contain richSnippet.cseImage.src (original full-res image URL).
+  // 2. Use a MutationObserver to detect when result DOM elements appear and
+  //    attach "Use as Template" buttons, pairing each DOM result with its
+  //    data from the ready callback by index.
+  // This is robust: the MutationObserver always works for button injection,
+  // and the ready callback provides the high-quality image URLs.
 
   var cseResultsData = [];
 
@@ -648,7 +649,13 @@
     if (!resultEl || resultEl.dataset.memeProcessed) return;
     resultEl.dataset.memeProcessed = 'true';
 
-    var imageUrl = data.imageUrl || data.thumbnailUrl || null;
+    var imageUrl = (data && data.imageUrl) || (data && data.thumbnailUrl) || null;
+
+    // If no data from ready callback, try to get thumbnail from the DOM
+    if (!imageUrl) {
+      var thumb = resultEl.querySelector('img.gs-image, .gs-image-box img, img');
+      if (thumb) imageUrl = thumb.getAttribute('data-src') || thumb.src || null;
+    }
     if (!imageUrl) return;
 
     var btn = document.createElement('button');
@@ -682,30 +689,49 @@
     });
   }
 
+  // MutationObserver: watches the CSE container for newly rendered results
+  // and attaches buttons. Pairs DOM results with cseResultsData by index.
+  function setupCSEObserver() {
+    var cseContainer = document.getElementById('cse-container');
+    if (!cseContainer) return;
+
+    function processVisibleResults() {
+      var results = cseContainer.querySelectorAll('.gsc-webResult.gsc-result, .gsc-imageResult');
+      for (var i = 0; i < results.length; i++) {
+        attachTemplateButton(results[i], cseResultsData[i] || {});
+      }
+    }
+
+    var observer = new MutationObserver(function () {
+      processVisibleResults();
+    });
+    observer.observe(cseContainer, { childList: true, subtree: true });
+  }
+
   // Configure __gcse BEFORE loading the CSE script.
-  // parsetags: 'onready' lets CSE auto-render the .gcse-search div,
-  // then our searchCallbacks fire on every search.
   window.__gcse = {
     parsetags: 'onready',
+    callback: function () {
+      // CSE is ready — start the MutationObserver
+      setupCSEObserver();
+    },
     searchCallbacks: {
       web: {
         // 'ready' fires with the raw result objects (before DOM rendering).
-        // Each result has richSnippet.cseImage.src with the original image URL.
         ready: function (_name, _q, _promos, results) {
+          console.log('[MemeCSE] ready callback fired, results:', results && results.length);
           cseResultsData = (results || []).map(function (r) {
             var img = null;
-            // Primary: cseImage.src is the full-res original
             try { img = r.richSnippet.cseImage.src; } catch (e) { /* */ }
-            // Fallback: og:image from metatags
             if (!img) {
               try { img = r.richSnippet.metatags['og:image']; } catch (e) { /* */ }
             }
-            // Fallback: twitter:image
             if (!img) {
               try { img = r.richSnippet.metatags['twitter:image']; } catch (e) { /* */ }
             }
             var thumb = null;
             try { thumb = r.richSnippet.cseThumbnail.src; } catch (e) { /* */ }
+            console.log('[MemeCSE] result:', r.unescapedUrl || r.url, '-> image:', img, 'thumb:', thumb);
             return {
               imageUrl: img,
               thumbnailUrl: thumb,
@@ -713,9 +739,9 @@
             };
           });
         },
-        // 'rendered' fires after the DOM is built. resultElts and
-        // cseResultsData are in the same order so we index-match.
+        // 'rendered' fires after the DOM is built — also try to attach here.
         rendered: function (_name, _q, _promoElts, resultElts) {
+          console.log('[MemeCSE] rendered callback fired, resultElts:', resultElts && resultElts.length);
           if (!resultElts) return;
           for (var i = 0; i < resultElts.length; i++) {
             attachTemplateButton(resultElts[i], cseResultsData[i] || {});
