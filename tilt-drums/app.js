@@ -16,6 +16,7 @@
   var refBeta = null;
   var refGamma = null;
   var orientationEventCount = 0;
+  var audioUnlocked = false;
 
   // --- DOM refs ---
   var startScreen = document.getElementById("start-screen");
@@ -32,6 +33,9 @@
   var cancelAssign = document.getElementById("cancel-assign");
 
   console.log("[init] DOM refs acquired, startBtn:", !!startBtn);
+  console.log("[init] window.AudioContext:", !!window.AudioContext);
+  console.log("[init] window.webkitAudioContext:", !!window.webkitAudioContext);
+  console.log("[init] UA:", navigator.userAgent);
 
   // =========================================================================
   //  Audio
@@ -39,30 +43,82 @@
 
   function initAudio() {
     try {
+      // iOS Safari: do NOT pass options — some versions silently break
       var Ctor = window.AudioContext || window.webkitAudioContext;
-      console.log("[audio] Constructor:", Ctor === window.AudioContext ? "AudioContext" : "webkitAudioContext");
-      audioCtx = new Ctor({ latencyHint: "interactive" });
-      console.log("[audio] Created. state:", audioCtx.state, "sampleRate:", audioCtx.sampleRate);
+      console.log("[audio] Using:", Ctor === window.AudioContext ? "AudioContext" : "webkitAudioContext");
+
+      audioCtx = new Ctor();
+      console.log("[audio] Created — state:", audioCtx.state,
+        "sampleRate:", audioCtx.sampleRate,
+        "currentTime:", audioCtx.currentTime,
+        "baseLatency:", audioCtx.baseLatency);
+
+      // Track state changes
+      audioCtx.onstatechange = function () {
+        console.log("[audio] STATE CHANGED →", audioCtx.state, "currentTime:", audioCtx.currentTime);
+      };
+
       gainNode = audioCtx.createGain();
+      gainNode.gain.value = 1;
       gainNode.connect(audioCtx.destination);
-      console.log("[audio] GainNode connected to destination");
+      console.log("[audio] GainNode connected, gain:", gainNode.gain.value);
     } catch (err) {
-      console.error("[audio] initAudio FAILED:", err);
+      console.error("[audio] initAudio FAILED:", err.name, err.message);
     }
   }
 
-  function resumeAudio() {
-    if (!audioCtx) {
-      console.warn("[audio] resumeAudio called but no audioCtx");
-      return Promise.resolve();
-    }
-    console.log("[audio] resumeAudio — current state:", audioCtx.state);
-    if (audioCtx.state !== "running") {
-      return audioCtx.resume().then(function () {
-        console.log("[audio] resume() resolved — state now:", audioCtx.state);
+  function tryUnlockAudio() {
+    if (!audioCtx) return;
+
+    console.log("[unlock] Attempting — state:", audioCtx.state, "currentTime:", audioCtx.currentTime);
+
+    // Strategy 1: resume()
+    try {
+      audioCtx.resume().then(function () {
+        console.log("[unlock] resume() resolved — state:", audioCtx.state, "currentTime:", audioCtx.currentTime);
+      }).catch(function (err) {
+        console.error("[unlock] resume() rejected:", err);
       });
+    } catch (err) {
+      console.error("[unlock] resume() threw:", err);
     }
-    return Promise.resolve();
+
+    // Strategy 2: oscillator (known to work on stubborn iOS versions)
+    try {
+      var osc = audioCtx.createOscillator();
+      osc.frequency.value = 1; // sub-audible
+      osc.connect(audioCtx.destination);
+      osc.start(0);
+      osc.stop(audioCtx.currentTime + 0.001);
+      console.log("[unlock] Oscillator played OK");
+    } catch (err) {
+      console.error("[unlock] Oscillator failed:", err);
+    }
+
+    // Strategy 3: silent buffer connected DIRECTLY to destination (bypass gainNode)
+    try {
+      var silent = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
+      var src = audioCtx.createBufferSource();
+      src.buffer = silent;
+      src.connect(audioCtx.destination);
+      src.start(0);
+      console.log("[unlock] Silent buffer (direct) played OK");
+    } catch (err) {
+      console.error("[unlock] Silent buffer failed:", err);
+    }
+
+    // Check state after a tick
+    setTimeout(function () {
+      if (audioCtx) {
+        console.log("[unlock] After tick — state:", audioCtx.state, "currentTime:", audioCtx.currentTime);
+        if (audioCtx.state === "running" && audioCtx.currentTime > 0) {
+          audioUnlocked = true;
+          console.log("[unlock] ✓ AUDIO UNLOCKED");
+        } else {
+          console.warn("[unlock] ✗ Audio still NOT running. state:", audioCtx.state, "currentTime:", audioCtx.currentTime);
+        }
+      }
+    }, 100);
   }
 
   // =========================================================================
@@ -148,7 +204,6 @@
   function triggerPad(index) {
     var now = performance.now();
     if (now - lastTriggerTime[index] < RETRIGGER_COOLDOWN_MS) {
-      console.log("[trigger] pad " + index + " SKIPPED (cooldown)");
       return;
     }
     lastTriggerTime[index] = now;
@@ -163,16 +218,31 @@
       return;
     }
 
-    console.log("[trigger] pad " + index + " — ctx.state:", audioCtx.state, "buf.duration:", buffer.duration.toFixed(3));
+    console.log("[trigger] pad " + index +
+      " — ctx.state:", audioCtx.state +
+      " currentTime:", audioCtx.currentTime.toFixed(3) +
+      " buf.dur:", buffer.duration.toFixed(3) +
+      " gain:", gainNode.gain.value);
 
+    // Try both paths: through gainNode AND direct to destination
     try {
       var src = audioCtx.createBufferSource();
       src.buffer = buffer;
       src.connect(gainNode);
       src.start(0);
-      console.log("[trigger] pad " + index + " — started OK");
+      console.log("[trigger] pad " + index + " — via gainNode OK");
     } catch (err) {
-      console.error("[trigger] pad " + index + " — PLAY ERROR:", err);
+      console.error("[trigger] pad " + index + " — gainNode FAILED:", err);
+    }
+
+    try {
+      var src2 = audioCtx.createBufferSource();
+      src2.buffer = buffer;
+      src2.connect(audioCtx.destination);
+      src2.start(0);
+      console.log("[trigger] pad " + index + " — direct to destination OK");
+    } catch (err) {
+      console.error("[trigger] pad " + index + " — direct FAILED:", err);
     }
 
     pads[index].classList.add("active");
@@ -188,13 +258,11 @@
     var gamma = e.gamma;
 
     orientationEventCount++;
-    // Log first 5 events, then every 100th
     if (orientationEventCount <= 5 || orientationEventCount % 100 === 0) {
       console.log("[tilt] #" + orientationEventCount + " beta:", beta, "gamma:", gamma);
     }
 
     if (beta === null || gamma === null) {
-      console.warn("[tilt] null values — beta:", beta, "gamma:", gamma);
       return;
     }
 
@@ -233,7 +301,7 @@
     }
 
     if (quadrant !== activeQuadrant) {
-      console.log("[tilt] quadrant changed:", activeQuadrant, "→", quadrant, "(db:", db.toFixed(1), "dg:", dg.toFixed(1) + ")");
+      console.log("[tilt] quadrant:", activeQuadrant, "→", quadrant, "(db:", db.toFixed(1), "dg:", dg.toFixed(1) + ")");
       activeQuadrant = quadrant;
       triggerPad(quadrant);
     }
@@ -287,91 +355,130 @@
   function recalibrate() {
     refBeta = null;
     refGamma = null;
-    console.log("[tilt] Recalibrated (next event sets new center)");
+    console.log("[tilt] Recalibrated");
   }
 
   // =========================================================================
-  //  Start button — EVERYTHING must stay synchronous in the gesture stack
+  //  Start — use touchend (most reliable gesture on iOS) + click fallback
   // =========================================================================
 
-  startBtn.addEventListener("click", function () {
-    console.log("=== START BUTTON PRESSED ===");
+  var startHandled = false;
 
-    // 1. Audio context — create + resume synchronously in gesture
+  function handleStart(eventType) {
+    if (startHandled) return;
+    startHandled = true;
+
+    console.log("=== START (" + eventType + ") ===");
+
+    // 1. Create context (no options — safest for iOS)
     initAudio();
-    // resume() returns a promise but on iOS the state change happens
-    // synchronously when called inside a user gesture
-    audioCtx.resume();
-    console.log("[start] After resume() call — state:", audioCtx.state);
 
-    // 2. Generate buffers
+    // 2. Try every unlock strategy
+    tryUnlockAudio();
+
+    // 3. Generate sample buffers
     buildDefaultSamples();
 
-    // 3. Play silent buffer to prime iOS audio pipeline
-    try {
-      var silent = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
-      var src = audioCtx.createBufferSource();
-      src.buffer = silent;
-      src.connect(audioCtx.destination);
-      src.start(0);
-      console.log("[start] Silent buffer played OK");
-    } catch (err) {
-      console.error("[start] Silent buffer FAILED:", err);
-    }
-
-    // 4. Also play the kick immediately as an audible confirmation
+    // 4. Play audible test kick via BOTH paths
     try {
       var kickSrc = audioCtx.createBufferSource();
       kickSrc.buffer = sampleBuffers[0];
       kickSrc.connect(gainNode);
       kickSrc.start(0);
-      console.log("[start] Test kick played OK");
+      console.log("[start] Test kick (gainNode) OK");
     } catch (err) {
-      console.error("[start] Test kick FAILED:", err);
+      console.error("[start] Test kick (gainNode) FAILED:", err);
+    }
+    try {
+      var kickSrc2 = audioCtx.createBufferSource();
+      kickSrc2.buffer = sampleBuffers[0];
+      kickSrc2.connect(audioCtx.destination);
+      kickSrc2.start(0);
+      console.log("[start] Test kick (direct) OK");
+    } catch (err) {
+      console.error("[start] Test kick (direct) FAILED:", err);
     }
 
-    // 5. Motion permission — MUST be called synchronously in user gesture on iOS
-    console.log("[start] DeviceOrientationEvent exists:", typeof DeviceOrientationEvent !== "undefined");
-    console.log("[start] requestPermission exists:", typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function");
+    // 5. Play an audible oscillator beep as ultimate test
+    try {
+      var beep = audioCtx.createOscillator();
+      var beepGain = audioCtx.createGain();
+      beep.frequency.value = 440;
+      beepGain.gain.value = 0.3;
+      beep.connect(beepGain);
+      beepGain.connect(audioCtx.destination);
+      beep.start(0);
+      beep.stop(audioCtx.currentTime + 0.15);
+      console.log("[start] 440Hz beep OK");
+    } catch (err) {
+      console.error("[start] 440Hz beep FAILED:", err);
+    }
+
+    // 6. Motion permission
+    console.log("[start] DeviceOrientationEvent:", typeof DeviceOrientationEvent);
+    console.log("[start] requestPermission:", typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission);
 
     if (typeof DeviceOrientationEvent !== "undefined" &&
         typeof DeviceOrientationEvent.requestPermission === "function") {
       DeviceOrientationEvent.requestPermission().then(function (perm) {
-        console.log("[motion] Permission result:", perm);
+        console.log("[motion] Permission:", perm);
         if (perm === "granted") {
           window.addEventListener("deviceorientation", handleOrientation);
           console.log("[motion] Listener added");
         } else {
-          console.warn("[motion] Permission DENIED");
           alert("Motion permission denied — tap pads to play instead.");
         }
       }).catch(function (err) {
-        console.error("[motion] requestPermission FAILED:", err);
+        console.error("[motion] requestPermission error:", err);
         window.addEventListener("deviceorientation", handleOrientation);
-        console.log("[motion] Listener added (fallback after error)");
       });
     } else {
       window.addEventListener("deviceorientation", handleOrientation);
       console.log("[motion] Listener added (no permission API)");
     }
 
-    // 6. Check context state after a short delay (to see if resume actually worked)
-    setTimeout(function () {
-      console.log("[start] Delayed check — ctx.state:", audioCtx ? audioCtx.state : "null");
-    }, 500);
+    // 7. Periodic state check
+    var checkCount = 0;
+    var checker = setInterval(function () {
+      checkCount++;
+      if (audioCtx) {
+        console.log("[check #" + checkCount + "] state:", audioCtx.state, "currentTime:", audioCtx.currentTime.toFixed(3));
+      }
+      if (checkCount >= 5) clearInterval(checker);
+    }, 1000);
 
     startScreen.classList.add("hidden");
     mainScreen.classList.remove("hidden");
-    console.log("[start] UI switched to main screen");
+    console.log("[start] UI switched");
+  }
+
+  // Bind BOTH touchend and click — touchend fires first on iOS and is
+  // the most reliable event for audio unlock
+  startBtn.addEventListener("touchend", function (e) {
+    e.preventDefault();
+    handleStart("touchend");
+  });
+  startBtn.addEventListener("click", function () {
+    handleStart("click");
   });
 
-  // Tap pads
+  // Tap pads — also try to unlock on every tap
   pads.forEach(function (pad) {
-    pad.addEventListener("pointerdown", function (e) {
+    pad.addEventListener("touchend", function (e) {
       e.preventDefault();
       var idx = parseInt(pad.dataset.index, 10);
-      console.log("[tap] pad " + idx + " tapped, audioCtx:", audioCtx ? audioCtx.state : "null");
-      if (audioCtx) resumeAudio();
+      console.log("[tap] pad " + idx + " (touchend) ctx:", audioCtx ? audioCtx.state : "null", "currentTime:", audioCtx ? audioCtx.currentTime.toFixed(3) : "n/a");
+      if (audioCtx && audioCtx.state !== "running") {
+        tryUnlockAudio();
+      }
+      triggerPad(idx);
+    });
+    pad.addEventListener("click", function () {
+      var idx = parseInt(pad.dataset.index, 10);
+      console.log("[tap] pad " + idx + " (click) ctx:", audioCtx ? audioCtx.state : "null");
+      if (audioCtx && audioCtx.state !== "running") {
+        tryUnlockAudio();
+      }
       triggerPad(idx);
     });
   });
