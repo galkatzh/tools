@@ -70,17 +70,6 @@ html, body {
   transform: scale(0.96);
 }
 
-#debug-status {
-  margin-top: 12px;
-  font-size: 0.7rem;
-  font-family: monospace;
-  color: var(--text-dim);
-  white-space: pre-wrap;
-  text-align: left;
-  max-height: 30vh;
-  overflow-y: auto;
-}
-
 /* ---- Main screen ---- */
 
 #main-screen {
@@ -150,7 +139,6 @@ html, body {
   background: #2a2a4a;
 }
 
-/* vertical line */
 #quadrant-lines::before {
   left: 50%;
   top: 0;
@@ -158,7 +146,6 @@ html, body {
   width: 1px;
 }
 
-/* horizontal line */
 #quadrant-lines::after {
   top: 50%;
   left: 0;

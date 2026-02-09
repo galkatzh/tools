@@ -11,7 +11,6 @@
   var lastTriggerTime = [0, 0, 0, 0];
   var refBeta = null;
   var refGamma = null;
-  var orientationEventCount = 0;
 
   var startScreen = document.getElementById("start-screen");
   var mainScreen = document.getElementById("main-screen");
@@ -25,101 +24,12 @@
   var sampleLoader = document.getElementById("sample-loader");
   var assignBtns = document.querySelectorAll(".assign-btn");
   var cancelAssign = document.getElementById("cancel-assign");
-  var debugEl = document.getElementById("debug-status");
-
-  function dbg(msg) {
-    console.log(msg);
-    if (debugEl) {
-      debugEl.textContent += msg + "\n";
-      debugEl.scrollTop = debugEl.scrollHeight;
-    }
-  }
 
   // =========================================================================
-  //  iOS audio session unlock via <audio> element
-  //
-  //  iOS Web Audio uses the "ambient" audio session by default, which
-  //  respects the hardware mute switch. Playing an <audio> element forces
-  //  iOS into "playback" mode so all subsequent Web Audio output is audible.
-  //
-  //  We build a valid WAV blob programmatically (data URI MP3 was rejected
-  //  silently by iOS Safari).
+  //  AudioContext — created at page load, resumed on first user gesture
   // =========================================================================
 
-  function createSilentWAV() {
-    var sr = 44100, ch = 1, bps = 16;
-    var numSamples = sr; // 1 second of silence
-    var dataSize = numSamples * ch * (bps / 8);
-    var buf = new ArrayBuffer(44 + dataSize);
-    var v = new DataView(buf);
-
-    function writeStr(offset, str) {
-      for (var i = 0; i < str.length; i++) v.setUint8(offset + i, str.charCodeAt(i));
-    }
-
-    writeStr(0, "RIFF");
-    v.setUint32(4, 36 + dataSize, true);
-    writeStr(8, "WAVE");
-    writeStr(12, "fmt ");
-    v.setUint32(16, 16, true);
-    v.setUint16(20, 1, true);       // PCM
-    v.setUint16(22, ch, true);
-    v.setUint32(24, sr, true);
-    v.setUint32(28, sr * ch * (bps / 8), true);
-    v.setUint16(32, ch * (bps / 8), true);
-    v.setUint16(34, bps, true);
-    writeStr(36, "data");
-    v.setUint32(40, dataSize, true);
-    // PCM samples are all zeros (silence) — ArrayBuffer is zero-initialized
-    return new Blob([buf], { type: "audio/wav" });
-  }
-
-  var audioEl = null;
-
-  function unlockIOSAudio() {
-    dbg("building WAV blob for <audio> unlock...");
-    try {
-      var blob = createSilentWAV();
-      var url = URL.createObjectURL(blob);
-      audioEl = new Audio(url);
-      audioEl.setAttribute("playsinline", "");
-      audioEl.volume = 1;
-      dbg("<audio> src=" + url + " readyState=" + audioEl.readyState);
-
-      var p = audioEl.play();
-      if (p && p.then) {
-        p.then(function () {
-          dbg("<audio> play() OK — audio session should be 'playback' now");
-          URL.revokeObjectURL(url);
-        }).catch(function (err) {
-          dbg("<audio> play() REJECTED: " + err);
-        });
-      } else {
-        dbg("<audio> play() returned non-promise (old browser)");
-      }
-    } catch (err) {
-      dbg("<audio> unlock FAILED: " + err);
-    }
-  }
-
-  // =========================================================================
-  //  AudioContext — created at page load
-  // =========================================================================
-
-  var AudioCtor = window.AudioContext || window.webkitAudioContext;
-  var audioCtx;
-  try {
-    audioCtx = new AudioCtor();
-    dbg("ctx created: state=" + audioCtx.state + " sr=" + audioCtx.sampleRate);
-  } catch (err) {
-    dbg("ctx FAILED: " + err);
-  }
-
-  if (audioCtx) {
-    audioCtx.onstatechange = function () {
-      dbg("ctx -> " + audioCtx.state + " t=" + audioCtx.currentTime.toFixed(3));
-    };
-  }
+  var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
   // =========================================================================
   //  Drum sample synthesis
@@ -168,16 +78,14 @@
   }
 
   function buildDefaultSamples() {
-    var names = ["Kick", "Snare", "HiHat", "Clap"];
     var gens = [generateKick, generateSnare, generateHiHat, generateClap];
     for (var i = 0; i < PAD_COUNT; i++) {
       sampleBuffers[i] = gens[i](audioCtx);
-      dbg(names[i] + ": " + sampleBuffers[i].duration.toFixed(3) + "s");
     }
   }
 
   // =========================================================================
-  //  Playback
+  //  Playback — fire-and-forget BufferSourceNodes
   // =========================================================================
 
   function triggerPad(index) {
@@ -186,7 +94,7 @@
     lastTriggerTime[index] = now;
 
     var buffer = sampleBuffers[index];
-    if (!buffer || !audioCtx) return;
+    if (!buffer) return;
 
     var src = audioCtx.createBufferSource();
     src.buffer = buffer;
@@ -198,16 +106,15 @@
   }
 
   // =========================================================================
-  //  Tilt
+  //  Tilt → quadrant mapping
+  //
+  //  Calibrates on first reading. Dominant axis picks the quadrant:
+  //    Forward  (beta+)  → pad 2    Backward (beta-)  → pad 0
+  //    Right    (gamma+) → pad 1    Left     (gamma-) → pad 3
   // =========================================================================
 
   function handleOrientation(e) {
     var beta = e.beta, gamma = e.gamma;
-    orientationEventCount++;
-    if (orientationEventCount <= 3 || orientationEventCount % 200 === 0) {
-      dbg("tilt #" + orientationEventCount + " b=" + (beta && beta.toFixed(1)) + " g=" + (gamma && gamma.toFixed(1)));
-    }
-
     if (beta === null || gamma === null) return;
 
     if (refBeta === null) {
@@ -264,70 +171,33 @@
         sampleBuffers[padIndex] = decoded;
         pads[padIndex].querySelector(".pad-label").textContent =
           file.name.replace(/\.[^.]+$/, "").slice(0, 12);
-        dbg("loaded " + file.name + " -> pad " + padIndex);
-      }, function (err) { dbg("decode FAIL: " + err); });
+      });
     };
     reader.readAsArrayBuffer(file);
   }
 
-  function recalibrate() { refBeta = null; refGamma = null; dbg("recalibrated"); }
+  function recalibrate() { refBeta = null; refGamma = null; }
 
   // =========================================================================
-  //  START
+  //  Start
   // =========================================================================
 
   startBtn.onclick = function () {
-    dbg("=== START ===");
-
-    // 1. Force iOS into "playback" audio session by playing <audio> element
-    unlockIOSAudio();
-
-    // 2. Resume Web Audio context
-    audioCtx.resume().then(function () {
-      dbg("resume OK: state=" + audioCtx.state + " t=" + audioCtx.currentTime.toFixed(3));
-    });
-
-    // 3. Build samples
+    audioCtx.resume();
     buildDefaultSamples();
 
-    // 4. Play test beep (should now be audible even with mute switch)
-    try {
-      var osc = audioCtx.createOscillator();
-      osc.frequency.value = 440;
-      var g = audioCtx.createGain();
-      g.gain.value = 0.3;
-      osc.connect(g);
-      g.connect(audioCtx.destination);
-      osc.start();
-      osc.stop(audioCtx.currentTime + 0.2);
-      dbg("beep scheduled");
-    } catch (err) {
-      dbg("beep err: " + err);
-    }
-
-    // 5. Motion permission
     if (typeof DeviceOrientationEvent !== "undefined" &&
         typeof DeviceOrientationEvent.requestPermission === "function") {
       DeviceOrientationEvent.requestPermission().then(function (perm) {
-        dbg("motion: " + perm);
         if (perm === "granted") {
           window.addEventListener("deviceorientation", handleOrientation);
         }
-      }).catch(function (err) {
-        dbg("motion err: " + err);
+      }).catch(function () {
         window.addEventListener("deviceorientation", handleOrientation);
       });
     } else {
       window.addEventListener("deviceorientation", handleOrientation);
     }
-
-    // 6. Check
-    var n = 0;
-    var iv = setInterval(function () {
-      n++;
-      dbg("#" + n + " state=" + audioCtx.state + " t=" + audioCtx.currentTime.toFixed(3));
-      if (n >= 3) clearInterval(iv);
-    }, 1000);
 
     startScreen.classList.add("hidden");
     mainScreen.classList.remove("hidden");
@@ -336,12 +206,12 @@
   // Pad taps
   pads.forEach(function (pad) {
     pad.onclick = function () {
-      var idx = parseInt(pad.dataset.index, 10);
       if (audioCtx.state !== "running") audioCtx.resume();
-      triggerPad(idx);
+      triggerPad(parseInt(pad.dataset.index, 10));
     };
   });
 
+  // Double-tap tilt viz to recalibrate
   var lastTapTime = 0;
   tiltViz.addEventListener("pointerdown", function () {
     var now = performance.now();
