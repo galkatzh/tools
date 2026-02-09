@@ -90,7 +90,7 @@ html, body {
 }
 
 .pad {
-  aspect-ratio: 1.6;
+  aspect-ratio: 1.2;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -114,57 +114,6 @@ html, body {
   text-transform: uppercase;
   letter-spacing: 1px;
   pointer-events: none;
-}
-
-/* ---- Tilt visualiser ---- */
-
-#tilt-viz {
-  position: relative;
-  flex: 1;
-  min-height: 120px;
-  background: var(--surface);
-  border-radius: 14px;
-  overflow: hidden;
-}
-
-#quadrant-lines {
-  position: absolute;
-  inset: 0;
-}
-
-#quadrant-lines::before,
-#quadrant-lines::after {
-  content: "";
-  position: absolute;
-  background: #2a2a4a;
-}
-
-#quadrant-lines::before {
-  left: 50%;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-}
-
-#quadrant-lines::after {
-  top: 50%;
-  left: 0;
-  right: 0;
-  height: 1px;
-}
-
-#tilt-dot {
-  position: absolute;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 14px var(--accent-glow);
-  transform: translate(-50%, -50%);
-  left: 50%;
-  top: 50%;
-  pointer-events: none;
-  transition: left 0.06s linear, top 0.06s linear;
 }
 
 /* ---- Controls ---- */
