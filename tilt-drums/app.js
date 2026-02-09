@@ -7,14 +7,15 @@
   var DEAD_ZONE = 3;
 
   // --- State ---
-  var audioCtx = null;       // raw AudioContext (single instance, never replaced)
-  var sampleBuffers = [];    // AudioBuffer per pad (raw Web Audio buffers)
-  var gainNode = null;       // master gain
+  var audioCtx = null;
+  var sampleBuffers = [];
+  var gainNode = null;
   var sensitivity = 20;
   var activeQuadrant = -1;
   var lastTriggerTime = [0, 0, 0, 0];
   var refBeta = null;
   var refGamma = null;
+  var orientationEventCount = 0;
 
   // --- DOM refs ---
   var startScreen = document.getElementById("start-screen");
@@ -30,21 +31,36 @@
   var assignBtns = document.querySelectorAll(".assign-btn");
   var cancelAssign = document.getElementById("cancel-assign");
 
+  console.log("[init] DOM refs acquired, startBtn:", !!startBtn);
+
   // =========================================================================
-  //  Audio — use raw Web Audio API for guaranteed iOS compat & lowest latency
+  //  Audio
   // =========================================================================
 
   function initAudio() {
-    var Ctor = window.AudioContext || window.webkitAudioContext;
-    audioCtx = new Ctor({ latencyHint: "interactive" });
-    gainNode = audioCtx.createGain();
-    gainNode.connect(audioCtx.destination);
+    try {
+      var Ctor = window.AudioContext || window.webkitAudioContext;
+      console.log("[audio] Constructor:", Ctor === window.AudioContext ? "AudioContext" : "webkitAudioContext");
+      audioCtx = new Ctor({ latencyHint: "interactive" });
+      console.log("[audio] Created. state:", audioCtx.state, "sampleRate:", audioCtx.sampleRate);
+      gainNode = audioCtx.createGain();
+      gainNode.connect(audioCtx.destination);
+      console.log("[audio] GainNode connected to destination");
+    } catch (err) {
+      console.error("[audio] initAudio FAILED:", err);
+    }
   }
 
-  // Resume context (must be called inside user gesture on iOS)
   function resumeAudio() {
-    if (audioCtx && audioCtx.state !== "running") {
-      return audioCtx.resume();
+    if (!audioCtx) {
+      console.warn("[audio] resumeAudio called but no audioCtx");
+      return Promise.resolve();
+    }
+    console.log("[audio] resumeAudio — current state:", audioCtx.state);
+    if (audioCtx.state !== "running") {
+      return audioCtx.resume().then(function () {
+        console.log("[audio] resume() resolved — state now:", audioCtx.state);
+      });
     }
     return Promise.resolve();
   }
@@ -113,62 +129,84 @@
   }
 
   function buildDefaultSamples() {
+    var names = ["Kick", "Snare", "HiHat", "Clap"];
     var gens = [generateKick, generateSnare, generateHiHat, generateClap];
     for (var i = 0; i < PAD_COUNT; i++) {
-      sampleBuffers[i] = gens[i]();
+      try {
+        sampleBuffers[i] = gens[i]();
+        console.log("[samples] " + names[i] + " — duration:", sampleBuffers[i].duration.toFixed(3) + "s, length:", sampleBuffers[i].length);
+      } catch (err) {
+        console.error("[samples] Failed to generate " + names[i] + ":", err);
+      }
     }
   }
 
   // =========================================================================
-  //  Playback — fire-and-forget BufferSourceNodes (lowest possible latency)
+  //  Playback
   // =========================================================================
 
   function triggerPad(index) {
     var now = performance.now();
-    if (now - lastTriggerTime[index] < RETRIGGER_COOLDOWN_MS) return;
+    if (now - lastTriggerTime[index] < RETRIGGER_COOLDOWN_MS) {
+      console.log("[trigger] pad " + index + " SKIPPED (cooldown)");
+      return;
+    }
     lastTriggerTime[index] = now;
 
     var buffer = sampleBuffers[index];
-    if (!buffer) return;
+    if (!buffer) {
+      console.warn("[trigger] pad " + index + " — NO BUFFER");
+      return;
+    }
+    if (!audioCtx) {
+      console.warn("[trigger] pad " + index + " — NO audioCtx");
+      return;
+    }
 
-    // Each trigger creates a fresh source node (they're cheap & one-shot)
-    var src = audioCtx.createBufferSource();
-    src.buffer = buffer;
-    src.connect(gainNode);
-    src.start(0);
+    console.log("[trigger] pad " + index + " — ctx.state:", audioCtx.state, "buf.duration:", buffer.duration.toFixed(3));
 
-    // Visual feedback
+    try {
+      var src = audioCtx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(gainNode);
+      src.start(0);
+      console.log("[trigger] pad " + index + " — started OK");
+    } catch (err) {
+      console.error("[trigger] pad " + index + " — PLAY ERROR:", err);
+    }
+
     pads[index].classList.add("active");
     setTimeout(function () { pads[index].classList.remove("active"); }, 120);
   }
 
   // =========================================================================
-  //  Tilt → quadrant mapping
-  //
-  //  Calibrates on first reading so current phone position = center.
-  //  Dominant axis picks the quadrant:
-  //    Forward  (beta+)  → pad 2 (bottom-left)
-  //    Backward (beta-)  → pad 0 (top-left)
-  //    Right    (gamma+) → pad 1 (top-right)
-  //    Left     (gamma-) → pad 3 (bottom-right)
+  //  Tilt
   // =========================================================================
 
   function handleOrientation(e) {
     var beta = e.beta;
     var gamma = e.gamma;
 
-    if (beta === null || gamma === null) return;
+    orientationEventCount++;
+    // Log first 5 events, then every 100th
+    if (orientationEventCount <= 5 || orientationEventCount % 100 === 0) {
+      console.log("[tilt] #" + orientationEventCount + " beta:", beta, "gamma:", gamma);
+    }
 
-    // Calibrate on first reading
+    if (beta === null || gamma === null) {
+      console.warn("[tilt] null values — beta:", beta, "gamma:", gamma);
+      return;
+    }
+
     if (refBeta === null) {
       refBeta = beta;
       refGamma = gamma;
+      console.log("[tilt] Calibrated — refBeta:", refBeta.toFixed(1), "refGamma:", refGamma.toFixed(1));
     }
 
     var db = beta - refBeta;
     var dg = gamma - refGamma;
 
-    // Update tilt dot
     var s = sensitivity;
     var clampedB = Math.max(-s, Math.min(s, db));
     var clampedG = Math.max(-s, Math.min(s, dg));
@@ -179,7 +217,6 @@
     tiltDot.style.left = (cx + (clampedG / s) * cx) + "px";
     tiltDot.style.top = (cy + (clampedB / s) * cy) + "px";
 
-    // Pick quadrant
     var absB = Math.abs(db);
     var absG = Math.abs(dg);
 
@@ -196,6 +233,7 @@
     }
 
     if (quadrant !== activeQuadrant) {
+      console.log("[tilt] quadrant changed:", activeQuadrant, "→", quadrant, "(db:", db.toFixed(1), "dg:", dg.toFixed(1) + ")");
       activeQuadrant = quadrant;
       triggerPad(quadrant);
     }
@@ -210,6 +248,7 @@
   function handleFiles(files) {
     if (!files || files.length === 0) return;
     pendingFiles = Array.from(files);
+    console.log("[files] Selected", pendingFiles.length, "file(s)");
 
     if (pendingFiles.length === 1) {
       sampleLoader.classList.remove("hidden");
@@ -223,13 +262,20 @@
   }
 
   function loadFileIntoPad(file, padIndex) {
+    console.log("[files] Loading", file.name, "into pad", padIndex);
     var reader = new FileReader();
     reader.onload = function (e) {
       audioCtx.decodeAudioData(e.target.result, function (decoded) {
         sampleBuffers[padIndex] = decoded;
+        console.log("[files] Decoded", file.name, "— duration:", decoded.duration.toFixed(3));
         var label = pads[padIndex].querySelector(".pad-label");
         label.textContent = file.name.replace(/\.[^.]+$/, "").slice(0, 12);
+      }, function (err) {
+        console.error("[files] decodeAudioData FAILED for", file.name, ":", err);
       });
+    };
+    reader.onerror = function (err) {
+      console.error("[files] FileReader FAILED:", err);
     };
     reader.readAsArrayBuffer(file);
   }
@@ -241,57 +287,92 @@
   function recalibrate() {
     refBeta = null;
     refGamma = null;
+    console.log("[tilt] Recalibrated (next event sets new center)");
   }
 
   // =========================================================================
-  //  Init & events
+  //  Start button — EVERYTHING must stay synchronous in the gesture stack
   // =========================================================================
 
   startBtn.addEventListener("click", function () {
-    // 1. Create & resume audio context inside this user gesture
+    console.log("=== START BUTTON PRESSED ===");
+
+    // 1. Audio context — create + resume synchronously in gesture
     initAudio();
+    // resume() returns a promise but on iOS the state change happens
+    // synchronously when called inside a user gesture
+    audioCtx.resume();
+    console.log("[start] After resume() call — state:", audioCtx.state);
 
-    resumeAudio().then(function () {
-      // 2. Generate default drum buffers
-      buildDefaultSamples();
+    // 2. Generate buffers
+    buildDefaultSamples();
 
-      // 3. Play a silent buffer to fully unlock audio on iOS
+    // 3. Play silent buffer to prime iOS audio pipeline
+    try {
       var silent = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
       var src = audioCtx.createBufferSource();
       src.buffer = silent;
       src.connect(audioCtx.destination);
       src.start(0);
+      console.log("[start] Silent buffer played OK");
+    } catch (err) {
+      console.error("[start] Silent buffer FAILED:", err);
+    }
 
-      // 4. Request motion permission (iOS 13+ — must be inside user gesture)
-      if (typeof DeviceOrientationEvent !== "undefined" &&
-          typeof DeviceOrientationEvent.requestPermission === "function") {
-        DeviceOrientationEvent.requestPermission().then(function (perm) {
-          if (perm === "granted") {
-            window.addEventListener("deviceorientation", handleOrientation);
-          } else {
-            alert("Motion permission denied — tap pads to play instead.");
-          }
-        }).catch(function () {
-          // Permission API failed — try listening anyway
+    // 4. Also play the kick immediately as an audible confirmation
+    try {
+      var kickSrc = audioCtx.createBufferSource();
+      kickSrc.buffer = sampleBuffers[0];
+      kickSrc.connect(gainNode);
+      kickSrc.start(0);
+      console.log("[start] Test kick played OK");
+    } catch (err) {
+      console.error("[start] Test kick FAILED:", err);
+    }
+
+    // 5. Motion permission — MUST be called synchronously in user gesture on iOS
+    console.log("[start] DeviceOrientationEvent exists:", typeof DeviceOrientationEvent !== "undefined");
+    console.log("[start] requestPermission exists:", typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function");
+
+    if (typeof DeviceOrientationEvent !== "undefined" &&
+        typeof DeviceOrientationEvent.requestPermission === "function") {
+      DeviceOrientationEvent.requestPermission().then(function (perm) {
+        console.log("[motion] Permission result:", perm);
+        if (perm === "granted") {
           window.addEventListener("deviceorientation", handleOrientation);
-        });
-      } else {
-        // Non-iOS or older iOS — just listen
+          console.log("[motion] Listener added");
+        } else {
+          console.warn("[motion] Permission DENIED");
+          alert("Motion permission denied — tap pads to play instead.");
+        }
+      }).catch(function (err) {
+        console.error("[motion] requestPermission FAILED:", err);
         window.addEventListener("deviceorientation", handleOrientation);
-      }
+        console.log("[motion] Listener added (fallback after error)");
+      });
+    } else {
+      window.addEventListener("deviceorientation", handleOrientation);
+      console.log("[motion] Listener added (no permission API)");
+    }
 
-      startScreen.classList.add("hidden");
-      mainScreen.classList.remove("hidden");
-    });
+    // 6. Check context state after a short delay (to see if resume actually worked)
+    setTimeout(function () {
+      console.log("[start] Delayed check — ctx.state:", audioCtx ? audioCtx.state : "null");
+    }, 500);
+
+    startScreen.classList.add("hidden");
+    mainScreen.classList.remove("hidden");
+    console.log("[start] UI switched to main screen");
   });
 
-  // Tap pads directly (also works on desktop)
+  // Tap pads
   pads.forEach(function (pad) {
     pad.addEventListener("pointerdown", function (e) {
       e.preventDefault();
-      // Ensure audio context is running (handles edge cases)
+      var idx = parseInt(pad.dataset.index, 10);
+      console.log("[tap] pad " + idx + " tapped, audioCtx:", audioCtx ? audioCtx.state : "null");
       if (audioCtx) resumeAudio();
-      triggerPad(parseInt(pad.dataset.index, 10));
+      triggerPad(idx);
     });
   });
 
