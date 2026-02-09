@@ -113,6 +113,11 @@
   // =========================================================================
 
   var aimedQuadrant = -1;
+  var smoothB = 0, smoothG = 0;
+  var SMOOTH = 0.3; // EMA alpha — 0 = no smoothing, 1 = raw
+  var eventCount = 0;
+  var firstEventTime = 0;
+  var QUADRANT_NAMES = ["Back", "Right", "Fwd", "Left"];
 
   function setAimedPad(index) {
     if (index === aimedQuadrant) return;
@@ -130,22 +135,35 @@
       refGamma = gamma;
     }
 
-    var db = beta - refBeta, dg = gamma - refGamma;
+    var rawB = beta - refBeta, rawG = gamma - refGamma;
 
+    // Exponential moving average
+    smoothB = smoothB + SMOOTH * (rawB - smoothB);
+    smoothG = smoothG + SMOOTH * (rawG - smoothG);
+
+    // Event rate
+    eventCount++;
+    if (eventCount === 1) firstEventTime = performance.now();
+    var hz = eventCount > 1 ? (eventCount / ((performance.now() - firstEventTime) / 1000)).toFixed(0) : "?";
+
+    var absB = Math.abs(smoothB), absG = Math.abs(smoothG);
+    var quadrant = -1;
+    if (Math.max(absB, absG) >= DEAD_ZONE) {
+      if (absB >= absG) { quadrant = smoothB > 0 ? 2 : 0; }
+      else { quadrant = smoothG > 0 ? 1 : 3; }
+    }
+
+    // Debug display
     tiltDebug.textContent =
-      "b:" + db.toFixed(1) + " g:" + dg.toFixed(1) + " q:" + aimedQuadrant;
+      "raw  b:" + rawB.toFixed(1) + "  g:" + rawG.toFixed(1) + "\n" +
+      "smooth  b:" + smoothB.toFixed(1) + "  g:" + smoothG.toFixed(1) + "\n" +
+      hz + "Hz  q:" + (quadrant >= 0 ? quadrant + " " + QUADRANT_NAMES[quadrant] : "dead");
 
-    var absB = Math.abs(db), absG = Math.abs(dg);
-
-    if (Math.max(absB, absG) < DEAD_ZONE) {
+    if (quadrant < 0) {
       activeQuadrant = -1;
       setAimedPad(-1);
       return;
     }
-
-    var quadrant;
-    if (absB >= absG) { quadrant = db > 0 ? 2 : 0; }
-    else { quadrant = dg > 0 ? 1 : 3; }
 
     setAimedPad(quadrant);
 
