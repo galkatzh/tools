@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Tilt Drums</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <div id="start-screen">
+      <h1>Tilt Drums</h1>
+      <p>Tilt your phone to play drum samples</p>
+      <button id="start-btn">Start</button>
+    </div>
+
+    <div id="main-screen" class="hidden">
+      <div id="pad-grid">
+        <div class="pad" data-index="0"><span class="pad-label">Kick</span></div>
+        <div class="pad" data-index="1"><span class="pad-label">Snare</span></div>
+        <div class="pad" data-index="2"><span class="pad-label">Hi-Hat</span></div>
+        <div class="pad" data-index="3"><span class="pad-label">Clap</span></div>
+      </div>
+
+      <div id="tilt-viz">
+        <div id="tilt-dot"></div>
+        <div id="quadrant-lines"></div>
+      </div>
+
+      <div id="controls">
+        <div id="sensitivity-control">
+          <label for="sensitivity">Sensitivity</label>
+          <input type="range" id="sensitivity" min="5" max="45" value="20">
+        </div>
+        <button id="load-samples-btn">Load Custom Samples</button>
+        <input type="file" id="file-input" accept="audio/*" multiple class="hidden">
+      </div>
+
+      <div id="sample-loader" class="hidden">
+        <h3>Assign sample to pad:</h3>
+        <div id="assign-btns">
+          <button class="assign-btn" data-index="0">Pad 1</button>
+          <button class="assign-btn" data-index="1">Pad 2</button>
+          <button class="assign-btn" data-index="2">Pad 3</button>
+          <button class="assign-btn" data-index="3">Pad 4</button>
+        </div>
+        <button id="cancel-assign">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
