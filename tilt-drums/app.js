@@ -16,8 +16,6 @@
   var mainScreen = document.getElementById("main-screen");
   var startBtn = document.getElementById("start-btn");
   var pads = document.querySelectorAll(".pad");
-  var tiltDot = document.getElementById("tilt-dot");
-  var tiltViz = document.getElementById("tilt-viz");
   var sensitivitySlider = document.getElementById("sensitivity");
   var loadSamplesBtn = document.getElementById("load-samples-btn");
   var fileInput = document.getElementById("file-input");
@@ -123,15 +121,6 @@
     }
 
     var db = beta - refBeta, dg = gamma - refGamma;
-    var s = sensitivity;
-    var clampedB = Math.max(-s, Math.min(s, db));
-    var clampedG = Math.max(-s, Math.min(s, dg));
-
-    var vizRect = tiltViz.getBoundingClientRect();
-    var cx = vizRect.width / 2, cy = vizRect.height / 2;
-    tiltDot.style.left = (cx + (clampedG / s) * cx) + "px";
-    tiltDot.style.top = (cy + (clampedB / s) * cy) + "px";
-
     var absB = Math.abs(db), absG = Math.abs(dg);
     if (Math.max(absB, absG) < DEAD_ZONE) { activeQuadrant = -1; return; }
 
@@ -209,14 +198,6 @@
       if (audioCtx.state !== "running") audioCtx.resume();
       triggerPad(parseInt(pad.dataset.index, 10));
     };
-  });
-
-  // Double-tap tilt viz to recalibrate
-  var lastTapTime = 0;
-  tiltViz.addEventListener("pointerdown", function () {
-    var now = performance.now();
-    if (now - lastTapTime < 350) recalibrate();
-    lastTapTime = now;
   });
 
   sensitivitySlider.addEventListener("input", function () {
