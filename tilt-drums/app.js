@@ -40,31 +40,65 @@
   //
   //  iOS Web Audio uses the "ambient" audio session by default, which
   //  respects the hardware mute switch. Playing an <audio> element forces
-  //  iOS into "playback" mode so all subsequent Web Audio output is audible
-  //  regardless of the mute switch position.
+  //  iOS into "playback" mode so all subsequent Web Audio output is audible.
   //
-  //  The data URI below is a minimal valid MP3 frame (~200 bytes of silence).
+  //  We build a valid WAV blob programmatically (data URI MP3 was rejected
+  //  silently by iOS Safari).
   // =========================================================================
 
-  // Tiny MP3 silence — 1 frame, 128kbps, 44100Hz
-  var SILENT_MP3 = "data:audio/mpeg;base64,/+NIxAAAAAANIAAAAAExBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/jSMQPAAADSAAAAABVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVQ==";
+  function createSilentWAV() {
+    var sr = 44100, ch = 1, bps = 16;
+    var numSamples = sr; // 1 second of silence
+    var dataSize = numSamples * ch * (bps / 8);
+    var buf = new ArrayBuffer(44 + dataSize);
+    var v = new DataView(buf);
 
-  var audioEl = document.createElement("audio");
-  audioEl.controls = false;
-  audioEl.preload = "auto";
-  audioEl.loop = false;
-  audioEl.src = SILENT_MP3;
+    function writeStr(offset, str) {
+      for (var i = 0; i < str.length; i++) v.setUint8(offset + i, str.charCodeAt(i));
+    }
+
+    writeStr(0, "RIFF");
+    v.setUint32(4, 36 + dataSize, true);
+    writeStr(8, "WAVE");
+    writeStr(12, "fmt ");
+    v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true);       // PCM
+    v.setUint16(22, ch, true);
+    v.setUint32(24, sr, true);
+    v.setUint32(28, sr * ch * (bps / 8), true);
+    v.setUint16(32, ch * (bps / 8), true);
+    v.setUint16(34, bps, true);
+    writeStr(36, "data");
+    v.setUint32(40, dataSize, true);
+    // PCM samples are all zeros (silence) — ArrayBuffer is zero-initialized
+    return new Blob([buf], { type: "audio/wav" });
+  }
+
+  var audioEl = null;
 
   function unlockIOSAudio() {
-    dbg("playing <audio> element to force playback session...");
-    audioEl.volume = 1;
-    var p = audioEl.play();
-    if (p && p.then) {
-      p.then(function () {
-        dbg("<audio> play() resolved OK");
-      }).catch(function (err) {
-        dbg("<audio> play() rejected: " + err);
-      });
+    dbg("building WAV blob for <audio> unlock...");
+    try {
+      var blob = createSilentWAV();
+      var url = URL.createObjectURL(blob);
+      audioEl = new Audio(url);
+      audioEl.setAttribute("playsinline", "");
+      audioEl.volume = 1;
+      dbg("<audio> src=" + url + " readyState=" + audioEl.readyState);
+
+      var p = audioEl.play();
+      if (p && p.then) {
+        p.then(function () {
+          dbg("<audio> play() OK — audio session should be 'playback' now");
+          URL.revokeObjectURL(url);
+        }).catch(function (err) {
+          dbg("<audio> play() REJECTED: " + err);
+        });
+      } else {
+        dbg("<audio> play() returned non-promise (old browser)");
+      }
+    } catch (err) {
+      dbg("<audio> unlock FAILED: " + err);
     }
   }
 
