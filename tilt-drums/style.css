@@ -120,6 +120,13 @@ html, body {
   pointer-events: none;
 }
 
+#tilt-debug {
+  font-size: 0.7rem;
+  font-family: monospace;
+  color: var(--text-dim);
+  text-align: center;
+}
+
 /* ---- Controls ---- */
 
 #controls {
