@@ -22,6 +22,7 @@
   var sampleLoader = document.getElementById("sample-loader");
   var assignBtns = document.querySelectorAll(".assign-btn");
   var cancelAssign = document.getElementById("cancel-assign");
+  var tiltDebug = document.getElementById("tilt-debug");
 
   // =========================================================================
   //  AudioContext — created at page load, resumed on first user gesture
@@ -130,6 +131,10 @@
     }
 
     var db = beta - refBeta, dg = gamma - refGamma;
+
+    tiltDebug.textContent =
+      "b:" + db.toFixed(1) + " g:" + dg.toFixed(1) + " q:" + aimedQuadrant;
+
     var absB = Math.abs(db), absG = Math.abs(dg);
 
     if (Math.max(absB, absG) < DEAD_ZONE) {
