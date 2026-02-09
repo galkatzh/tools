@@ -102,6 +102,10 @@ html, body {
   -webkit-tap-highlight-color: transparent;
 }
 
+.pad.aimed {
+  border-color: var(--accent);
+}
+
 .pad.active {
   background: var(--pad-active);
   border-color: var(--accent);
