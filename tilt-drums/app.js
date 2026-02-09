@@ -111,6 +111,15 @@
   //    Right    (gamma+) → pad 1    Left     (gamma-) → pad 3
   // =========================================================================
 
+  var aimedQuadrant = -1;
+
+  function setAimedPad(index) {
+    if (index === aimedQuadrant) return;
+    if (aimedQuadrant >= 0) pads[aimedQuadrant].classList.remove("aimed");
+    aimedQuadrant = index;
+    if (index >= 0) pads[index].classList.add("aimed");
+  }
+
   function handleOrientation(e) {
     var beta = e.beta, gamma = e.gamma;
     if (beta === null || gamma === null) return;
@@ -122,11 +131,18 @@
 
     var db = beta - refBeta, dg = gamma - refGamma;
     var absB = Math.abs(db), absG = Math.abs(dg);
-    if (Math.max(absB, absG) < DEAD_ZONE) { activeQuadrant = -1; return; }
+
+    if (Math.max(absB, absG) < DEAD_ZONE) {
+      activeQuadrant = -1;
+      setAimedPad(-1);
+      return;
+    }
 
     var quadrant;
     if (absB >= absG) { quadrant = db > 0 ? 2 : 0; }
     else { quadrant = dg > 0 ? 1 : 3; }
+
+    setAimedPad(quadrant);
 
     if (quadrant !== activeQuadrant) {
       activeQuadrant = quadrant;
