@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>Tilt Drums</title>
-  <!-- trigger rebuild -->
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,9 +12,7 @@
     <div id="start-screen">
       <h1>Tilt Drums</h1>
       <p>Tilt your phone to play drum samples</p>
-      <p style="font-size:0.75rem;color:#e94560;margin-top:8px">Mute switch must be OFF + volume up</p>
       <button id="start-btn">Start</button>
-      <div id="debug-status"></div>
     </div>
 
     <div id="main-screen" class="hidden">
@@ -53,8 +50,6 @@
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
-  <script>eruda.init();</script>
   <script src="app.js"></script>
 </body>
 </html>
