@@ -121,10 +121,13 @@ html, body {
 }
 
 #tilt-debug {
-  font-size: 0.7rem;
+  flex-shrink: 0;
+  padding: 8px;
+  font-size: 0.75rem;
   font-family: monospace;
   color: var(--text-dim);
   text-align: center;
+  line-height: 1.6;
 }
 
 /* ---- Controls ---- */
