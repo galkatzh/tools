@@ -6,7 +6,6 @@
   var DEAD_ZONE = 3;
 
   var sampleBuffers = [];
-  var gainNode = null;
   var sensitivity = 20;
   var activeQuadrant = -1;
   var lastTriggerTime = [0, 0, 0, 0];
@@ -28,7 +27,6 @@
   var cancelAssign = document.getElementById("cancel-assign");
   var debugEl = document.getElementById("debug-status");
 
-  // ---- On-screen debug log ----
   function dbg(msg) {
     console.log(msg);
     if (debugEl) {
@@ -38,8 +36,40 @@
   }
 
   // =========================================================================
-  //  Create AudioContext IMMEDIATELY at page load (before any gesture).
-  //  iOS requires it to EXIST before the gesture that resumes it.
+  //  iOS audio session unlock via <audio> element
+  //
+  //  iOS Web Audio uses the "ambient" audio session by default, which
+  //  respects the hardware mute switch. Playing an <audio> element forces
+  //  iOS into "playback" mode so all subsequent Web Audio output is audible
+  //  regardless of the mute switch position.
+  //
+  //  The data URI below is a minimal valid MP3 frame (~200 bytes of silence).
+  // =========================================================================
+
+  // Tiny MP3 silence — 1 frame, 128kbps, 44100Hz
+  var SILENT_MP3 = "data:audio/mpeg;base64,/+NIxAAAAAANIAAAAAExBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/jSMQPAAADSAAAAABVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVQ==";
+
+  var audioEl = document.createElement("audio");
+  audioEl.controls = false;
+  audioEl.preload = "auto";
+  audioEl.loop = false;
+  audioEl.src = SILENT_MP3;
+
+  function unlockIOSAudio() {
+    dbg("playing <audio> element to force playback session...");
+    audioEl.volume = 1;
+    var p = audioEl.play();
+    if (p && p.then) {
+      p.then(function () {
+        dbg("<audio> play() resolved OK");
+      }).catch(function (err) {
+        dbg("<audio> play() rejected: " + err);
+      });
+    }
+  }
+
+  // =========================================================================
+  //  AudioContext — created at page load
   // =========================================================================
 
   var AudioCtor = window.AudioContext || window.webkitAudioContext;
@@ -48,20 +78,17 @@
     audioCtx = new AudioCtor();
     dbg("ctx created: state=" + audioCtx.state + " sr=" + audioCtx.sampleRate);
   } catch (err) {
-    dbg("ctx creation FAILED: " + err);
+    dbg("ctx FAILED: " + err);
   }
 
   if (audioCtx) {
     audioCtx.onstatechange = function () {
-      dbg("ctx statechange -> " + audioCtx.state + " t=" + audioCtx.currentTime.toFixed(3));
+      dbg("ctx -> " + audioCtx.state + " t=" + audioCtx.currentTime.toFixed(3));
     };
-    gainNode = audioCtx.createGain();
-    gainNode.gain.value = 1;
-    gainNode.connect(audioCtx.destination);
   }
 
   // =========================================================================
-  //  Synthesised drum samples
+  //  Drum sample synthesis
   // =========================================================================
 
   function generateKick(ctx) {
@@ -111,7 +138,7 @@
     var gens = [generateKick, generateSnare, generateHiHat, generateClap];
     for (var i = 0; i < PAD_COUNT; i++) {
       sampleBuffers[i] = gens[i](audioCtx);
-      dbg(names[i] + ": " + sampleBuffers[i].duration.toFixed(3) + "s " + sampleBuffers[i].length + " samples");
+      dbg(names[i] + ": " + sampleBuffers[i].duration.toFixed(3) + "s");
     }
   }
 
@@ -127,12 +154,10 @@
     var buffer = sampleBuffers[index];
     if (!buffer || !audioCtx) return;
 
-    dbg("play " + index + " state=" + audioCtx.state + " t=" + audioCtx.currentTime.toFixed(3));
-
     var src = audioCtx.createBufferSource();
     src.buffer = buffer;
     src.connect(audioCtx.destination);
-    src.start(0);
+    src.start();
 
     pads[index].classList.add("active");
     setTimeout(function () { pads[index].classList.remove("active"); }, 120);
@@ -154,7 +179,6 @@
     if (refBeta === null) {
       refBeta = beta;
       refGamma = gamma;
-      dbg("calibrated ref b=" + refBeta.toFixed(1) + " g=" + refGamma.toFixed(1));
     }
 
     var db = beta - refBeta, dg = gamma - refGamma;
@@ -215,26 +239,24 @@
   function recalibrate() { refBeta = null; refGamma = null; dbg("recalibrated"); }
 
   // =========================================================================
-  //  START — only resume() + play here, context already exists
+  //  START
   // =========================================================================
 
   startBtn.onclick = function () {
-    dbg("=== START tap ===");
-    dbg("ctx.state BEFORE resume: " + audioCtx.state);
+    dbg("=== START ===");
 
-    // Resume the pre-existing context inside this user gesture
+    // 1. Force iOS into "playback" audio session by playing <audio> element
+    unlockIOSAudio();
+
+    // 2. Resume Web Audio context
     audioCtx.resume().then(function () {
-      dbg("resume() resolved: state=" + audioCtx.state + " t=" + audioCtx.currentTime.toFixed(3));
-    }).catch(function (err) {
-      dbg("resume() REJECTED: " + err);
+      dbg("resume OK: state=" + audioCtx.state + " t=" + audioCtx.currentTime.toFixed(3));
     });
 
-    dbg("ctx.state AFTER resume call: " + audioCtx.state);
-
-    // Generate samples
+    // 3. Build samples
     buildDefaultSamples();
 
-    // Play an oscillator beep — the simplest possible audio output
+    // 4. Play test beep (should now be audible even with mute switch)
     try {
       var osc = audioCtx.createOscillator();
       osc.frequency.value = 440;
@@ -244,61 +266,44 @@
       g.connect(audioCtx.destination);
       osc.start();
       osc.stop(audioCtx.currentTime + 0.2);
-      dbg("440Hz beep scheduled at t=" + audioCtx.currentTime.toFixed(3));
+      dbg("beep scheduled");
     } catch (err) {
-      dbg("beep FAILED: " + err);
+      dbg("beep err: " + err);
     }
 
-    // Also play kick directly to destination
-    try {
-      var src = audioCtx.createBufferSource();
-      src.buffer = sampleBuffers[0];
-      src.connect(audioCtx.destination);
-      src.start(0);
-      dbg("test kick played");
-    } catch (err) {
-      dbg("test kick FAILED: " + err);
-    }
-
-    // Motion permission (iOS 13+)
+    // 5. Motion permission
     if (typeof DeviceOrientationEvent !== "undefined" &&
         typeof DeviceOrientationEvent.requestPermission === "function") {
-      dbg("requesting motion permission...");
       DeviceOrientationEvent.requestPermission().then(function (perm) {
-        dbg("motion permission: " + perm);
+        dbg("motion: " + perm);
         if (perm === "granted") {
           window.addEventListener("deviceorientation", handleOrientation);
         }
       }).catch(function (err) {
-        dbg("motion permission error: " + err);
+        dbg("motion err: " + err);
         window.addEventListener("deviceorientation", handleOrientation);
       });
     } else {
       window.addEventListener("deviceorientation", handleOrientation);
-      dbg("no motion permission API, listener added");
     }
 
-    // Periodic state check
+    // 6. Check
     var n = 0;
     var iv = setInterval(function () {
       n++;
-      dbg("check #" + n + " state=" + audioCtx.state + " t=" + audioCtx.currentTime.toFixed(3));
-      if (n >= 5) clearInterval(iv);
+      dbg("#" + n + " state=" + audioCtx.state + " t=" + audioCtx.currentTime.toFixed(3));
+      if (n >= 3) clearInterval(iv);
     }, 1000);
 
     startScreen.classList.add("hidden");
     mainScreen.classList.remove("hidden");
   };
 
-  // ---- Pad taps ----
+  // Pad taps
   pads.forEach(function (pad) {
     pad.onclick = function () {
       var idx = parseInt(pad.dataset.index, 10);
-      dbg("tap pad " + idx + " state=" + audioCtx.state + " t=" + audioCtx.currentTime.toFixed(3));
-      if (audioCtx.state !== "running") {
-        audioCtx.resume();
-        dbg("resume() called from pad tap");
-      }
+      if (audioCtx.state !== "running") audioCtx.resume();
       triggerPad(idx);
     };
   });
@@ -315,7 +320,6 @@
   });
 
   loadSamplesBtn.onclick = function () { fileInput.click(); };
-
   fileInput.addEventListener("change", function () {
     handleFiles(fileInput.files);
     fileInput.value = "";
