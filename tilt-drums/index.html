@@ -18,8 +18,8 @@
     <div id="main-screen" class="hidden">
       <div id="pad-grid">
         <div class="pad" data-index="0"><span class="pad-label">&#x2191; Kick</span></div>
-        <div class="pad" data-index="1"><span class="pad-label">&#x2192; Snare</span></div>
         <div class="pad" data-index="2"><span class="pad-label">&#x2190; Hi-Hat</span></div>
+        <div class="pad" data-index="1"><span class="pad-label">&#x2192; Snare</span></div>
         <div class="pad" data-index="3"><span class="pad-label">&#x2193; Clap</span></div>
       </div>
 
@@ -41,9 +41,14 @@
       </div>
 
       <div id="controls">
-        <div id="sensitivity-control">
+        <div class="slider-row">
           <label for="sensitivity">Sensitivity</label>
           <input type="range" id="sensitivity" min="5" max="45" value="20">
+        </div>
+        <div class="slider-row">
+          <label for="cooldown">Cooldown</label>
+          <input type="range" id="cooldown" min="50" max="400" step="10" value="200">
+          <span id="cooldown-val">200ms</span>
         </div>
         <button id="load-samples-btn">Load Custom Samples</button>
         <input type="file" id="file-input" accept="audio/*" multiple class="hidden">
