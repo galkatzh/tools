@@ -128,7 +128,7 @@
   var QUADRANT_NAMES = ["Back", "Right", "Fwd", "Left"];
   var pendingQuadrant = -1;
   var pendingCount = 0;
-  var DEBOUNCE_FRAMES = 2;
+  var DEBOUNCE_FRAMES = 3;
 
   // Auto-scaling range for the debug box — starts at ±10, grows with data
   var rangeB = 10, rangeG = 10;
@@ -144,7 +144,7 @@
   // gamma → X (right = positive), beta → Y (forward/+ = down on screen)
   function placeDot(dot, g, b, rg, rb) {
     var px = 50 + (g / rg) * 50; // 0..100
-    var py = 50 - (b / rb) * 50; // negate: forward (beta-) → up
+    var py = 50 + (b / rb) * 50; // forward (beta-) → negative → up
     px = Math.max(0, Math.min(100, px));
     py = Math.max(0, Math.min(100, py));
     dot.style.left = px + "%";
