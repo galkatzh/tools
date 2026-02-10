@@ -126,6 +126,9 @@
   var eventCount = 0;
   var firstEventTime = 0;
   var QUADRANT_NAMES = ["Back", "Right", "Fwd", "Left"];
+  var pendingQuadrant = -1;
+  var pendingCount = 0;
+  var DEBOUNCE_FRAMES = 2;
 
   // Auto-scaling range for the debug box — starts at ±10, grows with data
   var rangeB = 10, rangeG = 10;
@@ -188,13 +191,22 @@
     tiltLblTop.textContent = "Fwd b:-" + rangeB.toFixed(0);
     tiltLblBottom.textContent = "Back b:+" + rangeB.toFixed(0);
 
-    // Quadrant logic
-    var absB = Math.abs(smoothB), absG = Math.abs(smoothG);
-    var quadrant = -1;
-    if (Math.max(absB, absG) >= DEAD_ZONE) {
-      if (absB >= absG) { quadrant = smoothB < 0 ? 2 : 0; }
-      else { quadrant = smoothG > 0 ? 1 : 3; }
+    // Quadrant from RAW values (no EMA lag) for responsive triggering
+    var absRawB = Math.abs(rawB), absRawG = Math.abs(rawG);
+    var rawQuadrant = -1;
+    if (Math.max(absRawB, absRawG) >= DEAD_ZONE) {
+      if (absRawB >= absRawG) { rawQuadrant = rawB < 0 ? 2 : 0; }
+      else { rawQuadrant = rawG > 0 ? 1 : 3; }
     }
+
+    // Debounce: require consecutive frames in new quadrant to switch
+    if (rawQuadrant === pendingQuadrant) {
+      pendingCount++;
+    } else {
+      pendingQuadrant = rawQuadrant;
+      pendingCount = 1;
+    }
+    var quadrant = pendingCount >= DEBOUNCE_FRAMES ? pendingQuadrant : activeQuadrant;
 
     tiltInfo.textContent =
       "raw b:" + rawB.toFixed(1) + " g:" + rawG.toFixed(1) +
