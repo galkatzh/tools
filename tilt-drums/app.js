@@ -15,6 +15,8 @@
   var startBtn = document.getElementById("start-btn");
   var pads = document.querySelectorAll(".pad");
   var sensitivitySlider = document.getElementById("sensitivity");
+  var cooldownSlider = document.getElementById("cooldown");
+  var cooldownVal = document.getElementById("cooldown-val");
   var loadSamplesBtn = document.getElementById("load-samples-btn");
   var fileInput = document.getElementById("file-input");
   var sampleLoader = document.getElementById("sample-loader");
@@ -307,6 +309,11 @@
 
   sensitivitySlider.addEventListener("input", function () {
     sensitivity = parseInt(sensitivitySlider.value, 10);
+  });
+
+  cooldownSlider.addEventListener("input", function () {
+    MOTION_COOLDOWN_MS = parseInt(cooldownSlider.value, 10);
+    cooldownVal.textContent = MOTION_COOLDOWN_MS + "ms";
   });
 
   loadSamplesBtn.onclick = function () { fileInput.click(); };

@@ -80,17 +80,18 @@ html, body {
   gap: 12px;
 }
 
-/* ---- Pad grid ---- */
+/* ---- Pad grid (d-pad cross layout) ---- */
 
 #pad-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: auto auto auto;
+  gap: 8px;
   flex-shrink: 0;
 }
 
 .pad {
-  aspect-ratio: 1.2;
+  aspect-ratio: 1;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -101,6 +102,11 @@ html, body {
   transition: background 0.08s, border-color 0.08s, box-shadow 0.08s;
   -webkit-tap-highlight-color: transparent;
 }
+
+.pad[data-index="0"] { grid-row: 1; grid-column: 2; }
+.pad[data-index="2"] { grid-row: 2; grid-column: 1; }
+.pad[data-index="1"] { grid-row: 2; grid-column: 3; }
+.pad[data-index="3"] { grid-row: 3; grid-column: 2; }
 
 .pad.aimed {
   border-color: var(--accent);
@@ -208,28 +214,35 @@ html, body {
 
 #controls {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
   flex-shrink: 0;
-  flex-wrap: wrap;
 }
 
-#sensitivity-control {
+.slider-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1;
 }
 
-#sensitivity-control label {
+.slider-row label {
   font-size: 0.75rem;
   color: var(--text-dim);
   white-space: nowrap;
+  min-width: 70px;
 }
 
-#sensitivity {
+.slider-row input[type="range"] {
   flex: 1;
   accent-color: var(--accent);
+}
+
+.slider-row span {
+  font-size: 0.7rem;
+  font-family: monospace;
+  color: var(--text-dim);
+  min-width: 40px;
+  text-align: right;
 }
 
 #load-samples-btn {
