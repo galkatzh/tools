@@ -22,7 +22,15 @@
   var sampleLoader = document.getElementById("sample-loader");
   var assignBtns = document.querySelectorAll(".assign-btn");
   var cancelAssign = document.getElementById("cancel-assign");
-  var tiltDebug = document.getElementById("tilt-debug");
+  var tiltBox = document.getElementById("tilt-box");
+  var tiltRawDot = document.getElementById("tilt-raw-dot");
+  var tiltSmoothDot = document.getElementById("tilt-smooth-dot");
+  var tiltDeadzone = document.getElementById("tilt-deadzone");
+  var tiltInfo = document.getElementById("tilt-info");
+  var tiltLblTop = document.getElementById("tilt-lbl-top");
+  var tiltLblBottom = document.getElementById("tilt-lbl-bottom");
+  var tiltLblLeft = document.getElementById("tilt-lbl-left");
+  var tiltLblRight = document.getElementById("tilt-lbl-right");
 
   // =========================================================================
   //  AudioContext — created at page load, resumed on first user gesture
@@ -114,16 +122,30 @@
 
   var aimedQuadrant = -1;
   var smoothB = 0, smoothG = 0;
-  var SMOOTH = 0.3; // EMA alpha — 0 = no smoothing, 1 = raw
+  var SMOOTH = 0.3;
   var eventCount = 0;
   var firstEventTime = 0;
   var QUADRANT_NAMES = ["Back", "Right", "Fwd", "Left"];
+
+  // Auto-scaling range for the debug box — starts at ±10, grows with data
+  var rangeB = 10, rangeG = 10;
 
   function setAimedPad(index) {
     if (index === aimedQuadrant) return;
     if (aimedQuadrant >= 0) pads[aimedQuadrant].classList.remove("aimed");
     aimedQuadrant = index;
     if (index >= 0) pads[index].classList.add("aimed");
+  }
+
+  // Position a dot element as percentage within the box.
+  // gamma → X (right = positive), beta → Y (forward/+ = down on screen)
+  function placeDot(dot, g, b, rg, rb) {
+    var px = 50 + (g / rg) * 50; // 0..100
+    var py = 50 + (b / rb) * 50;
+    px = Math.max(0, Math.min(100, px));
+    py = Math.max(0, Math.min(100, py));
+    dot.style.left = px + "%";
+    dot.style.top = py + "%";
   }
 
   function handleOrientation(e) {
@@ -137,15 +159,36 @@
 
     var rawB = beta - refBeta, rawG = gamma - refGamma;
 
-    // Exponential moving average
     smoothB = smoothB + SMOOTH * (rawB - smoothB);
     smoothG = smoothG + SMOOTH * (rawG - smoothG);
 
-    // Event rate
     eventCount++;
     if (eventCount === 1) firstEventTime = performance.now();
     var hz = eventCount > 1 ? (eventCount / ((performance.now() - firstEventTime) / 1000)).toFixed(0) : "?";
 
+    // Grow range to fit observed values (never shrink)
+    rangeB = Math.max(rangeB, Math.abs(rawB) * 1.2);
+    rangeG = Math.max(rangeG, Math.abs(rawG) * 1.2);
+
+    // Position dots
+    placeDot(tiltRawDot, rawG, rawB, rangeG, rangeB);
+    placeDot(tiltSmoothDot, smoothG, smoothB, rangeG, rangeB);
+
+    // Dead zone indicator (centered box showing the dead zone region)
+    var dzPctG = (DEAD_ZONE / rangeG) * 50;
+    var dzPctB = (DEAD_ZONE / rangeB) * 50;
+    tiltDeadzone.style.left = (50 - dzPctG) + "%";
+    tiltDeadzone.style.right = (50 - dzPctG) + "%";
+    tiltDeadzone.style.top = (50 - dzPctB) + "%";
+    tiltDeadzone.style.bottom = (50 - dzPctB) + "%";
+
+    // Edge labels: show the range values
+    tiltLblLeft.textContent = "g:" + (-rangeG).toFixed(0);
+    tiltLblRight.textContent = "g:+" + rangeG.toFixed(0);
+    tiltLblTop.textContent = "Fwd +" + rangeB.toFixed(0);
+    tiltLblBottom.textContent = "Back -" + rangeB.toFixed(0);
+
+    // Quadrant logic
     var absB = Math.abs(smoothB), absG = Math.abs(smoothG);
     var quadrant = -1;
     if (Math.max(absB, absG) >= DEAD_ZONE) {
@@ -153,11 +196,10 @@
       else { quadrant = smoothG > 0 ? 1 : 3; }
     }
 
-    // Debug display
-    tiltDebug.textContent =
-      "raw  b:" + rawB.toFixed(1) + "  g:" + rawG.toFixed(1) + "\n" +
-      "smooth  b:" + smoothB.toFixed(1) + "  g:" + smoothG.toFixed(1) + "\n" +
-      hz + "Hz  q:" + (quadrant >= 0 ? quadrant + " " + QUADRANT_NAMES[quadrant] : "dead");
+    tiltInfo.textContent =
+      "raw b:" + rawB.toFixed(1) + " g:" + rawG.toFixed(1) +
+      "  sm b:" + smoothB.toFixed(1) + " g:" + smoothG.toFixed(1) +
+      "  " + hz + "Hz " + (quadrant >= 0 ? QUADRANT_NAMES[quadrant] : "dead");
 
     if (quadrant < 0) {
       activeQuadrant = -1;
