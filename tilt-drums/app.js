@@ -116,7 +116,7 @@
   //  Tilt → quadrant mapping
   //
   //  Calibrates on first reading. Dominant axis picks the quadrant:
-  //    Forward  (beta+)  → pad 2    Backward (beta-)  → pad 0
+  //    Forward  (beta-)  → pad 2    Backward (beta+)  → pad 0
   //    Right    (gamma+) → pad 1    Left     (gamma-) → pad 3
   // =========================================================================
 
@@ -141,7 +141,7 @@
   // gamma → X (right = positive), beta → Y (forward/+ = down on screen)
   function placeDot(dot, g, b, rg, rb) {
     var px = 50 + (g / rg) * 50; // 0..100
-    var py = 50 + (b / rb) * 50;
+    var py = 50 - (b / rb) * 50; // negate: forward (beta-) → up
     px = Math.max(0, Math.min(100, px));
     py = Math.max(0, Math.min(100, py));
     dot.style.left = px + "%";
@@ -185,14 +185,14 @@
     // Edge labels: show the range values
     tiltLblLeft.textContent = "g:" + (-rangeG).toFixed(0);
     tiltLblRight.textContent = "g:+" + rangeG.toFixed(0);
-    tiltLblTop.textContent = "Fwd +" + rangeB.toFixed(0);
-    tiltLblBottom.textContent = "Back -" + rangeB.toFixed(0);
+    tiltLblTop.textContent = "Fwd b:-" + rangeB.toFixed(0);
+    tiltLblBottom.textContent = "Back b:+" + rangeB.toFixed(0);
 
     // Quadrant logic
     var absB = Math.abs(smoothB), absG = Math.abs(smoothG);
     var quadrant = -1;
     if (Math.max(absB, absG) >= DEAD_ZONE) {
-      if (absB >= absG) { quadrant = smoothB > 0 ? 2 : 0; }
+      if (absB >= absG) { quadrant = smoothB < 0 ? 2 : 0; }
       else { quadrant = smoothG > 0 ? 1 : 3; }
     }
 
