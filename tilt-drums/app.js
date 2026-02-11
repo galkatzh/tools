@@ -165,7 +165,7 @@
     if (Math.abs(vb) >= Math.abs(vg)) {
       return vb < 0 ? 0 : 3; // forward → Up(0), backward → Down(3)
     }
-    return vg > 0 ? 1 : 2;   // right → Right(1), left → Left(2)
+    return vg > 0 ? 2 : 1;   // right → Right(1), left → Left(2)
   }
 
   function handleOrientation(e) {
