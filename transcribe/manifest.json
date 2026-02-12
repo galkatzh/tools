@@ -1,0 +1,28 @@
+{
+  "name": "Transcribe",
+  "short_name": "Transcribe",
+  "description": "Transcribe audio with Groq Whisper and save to GitHub Gist",
+  "start_url": "/transcribe/",
+  "scope": "/transcribe/",
+  "display": "standalone",
+  "background_color": "#1a1a2e",
+  "theme_color": "#1a1a2e",
+  "icons": [
+    { "src": "favicon.svg", "type": "image/svg+xml", "sizes": "any" },
+    { "src": "icons/icon-192.png", "type": "image/png", "sizes": "192x192" },
+    { "src": "icons/icon-512.png", "type": "image/png", "sizes": "512x512" }
+  ],
+  "share_target": {
+    "action": "/transcribe/",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [
+        {
+          "name": "audio",
+          "accept": ["audio/*", ".m4a", ".mp3", ".wav", ".ogg", ".webm", ".flac", ".mp4"]
+        }
+      ]
+    }
+  }
+}
