@@ -186,6 +186,32 @@ body {
   white-space: pre-wrap;
 }
 
+/* ── History ───────────────────────────────────────────────────────── */
+
+.history-heading {
+  font-size: 1rem;
+  color: var(--muted);
+  font-weight: 600;
+  padding-top: 4px;
+}
+
+.history-loading {
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-align: center;
+  padding: 12px 0;
+}
+
+.card-date {
+  margin-right: 12px;
+}
+
+.card-status a {
+  color: #27ae60;
+  font-weight: 600;
+  text-decoration: none;
+}
+
 /* ── Processing animation ──────────────────────────────────────────── */
 
 .card.processing .card-status::after {
