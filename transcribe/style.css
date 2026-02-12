@@ -186,6 +186,16 @@ body {
   white-space: pre-wrap;
 }
 
+.card.expandable { cursor: pointer; }
+.card.expandable:hover { opacity: 0.9; }
+
+.card-preview.collapsed {
+  max-height: 1.45em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── History ───────────────────────────────────────────────────────── */
 
 .history-heading {
@@ -204,12 +214,6 @@ body {
 
 .card-date {
   margin-right: 12px;
-}
-
-.card-status a {
-  color: #27ae60;
-  font-weight: 600;
-  text-decoration: none;
 }
 
 /* ── Processing animation ──────────────────────────────────────────── */
