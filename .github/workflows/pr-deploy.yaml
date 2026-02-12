@@ -12,7 +12,6 @@ jobs:
       issues: write
       deployments: write
 
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,6 +25,13 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           projectName: ${{ secrets.CLOUDFLARE_PAGES_PROJECT }}
-          directory: .               # folder with your index.html
+          directory: .
           branch: pr-${{ github.event.number }}
-          gitHubToken: ${{ secrets.GITHUB_TOKEN }}  # creates a GitHub Deployment
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post stable preview URL
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: cf-preview
+          message: |
+            **Preview:** https://pr-${{ github.event.number }}.${{ secrets.CLOUDFLARE_PAGES_PROJECT }}.pages.dev

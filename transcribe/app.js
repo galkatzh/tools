@@ -287,7 +287,7 @@
     try {
       const files = await consumeSharedFiles();
       if (files.length) handleFiles(files);
-    } catch { /* no shared files */ }
+    } catch (err) { console.error('Failed to consume shared files:', err); }
   }
 
   // ── Service worker registration ───────────────────────────────────────
