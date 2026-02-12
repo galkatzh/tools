@@ -177,31 +177,54 @@
     return results;
   }
 
-  /** Build a card DOM element for a past gist. */
+  /** Fetch the full content of a single gist by ID. */
+  async function fetchGistContent(id) {
+    const res = await fetch(`${GIST_URL}/${id}`, {
+      headers: { Authorization: `Bearer ${loadKeys().gh}` },
+    });
+    if (!res.ok) throw new Error(`GitHub ${res.status}`);
+    const gist = await res.json();
+    return Object.values(gist.files)[0]?.content ?? '';
+  }
+
+  /** Build a card DOM element for a past gist. Tap to expand full text. */
   function renderHistoryCard(gist) {
     const name = gist.description.slice(GIST_PREFIX.length).trim();
     const date = new Date(gist.created_at).toLocaleString();
-    // Grab the first (and usually only) file's truncated content
-    const file = Object.values(gist.files)[0];
 
     const card = document.createElement('div');
-    card.className = 'card done';
+    card.className = 'card done expandable';
     card.innerHTML = `
       <div class="card-name">${name}</div>
       <div class="card-status">
         <span class="card-date">${date}</span>
         <a href="${gist.html_url}" target="_blank" rel="noopener">View Gist</a>
       </div>
+      <div class="card-preview collapsed">Tap to expand\u2026</div>
     `;
 
-    if (file && file.content) {
-      const preview = document.createElement('div');
-      preview.className = 'card-preview';
-      preview.textContent = file.content.length > 300
-        ? file.content.slice(0, 300) + '\u2026'
-        : file.content;
-      card.appendChild(preview);
-    }
+    const preview = card.querySelector('.card-preview');
+    const link = card.querySelector('a');
+    let loaded = false;
+
+    // Prevent the card click from firing when tapping the gist link
+    link.addEventListener('click', (e) => e.stopPropagation());
+
+    card.addEventListener('click', async () => {
+      if (!loaded) {
+        preview.textContent = 'Loading\u2026';
+        try {
+          preview.textContent = await fetchGistContent(gist.id);
+          loaded = true;
+        } catch (err) {
+          console.error('Failed to fetch gist content:', err);
+          preview.textContent = err.message;
+          return;
+        }
+      }
+      preview.classList.toggle('collapsed');
+    });
+
     return card;
   }
 
