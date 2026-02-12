@@ -4,6 +4,7 @@
   const GROQ_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
   const GIST_URL = 'https://api.github.com/gists';
   const WHISPER_MODEL = 'whisper-large-v3-turbo';
+  const GIST_PREFIX = '[transcribe]';
   const STORE_NAME = 'shared-audio';
   const DB_NAME = 'transcribe-share';
 
@@ -18,6 +19,7 @@
     dropZone: $('#drop-zone'),
     fileInput: $('#file-input'),
     queue: $('#queue'),
+    history: $('#history'),
   };
 
   // ── Keys ──────────────────────────────────────────────────────────────
@@ -113,7 +115,7 @@
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        description: `Transcription of ${filename}`,
+        description: `${GIST_PREFIX} ${filename}`,
         public: false,
         files: { [`${filename}.md`]: { content } },
       }),
@@ -124,6 +126,83 @@
       throw new Error(`GitHub ${res.status}: ${err}`);
     }
     return (await res.json()).html_url;
+  }
+
+  // ── History: load past transcription gists ─────────────────────────────
+
+  /** Fetch all gists with our prefix and render them as cards. */
+  async function loadHistory() {
+    el.history.innerHTML = '<div class="history-loading">Loading history\u2026</div>';
+    try {
+      const gists = await fetchTranscriptionGists();
+      el.history.innerHTML = '';
+      if (!gists.length) return;
+
+      const heading = document.createElement('h2');
+      heading.className = 'history-heading';
+      heading.textContent = 'History';
+      el.history.appendChild(heading);
+
+      for (const g of gists) {
+        el.history.appendChild(renderHistoryCard(g));
+      }
+    } catch (err) {
+      el.history.innerHTML = `<div class="history-loading">${err.message}</div>`;
+    }
+  }
+
+  /**
+   * Paginate through GET /gists until we've gathered all [transcribe] gists.
+   * Stops early once a page returns zero matches and we've passed the first page.
+   */
+  async function fetchTranscriptionGists() {
+    const headers = { Authorization: `Bearer ${loadKeys().gh}` };
+    const results = [];
+    let page = 1;
+
+    while (true) {
+      const res = await fetch(`${GIST_URL}?per_page=100&page=${page}`, { headers });
+      if (!res.ok) throw new Error(`GitHub ${res.status}`);
+      const batch = await res.json();
+      if (!batch.length) break;
+
+      for (const g of batch) {
+        if (g.description && g.description.startsWith(GIST_PREFIX)) results.push(g);
+      }
+
+      // GitHub returns at most 100 per page; stop if less
+      if (batch.length < 100) break;
+      page++;
+    }
+    return results;
+  }
+
+  /** Build a card DOM element for a past gist. */
+  function renderHistoryCard(gist) {
+    const name = gist.description.slice(GIST_PREFIX.length).trim();
+    const date = new Date(gist.created_at).toLocaleString();
+    // Grab the first (and usually only) file's truncated content
+    const file = Object.values(gist.files)[0];
+
+    const card = document.createElement('div');
+    card.className = 'card done';
+    card.innerHTML = `
+      <div class="card-name">${name}</div>
+      <div class="card-status">
+        <span class="card-date">${date}</span>
+        <a href="${gist.html_url}" target="_blank" rel="noopener">View Gist</a>
+      </div>
+    `;
+
+    if (file && file.content) {
+      const preview = document.createElement('div');
+      preview.className = 'card-preview';
+      preview.textContent = file.content.length > 300
+        ? file.content.slice(0, 300) + '\u2026'
+        : file.content;
+      card.appendChild(preview);
+    }
+    return card;
   }
 
   // ── Queue UI ──────────────────────────────────────────────────────────
@@ -178,6 +257,7 @@
     if (!groq || !gh) return alert('Both keys are required.');
     saveKeys(groq, gh);
     showMain();
+    loadHistory();
   });
 
   el.settingsBtn.addEventListener('click', showSetup);
@@ -232,6 +312,8 @@
     }
     // Handle files shared via the Web Share Target API
     await checkForSharedFiles();
+    // Load past transcription gists
+    if (hasKeys()) loadHistory();
   }
 
   init();
