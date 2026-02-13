@@ -9,6 +9,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      deployments: write
 
     steps:
       - name: Checkout
@@ -25,10 +26,12 @@ jobs:
           projectName: ${{ secrets.CLOUDFLARE_PAGES_PROJECT }}
           directory: .
           branch: pr-${{ github.event.number }}
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Post stable preview URL
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: cf-preview
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           message: |
             **Preview:** https://pr-${{ github.event.number }}.${{ secrets.CLOUDFLARE_PAGES_PROJECT }}.pages.dev
