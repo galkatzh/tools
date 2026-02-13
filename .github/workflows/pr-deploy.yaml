@@ -3,30 +3,30 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+concurrency:
+  group: cf-pages-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   deploy-preview:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
-      deployments: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # No build step needed for plain HTML/JS
-
-      - name: Publish to Cloudflare Pages
-        id: pages
-        uses: cloudflare/pages-action@v1
+      - name: Deploy to Cloudflare Pages
+        id: deploy
+        uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          projectName: ${{ secrets.CLOUDFLARE_PAGES_PROJECT }}
-          directory: .
-          branch: pr-${{ github.event.number }}
-          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          command: >
+            pages deploy .
+            --project-name=${{ secrets.CLOUDFLARE_PAGES_PROJECT }}
+            --branch=pr-${{ github.event.pull_request.number }}
 
       - name: Post stable preview URL
         uses: marocchino/sticky-pull-request-comment@v2
@@ -34,4 +34,4 @@ jobs:
           header: cf-preview
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           message: |
-            **Preview:** https://pr-${{ github.event.number }}.${{ secrets.CLOUDFLARE_PAGES_PROJECT }}.pages.dev
+            **Preview:** ${{ steps.deploy.outputs.pages-deployment-alias-url }}
