@@ -9,3 +9,4 @@ This is a repository of vanilla javascript apps, which are deployed as is with g
 - Make the code concise and elegant.
 - Document methods, but also difficult and confusing parts of the code.
 - Never swallow errors silently. Every catch block must log to console at minimum. Prefer failing visibly over failing gracefully and silent.
+- Bump the `CACHE_NAME` version in every PWA's `sw.js` with each commit that modifies that app's files. This ensures users get fresh assets instead of stale cached ones.
