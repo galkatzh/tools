@@ -1,4 +1,4 @@
-const CACHE_NAME = 'transcribe-v1';
+const CACHE_NAME = 'transcribe-v2';
 const SHELL = [
   '/transcribe/',
   '/transcribe/app.js',
