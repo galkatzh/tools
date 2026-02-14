@@ -3,7 +3,7 @@
 
   const GROQ_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
   const GIST_URL = 'https://api.github.com/gists';
-  const WHISPER_MODEL = 'whisper-large-v3-turbo';
+  const WHISPER_MODEL = 'whisper-large-v3';
   const GIST_PREFIX = '[transcribe]';
   const STORE_NAME = 'shared-audio';
   const DB_NAME = 'transcribe-share';
