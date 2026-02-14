@@ -179,6 +179,18 @@
     return results;
   }
 
+  /** Delete a gist by its ID. */
+  async function deleteGist(id) {
+    const res = await fetch(`${GIST_URL}/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${loadKeys().gh}` },
+    });
+    if (!res.ok && res.status !== 204) {
+      const err = await res.text();
+      throw new Error(`GitHub ${res.status}: ${err}`);
+    }
+  }
+
   /** Fetch the full content of a single gist by ID. */
   async function fetchGistContent(id) {
     const res = await fetch(`${GIST_URL}/${id}`, {
@@ -197,7 +209,10 @@
     const card = document.createElement('div');
     card.className = 'card done expandable';
     card.innerHTML = `
-      <div class="card-name">${name}</div>
+      <div class="card-top">
+        <div class="card-name">${name}</div>
+        <button class="btn-delete" title="Delete gist" aria-label="Delete gist">&times;</button>
+      </div>
       <div class="card-status">
         <span class="card-date">${date}</span>
         <a href="${gist.html_url}" target="_blank" rel="noopener">View Gist</a>
@@ -207,10 +222,29 @@
 
     const preview = card.querySelector('.card-preview');
     const link = card.querySelector('a');
+    const deleteBtn = card.querySelector('.btn-delete');
     let loaded = false;
 
-    // Prevent the card click from firing when tapping the gist link
+    // Prevent the card click from firing when tapping interactive children
     link.addEventListener('click', (e) => e.stopPropagation());
+
+    deleteBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm(`Delete "${name}"?`)) return;
+      deleteBtn.disabled = true;
+      deleteBtn.textContent = '\u2026';
+      try {
+        await deleteGist(gist.id);
+        card.remove();
+        // Remove heading if no more history cards remain
+        if (!el.history.querySelector('.card')) el.history.innerHTML = '';
+      } catch (err) {
+        console.error('Failed to delete gist:', err);
+        alert(`Delete failed: ${err.message}`);
+        deleteBtn.disabled = false;
+        deleteBtn.textContent = '\u00d7';
+      }
+    });
 
     card.addEventListener('click', async () => {
       if (!loaded) {
@@ -281,6 +315,24 @@
   let recordingStart = 0;
   let timerInterval = null;
 
+  /** Probe for a MIME type the browser's MediaRecorder actually supports. */
+  function getRecordingMimeType() {
+    if (typeof MediaRecorder === 'undefined') return null;
+    for (const t of ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus']) {
+      if (MediaRecorder.isTypeSupported(t)) return t;
+    }
+    return ''; // let browser pick its default
+  }
+
+  /** Map a MIME string to a file extension Groq will accept. */
+  function extForMime(mime) {
+    if (!mime) return 'm4a';
+    if (mime.includes('webm')) return 'webm';
+    if (mime.includes('mp4') || mime.includes('aac')) return 'm4a';
+    if (mime.includes('ogg')) return 'ogg';
+    return 'm4a';
+  }
+
   /** Format seconds as m:ss. */
   function fmtTime(sec) {
     const m = Math.floor(sec / 60);
@@ -305,16 +357,28 @@
 
   /** Start recording from the microphone. */
   async function startRecording() {
+    const mimeType = getRecordingMimeType();
+    if (mimeType === null) {
+      throw new Error('Recording is not supported in this browser.');
+    }
+
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     recordingChunks = [];
-    mediaRecorder = new MediaRecorder(stream);
+
+    const opts = mimeType ? { mimeType } : undefined;
+    mediaRecorder = new MediaRecorder(stream, opts);
+
+    // Capture the actual type the recorder chose (fallback for onstop)
+    const chosenMime = mediaRecorder.mimeType || mimeType;
+
     mediaRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) recordingChunks.push(e.data);
     };
     mediaRecorder.onstop = () => {
       stream.getTracks().forEach((t) => t.stop());
-      const blob = new Blob(recordingChunks, { type: mediaRecorder.mimeType });
-      const ext = mediaRecorder.mimeType.includes('webm') ? 'webm' : 'ogg';
+      const mime = mediaRecorder.mimeType || chosenMime;
+      const blob = new Blob(recordingChunks, { type: mime });
+      const ext = extForMime(mime);
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       const file = new File([blob], `recording-${ts}.${ext}`, { type: blob.type });
       handleFiles([file]);
