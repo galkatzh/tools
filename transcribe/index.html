@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Transcribe</title>
+  <meta name="description" content="Transcribe audio with Groq Whisper and save to GitHub Gist">
+  <meta name="theme-color" content="#f5f5f7">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="app">
+    <!-- Setup screen: API keys -->
+    <section id="setup" class="screen">
+      <h1>Transcribe</h1>
+      <p class="subtitle">Audio &rarr; Whisper &rarr; Gist</p>
+
+      <div class="field">
+        <label for="groq-key">Groq API Key</label>
+        <input type="password" id="groq-key" placeholder="gsk_..." autocomplete="off">
+        <a href="https://console.groq.com/keys" target="_blank" rel="noopener">Get a key</a>
+      </div>
+
+      <div class="field">
+        <label for="gh-token">GitHub Token <span class="hint">(gist scope)</span></label>
+        <input type="password" id="gh-token" placeholder="ghp_..." autocomplete="off">
+        <a href="https://github.com/settings/tokens/new?scopes=gist&description=Transcribe+PWA" target="_blank" rel="noopener">Create token</a>
+      </div>
+
+      <button id="save-keys" class="btn primary">Save &amp; Continue</button>
+    </section>
+
+    <!-- Main screen: transcription -->
+    <section id="main" class="screen hidden">
+      <header>
+        <h1>Transcribe</h1>
+        <button id="settings-btn" class="btn icon" title="Settings" aria-label="Settings">&#9881;</button>
+      </header>
+
+      <div id="drop-zone" class="drop-zone">
+        <p>Drop audio here or tap to select</p>
+        <input type="file" id="file-input" accept="audio/*,.m4a,.mp3,.wav,.ogg,.webm,.flac,.mp4" multiple hidden>
+      </div>
+
+      <div id="queue" class="queue"></div>
+      <div id="history" class="queue"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

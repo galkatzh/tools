@@ -1,0 +1,234 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #f5f5f7;
+  --surface: #ffffff;
+  --border: #e0e0e3;
+  --accent: #111;
+  --text: #1a1a1a;
+  --muted: #888;
+  --radius: 10px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100dvh;
+  display: flex;
+  justify-content: center;
+}
+
+#app {
+  width: 100%;
+  max-width: 480px;
+  padding: 24px 16px;
+}
+
+/* ── Utilities ─────────────────────────────────────────────────────── */
+
+.hidden { display: none !important; }
+
+/* ── Setup screen ──────────────────────────────────────────────────── */
+
+#setup {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding-top: 15vh;
+}
+
+#setup h1 {
+  font-size: 2rem;
+  text-align: center;
+}
+
+.subtitle {
+  text-align: center;
+  color: var(--muted);
+  margin-top: -12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field label {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.hint {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.field input {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.field a {
+  font-size: 0.8rem;
+  color: var(--accent);
+}
+
+/* ── Buttons ───────────────────────────────────────────────────────── */
+
+.btn {
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  border-radius: var(--radius);
+  transition: opacity 0.15s;
+}
+
+.btn:hover { opacity: 0.85; }
+
+.btn.primary {
+  background: var(--accent);
+  color: #fff;
+  padding: 12px;
+  font-weight: 600;
+}
+
+.btn.icon {
+  background: none;
+  color: var(--muted);
+  font-size: 1.4rem;
+  padding: 4px 8px;
+}
+
+/* ── Main screen ───────────────────────────────────────────────────── */
+
+#main header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+#main header h1 { font-size: 1.5rem; }
+
+/* ── Drop zone ─────────────────────────────────────────────────────── */
+
+.drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 40px 16px;
+  text-align: center;
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s;
+}
+
+.drop-zone.active,
+.drop-zone:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* ── Queue cards ───────────────────────────────────────────────────── */
+
+.queue {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  border-left: 4px solid var(--border);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.card.processing { border-left-color: var(--accent); }
+.card.done { border-left-color: #2d8a56; }
+.card.error { border-left-color: #c0392b; }
+
+.card-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+
+.card-status {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.card-status a {
+  color: #2d8a56;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.card-preview {
+  margin-top: 8px;
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.card.expandable { cursor: pointer; }
+.card.expandable:hover { opacity: 0.9; }
+
+.card-preview.collapsed {
+  max-height: 1.45em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── History ───────────────────────────────────────────────────────── */
+
+.history-heading {
+  font-size: 1rem;
+  color: var(--muted);
+  font-weight: 600;
+  padding-top: 4px;
+}
+
+.history-loading {
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-align: center;
+  padding: 12px 0;
+}
+
+.card-date {
+  margin-right: 12px;
+}
+
+/* ── Processing animation ──────────────────────────────────────────── */
+
+.card.processing .card-status::after {
+  content: '';
+  display: inline-block;
+  width: 12px;
+  animation: dots 1.2s steps(4, end) infinite;
+}
+
+@keyframes dots {
+  0%  { content: ''; }
+  25% { content: '.'; }
+  50% { content: '..'; }
+  75% { content: '...'; }
+}
