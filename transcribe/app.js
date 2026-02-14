@@ -376,7 +376,7 @@
     };
     mediaRecorder.onstop = () => {
       stream.getTracks().forEach((t) => t.stop());
-      const mime = mediaRecorder.mimeType || chosenMime;
+      const mime = chosenMime;
       const blob = new Blob(recordingChunks, { type: mime });
       const ext = extForMime(mime);
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
