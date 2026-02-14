@@ -18,6 +18,8 @@
     settingsBtn: $('#settings-btn'),
     dropZone: $('#drop-zone'),
     fileInput: $('#file-input'),
+    recordBtn: $('#record-btn'),
+    recordTimer: $('#record-timer'),
     queue: $('#queue'),
     history: $('#history'),
   };
@@ -272,6 +274,83 @@
     for (const f of files) enqueue(f);
   }
 
+  // ── Recording ────────────────────────────────────────────────────
+
+  let mediaRecorder = null;
+  let recordingChunks = [];
+  let recordingStart = 0;
+  let timerInterval = null;
+
+  /** Format seconds as m:ss. */
+  function fmtTime(sec) {
+    const m = Math.floor(sec / 60);
+    const s = String(Math.floor(sec % 60)).padStart(2, '0');
+    return `${m}:${s}`;
+  }
+
+  function startTimer() {
+    recordingStart = Date.now();
+    el.recordTimer.classList.remove('hidden');
+    el.recordTimer.textContent = '0:00';
+    timerInterval = setInterval(() => {
+      el.recordTimer.textContent = fmtTime((Date.now() - recordingStart) / 1000);
+    }, 250);
+  }
+
+  function stopTimer() {
+    clearInterval(timerInterval);
+    timerInterval = null;
+    el.recordTimer.classList.add('hidden');
+  }
+
+  /** Start recording from the microphone. */
+  async function startRecording() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    recordingChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) recordingChunks.push(e.data);
+    };
+    mediaRecorder.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      const blob = new Blob(recordingChunks, { type: mediaRecorder.mimeType });
+      const ext = mediaRecorder.mimeType.includes('webm') ? 'webm' : 'ogg';
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const file = new File([blob], `recording-${ts}.${ext}`, { type: blob.type });
+      handleFiles([file]);
+    };
+    mediaRecorder.start();
+    el.recordBtn.classList.add('recording');
+    el.recordBtn.querySelector('.mic-icon').classList.add('hidden');
+    el.recordBtn.querySelector('.stop-icon').classList.remove('hidden');
+    startTimer();
+  }
+
+  /** Stop an in-progress recording. */
+  function stopRecording() {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+    }
+    el.recordBtn.classList.remove('recording');
+    el.recordBtn.querySelector('.mic-icon').classList.remove('hidden');
+    el.recordBtn.querySelector('.stop-icon').classList.add('hidden');
+    stopTimer();
+    mediaRecorder = null;
+  }
+
+  async function toggleRecording() {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      stopRecording();
+    } else {
+      try {
+        await startRecording();
+      } catch (err) {
+        console.error('Microphone access denied:', err);
+        alert('Microphone access is required to record audio.');
+      }
+    }
+  }
+
   // ── Events ────────────────────────────────────────────────────────────
 
   el.saveKeys.addEventListener('click', () => {
@@ -286,6 +365,7 @@
   el.settingsBtn.addEventListener('click', showSetup);
 
   el.dropZone.addEventListener('click', () => el.fileInput.click());
+  el.recordBtn.addEventListener('click', toggleRecording);
 
   el.fileInput.addEventListener('change', () => {
     handleFiles(el.fileInput.files);
