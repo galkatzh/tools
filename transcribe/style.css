@@ -122,9 +122,16 @@ body {
 
 #main header h1 { font-size: 1.5rem; }
 
-/* ── Drop zone ─────────────────────────────────────────────────────── */
+/* ── Input row (drop zone + record) ────────────────────────────────── */
+
+.input-row {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
 
 .drop-zone {
+  flex: 1;
   border: 2px dashed var(--border);
   border-radius: var(--radius);
   padding: 40px 16px;
@@ -138,6 +145,45 @@ body {
 .drop-zone:hover {
   border-color: var(--accent);
   color: var(--text);
+}
+
+/* ── Record button ─────────────────────────────────────────────────── */
+
+.record-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 72px;
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s;
+}
+
+.record-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.record-btn.recording {
+  border-color: #c0392b;
+  color: #c0392b;
+  animation: pulse-border 1.5s ease-in-out infinite;
+}
+
+.record-timer {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+@keyframes pulse-border {
+  0%, 100% { border-color: #c0392b; }
+  50% { border-color: #e57373; }
 }
 
 /* ── Queue cards ───────────────────────────────────────────────────── */
