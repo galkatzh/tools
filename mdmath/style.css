@@ -1,0 +1,121 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: #0f172a;
+  color: #e2e8f0;
+}
+
+.app {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-bottom: 1px solid #334155;
+  background: #111827;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toggle-btn {
+  border: 1px solid #475569;
+  background: #1e293b;
+  color: #e2e8f0;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.editor-panel {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #334155;
+  background: #0b1220;
+}
+
+.editor-panel.hidden {
+  display: none;
+}
+
+label {
+  font-size: 0.85rem;
+  color: #94a3b8;
+}
+
+textarea {
+  width: 100%;
+  min-height: 150px;
+  resize: vertical;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  padding: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  background: #0f172a;
+  color: #e2e8f0;
+}
+
+#macros-input {
+  min-height: 170px;
+}
+
+.error,
+.status {
+  min-height: 1.2em;
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.error {
+  color: #fda4af;
+}
+
+.status {
+  color: #93c5fd;
+}
+
+.rendered-wrap {
+  overflow: auto;
+  padding: 20px;
+}
+
+.markdown-body {
+  max-width: 920px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+.markdown-body pre,
+.markdown-body code {
+  background: #111827;
+  border-radius: 6px;
+}
+
+.markdown-body pre {
+  padding: 10px;
+  overflow: auto;
+}
+
+.markdown-body a {
+  color: #93c5fd;
+}
