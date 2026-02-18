@@ -112,7 +112,7 @@ function withMacroPrelude(markdown) {
   }
 
   macroError.textContent = '';
-  const prelude = `$$\n${macroText}\n$$\n\n`;
+  const prelude = `\n${macroText}\n\n`;
   return `${prelude}${markdown}`;
 }
 
