@@ -41,7 +41,7 @@ const DEFAULT_MACROS = String.raw`\newcommand{\sparentheses}[1]{\left[#1\right]}
 \newcommand{\BB}[1]{\mathbb{#1}}
 \newcommand{\FF}{\mathbb{F}}
 \newcommand{\bW}{\mathbf{W}}
-\newcommand{\x}{\mathbf{x}}
+\def\x{\mathbf{x}}
 \newcommand{\f}{\mathbf{f}}
 \newcommand{\y}{\mathbf{y}}
 \newcommand{\z}{\mathbf{z}}
@@ -116,14 +116,65 @@ function buildMacroPreludeNode() {
   return preludeNode;
 }
 
+function protectMathSegments(markdown) {
+  const segments = [];
+  let protectedMarkdown = '';
+  let index = 0;
+
+  while (index < markdown.length) {
+    if (markdown[index] !== '$' || markdown[index - 1] === '\\') {
+      protectedMarkdown += markdown[index];
+      index += 1;
+      continue;
+    }
+
+    const delimiter = markdown[index + 1] === '$' ? '$$' : '$';
+    const start = index;
+    let cursor = index + delimiter.length;
+    let foundEnd = false;
+
+    while (cursor < markdown.length) {
+      if (
+        markdown.slice(cursor, cursor + delimiter.length) === delimiter
+        && markdown[cursor - 1] !== '\\'
+      ) {
+        cursor += delimiter.length;
+        foundEnd = true;
+        break;
+      }
+      cursor += 1;
+    }
+
+    if (!foundEnd) {
+      protectedMarkdown += markdown[index];
+      index += 1;
+      continue;
+    }
+
+    const token = `@@MATH${segments.length}@@`;
+    segments.push({ token, value: markdown.slice(start, cursor) });
+    protectedMarkdown += token;
+    index = cursor;
+  }
+
+  return { protectedMarkdown, segments };
+}
+
+function restoreMathSegments(html, segments) {
+  return segments.reduce((currentHtml, segment) => {
+    return currentHtml.split(segment.token).join(segment.value);
+  }, html);
+}
+
 async function render() {
   try {
-    const html = marked.parse(markdownInput.value, {
+    const { protectedMarkdown, segments } = protectMathSegments(markdownInput.value);
+    const html = marked.parse(protectedMarkdown, {
       gfm: true,
       breaks: true
     });
 
-    renderedOutput.innerHTML = DOMPurify.sanitize(html);
+    renderedOutput.innerHTML = DOMPurify.sanitize(restoreMathSegments(html, segments));
 
     const preludeNode = buildMacroPreludeNode();
     if (preludeNode) {
