@@ -41,7 +41,7 @@ const DEFAULT_MACROS = String.raw`\newcommand{\sparentheses}[1]{\left[#1\right]}
 \newcommand{\BB}[1]{\mathbb{#1}}
 \newcommand{\FF}{\mathbb{F}}
 \newcommand{\bW}{\mathbf{W}}
-\def\x{\mathbf{x}}
+\newcommand{\x}{\mathbf{x}}
 \newcommand{\f}{\mathbf{f}}
 \newcommand{\y}{\mathbf{y}}
 \newcommand{\z}{\mathbf{z}}
