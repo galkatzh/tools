@@ -75,6 +75,28 @@ textarea {
   color: #e2e8f0;
 }
 
+#preamble-details {
+  display: grid;
+  gap: 8px;
+}
+
+#preamble-details summary {
+  font-size: 0.85rem;
+  color: #94a3b8;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+#preamble-details summary::before {
+  content: '▶ ';
+  font-size: 0.7rem;
+}
+
+#preamble-details[open] summary::before {
+  content: '▼ ';
+}
+
 #macros-input {
   min-height: 170px;
 }
