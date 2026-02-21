@@ -40,9 +40,11 @@
       <textarea id="markdown-input" spellcheck="false" placeholder="# Hello\n\nInline math: $E = mc^2$\n\nDisplay math:\n\n$$\n\\int_0^1 x^2 dx = \\frac{1}{3}
 $$"></textarea>
 
-      <label for="macros-input">Math macros (MathJax \newcommand lines)</label>
-      <textarea id="macros-input" spellcheck="false"></textarea>
-      <p id="macro-error" class="error" aria-live="polite"></p>
+      <details id="preamble-details">
+        <summary>Preamble (math macros)</summary>
+        <textarea id="macros-input" spellcheck="false"></textarea>
+        <p id="macro-error" class="error" aria-live="polite"></p>
+      </details>
       <p id="url-status" class="status" aria-live="polite"></p>
     </section>
 
