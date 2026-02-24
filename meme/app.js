@@ -35,6 +35,7 @@
   const btnSearch = document.getElementById('btn-search');
   const btnUpload = document.getElementById('btn-upload');
   const btnSave = document.getElementById('btn-save');
+  const btnPaste = document.getElementById('btn-paste');
   const btnGetStarted = document.getElementById('btn-get-started');
 
   const optionsBar = document.getElementById('options-bar');
@@ -618,6 +619,84 @@
     };
     reader.readAsDataURL(file);
     fileInput.value = '';
+  });
+
+  // ========== Clipboard paste ==========
+
+  /**
+   * Extract an image blob from a DataTransferItemList or File array.
+   * Returns the first image/* item found, or null.
+   */
+  function extractImageFromItems(items) {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type && item.type.startsWith('image/')) {
+        return item.getAsFile ? item.getAsFile() : item;
+      }
+    }
+    return null;
+  }
+
+  /** Load an image File/Blob into the canvas via object URL. */
+  function loadImageFromBlob(blob) {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      // Re-encode to data URL so loadImage's CORS handling works cleanly
+      const tmp = document.createElement('canvas');
+      tmp.width = img.naturalWidth;
+      tmp.height = img.naturalHeight;
+      tmp.getContext('2d').drawImage(img, 0, 0);
+      try {
+        loadImage(tmp.toDataURL('image/png'));
+      } catch (err) {
+        console.error('[Meme] Paste re-encode failed:', err);
+        // Fallback: load the object URL directly
+        loadImage(URL.createObjectURL(blob));
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      console.error('[Meme] Pasted image failed to decode');
+    };
+    img.src = url;
+  }
+
+  // Ctrl+V / Cmd+V — intercept paste events with image data
+  document.addEventListener('paste', (e) => {
+    // Don't intercept when typing in text fields
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+
+    const blob = extractImageFromItems(items);
+    if (blob) {
+      e.preventDefault();
+      console.log('[Meme] Image pasted from clipboard via Ctrl+V');
+      loadImageFromBlob(blob);
+    }
+  });
+
+  // "Paste" button — uses async Clipboard API for mobile/tappable access
+  btnPaste.addEventListener('click', async () => {
+    try {
+      const clipItems = await navigator.clipboard.read();
+      for (const item of clipItems) {
+        const imageType = item.types.find(t => t.startsWith('image/'));
+        if (imageType) {
+          const blob = await item.getType(imageType);
+          console.log('[Meme] Image pasted from clipboard via button');
+          loadImageFromBlob(blob);
+          return;
+        }
+      }
+      alert('No image found in clipboard. Copy an image first, then paste.');
+    } catch (err) {
+      console.error('[Meme] Clipboard read failed:', err);
+      alert('Could not read clipboard. Your browser may require permission, or there may be no image copied.');
+    }
   });
 
   // ========== Search modal ==========
