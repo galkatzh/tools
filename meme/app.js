@@ -637,6 +637,17 @@
     return null;
   }
 
+  /** Check if a string looks like a URL pointing to an image. */
+  function looksLikeImageUrl(text) {
+    const trimmed = text.trim();
+    if (!/^https?:\/\//i.test(trimmed)) return null;
+    // Direct image file extension
+    if (/\.(jpe?g|png|gif|webp|bmp|svg)(\?.*)?$/i.test(trimmed)) return trimmed;
+    // Common image host patterns (imgur, etc.) even without extension
+    if (/imgur\.com\/\w+/i.test(trimmed)) return trimmed;
+    return null;
+  }
+
   /** Load an image File/Blob into the canvas via object URL. */
   function loadImageFromBlob(blob) {
     const url = URL.createObjectURL(blob);
@@ -671,15 +682,28 @@
     const items = e.clipboardData && e.clipboardData.items;
     if (!items) return;
 
+    // Prefer image blob if available
     const blob = extractImageFromItems(items);
     if (blob) {
       e.preventDefault();
       console.log('[Meme] Image pasted from clipboard via Ctrl+V');
       loadImageFromBlob(blob);
+      return;
+    }
+
+    // Fallback: check for a pasted image URL as text (common on iOS Safari)
+    const text = e.clipboardData.getData('text/plain');
+    const imageUrl = text && looksLikeImageUrl(text);
+    if (imageUrl) {
+      e.preventDefault();
+      console.log('[Meme] Image URL pasted from clipboard:', imageUrl.substring(0, 120));
+      loadImage(imageUrl);
     }
   });
 
-  // "Paste" button — uses async Clipboard API for mobile/tappable access
+  // "Paste" button — uses async Clipboard API for mobile/tappable access.
+  // Checks for image blobs first, then falls back to text URLs since iOS
+  // Safari often copies images as URLs rather than blobs.
   btnPaste.addEventListener('click', async () => {
     try {
       const clipItems = await navigator.clipboard.read();
@@ -692,9 +716,34 @@
           return;
         }
       }
-      alert('No image found in clipboard. Copy an image first, then paste.');
+      // No image blob — check for text that looks like an image URL
+      for (const item of clipItems) {
+        if (item.types.includes('text/plain')) {
+          const textBlob = await item.getType('text/plain');
+          const text = await textBlob.text();
+          const imageUrl = looksLikeImageUrl(text);
+          if (imageUrl) {
+            console.log('[Meme] Image URL pasted from clipboard via button:', imageUrl.substring(0, 120));
+            loadImage(imageUrl);
+            return;
+          }
+        }
+      }
+      alert('No image found in clipboard. Copy an image or image URL first, then paste.');
     } catch (err) {
       console.error('[Meme] Clipboard read failed:', err);
+      // Fallback: try the simpler readText API which has broader support
+      try {
+        const text = await navigator.clipboard.readText();
+        const imageUrl = text && looksLikeImageUrl(text);
+        if (imageUrl) {
+          console.log('[Meme] Image URL pasted via readText fallback:', imageUrl.substring(0, 120));
+          loadImage(imageUrl);
+          return;
+        }
+      } catch (textErr) {
+        console.error('[Meme] Clipboard readText also failed:', textErr);
+      }
       alert('Could not read clipboard. Your browser may require permission, or there may be no image copied.');
     }
   });
