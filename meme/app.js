@@ -831,31 +831,84 @@
   }
 
   /**
-   * Create and inject a "Use as Meme Template" button into a container.
+   * Create and inject "Use as Meme Template" and "Copy Image" buttons into a container.
    */
   function injectTemplateButton(imageUrl, parent) {
     if (!imageUrl || !parent) return;
     if (parent.querySelector('.meme-template-btn')) return;
 
-    var btn = document.createElement('button');
-    btn.className = 'meme-template-btn';
-    btn.textContent = 'Use as Meme Template';
-    btn.style.cssText = [
-      'display:block; margin:8px auto; background:#e94560; color:#fff;',
+    var btnStyle = [
+      'display:inline-block; margin:4px; background:#e94560; color:#fff;',
       'border:none; padding:10px 16px; border-radius:6px; font-size:14px;',
       'font-weight:bold; cursor:pointer; transition:background 0.15s;',
       'z-index:100; position:relative;',
     ].join('');
-    btn.onmouseenter = function () { btn.style.background = '#ff6b81'; };
-    btn.onmouseleave = function () { btn.style.background = '#e94560'; };
-    btn.addEventListener('click', function (e) {
+
+    var wrapper = document.createElement('div');
+    wrapper.style.cssText = 'text-align:center; margin:8px auto;';
+
+    var btnUse = document.createElement('button');
+    btnUse.className = 'meme-template-btn';
+    btnUse.textContent = 'Use as Template';
+    btnUse.style.cssText = btnStyle;
+    btnUse.onmouseenter = function () { btnUse.style.background = '#ff6b81'; };
+    btnUse.onmouseleave = function () { btnUse.style.background = '#e94560'; };
+    btnUse.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
       closeSearchModal();
       loadImage(imageUrl);
     });
-    parent.appendChild(btn);
-    console.log('[MemeCSE] Injected template button | url:', imageUrl.substring(0, 120));
+
+    var btnCopy = document.createElement('button');
+    btnCopy.className = 'meme-template-btn meme-copy-btn';
+    btnCopy.textContent = 'Copy Image';
+    btnCopy.style.cssText = btnStyle.replace('#e94560', '#0984e3');
+    btnCopy.onmouseenter = function () { btnCopy.style.background = '#74b9ff'; };
+    btnCopy.onmouseleave = function () { btnCopy.style.background = '#0984e3'; };
+    btnCopy.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      copyImageToClipboard(imageUrl, btnCopy);
+    });
+
+    wrapper.appendChild(btnUse);
+    wrapper.appendChild(btnCopy);
+    parent.appendChild(wrapper);
+    console.log('[MemeCSE] Injected buttons | url:', imageUrl.substring(0, 120));
+  }
+
+  /**
+   * Fetch an image URL, convert to PNG blob, and write to clipboard.
+   * Shows feedback on the button to confirm success/failure.
+   */
+  async function copyImageToClipboard(imageUrl, btn) {
+    var original = btn.textContent;
+    btn.textContent = 'Copying…';
+    btn.disabled = true;
+    try {
+      // Use the CORS proxy from loadImage to fetch the image
+      var proxied = 'https://corsproxy.io/?' + encodeURIComponent(imageUrl);
+      var img = new Image();
+      img.crossOrigin = 'anonymous';
+      await new Promise(function (resolve, reject) {
+        img.onload = resolve;
+        img.onerror = function () { reject(new Error('Failed to load image')); };
+        img.src = proxied;
+      });
+      var c = document.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      c.getContext('2d').drawImage(img, 0, 0);
+      var blob = await new Promise(function (resolve) { c.toBlob(resolve, 'image/png'); });
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      btn.textContent = 'Copied!';
+      console.log('[MemeCSE] Image copied to clipboard');
+    } catch (err) {
+      console.error('[MemeCSE] Copy failed:', err);
+      btn.textContent = 'Copy failed';
+    }
+    setTimeout(function () { btn.textContent = original; btn.disabled = false; }, 2000);
   }
 
   /**
