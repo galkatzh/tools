@@ -542,7 +542,7 @@
 
   // CORS proxy chain - try each in order on failure
   const CORS_PROXIES = [
-    (url) => '313131313.galkatz.workers.dev/?url=' + encodeURIComponent(url),
+    (url) => 'https://313131313.galkatz.workers.dev/?url=' + encodeURIComponent(url),
     (url) => 'https://corsproxy.io/?' + encodeURIComponent(url),
     (url) => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
   ];
