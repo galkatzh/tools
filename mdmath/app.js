@@ -7,8 +7,8 @@ const toggleEditorBtn = document.getElementById('toggle-editor');
 const getUrlBtn = document.getElementById('get-url');
 const editorPanel = document.getElementById('editor-panel');
 
-const DEFAULT_MARKDOWN = `# Markdown + Math\n\nUse standard markdown plus TeX math delimiters.\n\nInline: $a^2 + b^2 = c^2$\n\nDisplay:\n\n$$\n\\sum_{k=1}^{n} k = \\frac{n(n+1)}{2}
-$$`;
+const DEFAULT_MARKDOWN = '';
+const COMPRESS_PREFIX = 'lz~';
 
 const DEFAULT_MACROS = String.raw`\newcommand{\sparentheses}[1]{\left[#1\right]}
 \newcommand{\co}{{\cal O}}
@@ -82,26 +82,35 @@ const DEFAULT_MACROS = String.raw`\newcommand{\sparentheses}[1]{\left[#1\right]}
 
 let renderTimer;
 
+/** Decode markdown from URL query string, supporting both compressed (lz~) and legacy formats. */
 function decodeQueryMarkdown() {
   const raw = window.location.search.slice(1);
   if (!raw) return '';
   try {
+    if (raw.startsWith(COMPRESS_PREFIX)) {
+      return LZString.decompressFromEncodedURIComponent(raw.slice(COMPRESS_PREFIX.length)) || '';
+    }
+    // Legacy plain URI-encoded URLs
     return decodeURIComponent(raw.replace(/\+/g, '%20'));
-  } catch {
+  } catch (e) {
+    console.error('Failed to decode URL markdown:', e);
     return '';
   }
 }
 
 function getShareUrl() {
-  const encoded = encodeURIComponent(markdownInput.value);
-  const suffix = encoded ? `?${encoded}` : '';
-  return `${window.location.origin}${window.location.pathname}${suffix}`;
+  if (!markdownInput.value) return `${window.location.origin}${window.location.pathname}`;
+  const compressed = LZString.compressToEncodedURIComponent(markdownInput.value);
+  return `${window.location.origin}${window.location.pathname}?${COMPRESS_PREFIX}${compressed}`;
 }
 
 function updateQueryString(value) {
-  const encoded = encodeURIComponent(value);
-  const next = encoded ? `${window.location.pathname}?${encoded}` : window.location.pathname;
-  window.history.replaceState({}, '', next);
+  if (!value) {
+    window.history.replaceState({}, '', window.location.pathname);
+    return;
+  }
+  const compressed = LZString.compressToEncodedURIComponent(value);
+  window.history.replaceState({}, '', `${window.location.pathname}?${COMPRESS_PREFIX}${compressed}`);
 }
 
 function buildMacroPreludeNode() {
