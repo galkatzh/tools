@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Text Diff</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main id="app">
+    <header>
+      <h1>Text Diff</h1>
+    </header>
+
+    <section class="inputs">
+      <div class="input-col">
+        <label for="input-a">Original</label>
+        <textarea id="input-a" placeholder="Paste original text..." spellcheck="false"></textarea>
+      </div>
+      <button id="swap-btn" type="button" title="Swap texts">&#8644;</button>
+      <div class="input-col">
+        <label for="input-b">Modified</label>
+        <textarea id="input-b" placeholder="Paste modified text..." spellcheck="false"></textarea>
+      </div>
+    </section>
+
+    <section class="toolbar">
+      <div class="mode-toggle">
+        <label><input type="radio" name="mode" value="char" checked><span>Character</span></label>
+        <label><input type="radio" name="mode" value="line"><span>Line</span></label>
+      </div>
+      <div class="stats">
+        <span class="stat-ins">+<span id="stat-added">0</span></span>
+        <span class="stat-del">&minus;<span id="stat-removed">0</span></span>
+        <span class="stat-eq">=<span id="stat-unchanged">0</span></span>
+      </div>
+    </section>
+
+    <section id="output" class="output">
+      <p class="empty">Enter text in both fields to see the diff.</p>
+    </section>
+  </main>
+</body>
+</html>
