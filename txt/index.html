@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Text Analyzer</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main id="app">
+    <header>
+      <h1>Text Analyzer</h1>
+    </header>
+
+    <section class="input-section">
+      <textarea id="input" placeholder="Paste or type text here to analyze..." spellcheck="false" autofocus></textarea>
+    </section>
+
+    <section class="stats-grid">
+      <div class="stat-card">
+        <span class="stat-value" id="stat-chars">0</span>
+        <span class="stat-label">Characters</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value" id="stat-chars-no-spaces">0</span>
+        <span class="stat-label">No spaces</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value" id="stat-words">0</span>
+        <span class="stat-label">Words</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value" id="stat-lines">0</span>
+        <span class="stat-label">Lines</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value" id="stat-sentences">0</span>
+        <span class="stat-label">Sentences</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value" id="stat-paragraphs">0</span>
+        <span class="stat-label">Paragraphs</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value" id="stat-tokens">0</span>
+        <span class="stat-label">Tokens (~)</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value" id="stat-compressed">0</span>
+        <span class="stat-label">Compressed</span>
+      </div>
+    </section>
+
+    <section class="insights">
+      <h2>Insights</h2>
+      <div class="insight-grid">
+        <div class="insight-item">
+          <span class="insight-value" id="reading-time">0 sec</span>
+          <span class="insight-label">Reading time</span>
+        </div>
+        <div class="insight-item">
+          <span class="insight-value" id="speaking-time">0 sec</span>
+          <span class="insight-label">Speaking time</span>
+        </div>
+        <div class="insight-item">
+          <span class="insight-value" id="avg-word-len">0</span>
+          <span class="insight-label">Avg word length</span>
+        </div>
+        <div class="insight-item">
+          <span class="insight-value" id="unique-words">0</span>
+          <span class="insight-label">Unique words</span>
+        </div>
+        <div class="insight-item">
+          <span class="insight-value" id="vocab-richness">0%</span>
+          <span class="insight-label">Vocabulary richness</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="readability">
+      <h2>Readability</h2>
+      <div class="readability-grid">
+        <div class="readability-card">
+          <span class="readability-value" id="fk-grade">--</span>
+          <span class="readability-label">Flesch-Kincaid Grade</span>
+          <span class="readability-desc" id="fk-grade-label"></span>
+        </div>
+        <div class="readability-card">
+          <span class="readability-value" id="fre-score">--</span>
+          <span class="readability-label">Reading Ease</span>
+          <span class="readability-desc" id="fre-label"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="top-words">
+      <h2>Top 10 Words</h2>
+      <ol id="word-list" class="word-list"></ol>
+    </section>
+
+    <section class="histogram">
+      <h2>Character Frequency</h2>
+      <div id="chart" class="bar-chart"></div>
+    </section>
+  </main>
+</body>
+</html>
