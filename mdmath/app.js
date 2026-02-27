@@ -255,7 +255,7 @@ const exportModal = document.getElementById('export-modal');
 const exportPreview = document.getElementById('export-preview');
 const exportStatus = document.getElementById('export-status');
 const exportPngBtn = document.getElementById('export-png-btn');
-const exportStickerBtn = document.getElementById('export-sticker-btn');
+
 const fontSizeSlider = document.getElementById('font-size-slider');
 const fontSizeVal = document.getElementById('font-size-val');
 const pixelRatioSlider = document.getElementById('pixel-ratio-slider');
@@ -416,9 +416,8 @@ async function openExportModal() {
  * reads computed styles (including MathJax layout) at call time — using the
  * library's `style` option applies overrides AFTER freezing computed styles,
  * which breaks MathJax CHTML's em-based positioning.
- * @param {boolean} asCanvas - Return a canvas instead of a blob.
  */
-async function captureExport(asCanvas = false) {
+async function captureExport() {
   const { width, maxHeight } = getLogicalDims();
   const isDark = exportTheme === 'dark';
   const bg = isDark ? '#0f172a' : '#ffffff';
@@ -452,8 +451,7 @@ async function captureExport(asCanvas = false) {
   }
 
   try {
-    const opts = { pixelRatio: asCanvas ? 1 : exportPixelRatio, backgroundColor: bg };
-    if (asCanvas) return await htmlToImage.toCanvas(el, opts);
+    const opts = { pixelRatio: exportPixelRatio, backgroundColor: bg };
     const blob = await htmlToImage.toBlob(el, opts);
     if (!blob) throw new Error('html-to-image returned null blob');
     return blob;
@@ -511,78 +509,6 @@ async function exportPng() {
   }
 }
 
-/**
- * Converts a canvas to a WebP blob ≤100KB (quality reduction loop).
- * Falls back to PNG on Safari, which silently ignores the WebP MIME type.
- */
-async function canvasToStickerBlob(canvas) {
-  const toBlob = (type, quality) => new Promise(resolve => canvas.toBlob(resolve, type, quality));
-
-  const probe = await toBlob('image/webp', 0.9);
-  if (!probe || probe.type !== 'image/webp') {
-    // Safari fallback
-    const png = await toBlob('image/png');
-    if (png.size > 100 * 1024) console.warn(`Sticker PNG is ${Math.round(png.size / 1024)}KB, exceeds 100KB target`);
-    return png;
-  }
-
-  let quality = 0.85;
-  while (quality >= 0.3) {
-    const blob = await toBlob('image/webp', quality);
-    if (blob.size <= 100 * 1024) return blob;
-    quality = Math.round((quality - 0.1) * 10) / 10;
-  }
-  return toBlob('image/webp', 0.3);
-}
-
-/** Exports a 512×512 WhatsApp sticker (WebP ≤100KB, PNG fallback on Safari). */
-async function exportSticker() {
-  exportStatus.textContent = 'Generating sticker\u2026';
-  exportStickerBtn.disabled = true;
-  try {
-    const sourceCanvas = await captureExport(true);
-
-    const sticker = document.createElement('canvas');
-    sticker.width = 512;
-    sticker.height = 512;
-    const ctx = sticker.getContext('2d');
-
-    const isDark = exportTheme === 'dark';
-    ctx.fillStyle = isDark ? '#0f172a' : '#ffffff';
-    ctx.fillRect(0, 0, 512, 512);
-
-    // Letterbox: scale source to fit within 480×480 (16px margin each side)
-    const inner = 480;
-    const scale = Math.min(inner / sourceCanvas.width, inner / sourceCanvas.height);
-    const dw = Math.round(sourceCanvas.width * scale);
-    const dh = Math.round(sourceCanvas.height * scale);
-    const dx = Math.round((512 - dw) / 2);
-    const dy = Math.round((512 - dh) / 2);
-    ctx.drawImage(sourceCanvas, dx, dy, dw, dh);
-
-    const blob = await canvasToStickerBlob(sticker);
-    const ext = blob.type === 'image/webp' ? 'webp' : 'png';
-    const filename = `sticker.${ext}`;
-
-    if (canShareFiles()) {
-      await navigator.share({ files: [new File([blob], filename, { type: blob.type })] });
-      exportStatus.textContent = `Sticker shared (${Math.round(blob.size / 1024)}KB ${ext.toUpperCase()}).`;
-    } else {
-      downloadBlob(blob, filename);
-      exportStatus.textContent = `Sticker downloaded (${Math.round(blob.size / 1024)}KB ${ext.toUpperCase()}).`;
-    }
-  } catch (err) {
-    if (err.name !== 'AbortError') {
-      console.error('Sticker export failed:', err);
-      exportStatus.textContent = `Sticker failed: ${err.message}`;
-    } else {
-      exportStatus.textContent = '';
-    }
-  } finally {
-    exportStickerBtn.disabled = false;
-  }
-}
-
 // Wire up export modal events
 document.getElementById('export-image').addEventListener('click', openExportModal);
 document.getElementById('export-modal-close').addEventListener('click', () => exportModal.close());
@@ -616,4 +542,3 @@ pixelRatioSlider.addEventListener('input', () => {
 });
 
 exportPngBtn.addEventListener('click', exportPng);
-exportStickerBtn.addEventListener('click', exportSticker);
