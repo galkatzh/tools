@@ -283,6 +283,34 @@ function updateDimsDisplay() {
   exportDims.textContent = `1600 \u00d7 ${physH}`;
 }
 
+/**
+ * Prefixes all IDs in a subtree with a unique string and updates all internal
+ * cross-references (xlink:href, href, url() in style/attrs). Required so that
+ * cloned nodes don't conflict with the original's IDs while keeping internal
+ * SVG <use> references (and similar) intact.
+ */
+function prefixIds(root, prefix) {
+  const oldIds = new Set();
+  root.querySelectorAll('[id]').forEach(el => oldIds.add(el.id));
+  root.querySelectorAll('[id]').forEach(el => { el.id = prefix + el.id; });
+
+  root.querySelectorAll('*').forEach(el => {
+    ['href', 'xlink:href'].forEach(attr => {
+      const v = el.getAttribute(attr);
+      if (v && v.startsWith('#') && oldIds.has(v.slice(1)))
+        el.setAttribute(attr, '#' + prefix + v.slice(1));
+    });
+    ['fill', 'stroke', 'clip-path', 'filter', 'mask'].forEach(attr => {
+      const v = el.getAttribute(attr);
+      if (v) el.setAttribute(attr, v.replace(/url\(#([^)]+)\)/g,
+        (m, id) => oldIds.has(id) ? `url(#${prefix}${id})` : m));
+    });
+    const s = el.getAttribute('style');
+    if (s) el.setAttribute('style', s.replace(/url\(#([^)]+)\)/g,
+      (m, id) => oldIds.has(id) ? `url(#${prefix}${id})` : m));
+  });
+}
+
 /** Returns true when Web Share API with file support is available (mobile). */
 function canShareFiles() {
   try {
@@ -312,8 +340,7 @@ function refreshExportPreview() {
   const { width, maxHeight } = getLogicalDims();
   const isDark = exportTheme === 'dark';
   const clone = renderedOutput.cloneNode(true);
-  clone.removeAttribute('id');
-  clone.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+  prefixIds(clone, 'prev-');
 
   const innerMaxH = maxHeight - 64; // subtract 2×32px padding
   Object.assign(clone.style, {
@@ -376,54 +403,58 @@ async function openExportModal() {
  * Builds an off-screen DOM node for html-to-image capture.
  * Caller must remove it from the document in a finally block.
  */
-function buildExportNode() {
+/**
+ * Temporarily applies export styles directly to renderedOutput, captures it,
+ * then restores the original styles. Must be done this way because html-to-image
+ * reads computed styles (including MathJax layout) at call time — using the
+ * library's `style` option applies overrides AFTER freezing computed styles,
+ * which breaks MathJax CHTML's em-based positioning.
+ * @param {boolean} asCanvas - Return a canvas instead of a blob.
+ */
+async function captureExport(asCanvas = false) {
   const { width, maxHeight } = getLogicalDims();
   const isDark = exportTheme === 'dark';
-  const clone = renderedOutput.cloneNode(true);
-  clone.removeAttribute('id');
-  clone.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+  const bg = isDark ? '#0f172a' : '#ffffff';
+  const el = renderedOutput;
 
-  const innerMaxH = maxHeight - 64;
-  Object.assign(clone.style, {
-    position: 'absolute',
-    top: '-99999px',
-    left: '-99999px',
+  const savedStyle = el.getAttribute('style'); // null if no style attr
+  Object.assign(el.style, {
     width: `${width}px`,
+    margin: '0',            // remove auto-centering so capture aligns to left edge
     padding: '32px',
     boxSizing: 'border-box',
     fontSize: `${exportFontSize}px`,
     lineHeight: '1.6',
-    fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
-    background: isDark ? '#0f172a' : '#ffffff',
+    background: bg,
     color: isDark ? '#e2e8f0' : '#1e293b',
-    maxHeight: `${innerMaxH}px`,
+    maxHeight: `${maxHeight - 64}px`,
     overflow: 'hidden',
   });
 
+  // Force layout flush so MathJax CHTML reflows before html-to-image reads styles
+  el.getBoundingClientRect();
+
+  // Light theme: inject a temporary <style> for descendant color overrides
+  let lightSheet = null;
   if (!isDark) {
-    clone.querySelectorAll('pre, code').forEach(el => {
-      el.style.background = '#f1f5f9';
-      el.style.color = '#1e293b';
-    });
-    clone.querySelectorAll('a').forEach(el => {
-      el.style.color = '#2563eb';
-    });
+    lightSheet = document.createElement('style');
+    lightSheet.textContent =
+      '#rendered-output pre,#rendered-output code{background:#f1f5f9!important;color:#1e293b!important}' +
+      '#rendered-output a{color:#2563eb!important}';
+    document.head.appendChild(lightSheet);
   }
 
-  document.body.appendChild(clone);
-  return clone;
-}
-
-/** Captures a DOM node as a PNG blob using html-to-image. */
-async function captureNode(node) {
-  const { width } = getLogicalDims();
-  const blob = await htmlToImage.toBlob(node, {
-    pixelRatio: exportPixelRatio,
-    width,
-    skipFonts: true, // avoid CORS crash on cross-origin CDN stylesheets
-  });
-  if (!blob) throw new Error('html-to-image returned null blob');
-  return blob;
+  try {
+    const opts = { pixelRatio: asCanvas ? 1 : exportPixelRatio, backgroundColor: bg };
+    if (asCanvas) return await htmlToImage.toCanvas(el, opts);
+    const blob = await htmlToImage.toBlob(el, opts);
+    if (!blob) throw new Error('html-to-image returned null blob');
+    return blob;
+  } finally {
+    if (savedStyle !== null) el.setAttribute('style', savedStyle);
+    else el.removeAttribute('style');
+    if (lightSheet) lightSheet.remove();
+  }
 }
 
 /** Triggers a file download from a Blob. */
@@ -442,9 +473,8 @@ function downloadBlob(blob, filename) {
 async function exportPng() {
   exportStatus.textContent = 'Generating image\u2026';
   exportPngBtn.disabled = true;
-  const node = buildExportNode();
   try {
-    const blob = await captureNode(node);
+    const blob = await captureExport();
     const file = new File([blob], 'mdmath.png', { type: 'image/png' });
 
     if (canShareFiles()) {
@@ -465,7 +495,6 @@ async function exportPng() {
       exportStatus.textContent = '';
     }
   } finally {
-    node.remove();
     exportPngBtn.disabled = false;
   }
 }
@@ -498,14 +527,8 @@ async function canvasToStickerBlob(canvas) {
 async function exportSticker() {
   exportStatus.textContent = 'Generating sticker\u2026';
   exportStickerBtn.disabled = true;
-  const node = buildExportNode();
   try {
-    const { width } = getLogicalDims();
-    const sourceCanvas = await htmlToImage.toCanvas(node, {
-      pixelRatio: 1,
-      width,
-      skipFonts: true,
-    });
+    const sourceCanvas = await captureExport(true);
 
     const sticker = document.createElement('canvas');
     sticker.width = 512;
@@ -544,7 +567,6 @@ async function exportSticker() {
       exportStatus.textContent = '';
     }
   } finally {
-    node.remove();
     exportStickerBtn.disabled = false;
   }
 }
