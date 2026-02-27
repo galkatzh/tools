@@ -248,3 +248,297 @@ function init() {
 }
 
 init();
+
+// --- Image Export ---
+
+const exportModal = document.getElementById('export-modal');
+const exportPreview = document.getElementById('export-preview');
+const exportStatus = document.getElementById('export-status');
+const exportPngBtn = document.getElementById('export-png-btn');
+
+const fontSizeSlider = document.getElementById('font-size-slider');
+const fontSizeVal = document.getElementById('font-size-val');
+const pixelRatioSlider = document.getElementById('pixel-ratio-slider');
+const pixelRatioVal = document.getElementById('pixel-ratio-val');
+const exportDims = document.getElementById('export-dims');
+
+let exportTheme = 'dark';
+let exportFontSize = 16;
+let exportPixelRatio = 2;
+
+/** Returns logical CSS dimensions derived from the current pixel ratio. Physical output is always ~1600px. */
+function getLogicalDims() {
+  const w = Math.round(1600 / exportPixelRatio);
+  return { width: w, maxHeight: w };
+}
+
+/** Updates the pixel ratio label and physical dimension hint in the modal. */
+function updateDimsDisplay() {
+  const { maxHeight } = getLogicalDims();
+  const clone = exportPreview.firstElementChild;
+  // scrollHeight is the natural height before the max-height clamp
+  const naturalH = clone ? Math.min(clone.scrollHeight, maxHeight) : maxHeight;
+  const physH = Math.round(naturalH * exportPixelRatio);
+  pixelRatioVal.textContent = exportPixelRatio;
+  exportDims.textContent = `1600 \u00d7 ${physH}`;
+}
+
+/**
+ * Prefixes all IDs in a subtree with a unique string and updates all internal
+ * cross-references (xlink:href, href, url() in style/attrs). Required so that
+ * cloned nodes don't conflict with the original's IDs while keeping internal
+ * SVG <use> references (and similar) intact.
+ */
+function prefixIds(root, prefix) {
+  const oldIds = new Set();
+  root.querySelectorAll('[id]').forEach(el => oldIds.add(el.id));
+  root.querySelectorAll('[id]').forEach(el => { el.id = prefix + el.id; });
+
+  root.querySelectorAll('*').forEach(el => {
+    ['href', 'xlink:href'].forEach(attr => {
+      const v = el.getAttribute(attr);
+      if (v && v.startsWith('#') && oldIds.has(v.slice(1)))
+        el.setAttribute(attr, '#' + prefix + v.slice(1));
+    });
+    ['fill', 'stroke', 'clip-path', 'filter', 'mask'].forEach(attr => {
+      const v = el.getAttribute(attr);
+      if (v) el.setAttribute(attr, v.replace(/url\(#([^)]+)\)/g,
+        (m, id) => oldIds.has(id) ? `url(#${prefix}${id})` : m));
+    });
+    const s = el.getAttribute('style');
+    if (s) el.setAttribute('style', s.replace(/url\(#([^)]+)\)/g,
+      (m, id) => oldIds.has(id) ? `url(#${prefix}${id})` : m));
+  });
+}
+
+/** Returns true when Web Share API with file support is available. */
+function canShareFiles() {
+  try {
+    return typeof navigator.canShare === 'function' &&
+      navigator.canShare({ files: [new File([''], 'test.png', { type: 'image/png' })] });
+  } catch {
+    return false;
+  }
+}
+
+/** True on touch-primary devices — used to prefer share over clipboard on mobile. */
+function isMobile() {
+  return navigator.maxTouchPoints > 0;
+}
+
+/** Sets the primary export button label based on platform capabilities. */
+function updateExportPngBtnLabel() {
+  if (isMobile() && canShareFiles()) {
+    exportPngBtn.textContent = 'Share PNG';
+  } else if (navigator.clipboard && window.ClipboardItem) {
+    exportPngBtn.textContent = 'Copy PNG';
+  } else if (canShareFiles()) {
+    exportPngBtn.textContent = 'Share PNG';
+  } else {
+    exportPngBtn.textContent = 'Download PNG';
+  }
+}
+
+/**
+ * Deep-clones the rendered output into the preview pane with current theme/font/size settings.
+ * The clone has max-height and overflow:hidden so it exactly mirrors what will be captured.
+ */
+function refreshExportPreview() {
+  const { width, maxHeight } = getLogicalDims();
+  const isDark = exportTheme === 'dark';
+  const clone = renderedOutput.cloneNode(true);
+  prefixIds(clone, 'prev-');
+
+  const innerMaxH = maxHeight - 64; // subtract 2×32px padding
+  Object.assign(clone.style, {
+    width: `${width}px`,
+    padding: '32px',
+    boxSizing: 'border-box',
+    fontSize: `${exportFontSize}px`,
+    lineHeight: '1.6',
+    background: isDark ? '#0f172a' : '#ffffff',
+    color: isDark ? '#e2e8f0' : '#1e293b',
+    maxHeight: `${innerMaxH}px`,
+    overflow: 'hidden',
+  });
+
+  if (!isDark) {
+    clone.querySelectorAll('pre, code').forEach(el => {
+      el.style.background = '#f1f5f9';
+      el.style.color = '#1e293b';
+    });
+    clone.querySelectorAll('a').forEach(el => {
+      el.style.color = '#2563eb';
+    });
+  }
+
+  exportPreview.innerHTML = '';
+  exportPreview.appendChild(clone);
+  scalePreview();
+  updateDimsDisplay();
+}
+
+/** Scales the preview clone to fit the container width without horizontal scroll. */
+function scalePreview() {
+  const clone = exportPreview.firstElementChild;
+  if (!clone) return;
+  clone.style.transform = '';
+  const naturalW = clone.scrollWidth;
+  const containerW = exportPreview.parentElement.clientWidth - 2; // -2 for border
+  if (naturalW > containerW) {
+    const scale = containerW / naturalW;
+    clone.style.transform = `scale(${scale})`;
+    clone.style.transformOrigin = 'top left';
+    exportPreview.style.height = `${clone.offsetHeight * scale}px`;
+  } else {
+    exportPreview.style.height = '';
+  }
+}
+
+/** Opens the export modal, flushing any pending render first. */
+async function openExportModal() {
+  clearTimeout(renderTimer);
+  await render();
+  updateExportPngBtnLabel();
+  exportStatus.textContent = '';
+  exportModal.showModal();
+  // Refresh after showModal so the dialog is in the layout and scrollHeight is correct
+  refreshExportPreview();
+}
+
+/**
+ * Builds an off-screen DOM node for html-to-image capture.
+ * Caller must remove it from the document in a finally block.
+ */
+/**
+ * Temporarily applies export styles directly to renderedOutput, captures it,
+ * then restores the original styles. Must be done this way because html-to-image
+ * reads computed styles (including MathJax layout) at call time — using the
+ * library's `style` option applies overrides AFTER freezing computed styles,
+ * which breaks MathJax CHTML's em-based positioning.
+ */
+async function captureExport() {
+  const { width, maxHeight } = getLogicalDims();
+  const isDark = exportTheme === 'dark';
+  const bg = isDark ? '#0f172a' : '#ffffff';
+  const el = renderedOutput;
+
+  const savedStyle = el.getAttribute('style'); // null if no style attr
+  Object.assign(el.style, {
+    width: `${width}px`,
+    margin: '0',            // remove auto-centering so capture aligns to left edge
+    padding: '32px',
+    boxSizing: 'border-box',
+    fontSize: `${exportFontSize}px`,
+    lineHeight: '1.6',
+    background: bg,
+    color: isDark ? '#e2e8f0' : '#1e293b',
+    maxHeight: `${maxHeight - 64}px`,
+    overflow: 'hidden',
+  });
+
+  // Force layout flush so MathJax CHTML reflows before html-to-image reads styles
+  el.getBoundingClientRect();
+
+  // Light theme: inject a temporary <style> for descendant color overrides
+  let lightSheet = null;
+  if (!isDark) {
+    lightSheet = document.createElement('style');
+    lightSheet.textContent =
+      '#rendered-output pre,#rendered-output code{background:#f1f5f9!important;color:#1e293b!important}' +
+      '#rendered-output a{color:#2563eb!important}';
+    document.head.appendChild(lightSheet);
+  }
+
+  try {
+    const opts = { pixelRatio: exportPixelRatio, backgroundColor: bg };
+    const blob = await htmlToImage.toBlob(el, opts);
+    if (!blob) throw new Error('html-to-image returned null blob');
+    return blob;
+  } finally {
+    if (savedStyle !== null) el.setAttribute('style', savedStyle);
+    else el.removeAttribute('style');
+    if (lightSheet) lightSheet.remove();
+  }
+}
+
+/** Triggers a file download from a Blob. */
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+/** Exports the rendered content as PNG: share on mobile, copy on desktop, download as fallback. */
+async function exportPng() {
+  exportStatus.textContent = 'Generating image\u2026';
+  exportPngBtn.disabled = true;
+  try {
+    const blob = await captureExport();
+    const file = new File([blob], 'mdmath.png', { type: 'image/png' });
+
+    // On mobile, prefer share sheet (richer UX). On desktop, prefer clipboard
+    // because Windows/Chrome's share sheet copies as a file, not image pixels.
+    if (isMobile() && canShareFiles()) {
+      await navigator.share({ files: [file] });
+      exportStatus.textContent = 'Shared.';
+    } else if (navigator.clipboard && window.ClipboardItem) {
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      exportStatus.textContent = 'PNG copied to clipboard.';
+    } else if (canShareFiles()) {
+      await navigator.share({ files: [file] });
+      exportStatus.textContent = 'Shared.';
+    } else {
+      downloadBlob(blob, 'mdmath.png');
+      exportStatus.textContent = 'Image downloaded.';
+    }
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      console.error('PNG export failed:', err);
+      exportStatus.textContent = `Export failed: ${err.message}`;
+    } else {
+      exportStatus.textContent = '';
+    }
+  } finally {
+    exportPngBtn.disabled = false;
+  }
+}
+
+// Wire up export modal events
+document.getElementById('export-image').addEventListener('click', openExportModal);
+document.getElementById('export-modal-close').addEventListener('click', () => exportModal.close());
+exportModal.addEventListener('click', e => { if (e.target === exportModal) exportModal.close(); });
+exportModal.addEventListener('toggle', () => { if (exportModal.open) { scalePreview(); updateDimsDisplay(); } });
+window.addEventListener('resize', () => { if (exportModal.open) scalePreview(); });
+
+document.getElementById('theme-dark').addEventListener('click', () => {
+  exportTheme = 'dark';
+  document.getElementById('theme-dark').classList.add('active');
+  document.getElementById('theme-light').classList.remove('active');
+  refreshExportPreview();
+});
+
+document.getElementById('theme-light').addEventListener('click', () => {
+  exportTheme = 'light';
+  document.getElementById('theme-light').classList.add('active');
+  document.getElementById('theme-dark').classList.remove('active');
+  refreshExportPreview();
+});
+
+fontSizeSlider.addEventListener('input', () => {
+  exportFontSize = Number(fontSizeSlider.value);
+  fontSizeVal.textContent = exportFontSize;
+  refreshExportPreview();
+});
+
+pixelRatioSlider.addEventListener('input', () => {
+  exportPixelRatio = Number(pixelRatioSlider.value);
+  refreshExportPreview();
+});
+
+exportPngBtn.addEventListener('click', exportPng);
