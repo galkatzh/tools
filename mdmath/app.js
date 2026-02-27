@@ -311,7 +311,7 @@ function prefixIds(root, prefix) {
   });
 }
 
-/** Returns true when Web Share API with file support is available (mobile). */
+/** Returns true when Web Share API with file support is available. */
 function canShareFiles() {
   try {
     return typeof navigator.canShare === 'function' &&
@@ -321,12 +321,19 @@ function canShareFiles() {
   }
 }
 
+/** True on touch-primary devices — used to prefer share over clipboard on mobile. */
+function isMobile() {
+  return navigator.maxTouchPoints > 0;
+}
+
 /** Sets the primary export button label based on platform capabilities. */
 function updateExportPngBtnLabel() {
-  if (canShareFiles()) {
+  if (isMobile() && canShareFiles()) {
     exportPngBtn.textContent = 'Share PNG';
   } else if (navigator.clipboard && window.ClipboardItem) {
     exportPngBtn.textContent = 'Copy PNG';
+  } else if (canShareFiles()) {
+    exportPngBtn.textContent = 'Share PNG';
   } else {
     exportPngBtn.textContent = 'Download PNG';
   }
@@ -477,12 +484,17 @@ async function exportPng() {
     const blob = await captureExport();
     const file = new File([blob], 'mdmath.png', { type: 'image/png' });
 
-    if (canShareFiles()) {
-      await navigator.share({ files: [file], title: 'Rendered math' });
+    // On mobile, prefer share sheet (richer UX). On desktop, prefer clipboard
+    // because Windows/Chrome's share sheet copies as a file, not image pixels.
+    if (isMobile() && canShareFiles()) {
+      await navigator.share({ files: [file] });
       exportStatus.textContent = 'Shared.';
     } else if (navigator.clipboard && window.ClipboardItem) {
       await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
       exportStatus.textContent = 'PNG copied to clipboard.';
+    } else if (canShareFiles()) {
+      await navigator.share({ files: [file] });
+      exportStatus.textContent = 'Shared.';
     } else {
       downloadBlob(blob, 'mdmath.png');
       exportStatus.textContent = 'Image downloaded.';
@@ -553,7 +565,7 @@ async function exportSticker() {
     const filename = `sticker.${ext}`;
 
     if (canShareFiles()) {
-      await navigator.share({ files: [new File([blob], filename, { type: blob.type })], title: 'Math sticker' });
+      await navigator.share({ files: [new File([blob], filename, { type: blob.type })] });
       exportStatus.textContent = `Sticker shared (${Math.round(blob.size / 1024)}KB ${ext.toUpperCase()}).`;
     } else {
       downloadBlob(blob, filename);
