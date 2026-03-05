@@ -32,11 +32,20 @@
   var tiltLblLeft = document.getElementById("tilt-lbl-left");
   var tiltLblRight = document.getElementById("tilt-lbl-right");
 
+  // Looper DOM
+  var loopRecBtn = document.getElementById("loop-rec");
+  var loopStopBtn = document.getElementById("loop-stop");
+  var loopPlayBtn = document.getElementById("loop-play");
+  var loopClearBtn = document.getElementById("loop-clear");
+  var loopFill = document.getElementById("loop-fill");
+  var loopStatusEl = document.getElementById("loop-status");
+
   // =========================================================================
   //  AudioContext — created at page load, resumed on first user gesture
   // =========================================================================
 
   var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  Tone.setContext(audioCtx);
 
   // =========================================================================
   //  Drum sample synthesis
@@ -110,6 +119,8 @@
 
     pads[index].classList.add("active");
     setTimeout(function () { pads[index].classList.remove("active"); }, 120);
+
+    captureLoopEvent(index);
   }
 
   // =========================================================================
@@ -273,6 +284,174 @@
   }
 
   function recalibrate() { refBeta = null; refGamma = null; }
+
+  // =========================================================================
+  //  Loop pedal — event sequencer backed by Tone.Transport
+  //
+  //  Workflow (like a guitar loop pedal):
+  //    1. Press REC → start capturing pad hits with timestamps
+  //    2. Press REC again → set loop length, begin looped playback + overdub
+  //    3. Keep playing → new hits layer on top each pass
+  //    4. Press REC → exit overdub (playback continues)
+  //    5. Press STOP → silence   |   PLAY → resume   |   CLEAR → reset
+  // =========================================================================
+
+  var loopEvents = [];       // [{pad, time}] — time in seconds from loop start
+  var loopDuration = 0;      // seconds; set when first recording pass ends
+  var loopState = "idle";    // idle | recording | overdubbing | playing
+  var recordStartTime = 0;   // Tone.now() when recording began
+  var loopTickId = null;     // rAF id for progress / status updates
+  var scheduledIds = [];     // Tone.Transport event IDs for cleanup
+
+  /** Play a pad sound at the current moment (used by the sequencer). */
+  function playPadNow(index) {
+    var buffer = sampleBuffers[index];
+    if (!buffer) return;
+    var src = audioCtx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(audioCtx.destination);
+    src.start();
+    pads[index].classList.add("active");
+    setTimeout(function () { pads[index].classList.remove("active"); }, 120);
+  }
+
+  /** Capture a pad hit into the loop (no-op unless recording/overdubbing). */
+  function captureLoopEvent(padIndex) {
+    if (loopState !== "recording" && loopState !== "overdubbing") return;
+
+    var offset;
+    if (loopState === "recording") {
+      offset = Tone.now() - recordStartTime;
+    } else {
+      // Wrap to current position within loop
+      offset = Tone.Transport.seconds % loopDuration;
+    }
+
+    var evt = { pad: padIndex, time: offset };
+    loopEvents.push(evt);
+
+    // During overdub, schedule immediately so it plays on subsequent cycles
+    if (loopState === "overdubbing") {
+      var id = Tone.Transport.schedule(function () { playPadNow(evt.pad); }, evt.time);
+      scheduledIds.push(id);
+    }
+  }
+
+  /** Clear all Tone.Transport scheduled events and re-schedule from loopEvents. */
+  function scheduleAllEvents() {
+    scheduledIds.forEach(function (id) { Tone.Transport.clear(id); });
+    scheduledIds = [];
+    loopEvents.forEach(function (evt) {
+      var id = Tone.Transport.schedule(function () { playPadNow(evt.pad); }, evt.time);
+      scheduledIds.push(id);
+    });
+  }
+
+  /** Start the rAF tick that drives the progress bar and status text. */
+  function startTick() {
+    if (loopTickId !== null) return;
+    (function tick() {
+      switch (loopState) {
+        case "recording":
+          loopStatusEl.textContent = "REC " + (Tone.now() - recordStartTime).toFixed(1) + "s";
+          break;
+        case "overdubbing":
+        case "playing":
+          loopFill.style.width = (Tone.Transport.progress * 100) + "%";
+          break;
+        default:
+          loopFill.style.width = "0%";
+          return; // stop ticking
+      }
+      loopTickId = requestAnimationFrame(tick);
+    })();
+  }
+
+  function stopTick() {
+    if (loopTickId !== null) { cancelAnimationFrame(loopTickId); loopTickId = null; }
+    loopFill.style.width = "0%";
+  }
+
+  /** Update button active states and status label. */
+  function updateLoopUI() {
+    loopRecBtn.classList.toggle("rec-active", loopState === "recording" || loopState === "overdubbing");
+    loopPlayBtn.classList.toggle("play-active", loopState === "playing" || loopState === "overdubbing");
+    if (loopState === "idle") {
+      loopStatusEl.textContent = loopEvents.length ? loopDuration.toFixed(1) + "s loop" : "";
+    } else if (loopState === "overdubbing") {
+      loopStatusEl.textContent = "OVERDUB";
+    } else if (loopState === "playing") {
+      loopStatusEl.textContent = "PLAY";
+    }
+  }
+
+  // ---- Looper button handlers ----
+
+  loopRecBtn.onclick = function () {
+    switch (loopState) {
+      case "idle":
+        recordStartTime = Tone.now();
+        loopEvents = [];
+        loopDuration = 0;
+        loopState = "recording";
+        startTick();
+        break;
+      case "recording":
+        loopDuration = Tone.now() - recordStartTime;
+        if (loopDuration < 0.2) return; // ignore accidental double-tap
+        Tone.Transport.loop = true;
+        Tone.Transport.loopStart = 0;
+        Tone.Transport.loopEnd = loopDuration;
+        scheduleAllEvents();
+        Tone.Transport.start();
+        loopState = "overdubbing";
+        break;
+      case "overdubbing":
+        loopState = "playing";
+        break;
+      case "playing":
+        loopState = "overdubbing";
+        break;
+    }
+    updateLoopUI();
+  };
+
+  loopStopBtn.onclick = function () {
+    if (loopState === "idle") return;
+    if (loopState === "recording") {
+      loopEvents = [];
+      loopDuration = 0;
+    }
+    Tone.Transport.stop();
+    Tone.Transport.cancel();
+    scheduledIds = [];
+    stopTick();
+    loopState = "idle";
+    updateLoopUI();
+  };
+
+  loopPlayBtn.onclick = function () {
+    if (loopState !== "idle" || !loopEvents.length || !loopDuration) return;
+    Tone.Transport.loop = true;
+    Tone.Transport.loopStart = 0;
+    Tone.Transport.loopEnd = loopDuration;
+    scheduleAllEvents();
+    Tone.Transport.start();
+    loopState = "playing";
+    startTick();
+    updateLoopUI();
+  };
+
+  loopClearBtn.onclick = function () {
+    Tone.Transport.stop();
+    Tone.Transport.cancel();
+    scheduledIds = [];
+    loopEvents = [];
+    loopDuration = 0;
+    stopTick();
+    loopState = "idle";
+    updateLoopUI();
+  };
 
   // =========================================================================
   //  Start
