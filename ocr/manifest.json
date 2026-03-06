@@ -1,0 +1,13 @@
+{
+  "name": "OCR",
+  "short_name": "OCR",
+  "description": "Extract text from images and PDFs using PaddleOCR",
+  "start_url": "/ocr/",
+  "scope": "/ocr/",
+  "display": "standalone",
+  "theme_color": "#1a1a2e",
+  "background_color": "#f5f5f7",
+  "icons": [
+    { "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

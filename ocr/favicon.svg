@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <rect width="100" height="100" rx="20" fill="#0071e3"/>
+  <text x="50" y="40" text-anchor="middle" font-family="system-ui,sans-serif" font-weight="700" font-size="22" fill="#fff">OCR</text>
+  <rect x="20" y="52" width="60" height="3" rx="1.5" fill="#fff" opacity=".6"/>
+  <rect x="20" y="60" width="45" height="3" rx="1.5" fill="#fff" opacity=".6"/>
+  <rect x="20" y="68" width="55" height="3" rx="1.5" fill="#fff" opacity=".6"/>
+  <rect x="20" y="76" width="35" height="3" rx="1.5" fill="#fff" opacity=".6"/>
+</svg>

@@ -1,0 +1,112 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #f5f5f7;
+  --surface: #fff;
+  --text: #1d1d1f;
+  --muted: #86868b;
+  --accent: #0071e3;
+  --border: #d2d2d7;
+  --radius: 12px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100dvh;
+}
+
+#app {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.subtitle {
+  text-align: center;
+  color: var(--muted);
+  margin: 0.25rem 0 1.5rem;
+}
+
+/* ── Drop zone ── */
+
+.drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 3rem 1rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  color: var(--muted);
+}
+
+.drop-zone:hover,
+.drop-zone.active {
+  border-color: var(--accent);
+  background: rgba(0, 113, 227, 0.04);
+}
+
+/* ── Status ── */
+
+.status {
+  text-align: center;
+  padding: 1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* ── Results ── */
+
+.results {
+  margin-top: 1rem;
+  background: var(--surface);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.results-header h2 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 0.4rem 1rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.btn:hover { opacity: 0.85; }
+
+#output {
+  padding: 1rem;
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.hidden { display: none !important; }
