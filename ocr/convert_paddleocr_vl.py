@@ -2,11 +2,12 @@
 """
 Convert PaddleOCR-VL 0.9B to ONNX format.
 
-Exports 4 ONNX models:
-  1. patch_embed.onnx      - Conv2d patch embedding (3x14x14 -> 1152)
-  2. vision_encoder.onnx   - Vision transformer encoder (no RoPE, no flash attn)
-  3. vision_projector.onnx - MLP projector (1152*4 -> 1024, with 2x2 spatial merge)
-  4. decoder.onnx          - Full LLM: embed_tokens + transformer + lm_head
+Exports 5 ONNX models:
+  1. patch_embed.onnx       - Conv2d patch embedding (3x14x14 -> 1152)
+  2. vision_encoder.onnx    - Vision transformer encoder (no RoPE, no flash attn)
+  3. vision_projector.onnx  - MLP projector (1152*4 -> 1024, with 2x2 spatial merge)
+  4. decoder_prefill.onnx   - LLM prefill: full prompt → logits + KV cache
+  5. decoder_decode.onnx    - LLM decode: 1 token + KV cache → logits + updated cache
 
 Position encoding interpolation and 3D RoPE computation are NOT included in the
 ONNX models - they must be done in the inference runtime. See the `verify_pipeline`
@@ -22,9 +23,6 @@ Usage:
 import argparse
 import json
 import os
-import shutil
-from pathlib import Path
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -136,20 +134,23 @@ class VisionProjectorWrapper(nn.Module):
         return x  # [N/4, 1024]
 
 
-class DecoderWrapper(nn.Module):
-    """Full LLM decoder: embed_tokens -> transformer -> lm_head.
+class DecoderPrefillWrapper(nn.Module):
+    """LLM decoder prefill: processes full prompt, returns logits + KV cache.
 
     Input:  input_ids      [1, seq_len]       token ids
             position_ids   [3, 1, seq_len]    3D RoPE positions (t, h, w)
             attention_mask  [1, seq_len]       1=attend, 0=ignore
     Output: logits         [1, seq_len, vocab] raw logits
+            past_key_N     [1, num_kv_heads, seq_len, head_dim]  per layer
+            past_value_N   [1, num_kv_heads, seq_len, head_dim]  per layer
     """
 
-    def __init__(self, embed_tokens, transformer, lm_head):
+    def __init__(self, embed_tokens, transformer, lm_head, num_layers):
         super().__init__()
         self.embed_tokens = embed_tokens
         self.transformer = transformer
         self.lm_head = lm_head
+        self.num_layers = num_layers
 
     def forward(self, input_ids, position_ids, attention_mask):
         embeds = self.embed_tokens(input_ids)
@@ -158,12 +159,74 @@ class DecoderWrapper(nn.Module):
             inputs_embeds=embeds,
             position_ids=position_ids,
             attention_mask=attention_mask,
-            use_cache=False,
+            use_cache=True,
             output_attentions=False,
             output_hidden_states=False,
             return_dict=True,
         )
-        return self.lm_head(out.last_hidden_state)
+        logits = self.lm_head(out.last_hidden_state)
+        # Flatten KV cache: (k0, v0, k1, v1, ..., kN, vN)
+        cache = out.past_key_values
+        kv_flat = []
+        for i in range(self.num_layers):
+            kv_flat.append(cache.key_cache[i])
+            kv_flat.append(cache.value_cache[i])
+        return (logits, *kv_flat)
+
+
+class DecoderDecodeWrapper(nn.Module):
+    """LLM decoder single-step: processes one token with KV cache.
+
+    Input:  input_ids      [1, 1]             single token id
+            position_ids   [3, 1, 1]          3D RoPE position for this step
+            attention_mask  [1, past_len + 1]  full attention mask
+            past_key_N     [1, num_kv_heads, past_len, head_dim]  per layer
+            past_value_N   [1, num_kv_heads, past_len, head_dim]  per layer
+    Output: logits         [1, 1, vocab]       logits for next token
+            new_key_N      [1, num_kv_heads, past_len+1, head_dim]  per layer
+            new_value_N    [1, num_kv_heads, past_len+1, head_dim]  per layer
+    """
+
+    def __init__(self, embed_tokens, transformer, lm_head, num_layers):
+        super().__init__()
+        self.embed_tokens = embed_tokens
+        self.transformer = transformer
+        self.lm_head = lm_head
+        self.num_layers = num_layers
+
+    def forward(self, input_ids, position_ids, attention_mask, *past_kv_flat):
+        """past_kv_flat: k0, v0, k1, v1, ..., kN, vN as positional args."""
+        from transformers import DynamicCache
+
+        # Reconstruct DynamicCache from flat tensor args
+        past_kv = DynamicCache()
+        for i in range(self.num_layers):
+            past_kv.update(
+                past_kv_flat[2 * i],      # key
+                past_kv_flat[2 * i + 1],  # value
+                layer_idx=i,
+            )
+
+        embeds = self.embed_tokens(input_ids)
+        out = self.transformer(
+            input_ids=None,
+            inputs_embeds=embeds,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+            past_key_values=past_kv,
+            use_cache=True,
+            output_attentions=False,
+            output_hidden_states=False,
+            return_dict=True,
+        )
+        logits = self.lm_head(out.last_hidden_state)
+        # Flatten updated KV cache
+        cache = out.past_key_values
+        kv_flat = []
+        for i in range(self.num_layers):
+            kv_flat.append(cache.key_cache[i])
+            kv_flat.append(cache.value_cache[i])
+        return (logits, *kv_flat)
 
 
 # ── Export Functions ────────────────────────────────────────────────────────
@@ -257,28 +320,95 @@ def export_vision_projector(model, output_dir, opset):
     )
 
 
-def export_decoder(model, output_dir, opset):
-    """Export the full LLM decoder (embed + transformer + lm_head)."""
-    print("\n── LLM decoder ──")
-    wrapper = DecoderWrapper(model.model.embed_tokens, model.model, model.lm_head)
+def export_decoder_prefill(model, output_dir, opset):
+    """Export the decoder prefill model (full prompt → logits + KV cache)."""
+    print("\n── LLM decoder (prefill) ──")
+    num_layers = model.config.num_hidden_layers
+    num_kv_heads = model.config.num_key_value_heads
+    head_dim = model.config.head_dim
+    wrapper = DecoderPrefillWrapper(
+        model.model.embed_tokens, model.model, model.lm_head, num_layers
+    )
     wrapper.eval()
 
     seq_len = 32
     dummy_ids = torch.randint(0, 1000, (1, seq_len))
     dummy_pos = torch.arange(seq_len).unsqueeze(0).unsqueeze(0).expand(3, 1, -1).clone()
     dummy_mask = torch.ones(1, seq_len, dtype=torch.long)
-    path = os.path.join(output_dir, "decoder.onnx")
+    path = os.path.join(output_dir, "decoder_prefill.onnx")
+
+    # Build I/O names and dynamic axes for KV cache outputs
+    output_names = ["logits"]
+    dynamic_axes = {
+        "input_ids": {1: "seq_len"},
+        "position_ids": {2: "seq_len"},
+        "attention_mask": {1: "seq_len"},
+        "logits": {1: "seq_len"},
+    }
+    for i in range(num_layers):
+        for kind in ("key", "value"):
+            name = f"past_{kind}_{i}"
+            output_names.append(name)
+            dynamic_axes[name] = {2: "seq_len"}
 
     return onnx_export(
         wrapper, (dummy_ids, dummy_pos, dummy_mask), path,
         input_names=["input_ids", "position_ids", "attention_mask"],
-        output_names=["logits"],
-        dynamic_axes={
-            "input_ids": {1: "seq_len"},
-            "position_ids": {2: "seq_len"},
-            "attention_mask": {1: "seq_len"},
-            "logits": {1: "seq_len"},
-        },
+        output_names=output_names,
+        dynamic_axes=dynamic_axes,
+        opset=opset,
+    )
+
+
+def export_decoder_decode(model, output_dir, opset):
+    """Export the decoder single-step model (1 token + KV cache → logits + updated cache)."""
+    print("\n── LLM decoder (decode) ──")
+    num_layers = model.config.num_hidden_layers
+    num_kv_heads = model.config.num_key_value_heads
+    head_dim = model.config.head_dim
+    wrapper = DecoderDecodeWrapper(
+        model.model.embed_tokens, model.model, model.lm_head, num_layers
+    )
+    wrapper.eval()
+
+    past_len = 32  # example past sequence length
+    dummy_ids = torch.randint(0, 1000, (1, 1))
+    dummy_pos = torch.zeros(3, 1, 1, dtype=torch.long)
+    dummy_mask = torch.ones(1, past_len + 1, dtype=torch.long)
+
+    # Build dummy KV cache inputs
+    dummy_kv = []
+    for _ in range(num_layers):
+        dummy_kv.append(torch.randn(1, num_kv_heads, past_len, head_dim))  # key
+        dummy_kv.append(torch.randn(1, num_kv_heads, past_len, head_dim))  # value
+    dummy_args = (dummy_ids, dummy_pos, dummy_mask, *dummy_kv)
+
+    path = os.path.join(output_dir, "decoder_decode.onnx")
+
+    # Build I/O names and dynamic axes
+    input_names = ["input_ids", "position_ids", "attention_mask"]
+    output_names = ["logits"]
+    dynamic_axes = {
+        "input_ids": {},
+        "position_ids": {},
+        "attention_mask": {1: "total_len"},
+        "logits": {},
+    }
+
+    for i in range(num_layers):
+        for kind in ("key", "value"):
+            in_name = f"past_{kind}_{i}"
+            out_name = f"new_{kind}_{i}"
+            input_names.append(in_name)
+            output_names.append(out_name)
+            dynamic_axes[in_name] = {2: "past_len"}
+            dynamic_axes[out_name] = {2: "total_len"}
+
+    return onnx_export(
+        wrapper, dummy_args, path,
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_axes=dynamic_axes,
         opset=opset,
     )
 
@@ -325,6 +455,8 @@ def save_metadata(model, processor, output_dir):
             "hidden_size": config.hidden_size,
             "vocab_size": config.vocab_size,
             "num_layers": config.num_hidden_layers,
+            "num_kv_heads": config.num_key_value_heads,
+            "head_dim": config.head_dim,
         },
         "special_tokens": {
             "image_token_id": config.image_token_id,
@@ -354,7 +486,8 @@ def main():
         paths.append(export_patch_embed(model, args.output_dir, args.opset))
         paths.append(export_vision_encoder(model, args.output_dir, args.opset))
         paths.append(export_vision_projector(model, args.output_dir, args.opset))
-        paths.append(export_decoder(model, args.output_dir, args.opset))
+        paths.append(export_decoder_prefill(model, args.output_dir, args.opset))
+        paths.append(export_decoder_decode(model, args.output_dir, args.opset))
 
     save_metadata(model, processor, args.output_dir)
 
@@ -376,8 +509,8 @@ def main():
     print("    5. vision_projector(encoded) → projected [N/4, 1024]")
     print("    6. Build input_ids with <image> tokens replaced by projected features")
     print("    7. Compute 3D position_ids (see get_rope_index in modeling code)")
-    print("    8. decoder(input_ids, position_ids, attention_mask) → logits")
-    print("    9. Greedy decode from logits")
+    print("    8. decoder_prefill(ids, pos, mask) → logits + KV cache")
+    print("    9. Loop: decoder_decode(next_id, pos, mask, kv) → logits + updated KV")
 
 
 if __name__ == "__main__":
