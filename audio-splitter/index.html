@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Audio Splitter</title>
+  <meta name="description" content="Separate vocals from instrumentals using SCNet AI, entirely in your browser.">
+  <meta name="theme-color" content="#1a1a2e">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js"></script>
+</head>
+<body>
+  <main id="app">
+    <h1>Audio Splitter</h1>
+    <p class="subtitle">Separate vocals from instrumentals using <a href="https://arxiv.org/abs/2401.13276" target="_blank">SCNet</a> — runs entirely in your browser.</p>
+
+    <div id="drop-zone" tabindex="0" role="button" aria-label="Upload audio file">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+      <span>Drop an audio file here or click to upload</span>
+      <input type="file" id="file-input" accept="audio/*" hidden>
+    </div>
+    <p id="file-name" class="file-name"></p>
+
+    <section id="progress" class="hidden">
+      <div class="progress-track">
+        <div id="progress-bar" class="progress-fill"></div>
+      </div>
+      <p id="progress-text" class="progress-label"></p>
+    </section>
+
+    <section id="results" class="hidden">
+      <div class="stem">
+        <h2>Vocals</h2>
+        <audio id="vocal-player" controls></audio>
+        <a id="vocal-download" class="download-btn">Download</a>
+      </div>
+      <div class="stem">
+        <h2>Instrumental</h2>
+        <audio id="instr-player" controls></audio>
+        <a id="instr-download" class="download-btn">Download</a>
+      </div>
+    </section>
+
+    <details class="settings">
+      <summary>Settings</summary>
+      <label for="model-url">ONNX Model URL</label>
+      <div class="url-row">
+        <input type="text" id="model-url" placeholder="https://huggingface.co/...scnet.onnx">
+        <button id="model-url-save">Save</button>
+      </div>
+    </details>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
