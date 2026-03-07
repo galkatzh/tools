@@ -169,8 +169,8 @@ class DecoderPrefillWrapper(nn.Module):
         cache = out.past_key_values
         kv_flat = []
         for i in range(self.num_layers):
-            kv_flat.append(cache.key_cache[i])
-            kv_flat.append(cache.value_cache[i])
+            kv_flat.append(cache.layers[i].keys)
+            kv_flat.append(cache.layers[i].values)
         return (logits, *kv_flat)
 
 
@@ -224,8 +224,8 @@ class DecoderDecodeWrapper(nn.Module):
         cache = out.past_key_values
         kv_flat = []
         for i in range(self.num_layers):
-            kv_flat.append(cache.key_cache[i])
-            kv_flat.append(cache.value_cache[i])
+            kv_flat.append(cache.layers[i].keys)
+            kv_flat.append(cache.layers[i].values)
         return (logits, *kv_flat)
 
 
