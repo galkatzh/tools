@@ -6,6 +6,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>Tilt Drums</title>
   <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/tone@14/build/Tone.js"></script>
 </head>
 <body>
   <div id="app">
@@ -21,6 +22,17 @@
         <div class="pad" data-index="2"><span class="pad-label">&#x2190; Hi-Hat</span></div>
         <div class="pad" data-index="1"><span class="pad-label">&#x2192; Snare</span></div>
         <div class="pad" data-index="3"><span class="pad-label">&#x2193; Clap</span></div>
+      </div>
+
+      <div id="looper">
+        <div id="loop-progress"><div id="loop-fill"></div></div>
+        <div id="loop-btns">
+          <button id="loop-rec" class="loop-btn" title="Record / Overdub">&#x23FA;</button>
+          <button id="loop-stop" class="loop-btn" title="Stop">&#x23F9;</button>
+          <button id="loop-play" class="loop-btn" title="Play">&#x25B6;</button>
+          <button id="loop-clear" class="loop-btn" title="Clear">&#x2715;</button>
+        </div>
+        <div id="loop-status"></div>
       </div>
 
       <div id="tilt-debug">
