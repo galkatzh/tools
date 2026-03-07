@@ -167,24 +167,50 @@ class SDblock(nn.Module):
 # ── Separation network ─────────────────────────────────────────────────────
 
 class FeatureConversion(nn.Module):
-    """Converts between time and frequency domain within the separation net."""
-    def __init__(self, channels, inverse):
+    """Converts between time/frequency domains using DFT matrix multiplication.
+
+    Uses explicit cos/sin matmuls instead of torch.fft, which isn't exportable to ONNX.
+    Precomputes DFT matrices as buffers for the expected time dimension (t_frames=474
+    corresponds to ~11s chunks at hop=1024, sr=44100).
+    """
+    def __init__(self, channels, inverse, t_frames=474):
         super().__init__()
         self.inverse = inverse
         self.channels = channels
+        T = t_frames
+        N_freq = T // 2 + 1
+
+        if not inverse:
+            # rfft DFT matrix: X[k] = (1/√T) Σ_n x[n]·e^{-2πikn/T}
+            n = torch.arange(T).float()
+            k = torch.arange(N_freq).float()
+            angles = (2 * math.pi / T) * n.unsqueeze(1) * k.unsqueeze(0)  # (T, N_freq)
+            s = 1.0 / math.sqrt(T)
+            self.register_buffer('W_re', torch.cos(angles) * s)    # (T, N_freq)
+            self.register_buffer('W_im', -torch.sin(angles) * s)   # (T, N_freq)
+        else:
+            # irfft DFT matrix with onesided symmetry scaling:
+            # DC and Nyquist counted once, middle bins counted twice
+            n = torch.arange(T).float()
+            k = torch.arange(N_freq).float()
+            angles = (2 * math.pi / T) * k.unsqueeze(1) * n.unsqueeze(0)  # (N_freq, T)
+            w = torch.ones(N_freq, 1)
+            w[1:-1] = 2.0
+            s = w / math.sqrt(T)
+            self.register_buffer('iW_re', torch.cos(angles) * s)   # (N_freq, T)
+            self.register_buffer('iW_im', torch.sin(angles) * s)   # (N_freq, T)
 
     def forward(self, x):
+        x = x.float()
         if self.inverse:
-            x = x.float()
-            x_r = x[:, :self.channels // 2, :, :]
-            x_i = x[:, self.channels // 2:, :, :]
-            x = torch.complex(x_r, x_i)
-            x = torch.fft.irfft(x, dim=3, norm="ortho")
+            C_half = self.channels // 2
+            x_r = x[:, :C_half, :, :]  # (B, C/2, F, N_freq)
+            x_i = x[:, C_half:, :, :]
+            return x_r @ self.iW_re - x_i @ self.iW_im  # (B, C/2, F, T)
         else:
-            x = x.float()
-            x = torch.fft.rfft(x, dim=3, norm="ortho")
-            x = torch.cat([x.real, x.imag], dim=1)
-        return x
+            x_real = x @ self.W_re  # (B, C, F, T) @ (T, N_freq) → (B, C, F, N_freq)
+            x_imag = x @ self.W_im
+            return torch.cat([x_real, x_imag], dim=1)  # (B, 2C, F, N_freq)
 
 
 class DualPathRNN(nn.Module):
@@ -380,8 +406,8 @@ def main():
                         help='Path to pretrained checkpoint (.th or .pth)')
     parser.add_argument('--output', type=str, default='scnet.onnx',
                         help='Output ONNX file path')
-    parser.add_argument('--opset', type=int, default=17,
-                        help='ONNX opset version (17+ for DFT support)')
+    parser.add_argument('--opset', type=int, default=18,
+                        help='ONNX opset version')
     args = parser.parse_args()
 
     # Build model
@@ -429,6 +455,7 @@ def main():
                 'spectrogram': {0: 'batch', 3: 'time'},
                 'sources': {0: 'batch', 4: 'time'},
             },
+            dynamo=False,  # Use legacy TorchScript exporter (dynamo chokes on LSTM + dynamic shapes)
         )
     except Exception as e:
         print(f"\n✗ Export failed: {e}")
