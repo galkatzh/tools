@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>STFT/iSTFT Tests</title>
+  <style>
+    body { font-family: monospace; margin: 2rem; background: #1a1a2e; color: #e0e0e0; }
+    .pass { color: #4caf50; }
+    .fail { color: #f44336; }
+    pre { margin: 0.25rem 0; }
+    h2 { color: #e94560; margin-top: 1.5rem; }
+  </style>
+</head>
+<body>
+  <h1>STFT / iSTFT Test Suite</h1>
+  <div id="results"></div>
+
+  <script type="module">
+    import {
+      fft, stft, istft, stftChannel, istftChannel,
+      N_FFT, HOP_LENGTH, N_FREQ, SAMPLE_RATE,
+    } from './audio-processor.js';
+
+    const results = document.getElementById('results');
+    let passed = 0, failed = 0;
+
+    function log(msg, ok) {
+      const el = document.createElement('pre');
+      el.className = ok ? 'pass' : 'fail';
+      el.textContent = `${ok ? '✓' : '✗'} ${msg}`;
+      results.appendChild(el);
+      if (ok) passed++; else failed++;
+    }
+
+    function heading(text) {
+      const h = document.createElement('h2');
+      h.textContent = text;
+      results.appendChild(h);
+    }
+
+    function maxDiff(a, b) {
+      let mx = 0;
+      const len = Math.min(a.length, b.length);
+      for (let i = 0; i < len; i++) mx = Math.max(mx, Math.abs(a[i] - b[i]));
+      return mx;
+    }
+
+    function mse(a, b) {
+      let sum = 0;
+      const len = Math.min(a.length, b.length);
+      for (let i = 0; i < len; i++) sum += (a[i] - b[i]) ** 2;
+      return sum / len;
+    }
+
+    function rms(a) {
+      let sum = 0;
+      for (let i = 0; i < a.length; i++) sum += a[i] ** 2;
+      return Math.sqrt(sum / a.length);
+    }
+
+    // ── Test 1: FFT of known signal ───────────────────────────────────
+    heading('FFT correctness');
+    {
+      const n = 8;
+      const re = new Float32Array([1, 0, 0, 0, 0, 0, 0, 0]);
+      const im = new Float32Array(n);
+      fft(re, im, false);
+      const allOnesRe = re.every(v => Math.abs(v - 1) < 1e-6);
+      const allZerosIm = im.every(v => Math.abs(v) < 1e-6);
+      log(`Impulse FFT: real all 1s = ${allOnesRe}`, allOnesRe);
+      log(`Impulse FFT: imag all 0s = ${allZerosIm}`, allZerosIm);
+    }
+
+    // ── Test 2: FFT → iFFT roundtrip ──────────────────────────────────
+    {
+      const n = 1024;
+      const original = new Float32Array(n);
+      for (let i = 0; i < n; i++) original[i] = Math.sin(2 * Math.PI * 440 * i / SAMPLE_RATE);
+      const re = new Float32Array(original);
+      const im = new Float32Array(n);
+      fft(re, im, false);
+      fft(re, im, true);
+      const diff = maxDiff(re, original);
+      log(`FFT roundtrip max error: ${diff.toExponential(2)} (< 1e-5)`, diff < 1e-5);
+    }
+
+    // ── Test 3: FFT of pure sine ──────────────────────────────────────
+    {
+      const n = 256;
+      const freq = 4;
+      const re = new Float32Array(n);
+      const im = new Float32Array(n);
+      for (let i = 0; i < n; i++) re[i] = Math.sin(2 * Math.PI * freq * i / n);
+      fft(re, im, false);
+      let peakBin = 0, peakVal = 0;
+      for (let i = 0; i < n; i++) {
+        const mag = Math.sqrt(re[i] ** 2 + im[i] ** 2);
+        if (mag > peakVal) { peakVal = mag; peakBin = i; }
+      }
+      log(`Sine FFT peak at bin ${peakBin} (expected ${freq})`, peakBin === freq);
+    }
+
+    // ── Test 4: STFT → iSTFT roundtrip (mono) ────────────────────────
+    heading('STFT/iSTFT roundtrip (mono)');
+    {
+      const len = SAMPLE_RATE;
+      const signal = new Float32Array(len);
+      for (let i = 0; i < len; i++) {
+        signal[i] = 0.5 * Math.sin(2 * Math.PI * 440 * i / SAMPLE_RATE)
+                   + 0.3 * Math.sin(2 * Math.PI * 1000 * i / SAMPLE_RATE);
+      }
+
+      const { real, imag } = stftChannel(signal);
+      log(`STFT produced ${real.length} frames, each ${real[0].length} bins`, real[0].length === N_FREQ);
+
+      const reconstructed = istftChannel(real, imag, len);
+      const diff = maxDiff(signal, reconstructed);
+      const error = mse(signal, reconstructed);
+      const snr = 10 * Math.log10(rms(signal) ** 2 / error);
+      log(`iSTFT max error: ${diff.toExponential(2)} (< 1e-3)`, diff < 1e-3);
+      log(`iSTFT MSE: ${error.toExponential(2)}`, error < 1e-6);
+      log(`Reconstruction SNR: ${snr.toFixed(1)} dB (> 60 dB)`, snr > 60);
+    }
+
+    // ── Test 5: Stereo STFT → iSTFT roundtrip (model format) ─────────
+    heading('Stereo STFT/iSTFT roundtrip [C=4, F, T] layout');
+    {
+      const len = SAMPLE_RATE;
+      const left = new Float32Array(len);
+      const right = new Float32Array(len);
+      for (let i = 0; i < len; i++) {
+        left[i] = 0.5 * Math.sin(2 * Math.PI * 440 * i / SAMPLE_RATE);
+        right[i] = 0.3 * Math.cos(2 * Math.PI * 880 * i / SAMPLE_RATE);
+      }
+
+      const { data, nFrames } = stft(left, right);
+      const expectedSize = 4 * N_FREQ * nFrames;
+      log(`Stereo STFT data size: ${data.length} (expected ${expectedSize})`, data.length === expectedSize);
+
+      // Verify layout: data[c * F * T + f * T + t]
+      const stride = N_FREQ * nFrames;
+      const { real: lReal, imag: lImag } = stftChannel(left);
+      let layoutOk = true;
+      for (let t = 0; t < Math.min(5, nFrames); t++) {
+        for (let f = 0; f < Math.min(5, N_FREQ); f++) {
+          const idx = f * nFrames + t;
+          if (Math.abs(data[0 * stride + idx] - lReal[t][f]) > 1e-10) layoutOk = false;
+          if (Math.abs(data[1 * stride + idx] - lImag[t][f]) > 1e-10) layoutOk = false;
+        }
+      }
+      log(`Layout [C, F, T] matches channel data`, layoutOk);
+
+      const { left: recL, right: recR } = istft(data, nFrames, len);
+      const diffL = maxDiff(left, recL);
+      const diffR = maxDiff(right, recR);
+      const mseL = mse(left, recL);
+      const mseR = mse(right, recR);
+      log(`Left channel max error: ${diffL.toExponential(2)} (< 1e-3)`, diffL < 1e-3);
+      log(`Right channel max error: ${diffR.toExponential(2)} (< 1e-3)`, diffR < 1e-3);
+      log(`Left MSE: ${mseL.toExponential(2)}`, mseL < 1e-6);
+      log(`Right MSE: ${mseR.toExponential(2)}`, mseR < 1e-6);
+    }
+
+    // ── Test 6: Longer signal (5 seconds) ─────────────────────────────
+    heading('Longer signal roundtrip (5s chirp)');
+    {
+      const len = SAMPLE_RATE * 5;
+      const signal = new Float32Array(len);
+      for (let i = 0; i < len; i++) {
+        const t = i / SAMPLE_RATE;
+        const freq = 200 + (4000 - 200) * t / 5;
+        signal[i] = 0.7 * Math.sin(2 * Math.PI * freq * t);
+      }
+
+      const { real, imag } = stftChannel(signal);
+      const reconstructed = istftChannel(real, imag, len);
+      const diff = maxDiff(signal, reconstructed);
+      const error = mse(signal, reconstructed);
+      log(`5s chirp max error: ${diff.toExponential(2)} (< 1e-3)`, diff < 1e-3);
+      log(`5s chirp MSE: ${error.toExponential(2)}`, error < 1e-6);
+    }
+
+    // ── Test 7: Short signal edge case ────────────────────────────────
+    heading('Edge cases');
+    {
+      const len = N_FFT + 1;
+      const signal = new Float32Array(len);
+      for (let i = 0; i < len; i++) signal[i] = Math.random() * 2 - 1;
+      const { real, imag } = stftChannel(signal);
+      log(`Short signal: ${real.length} frames produced`, real.length > 0);
+      const reconstructed = istftChannel(real, imag, len);
+      const diff = maxDiff(signal, reconstructed);
+      log(`Short signal roundtrip max error: ${diff.toExponential(2)} (< 1e-2)`, diff < 1e-2);
+    }
+
+    // ── Summary ───────────────────────────────────────────────────────
+    heading('Summary');
+    log(`${passed} passed, ${failed} failed`, failed === 0);
+  </script>
+</body>
+</html>
