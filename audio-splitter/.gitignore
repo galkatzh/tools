@@ -1,0 +1,13 @@
+*.mp3
+*.wav
+*.flac
+*.ogg
+*.webm
+convert/*.th
+convert/*.ckpt
+convert/*.onnx
+convert/__pycache__/
+node_modules/
+package.json
+package-lock.json
+test_result.png

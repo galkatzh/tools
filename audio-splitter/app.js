@@ -16,7 +16,7 @@ import {
 
 /** URL to the ONNX model file. Update after uploading to HuggingFace. */
 const MODEL_URL = localStorage.getItem('scnet_model_url')
-  || 'https://huggingface.co/galkatz373/scnet-onnx/resolve/main/scnet.onnx';
+  || 'https://huggingface.co/bgkb/scnet_onnx/resolve/main/scnet.onnx';
 
 /** Process audio in 11-second chunks (matching SCNet training config). */
 const CHUNK_SECONDS = 11;
@@ -109,6 +109,12 @@ function tick() {
   return new Promise((r) => setTimeout(r, 0));
 }
 
+/** Format seconds as m:ss */
+function fmt(s) {
+  const m = Math.floor(s / 60);
+  return `${m}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+}
+
 // ── Model loading ──────────────────────────────────────────────────────────
 
 async function loadModel(url) {
@@ -159,29 +165,26 @@ async function loadModel(url) {
 // ── Audio processing pipeline ──────────────────────────────────────────────
 
 /**
- * Pad signal so that each chunk produces an even number of STFT frames.
- * SCNet's FeatureConversion uses rfft along the T axis, requiring T to be even.
+ * Zero-pad signal to exactly CHUNK_SAMPLES so STFT always produces T=474 frames.
+ * The SCNet FeatureConversion uses a fixed DFT matrix built for T=474, so every
+ * chunk (including the last, shorter one) must be padded to this length.
  */
-function padForEvenFrames(signal) {
-  const padded = signal.length + N_FFT; // center padding adds N_FFT
-  const nFrames = Math.floor(padded / HOP_LENGTH);
-  if (nFrames % 2 !== 0) {
-    const extra = HOP_LENGTH;
-    const out = new Float32Array(signal.length + extra);
-    out.set(signal);
-    return out;
-  }
-  return signal;
+function padToChunkSize(signal) {
+  if (signal.length === CHUNK_SAMPLES) return signal;
+  const out = new Float32Array(CHUNK_SAMPLES);
+  out.set(signal);
+  return out;
 }
 
 /**
  * Process a single chunk through the ONNX model.
- * @param {Float32Array} left - Left channel samples for this chunk
- * @param {Float32Array} right - Right channel samples for this chunk
+ * @param {Float32Array} left - Left channel padded to CHUNK_SAMPLES
+ * @param {Float32Array} right - Right channel padded to CHUNK_SAMPLES
+ * @param {number} originalLen - True length before padding (for iSTFT trimming)
  * @returns {{ vocalL, vocalR, instrL, instrR: Float32Array }}
  */
-async function processChunk(left, right) {
-  const chunkLen = left.length;
+async function processChunk(left, right, originalLen) {
+  const chunkLen = originalLen;
   const { data, nFrames } = stft(left, right);
 
   // Create ONNX tensor: shape [1, 4, F=2049, T=nFrames]
@@ -230,18 +233,28 @@ async function processAudio(left, right) {
   const instrL = new Float32Array(totalSamples);
   const instrR = new Float32Array(totalSamples);
 
+  const startTime = Date.now();
+
   for (let i = 0; i < nChunks; i++) {
     const start = i * step;
     const end = Math.min(start + CHUNK_SAMPLES, totalSamples);
     const chunkL = left.slice(start, end);
     const chunkR = right.slice(start, end);
 
-    showProgress(`Processing chunk ${i + 1} / ${nChunks}...`, i / nChunks);
+    // Build progress label: show ETA once first chunk completes
+    let label = `Processing chunk ${i + 1} / ${nChunks}`;
+    if (i > 0) {
+      const elapsed = (Date.now() - startTime) / 1000;
+      const eta = (elapsed / i) * (nChunks - i);
+      label += ` — ${fmt(elapsed)} elapsed, ~${fmt(eta)} remaining`;
+    }
+    showProgress(label, i / nChunks);
     await tick();
 
     const result = await processChunk(
-      padForEvenFrames(chunkL),
-      padForEvenFrames(chunkR),
+      padToChunkSize(chunkL),
+      padToChunkSize(chunkR),
+      end - start,
     );
 
     // Crossfade in the overlap region
