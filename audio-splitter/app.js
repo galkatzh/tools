@@ -156,6 +156,7 @@ async function loadModel(url) {
   }
 
   showProgress('Loading model into ONNX Runtime...', 0.95);
+  ort.env.wasm.numThreads = navigator.hardwareConcurrency || 4;
   session = await ort.InferenceSession.create(modelBytes.buffer, {
     executionProviders: ['wasm'],
   });
