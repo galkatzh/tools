@@ -503,6 +503,15 @@
 
   // ── Event binding ──────────────────────────────
 
+  // Global subdivision shortcuts — apply the same count to every beat at once.
+  // Buttons have no persistent selected state; they're one-shot shortcuts.
+  document.querySelectorAll('.sub-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var count = parseInt(btn.dataset.sub, 10);
+      for (var i = 0; i < state.tsNum; i++) setBeatSubdivisions(i, count);
+    });
+  });
+
   playBtn.addEventListener('click', togglePlay);
   tapBtn.addEventListener('click', handleTap);
   bpmSlider.addEventListener('input', function () { setBpm(parseInt(this.value, 10)); });
