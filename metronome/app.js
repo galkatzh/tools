@@ -2,12 +2,16 @@
   'use strict';
 
   // ── State ──────────────────────────────────────
+  // Accent levels: 0 = muted, 1 = normal, 2 = accented
   var state = {
     bpm: 120,
     tsNum: 4,
     tsDen: 4,
     isPlaying: false,
-    currentBeat: 0
+    currentBeat: 0,
+    currentSub: 0,
+    subdivision: 1,          // 1=off, 2=8ths, 3=triplets, 4=16ths
+    accents: [2, 1, 1, 1]    // per-beat accent levels
   };
 
   // ── Time signature presets ─────────────────────
@@ -27,11 +31,12 @@
   var tapBtn = document.getElementById('tap-btn');
   var tsPicker = document.getElementById('ts-picker');
   var tsPresetsEl = document.getElementById('ts-presets');
+  var subBtns = document.querySelectorAll('.sub-btn');
 
   // ── Audio engine ───────────────────────────────
   var audioCtx = null;
-  var SCHEDULE_AHEAD = 0.1;  // seconds lookahead
-  var TIMER_INTERVAL = 25;   // ms between scheduler ticks
+  var SCHEDULE_AHEAD = 0.1;
+  var TIMER_INTERVAL = 25;
   var nextNoteTime = 0.0;
   var timerId = null;
   var beatEls = [];
@@ -48,47 +53,77 @@
     }
   }
 
-  /** Schedule a short oscillator click at the given AudioContext time. */
-  function createClick(time, isDownbeat) {
+  /**
+   * Schedule a click at the given AudioContext time.
+   * @param {number} time - AudioContext schedule time
+   * @param {'accent'|'normal'|'muted'|'sub'} type - click type
+   */
+  function createClick(time, type) {
+    if (type === 'muted') return;
+
     var osc = audioCtx.createOscillator();
     var gain = audioCtx.createGain();
     osc.connect(gain);
     gain.connect(audioCtx.destination);
 
-    osc.frequency.value = isDownbeat ? 1000 : 800;
-    gain.gain.setValueAtTime(isDownbeat ? 1.0 : 0.5, time);
-    gain.gain.exponentialRampToValueAtTime(0.001, time + 0.03);
+    if (type === 'accent') {
+      osc.frequency.value = 1000;
+      gain.gain.setValueAtTime(1.0, time);
+    } else if (type === 'normal') {
+      osc.frequency.value = 800;
+      gain.gain.setValueAtTime(0.5, time);
+    } else {
+      // subdivision click: quieter, lower pitch
+      osc.frequency.value = 600;
+      gain.gain.setValueAtTime(0.2, time);
+    }
 
+    gain.gain.exponentialRampToValueAtTime(0.001, time + 0.03);
     osc.start(time);
     osc.stop(time + 0.03);
   }
 
   /** Beat duration in seconds, based on denominator and BPM. */
   function beatDuration() {
-    // BPM always refers to quarter-note tempo
     switch (state.tsDen) {
       case 2:  return 120.0 / state.bpm;
       case 8:  return 30.0 / state.bpm;
       case 16: return 15.0 / state.bpm;
-      default: return 60.0 / state.bpm; // /4
+      default: return 60.0 / state.bpm;
     }
   }
 
-  /** Schedule the next note and advance the beat counter. */
+  /** Schedule the next sub-note and advance counters. */
   function scheduleNote() {
-    var isDownbeat = state.currentBeat === 0;
-    createClick(nextNoteTime, isDownbeat);
+    var isMainBeat = state.currentSub === 0;
 
-    // Visual highlight synced roughly to audio time
-    var delay = Math.max(0, (nextNoteTime - audioCtx.currentTime) * 1000);
-    var beat = state.currentBeat;
-    setTimeout(function () { highlightBeat(beat); }, delay);
+    if (isMainBeat) {
+      // Determine click type from accent level
+      var accent = state.accents[state.currentBeat];
+      var type = accent === 2 ? 'accent' : accent === 1 ? 'normal' : 'muted';
+      createClick(nextNoteTime, type);
 
-    state.currentBeat = (state.currentBeat + 1) % state.tsNum;
-    nextNoteTime += beatDuration();
+      // Visual highlight synced to audio
+      var delay = Math.max(0, (nextNoteTime - audioCtx.currentTime) * 1000);
+      var beat = state.currentBeat;
+      setTimeout(function () { highlightBeat(beat); }, delay);
+    } else {
+      // Subdivision click
+      createClick(nextNoteTime, 'sub');
+    }
+
+    // Advance sub-beat, then beat
+    state.currentSub++;
+    if (state.currentSub >= state.subdivision) {
+      state.currentSub = 0;
+      state.currentBeat = (state.currentBeat + 1) % state.tsNum;
+    }
+
+    // Time to next sub-note = beat duration / subdivision
+    nextNoteTime += beatDuration() / state.subdivision;
   }
 
-  /** Lookahead scheduler — called by setInterval, schedules ahead on AudioContext. */
+  /** Lookahead scheduler. */
   function scheduler() {
     while (nextNoteTime < audioCtx.currentTime + SCHEDULE_AHEAD) {
       scheduleNote();
@@ -99,9 +134,10 @@
     ensureAudio();
     state.isPlaying = true;
     state.currentBeat = 0;
+    state.currentSub = 0;
     nextNoteTime = audioCtx.currentTime + 0.05;
     timerId = setInterval(scheduler, TIMER_INTERVAL);
-    playBtn.textContent = '\u25A0'; // stop square
+    playBtn.textContent = '\u25A0';
     playBtn.classList.add('playing');
   }
 
@@ -110,7 +146,7 @@
     clearInterval(timerId);
     timerId = null;
     clearBeatHighlights();
-    playBtn.textContent = '\u25B6'; // play triangle
+    playBtn.textContent = '\u25B6';
     playBtn.classList.remove('playing');
   }
 
@@ -121,16 +157,51 @@
 
   // ── Beat visualization ─────────────────────────
 
-  /** Rebuild beat indicator circles from current time signature. */
+  /** Rebuild beat indicators and accents array. */
   function buildBeats() {
     beatsEl.innerHTML = '';
     beatEls = [];
+
+    // Preserve existing accents where possible, default new beats to normal
+    var newAccents = [];
     for (var i = 0; i < state.tsNum; i++) {
+      if (i < state.accents.length) {
+        newAccents.push(state.accents[i]);
+      } else {
+        newAccents.push(1);
+      }
+    }
+    // First beat defaults to accented if it was before
+    if (newAccents.length > 0 && state.accents.length > 0 && state.accents[0] === 2) {
+      newAccents[0] = 2;
+    }
+    state.accents = newAccents;
+
+    for (var j = 0; j < state.tsNum; j++) {
       var el = document.createElement('div');
-      el.className = 'beat' + (i === 0 ? ' downbeat' : '');
+      el.className = 'beat';
+      applyAccentClass(el, state.accents[j]);
+      el.dataset.index = j;
+      el.addEventListener('click', onBeatClick);
       beatsEl.appendChild(el);
       beatEls.push(el);
     }
+  }
+
+  /** Apply the correct CSS class for an accent level. */
+  function applyAccentClass(el, level) {
+    el.classList.remove('accented', 'muted');
+    if (level === 2) el.classList.add('accented');
+    else if (level === 0) el.classList.add('muted');
+  }
+
+  /** Cycle accent on click: normal(1) → accented(2) → muted(0) → normal(1). */
+  function onBeatClick(e) {
+    var idx = parseInt(e.currentTarget.dataset.index, 10);
+    var current = state.accents[idx];
+    // Cycle: 1→2→0→1
+    state.accents[idx] = current === 1 ? 2 : current === 2 ? 0 : 1;
+    applyAccentClass(beatEls[idx], state.accents[idx]);
   }
 
   function highlightBeat(index) {
@@ -148,6 +219,21 @@
     }
   }
 
+  // ── Subdivision ────────────────────────────────
+
+  function setSubdivision(val) {
+    state.subdivision = val;
+    subBtns.forEach(function (btn) {
+      btn.classList.toggle('selected', parseInt(btn.dataset.sub, 10) === val);
+    });
+  }
+
+  subBtns.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      setSubdivision(parseInt(btn.dataset.sub, 10));
+    });
+  });
+
   // ── Time signature ─────────────────────────────
 
   function setTimeSignature(num, den) {
@@ -155,6 +241,13 @@
     state.tsDen = den;
     tsNumEl.textContent = num;
     tsDenEl.textContent = den;
+
+    // Reset accents: first beat accented, rest normal
+    state.accents = [];
+    for (var i = 0; i < num; i++) {
+      state.accents.push(i === 0 ? 2 : 1);
+    }
+
     buildBeats();
     updatePresetHighlight();
     if (state.isPlaying) {
@@ -214,7 +307,6 @@
     function start(e) {
       e.preventDefault();
       setBpm(state.bpm + delta);
-      // After 400ms, start repeating at 80ms intervals
       timeoutId = setTimeout(function () {
         intervalId = setInterval(function () {
           setBpm(state.bpm + delta);
@@ -271,12 +363,10 @@
   document.getElementById('time-sig-btn').addEventListener('click', openPicker);
   document.getElementById('ts-close').addEventListener('click', closePicker);
 
-  // Close picker when clicking backdrop
   tsPicker.addEventListener('click', function (e) {
     if (e.target === tsPicker) closePicker();
   });
 
-  // Custom time signature
   document.getElementById('ts-custom-ok').addEventListener('click', function () {
     var num = parseInt(document.getElementById('ts-custom-num').value, 10);
     var den = parseInt(document.getElementById('ts-custom-den').value, 10);
@@ -286,7 +376,6 @@
     }
   });
 
-  // Keyboard: spacebar toggles play
   document.addEventListener('keydown', function (e) {
     if (e.code === 'Space' && e.target === document.body) {
       e.preventDefault();

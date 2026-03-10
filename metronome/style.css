@@ -85,25 +85,76 @@ body {
   background: var(--beat-bg);
   border: 2px solid #333355;
   transition: background 0.08s, border-color 0.08s, box-shadow 0.08s;
+  cursor: pointer;
 }
 
+/* Accent level indicators (at rest) */
+.beat.accented {
+  border-color: var(--downbeat);
+  box-shadow: inset 0 0 6px rgba(255, 107, 53, 0.25);
+}
+
+.beat.muted {
+  opacity: 0.35;
+  border-style: dashed;
+}
+
+/* Active states per accent level */
 .beat.active {
   background: var(--accent);
   border-color: var(--accent);
+  border-style: solid;
   box-shadow: 0 0 14px var(--accent-glow);
   animation: beat-pulse 0.15s ease-out;
 }
 
-.beat.downbeat.active {
+.beat.accented.active {
   background: var(--downbeat);
   border-color: var(--downbeat);
   box-shadow: 0 0 14px var(--downbeat-glow);
+}
+
+.beat.muted.active {
+  background: #333355;
+  border-color: #444466;
+  border-style: solid;
+  box-shadow: none;
+  opacity: 0.6;
 }
 
 @keyframes beat-pulse {
   0%   { transform: scale(1); }
   50%  { transform: scale(1.35); }
   100% { transform: scale(1); }
+}
+
+/* ── Subdivision Selector ── */
+
+#subdivision {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.sub-btn {
+  padding: 0.35rem 0.8rem;
+  border-radius: 6px;
+  border: 2px solid var(--beat-bg);
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.sub-btn:hover, .sub-btn:active {
+  border-color: var(--accent);
+}
+
+.sub-btn.selected {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(0, 212, 255, 0.08);
 }
 
 /* ── BPM Display ── */
