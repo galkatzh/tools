@@ -141,14 +141,14 @@ class SDblock(nn.Module):
     """Sparse Down-sample block in encoder."""
     def __init__(self, channels_in, channels_out, band_configs, conv_config, depths, kernel_size=3):
         super().__init__()
-        self.sd = SDlayer(channels_in, channels_out, band_configs)
+        self.SDlayer = SDlayer(channels_in, channels_out, band_configs)
         self.conv_modules = nn.ModuleList([
             ConvolutionModule(channels_out, depth, **conv_config) for depth in depths
         ])
         self.globalconv = nn.Conv2d(channels_out, channels_out, kernel_size, 1, (kernel_size - 1) // 2)
 
     def forward(self, x):
-        bands, original_lengths = self.sd(x)
+        bands, original_lengths = self.SDlayer(x)
         bands = [
             F.gelu(
                 conv(band.permute(0, 2, 1, 3).reshape(-1, band.shape[1], band.shape[3]))
@@ -181,22 +181,22 @@ class FeatureConversion(nn.Module):
         N_freq = T // 2 + 1
 
         if not inverse:
-            # rfft DFT matrix: X[k] = (1/√T) Σ_n x[n]·e^{-2πikn/T}
+            # rfft DFT matrix matching torch.fft.rfft default (no normalization):
+            # X[k] = Σ_n x[n]·e^{-2πikn/T}
             n = torch.arange(T).float()
             k = torch.arange(N_freq).float()
             angles = (2 * math.pi / T) * n.unsqueeze(1) * k.unsqueeze(0)  # (T, N_freq)
-            s = 1.0 / math.sqrt(T)
-            self.register_buffer('W_re', torch.cos(angles) * s)    # (T, N_freq)
-            self.register_buffer('W_im', -torch.sin(angles) * s)   # (T, N_freq)
+            self.register_buffer('W_re', torch.cos(angles))    # (T, N_freq)
+            self.register_buffer('W_im', -torch.sin(angles))   # (T, N_freq)
         else:
-            # irfft DFT matrix with onesided symmetry scaling:
-            # DC and Nyquist counted once, middle bins counted twice
+            # irfft DFT matrix matching torch.fft.irfft default (1/T normalization):
+            # x[n] = (1/T) * (X[0] + 2·Σ_{k=1}^{N/2-1} X[k]·e^{2πikn/T} + X[N/2])
             n = torch.arange(T).float()
             k = torch.arange(N_freq).float()
             angles = (2 * math.pi / T) * k.unsqueeze(1) * n.unsqueeze(0)  # (N_freq, T)
             w = torch.ones(N_freq, 1)
             w[1:-1] = 2.0
-            s = w / math.sqrt(T)
+            s = w / T
             self.register_buffer('iW_re', torch.cos(angles) * s)   # (N_freq, T)
             self.register_buffer('iW_im', torch.sin(angles) * s)   # (N_freq, T)
 
@@ -363,9 +363,9 @@ class SCNetCore(nn.Module):
             x = su_layer(x, lengths_list.pop(), orig_lengths_list.pop())
 
         # Reshape to (B, n_sources, C=4, Fr, T) and denormalize
-        n = self.dims[0]  # 4
-        x = x.view(B, n, -1, Fr, T)        # (B, 4, S, Fr, T)
-        x = x.permute(0, 2, 1, 3, 4)       # (B, S, 4, Fr, T)
+        # Decoder outputs sources grouped: [src0_ch0..ch3, src1_ch0..ch3, ...]
+        C = self.dims[0]  # 4 (audio_channels * 2 = real+imag for L and R)
+        x = x.view(B, self.n_sources, C, Fr, T)  # (B, S, 4, Fr, T)
         x = x * std.unsqueeze(1) + mean.unsqueeze(1)
         return x
 
@@ -377,12 +377,9 @@ def load_official_checkpoint(path):
     ckpt = torch.load(path, map_location='cpu', weights_only=False)
     # Official repo saves entire model state or {'state': ..., 'optimizer': ...}
     if isinstance(ckpt, dict):
-        if 'state' in ckpt:
-            return ckpt['state']
-        if 'model_state_dict' in ckpt:
-            return ckpt['model_state_dict']
-        if 'state_dict' in ckpt:
-            return ckpt['state_dict']
+        for key in ('best_state', 'state', 'model_state_dict', 'state_dict'):
+            if key in ckpt:
+                return ckpt[key]
     return ckpt
 
 
@@ -455,7 +452,6 @@ def main():
                 'spectrogram': {0: 'batch', 3: 'time'},
                 'sources': {0: 'batch', 4: 'time'},
             },
-            dynamo=False,  # Use legacy TorchScript exporter (dynamo chokes on LSTM + dynamic shapes)
         )
     except Exception as e:
         print(f"\n✗ Export failed: {e}")
