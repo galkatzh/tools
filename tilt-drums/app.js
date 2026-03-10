@@ -45,6 +45,11 @@
   // =========================================================================
 
   var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  // Tell iOS to play audio even when the device is on silent.
+  // navigator.audioSession is a Safari-only API; no-op on other browsers.
+  if (navigator.audioSession) {
+    navigator.audioSession.type = 'playback';
+  }
   Tone.setContext(audioCtx);
 
   // =========================================================================
