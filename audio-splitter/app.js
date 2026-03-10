@@ -1,8 +1,9 @@
 /**
  * Audio Splitter — separate vocals from instrumentals using SCNet + ONNX Runtime.
  *
- * Pipeline: Upload → Decode → Chunk → STFT → ONNX inference → iSTFT → Output
+ * Pipeline: Upload → Decode → Chunk → Worker (STFT → ONNX → iSTFT) → Crossfade → Output
  *
+ * Chunks are distributed across N parallel Web Workers, each owning an ONNX session.
  * The SCNet model separates audio into 4 stems: drums, bass, other, vocals.
  * We combine drums+bass+other as "instrumental" and keep vocals as "acapella".
  */
@@ -25,9 +26,6 @@ const CHUNK_SAMPLES = CHUNK_SECONDS * SAMPLE_RATE;
 /** 1-second overlap between adjacent chunks for crossfade. */
 const OVERLAP_SAMPLES = 1 * SAMPLE_RATE;
 
-/** Source indices in model output (drums=0, bass=1, other=2, vocals=3). */
-const VOCAL_IDX = 3;
-
 // ── DOM elements ───────────────────────────────────────────────────────────
 
 const $ = (s) => document.querySelector(s);
@@ -45,11 +43,20 @@ const el = {
   instrDl: $('#instr-download'),
   modelUrl: $('#model-url'),
   modelUrlSave: $('#model-url-save'),
+  workerCount: $('#worker-count'),
+  workerCountVal: $('#worker-count-val'),
 };
 
 // ── State ──────────────────────────────────────────────────────────────────
 
-let session = null;  // ONNX InferenceSession
+let modelBytes = null;  // Uint8Array — kept for worker initialization
+let workers    = [];    // ChunkWorker instances, created on model load
+
+// ── Worker settings ────────────────────────────────────────────────────────
+
+function getNumWorkers() {
+  return parseInt(localStorage.getItem('scnet_num_workers') || '2', 10);
+}
 
 // ── IndexedDB model cache ──────────────────────────────────────────────────
 
@@ -100,8 +107,9 @@ function showProgress(text, fraction) {
   el.progressBar.style.width = `${Math.round(fraction * 100)}%`;
 }
 
-function hideProgress() {
-  el.progress.classList.add('hidden');
+function showCompletion(elapsed) {
+  el.progressText.textContent = `Done in ${fmt(elapsed)}`;
+  el.progressBar.style.width = '100%';
 }
 
 /** Yield control to the browser so the UI can repaint. */
@@ -115,12 +123,57 @@ function fmt(s) {
   return `${m}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 }
 
+// ── Web Worker pool ────────────────────────────────────────────────────────
+
+/**
+ * Wraps a splitter-worker.js Web Worker with a Promise-based API.
+ * Each worker loads its own ONNX session and processes one chunk at a time.
+ */
+class ChunkWorker {
+  constructor(bytes) {
+    this._pending = new Map();
+    this.worker = new Worker(new URL('./splitter-worker.js', import.meta.url), { type: 'module' });
+    this.worker.onmessage = ({ data }) => {
+      if (data.type === 'ready') {
+        this._pending.get('init')?.resolve(); this._pending.delete('init');
+      } else if (data.type === 'result') {
+        this._pending.get(data.chunkIdx)?.resolve(data); this._pending.delete(data.chunkIdx);
+      } else if (data.type === 'error') {
+        const key = data.chunkIdx ?? 'init';
+        this._pending.get(key)?.reject(new Error(data.message)); this._pending.delete(key);
+      }
+    };
+    this.worker.onerror = (e) => {
+      console.error('[ChunkWorker]', e);
+      for (const { reject } of this._pending.values()) reject(new Error(e.message));
+      this._pending.clear();
+    };
+    this.ready = new Promise((resolve, reject) => this._pending.set('init', { resolve, reject }));
+    // Copy model bytes for this worker (each needs its own copy for its ORT session)
+    const copy = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(copy).set(bytes);
+    this.worker.postMessage({ type: 'init', modelBytes: copy }, [copy]);
+  }
+
+  process(left, right, originalLen, chunkIdx) {
+    return new Promise((resolve, reject) => {
+      this._pending.set(chunkIdx, { resolve, reject });
+      this.worker.postMessage(
+        { type: 'process', chunkIdx, originalLen, leftData: left.buffer, rightData: right.buffer },
+        [left.buffer, right.buffer],
+      );
+    });
+  }
+
+  terminate() { this.worker.terminate(); }
+}
+
 // ── Model loading ──────────────────────────────────────────────────────────
 
 async function loadModel(url) {
   showProgress('Checking model cache...', 0);
 
-  let modelBytes = await getCachedModel(url);
+  modelBytes = await getCachedModel(url);
 
   if (!modelBytes) {
     showProgress('Downloading model...', 0);
@@ -147,19 +200,14 @@ async function loadModel(url) {
 
     modelBytes = new Uint8Array(received);
     let offset = 0;
-    for (const chunk of chunks) {
-      modelBytes.set(chunk, offset);
-      offset += chunk.length;
-    }
-
+    for (const chunk of chunks) { modelBytes.set(chunk, offset); offset += chunk.length; }
     await setCachedModel(url, modelBytes);
   }
 
-  showProgress('Loading model into ONNX Runtime...', 0.95);
-  ort.env.wasm.numThreads = navigator.hardwareConcurrency || 4;
-  session = await ort.InferenceSession.create(modelBytes.buffer, {
-    executionProviders: ['wasm'],
-  });
+  const n = getNumWorkers();
+  showProgress(`Initializing ${n} worker${n > 1 ? 's' : ''}…`, 0.95);
+  workers = Array.from({ length: n }, () => new ChunkWorker(modelBytes));
+  await Promise.all(workers.map(w => w.ready));
   showProgress('Model loaded', 1);
 }
 
@@ -178,114 +226,74 @@ function padToChunkSize(signal) {
 }
 
 /**
- * Process a single chunk through the ONNX model.
- * @param {Float32Array} left - Left channel padded to CHUNK_SAMPLES
- * @param {Float32Array} right - Right channel padded to CHUNK_SAMPLES
- * @param {number} originalLen - True length before padding (for iSTFT trimming)
- * @returns {{ vocalL, vocalR, instrL, instrR: Float32Array }}
- */
-async function processChunk(left, right, originalLen) {
-  const chunkLen = originalLen;
-  const { data, nFrames } = stft(left, right);
-
-  // Create ONNX tensor: shape [1, 4, F=2049, T=nFrames]
-  const inputTensor = new ort.Tensor('float32', data, [1, 4, N_FREQ, nFrames]);
-  const results = await session.run({ spectrogram: inputTensor });
-  const output = results.sources;
-
-  // Output shape: [1, 4, 4, F, T] = [B, S=4, C=4, F=2049, T]
-  const S = 4;          // drums, bass, other, vocals
-  const sourceStride = 4 * N_FREQ * nFrames;
-
-  // Extract vocals
-  const vocalData = output.data.slice(VOCAL_IDX * sourceStride, (VOCAL_IDX + 1) * sourceStride);
-  const vocal = istft(new Float32Array(vocalData), nFrames, chunkLen);
-
-  // Sum drums + bass + other for instrumental
-  const instrData = new Float32Array(sourceStride);
-  for (let s = 0; s < S; s++) {
-    if (s === VOCAL_IDX) continue;
-    const srcOffset = s * sourceStride;
-    for (let i = 0; i < sourceStride; i++) {
-      instrData[i] += output.data[srcOffset + i];
-    }
-  }
-  const instr = istft(instrData, nFrames, chunkLen);
-
-  return {
-    vocalL: vocal.left, vocalR: vocal.right,
-    instrL: instr.left, instrR: instr.right,
-  };
-}
-
-/**
- * Split audio into chunks with overlap, process each, and crossfade.
+ * Distribute chunks across the worker pool, collect results, then merge with crossfade.
  * @param {Float32Array} left - Full left channel
  * @param {Float32Array} right - Full right channel
+ * @returns {{ vocalL, vocalR, instrL, instrR: Float32Array, elapsed: number }}
  */
 async function processAudio(left, right) {
   const totalSamples = left.length;
   const step = CHUNK_SAMPLES - OVERLAP_SAMPLES;
   const nChunks = Math.ceil((totalSamples - OVERLAP_SAMPLES) / step);
 
-  // Output buffers
   const vocalL = new Float32Array(totalSamples);
   const vocalR = new Float32Array(totalSamples);
   const instrL = new Float32Array(totalSamples);
   const instrR = new Float32Array(totalSamples);
 
+  const results = new Array(nChunks);
+  const queue   = Array.from({ length: nChunks }, (_, i) => i);
   const startTime = Date.now();
+  let completed = 0;
 
+  // Each worker pulls from the queue until empty
+  await Promise.all(workers.map(async (worker) => {
+    while (queue.length > 0) {
+      const i = queue.shift();
+      const start = i * step;
+      const end   = Math.min(start + CHUNK_SAMPLES, totalSamples);
+
+      results[i] = await worker.process(
+        padToChunkSize(left.slice(start, end)),
+        padToChunkSize(right.slice(start, end)),
+        end - start,
+        i,
+      );
+
+      completed++;
+      const elapsed = (Date.now() - startTime) / 1000;
+      const eta = completed < nChunks ? (elapsed / completed) * (nChunks - completed) : 0;
+      const label = `Processing chunk ${completed} / ${nChunks}`
+        + (completed < nChunks ? ` — ${fmt(elapsed)} elapsed, ~${fmt(eta)} remaining` : '');
+      showProgress(label, completed / nChunks);
+      await tick();
+    }
+  }));
+
+  // Merge results with crossfade at overlap boundaries
   for (let i = 0; i < nChunks; i++) {
     const start = i * step;
-    const end = Math.min(start + CHUNK_SAMPLES, totalSamples);
-    const chunkL = left.slice(start, end);
-    const chunkR = right.slice(start, end);
-
-    // Build progress label: show ETA once first chunk completes
-    let label = `Processing chunk ${i + 1} / ${nChunks}`;
-    if (i > 0) {
-      const elapsed = (Date.now() - startTime) / 1000;
-      const eta = (elapsed / i) * (nChunks - i);
-      label += ` — ${fmt(elapsed)} elapsed, ~${fmt(eta)} remaining`;
-    }
-    showProgress(label, i / nChunks);
-    await tick();
-
-    const result = await processChunk(
-      padToChunkSize(chunkL),
-      padToChunkSize(chunkR),
-      end - start,
-    );
-
-    // Crossfade in the overlap region
+    const end   = Math.min(start + CHUNK_SAMPLES, totalSamples);
+    const { vocalL: vL, vocalR: vR, instrL: iL, instrR: iR } = results[i];
     const writeLen = end - start;
+
     for (let j = 0; j < writeLen; j++) {
       const pos = start + j;
       if (pos >= totalSamples) break;
-
-      // Crossfade weight: ramp down previous chunk, ramp up new chunk in overlap
-      let weight = 1;
       if (i > 0 && j < OVERLAP_SAMPLES) {
-        weight = j / OVERLAP_SAMPLES;
-      }
-
-      if (i > 0 && j < OVERLAP_SAMPLES) {
-        // Blend with previous chunk's tail
-        vocalL[pos] = vocalL[pos] * (1 - weight) + result.vocalL[j] * weight;
-        vocalR[pos] = vocalR[pos] * (1 - weight) + result.vocalR[j] * weight;
-        instrL[pos] = instrL[pos] * (1 - weight) + result.instrL[j] * weight;
-        instrR[pos] = instrR[pos] * (1 - weight) + result.instrR[j] * weight;
+        const w = j / OVERLAP_SAMPLES;
+        vocalL[pos] = vocalL[pos] * (1 - w) + vL[j] * w;
+        vocalR[pos] = vocalR[pos] * (1 - w) + vR[j] * w;
+        instrL[pos] = instrL[pos] * (1 - w) + iL[j] * w;
+        instrR[pos] = instrR[pos] * (1 - w) + iR[j] * w;
       } else {
-        vocalL[pos] = result.vocalL[j];
-        vocalR[pos] = result.vocalR[j];
-        instrL[pos] = result.instrL[j];
-        instrR[pos] = result.instrR[j];
+        vocalL[pos] = vL[j]; vocalR[pos] = vR[j];
+        instrL[pos] = iL[j]; instrR[pos] = iR[j];
       }
     }
   }
 
-  return { vocalL, vocalR, instrL, instrR };
+  return { vocalL, vocalR, instrL, instrR, elapsed: (Date.now() - startTime) / 1000 };
 }
 
 // ── File handling ──────────────────────────────────────────────────────────
@@ -298,33 +306,26 @@ async function handleFile(file) {
 
   el.fileName.textContent = file.name;
   el.results.classList.add('hidden');
+  el.progressBar.style.background = '';
 
   try {
-    // Load model if not already loaded
-    if (!session) {
+    if (!workers.length) {
       const url = localStorage.getItem('scnet_model_url') || MODEL_URL;
       await loadModel(url);
     }
 
-    // Decode audio
     showProgress('Decoding audio...', 0);
     await tick();
-    const buffer = await file.arrayBuffer();
-    const { left, right } = await decodeAudio(buffer);
+    const { left, right } = await decodeAudio(await file.arrayBuffer());
     showProgress('Decoding audio...', 1);
 
-    // Process
-    const { vocalL, vocalR, instrL, instrR } = await processAudio(left, right);
-    showProgress('Encoding output...', 0.95);
+    const { vocalL, vocalR, instrL, instrR, elapsed } = await processAudio(left, right);
+
+    showProgress('Encoding output…', 0.95);
     await tick();
 
-    // Encode to WAV
-    const vocalBlob = encodeWav(vocalL, vocalR);
-    const instrBlob = encodeWav(instrL, instrR);
-
-    // Display results
-    const vocalUrl = URL.createObjectURL(vocalBlob);
-    const instrUrl = URL.createObjectURL(instrBlob);
+    const vocalUrl = URL.createObjectURL(encodeWav(vocalL, vocalR));
+    const instrUrl = URL.createObjectURL(encodeWav(instrL, instrR));
 
     el.vocalPlayer.src = vocalUrl;
     el.instrPlayer.src = instrUrl;
@@ -335,7 +336,7 @@ async function handleFile(file) {
     el.vocalDl.download = `${baseName}_vocals.wav`;
     el.instrDl.download = `${baseName}_instrumental.wav`;
 
-    hideProgress();
+    showCompletion(elapsed);
     el.results.classList.remove('hidden');
   } catch (err) {
     console.error('Processing failed:', err);
@@ -347,40 +348,34 @@ async function handleFile(file) {
 // ── Event listeners ────────────────────────────────────────────────────────
 
 el.dropZone.addEventListener('click', () => el.fileInput.click());
-
-el.fileInput.addEventListener('change', (e) => {
-  if (e.target.files[0]) handleFile(e.target.files[0]);
-});
-
-el.dropZone.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  el.dropZone.classList.add('dragover');
-});
-
-el.dropZone.addEventListener('dragleave', () => {
-  el.dropZone.classList.remove('dragover');
-});
-
+el.fileInput.addEventListener('change', (e) => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+el.dropZone.addEventListener('dragover', (e) => { e.preventDefault(); el.dropZone.classList.add('dragover'); });
+el.dropZone.addEventListener('dragleave', () => el.dropZone.classList.remove('dragover'));
 el.dropZone.addEventListener('drop', (e) => {
   e.preventDefault();
   el.dropZone.classList.remove('dragover');
-  const file = e.dataTransfer.files[0];
-  if (file) handleFile(file);
+  if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
 });
 
-// Model URL configuration
 el.modelUrlSave.addEventListener('click', () => {
   const url = el.modelUrl.value.trim();
   if (url) {
     localStorage.setItem('scnet_model_url', url);
-    session = null; // Force reload
+    workers = [];  // force reload
     el.modelUrl.value = '';
     el.modelUrl.placeholder = url;
   }
 });
 
-// Init: show saved model URL if any
+el.workerCount.addEventListener('input', () => {
+  const n = parseInt(el.workerCount.value, 10);
+  el.workerCountVal.textContent = n;
+  localStorage.setItem('scnet_num_workers', String(n));
+  workers = [];  // reinitialize on next run
+});
+
+// Init: restore saved settings
 const savedUrl = localStorage.getItem('scnet_model_url');
-if (savedUrl) {
-  el.modelUrl.placeholder = savedUrl;
-}
+if (savedUrl) el.modelUrl.placeholder = savedUrl;
+el.workerCount.value = getNumWorkers();
+el.workerCountVal.textContent = getNumWorkers();
