@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#1a1a2e">
+  <meta name="description" content="Precise metronome with tap tempo and all time signatures">
+  <title>Metronome</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="apple-touch-icon" href="icons/icon-192.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <button id="time-sig-btn" aria-label="Change time signature">
+      <span id="ts-num">4</span>
+      <span class="ts-line"></span>
+      <span id="ts-den">4</span>
+    </button>
+
+    <div id="beats"></div>
+
+    <div id="subdivision">
+      <button class="sub-btn selected" data-sub="1">Off</button>
+      <button class="sub-btn" data-sub="2">8ths</button>
+      <button class="sub-btn" data-sub="3">Trip</button>
+      <button class="sub-btn" data-sub="4">16ths</button>
+    </div>
+
+    <div id="bpm-display">
+      <span id="bpm-value">120</span>
+      <span id="bpm-label">BPM</span>
+    </div>
+
+    <div id="bpm-control">
+      <button id="bpm-down" aria-label="Decrease BPM">&minus;</button>
+      <input type="range" id="bpm-slider" min="30" max="300" value="120">
+      <button id="bpm-up" aria-label="Increase BPM">+</button>
+    </div>
+
+    <div id="actions">
+      <button id="tap-btn">TAP</button>
+      <button id="play-btn" aria-label="Play">&#9654;</button>
+    </div>
+
+    <div id="ts-picker" class="hidden">
+      <div id="ts-picker-content">
+        <h3>Time Signature</h3>
+        <div id="ts-presets"></div>
+        <div id="ts-custom">
+          <span class="ts-custom-label">Custom</span>
+          <input type="number" id="ts-custom-num" min="1" max="32" value="4">
+          <span class="ts-custom-sep">/</span>
+          <select id="ts-custom-den">
+            <option value="2">2</option>
+            <option value="4" selected>4</option>
+            <option value="8">8</option>
+            <option value="16">16</option>
+          </select>
+          <button id="ts-custom-ok">OK</button>
+        </div>
+        <button id="ts-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(function (err) {
+        console.error('SW registration failed:', err);
+      });
+    }
+  </script>
+</body>
+</html>
