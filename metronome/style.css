@@ -1,0 +1,415 @@
+:root {
+  --bg: #0d0d1a;
+  --surface: #1a1a2e;
+  --accent: #00d4ff;
+  --accent-glow: rgba(0, 212, 255, 0.4);
+  --downbeat: #ff6b35;
+  --downbeat-glow: rgba(255, 107, 53, 0.4);
+  --text: #eee;
+  --text-dim: #666;
+  --beat-bg: #222240;
+  --radius: 12px;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  height: 100dvh;
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2rem;
+  max-width: 420px;
+  height: 100%;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+}
+
+/* ── Time Signature Button ── */
+
+#time-sig-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  background: var(--surface);
+  border: 2px solid var(--beat-bg);
+  border-radius: var(--radius);
+  padding: 0.6rem 1.4rem;
+  color: var(--text);
+  font-size: 1.5rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.2s;
+  line-height: 1.1;
+}
+
+#time-sig-btn:hover, #time-sig-btn:active {
+  border-color: var(--accent);
+}
+
+.ts-line {
+  display: block;
+  width: 1.8rem;
+  height: 2px;
+  background: var(--text-dim);
+}
+
+/* ── Beat Indicators ── */
+
+#beats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem;
+  min-height: 48px;
+}
+
+.beat {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--beat-bg);
+  border: 2px solid #333355;
+  transition: background 0.08s, border-color 0.08s, box-shadow 0.08s;
+  cursor: pointer;
+}
+
+/* Accent level indicators (at rest) */
+.beat.accented {
+  border-color: var(--downbeat);
+  box-shadow: inset 0 0 6px rgba(255, 107, 53, 0.25);
+}
+
+.beat.muted {
+  opacity: 0.35;
+  border-style: dashed;
+}
+
+/* Active states per accent level */
+.beat.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  border-style: solid;
+  box-shadow: 0 0 14px var(--accent-glow);
+  animation: beat-pulse 0.15s ease-out;
+}
+
+.beat.accented.active {
+  background: var(--downbeat);
+  border-color: var(--downbeat);
+  box-shadow: 0 0 14px var(--downbeat-glow);
+}
+
+.beat.muted.active {
+  background: #333355;
+  border-color: #444466;
+  border-style: solid;
+  box-shadow: none;
+  opacity: 0.6;
+}
+
+@keyframes beat-pulse {
+  0%   { transform: scale(1); }
+  50%  { transform: scale(1.35); }
+  100% { transform: scale(1); }
+}
+
+/* ── Subdivision Selector ── */
+
+#subdivision {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.sub-btn {
+  padding: 0.35rem 0.8rem;
+  border-radius: 6px;
+  border: 2px solid var(--beat-bg);
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.sub-btn:hover, .sub-btn:active {
+  border-color: var(--accent);
+}
+
+.sub-btn.selected {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(0, 212, 255, 0.08);
+}
+
+/* ── BPM Display ── */
+
+#bpm-display {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  user-select: none;
+}
+
+#bpm-value {
+  font-size: 5rem;
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+#bpm-label {
+  font-size: 0.9rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+}
+
+/* ── BPM Controls ── */
+
+#bpm-control {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  width: 100%;
+}
+
+#bpm-down, #bpm-up {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 2px solid var(--beat-bg);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 1.4rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: border-color 0.2s;
+}
+
+#bpm-down:hover, #bpm-up:hover,
+#bpm-down:active, #bpm-up:active {
+  border-color: var(--accent);
+}
+
+#bpm-slider {
+  flex: 1;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--beat-bg);
+  border-radius: 3px;
+  outline: none;
+  accent-color: var(--accent);
+}
+
+#bpm-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+#bpm-slider::-moz-range-thumb {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+}
+
+/* ── Action Buttons ── */
+
+#actions {
+  display: flex;
+  gap: 1.5rem;
+  align-items: center;
+}
+
+#play-btn {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 1.6rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s, box-shadow 0.2s;
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+#play-btn:active {
+  transform: scale(0.93);
+}
+
+#play-btn.playing {
+  background: var(--downbeat);
+  box-shadow: 0 0 20px var(--downbeat-glow);
+}
+
+#tap-btn {
+  height: 56px;
+  padding: 0 2rem;
+  border-radius: 28px;
+  border: 2px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  cursor: pointer;
+  transition: background 0.1s, transform 0.1s;
+}
+
+#tap-btn:active {
+  background: rgba(0, 212, 255, 0.15);
+  transform: scale(0.95);
+}
+
+/* ── Time Signature Picker Overlay ── */
+
+#ts-picker {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  backdrop-filter: blur(4px);
+}
+
+#ts-picker.hidden { display: none; }
+
+#ts-picker-content {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  width: 90%;
+  max-width: 360px;
+}
+
+#ts-picker-content h3 {
+  text-align: center;
+  margin-bottom: 1rem;
+  font-size: 1.1rem;
+  color: var(--text-dim);
+}
+
+#ts-presets {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.5rem;
+  margin-bottom: 1.2rem;
+}
+
+.ts-preset {
+  padding: 0.7rem;
+  border-radius: 8px;
+  border: 2px solid var(--beat-bg);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 0.15s;
+}
+
+.ts-preset:hover, .ts-preset:active {
+  border-color: var(--accent);
+}
+
+.ts-preset.selected {
+  border-color: var(--accent);
+  background: rgba(0, 212, 255, 0.1);
+}
+
+/* ── Custom Time Signature ── */
+
+#ts-custom {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  justify-content: center;
+}
+
+.ts-custom-label {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  margin-right: 0.3rem;
+}
+
+.ts-custom-sep {
+  color: var(--text-dim);
+  font-size: 1.2rem;
+}
+
+#ts-custom-num, #ts-custom-den {
+  width: 60px;
+  padding: 0.4rem;
+  border-radius: 6px;
+  border: 2px solid var(--beat-bg);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 1rem;
+  text-align: center;
+}
+
+#ts-custom-ok {
+  padding: 0.4rem 1rem;
+  border-radius: 6px;
+  border: 2px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+#ts-close {
+  display: block;
+  width: 100%;
+  padding: 0.7rem;
+  border-radius: 8px;
+  border: none;
+  background: var(--beat-bg);
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+/* ── Responsive ── */
+
+@media (max-width: 360px) {
+  #app { gap: 1.2rem; padding: 1rem; }
+  #bpm-value { font-size: 3.5rem; }
+  .beat { width: 28px; height: 28px; }
+  #beats { gap: 0.5rem; }
+}
