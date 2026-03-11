@@ -45,8 +45,6 @@ const el = {
   modelUrlSave: $('#model-url-save'),
   workerCount: $('#worker-count'),
   workerCountVal: $('#worker-count-val'),
-  threadCount: $('#thread-count'),
-  threadCountVal: $('#thread-count-val'),
 };
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -58,10 +56,6 @@ let workers    = [];    // ChunkWorker instances, created on model load
 
 function getNumWorkers() {
   return parseInt(localStorage.getItem('scnet_num_workers') || '2', 10);
-}
-
-function getNumThreads() {
-  return parseInt(localStorage.getItem('scnet_num_threads') || '1', 10);
 }
 
 // ── IndexedDB model cache ──────────────────────────────────────────────────
@@ -158,7 +152,7 @@ class ChunkWorker {
     // Copy model bytes for this worker (each needs its own copy for its ORT session)
     const copy = new ArrayBuffer(bytes.byteLength);
     new Uint8Array(copy).set(bytes);
-    this.worker.postMessage({ type: 'init', modelBytes: copy, numThreads: getNumThreads() }, [copy]);
+    this.worker.postMessage({ type: 'init', modelBytes: copy }, [copy]);
   }
 
   process(left, right, originalLen, chunkIdx) {
@@ -380,17 +374,8 @@ el.workerCount.addEventListener('input', () => {
   workers = [];  // reinitialize on next run
 });
 
-el.threadCount.addEventListener('input', () => {
-  const n = parseInt(el.threadCount.value, 10);
-  el.threadCountVal.textContent = n;
-  localStorage.setItem('scnet_num_threads', String(n));
-  workers = [];  // reinitialize on next run
-});
-
 // Init: restore saved settings
 const savedUrl = localStorage.getItem('scnet_model_url');
 if (savedUrl) el.modelUrl.placeholder = savedUrl;
 el.workerCount.value = getNumWorkers();
 el.workerCountVal.textContent = getNumWorkers();
-el.threadCount.value = getNumThreads();
-el.threadCountVal.textContent = getNumThreads();
