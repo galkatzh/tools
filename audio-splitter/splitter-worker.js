@@ -166,7 +166,10 @@ self.onmessage = async ({ data }) => {
   if (data.type === 'init') {
     try {
       ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/';
+      // SharedArrayBuffer is unavailable without COEP headers, which break CDN
+      // imports in workers. Parallelism is achieved via multiple chunk workers instead.
       ort.env.wasm.numThreads = 1;
+      ort.env.wasm.proxy = false;
       session = await ort.InferenceSession.create(data.modelBytes, { executionProviders: ['wasm'] });
       self.postMessage({ type: 'ready' });
     } catch (err) {
