@@ -53,6 +53,11 @@
         <input type="range" id="worker-count" min="1" max="8" value="2">
         <span id="worker-count-val">2</span>
       </div>
+      <label for="thread-count">Threads per worker <span class="hint">(requires page reload)</span></label>
+      <div class="worker-row">
+        <input type="range" id="thread-count" min="1" max="16" value="1">
+        <span id="thread-count-val">1</span>
+      </div>
       <label for="model-url">ONNX Model URL</label>
       <div class="url-row">
         <input type="text" id="model-url" placeholder="https://huggingface.co/...scnet.onnx">
