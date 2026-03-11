@@ -25,7 +25,7 @@ self.onmessage = async ({ data }) => {
     try {
       // Point ORT at the CDN for its WASM files (can't resolve relative to this worker)
       ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/';
-      ort.env.wasm.numThreads = 1;
+      ort.env.wasm.numThreads = data.numThreads ?? 1;
       session = await ort.InferenceSession.create(data.modelBytes, { executionProviders: ['wasm'] });
       self.postMessage({ type: 'ready' });
     } catch (err) {
