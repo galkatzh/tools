@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF Batch Crop</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #16161e;
+      color: #ccc;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+      gap: 1.5rem;
+    }
+
+    header { text-align: center; }
+    h1 { font-size: 1.8rem; color: #eee; }
+    .subtitle { color: #777; margin-top: 0.3rem; font-size: 0.95rem; }
+
+    /* ── Upload zone ─────────────────────────── */
+    #drop-zone {
+      border: 2px dashed #444;
+      border-radius: 12px;
+      padding: 3rem 4rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      width: 100%;
+      max-width: 500px;
+    }
+    #drop-zone:hover, #drop-zone.over {
+      border-color: #4488ff;
+      background: rgba(68, 136, 255, 0.05);
+    }
+    #drop-zone svg { stroke: #666; display: block; margin: 0 auto 1rem; }
+    #drop-zone p   { color: #888; }
+
+    /* ── Editor ──────────────────────────────── */
+    #editor { display: none; width: 100%; max-width: 860px; }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .page-nav { display: flex; align-items: center; gap: 0.5rem; }
+
+    button {
+      background: #252535;
+      color: #ddd;
+      border: 1px solid #444;
+      border-radius: 6px;
+      padding: 0.4rem 0.9rem;
+      cursor: pointer;
+      font-size: 0.85rem;
+      transition: background 0.15s;
+      white-space: nowrap;
+    }
+    button:hover:not(:disabled) { background: #353550; }
+    button:disabled { opacity: 0.4; cursor: default; }
+
+    #download-btn {
+      background: #1a4ecf;
+      border-color: #1a3fa0;
+      color: #fff;
+      font-size: 0.9rem;
+      padding: 0.5rem 1.2rem;
+    }
+    #download-btn:hover:not(:disabled) { background: #1a3fa0; }
+
+    /* ── Canvas area ─────────────────────────── */
+    #viewport-area { text-align: center; overflow-x: auto; }
+
+    #canvas-wrap {
+      position: relative;
+      display: inline-block;
+      overflow: hidden;
+      cursor: crosshair;
+      /* Remove gap below canvas in inline context */
+      line-height: 0;
+    }
+
+    #pdf-canvas { display: block; }
+
+    /* ── Crop box with surrounding dark overlay ─ */
+    #crop-box {
+      position: absolute;
+      /* The large box-shadow creates the darkened area outside the crop */
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+      border: 1.5px solid rgba(255, 255, 255, 0.85);
+      cursor: move;
+      touch-action: none;
+    }
+
+    /* Animated dashed inner border ("marching ants") */
+    #crop-box::after {
+      content: '';
+      position: absolute;
+      inset: -1.5px;
+      border: 1.5px dashed rgba(255, 255, 255, 0.35);
+      pointer-events: none;
+      animation: dash-march 0.8s linear infinite;
+    }
+    @keyframes dash-march {
+      from { outline-offset: 0; }
+      /* CSS-only marching ants via background */
+    }
+
+    /* ── Resize handles ──────────────────────── */
+    .handle {
+      position: absolute;
+      width: 9px;
+      height: 9px;
+      background: #fff;
+      border: 1px solid #555;
+      border-radius: 2px;
+      z-index: 1;
+    }
+    .handle.nw { top: -5px;  left: -5px;             cursor: nw-resize; }
+    .handle.n  { top: -5px;  left: calc(50% - 4px);  cursor: n-resize;  }
+    .handle.ne { top: -5px;  right: -5px;             cursor: ne-resize; }
+    .handle.w  { top: calc(50% - 4px); left: -5px;   cursor: w-resize;  }
+    .handle.e  { top: calc(50% - 4px); right: -5px;  cursor: e-resize;  }
+    .handle.sw { bottom: -5px; left: -5px;            cursor: sw-resize; }
+    .handle.s  { bottom: -5px; left: calc(50% - 4px);cursor: s-resize;  }
+    .handle.se { bottom: -5px; right: -5px;           cursor: se-resize; }
+
+    /* ── Info bar ────────────────────────────── */
+    .info-bar {
+      margin-top: 0.75rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      padding: 0.6rem 0.9rem;
+      background: #1e1e2e;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      color: #888;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>PDF Batch Crop</h1>
+  <p class="subtitle">Set a crop area on any page — all pages will be cropped identically.</p>
+</header>
+
+<div id="drop-zone" tabindex="0" role="button" aria-label="Upload PDF">
+  <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke-width="1.5"
+       stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+    <polyline points="14 2 14 8 20 8"/>
+    <line x1="12" y1="18" x2="12" y2="12"/>
+    <line x1="9"  y1="15" x2="15" y2="15"/>
+  </svg>
+  <p>Drop a PDF here or click to upload</p>
+  <input type="file" id="file-input" accept="application/pdf" hidden>
+</div>
+
+<div id="editor">
+  <div class="toolbar">
+    <div class="page-nav">
+      <button id="prev-btn" disabled>← Prev</button>
+      <span id="page-info">Page 1 / 1</span>
+      <button id="next-btn">Next →</button>
+    </div>
+    <div style="display:flex;gap:.5rem;align-items:center;">
+      <button id="reset-btn" title="Reset crop to full-page inset">Reset crop</button>
+      <button id="download-btn">Download cropped PDF</button>
+    </div>
+  </div>
+
+  <div id="viewport-area">
+    <div id="canvas-wrap">
+      <canvas id="pdf-canvas"></canvas>
+      <div id="crop-box">
+        <div class="handle nw" data-h="nw"></div>
+        <div class="handle n"  data-h="n"></div>
+        <div class="handle ne" data-h="ne"></div>
+        <div class="handle w"  data-h="w"></div>
+        <div class="handle e"  data-h="e"></div>
+        <div class="handle sw" data-h="sw"></div>
+        <div class="handle s"  data-h="s"></div>
+        <div class="handle se" data-h="se"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="info-bar">
+    <span id="crop-info">Drag to create a crop box, or drag an edge/corner to resize</span>
+    <span id="pdf-name"></span>
+  </div>
+</div>
+
+<!-- PDF.js for rendering; pdf-lib for writing the output -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script>
+'use strict';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// ── DOM refs ────────────────────────────────────────────────────────────────
+const dropZone   = document.getElementById('drop-zone');
+const fileInput  = document.getElementById('file-input');
+const editor     = document.getElementById('editor');
+const canvas     = document.getElementById('pdf-canvas');
+const canvasWrap = document.getElementById('canvas-wrap');
+const cropEl     = document.getElementById('crop-box');
+const prevBtn    = document.getElementById('prev-btn');
+const nextBtn    = document.getElementById('next-btn');
+const pageInfo   = document.getElementById('page-info');
+const cropInfo   = document.getElementById('crop-info');
+const pdfName    = document.getElementById('pdf-name');
+const downloadBtn= document.getElementById('download-btn');
+const resetBtn   = document.getElementById('reset-btn');
+
+// ── State ────────────────────────────────────────────────────────────────────
+let pdfDoc   = null;  // PDF.js document
+let viewport = null;  // PDF.js PageViewport for the current render
+let curPage  = 1;
+let numPages = 0;
+let pdfBytes = null;  // original ArrayBuffer — used by pdf-lib on export
+
+/**
+ * The active crop stored in PDF user-space coordinates (points, lower-left origin).
+ * Applied identically to every page on download.
+ * @type {{ x: number, y: number, w: number, h: number } | null}
+ */
+let cropPdf = null;
+
+/** Active pointer drag state */
+let drag = null;
+
+const MIN_PX = 16; // smallest allowed crop dimension in canvas pixels
+
+// ── File loading ─────────────────────────────────────────────────────────────
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') fileInput.click();
+});
+dropZone.addEventListener('dragover', e => {
+  e.preventDefault();
+  dropZone.classList.add('over');
+});
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('over');
+  const f = e.dataTransfer.files[0];
+  if (f?.type === 'application/pdf') loadFile(f);
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) loadFile(fileInput.files[0]);
+});
+
+async function loadFile(file) {
+  pdfBytes = await file.arrayBuffer();
+  // Pass a copy to PDF.js so it can transfer the buffer without detaching pdfBytes,
+  // which we still need for pdf-lib at download time.
+  pdfDoc   = await pdfjsLib.getDocument({ data: pdfBytes.slice(0) }).promise;
+  numPages = pdfDoc.numPages;
+  curPage  = 1;
+  cropPdf  = null;
+  dropZone.style.display = 'none';
+  editor.style.display   = 'block';
+  pdfName.textContent    = file.name;
+  await renderPage(curPage, /* initCrop= */ true);
+}
+
+// ── Rendering ────────────────────────────────────────────────────────────────
+async function renderPage(pageNum, initCrop = false) {
+  const page  = await pdfDoc.getPage(pageNum);
+
+  // Fit to the available container width (max 800 px)
+  const maxW  = Math.min(800, document.getElementById('viewport-area').clientWidth || 800);
+  const baseVp = page.getViewport({ scale: 1 });
+  const scale  = maxW / baseVp.width;
+  viewport = page.getViewport({ scale });
+
+  const W = Math.floor(viewport.width);
+  const H = Math.floor(viewport.height);
+  canvas.width  = W;
+  canvas.height = H;
+  // Pin CSS size to canvas pixels so there is no implicit browser scaling,
+  // which would break the pointer-position math below.
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+
+  if (initCrop || !cropPdf) setDefaultCrop();
+  updateCropEl();
+  updateNav();
+  updateInfo();
+}
+
+/** Default crop: 10 % inset from each edge of the current canvas. */
+function setDefaultCrop() {
+  const inset = 0.1;
+  cropPdf = canvasToPdf({
+    x: canvas.width  * inset,
+    y: canvas.height * inset,
+    w: canvas.width  * (1 - 2 * inset),
+    h: canvas.height * (1 - 2 * inset),
+  });
+}
+
+// ── Coordinate helpers ───────────────────────────────────────────────────────
+/**
+ * Convert a crop rect from canvas-pixel space to PDF user-space.
+ *
+ * PDF origin is bottom-left; canvas origin is top-left — the PDF.js viewport
+ * transform handles both the scale factor and the Y-axis flip.
+ */
+function canvasToPdf({ x, y, w, h }) {
+  // canvas bottom-left of crop  →  PDF lower-left
+  const [px1, py1] = viewport.convertToPdfPoint(x,     y + h);
+  // canvas top-right of crop   →  PDF upper-right
+  const [px2, py2] = viewport.convertToPdfPoint(x + w, y);
+  return {
+    x: Math.min(px1, px2),
+    y: Math.min(py1, py2),
+    w: Math.abs(px2 - px1),
+    h: Math.abs(py2 - py1),
+  };
+}
+
+/**
+ * Convert a crop rect from PDF user-space back to canvas-pixel space.
+ * Used to position the crop overlay div.
+ */
+function pdfToCanvas({ x, y, w, h }) {
+  // PDF lower-left  →  canvas bottom-left of crop
+  const [cx1, cy1] = viewport.convertToViewportPoint(x,     y);
+  // PDF upper-right →  canvas top-left of crop (Y flipped)
+  const [cx2, cy2] = viewport.convertToViewportPoint(x + w, y + h);
+  return {
+    x: Math.min(cx1, cx2),
+    y: Math.min(cy1, cy2),
+    w: Math.abs(cx2 - cx1),
+    h: Math.abs(cy2 - cy1),
+  };
+}
+
+// ── Crop overlay element ─────────────────────────────────────────────────────
+function updateCropEl() {
+  if (!cropPdf || !viewport) return;
+  const { x, y, w, h } = pdfToCanvas(cropPdf);
+  cropEl.style.left   = x + 'px';
+  cropEl.style.top    = y + 'px';
+  cropEl.style.width  = w + 'px';
+  cropEl.style.height = h + 'px';
+}
+
+function updateInfo() {
+  if (!cropPdf) return;
+  const mmW = Math.round(cropPdf.w / 72 * 25.4);
+  const mmH = Math.round(cropPdf.h / 72 * 25.4);
+  cropInfo.textContent =
+    `Crop: ${Math.round(cropPdf.w)} × ${Math.round(cropPdf.h)} pt  (${mmW} × ${mmH} mm)`;
+}
+
+function updateNav() {
+  pageInfo.textContent = `Page ${curPage} / ${numPages}`;
+  prevBtn.disabled = curPage <= 1;
+  nextBtn.disabled = curPage >= numPages;
+}
+
+// ── Navigation ───────────────────────────────────────────────────────────────
+prevBtn.addEventListener('click', () => { if (curPage > 1)        { curPage--; renderPage(curPage); } });
+nextBtn.addEventListener('click', () => { if (curPage < numPages) { curPage++; renderPage(curPage); } });
+resetBtn.addEventListener('click', () => { setDefaultCrop(); updateCropEl(); updateInfo(); });
+
+// ── Drag interaction ─────────────────────────────────────────────────────────
+/**
+ * Get pointer position in canvas pixels relative to canvas-wrap.
+ * Works for both mouse and touch events.
+ */
+function getPos(e) {
+  const rect = canvasWrap.getBoundingClientRect();
+  const src  = e.touches?.[0] ?? e;
+  return {
+    x: src.clientX - rect.left,
+    y: src.clientY - rect.top,
+  };
+}
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function beginDrag(e, type, handle = null) {
+  e.preventDefault();
+  const pos = getPos(e);
+  const cc  = pdfToCanvas(cropPdf);
+  drag = { type, handle, start: pos, crop0: { ...cc } };
+}
+
+// Drag on the canvas background → create a new crop
+canvasWrap.addEventListener('mousedown', e => {
+  if (e.target === cropEl || cropEl.contains(e.target)) return;
+  e.preventDefault();
+  const pos = getPos(e);
+  drag = { type: 'create', start: pos, crop0: null };
+});
+canvasWrap.addEventListener('touchstart', e => {
+  if (e.target === cropEl || cropEl.contains(e.target)) return;
+  e.preventDefault();
+  const pos = getPos(e);
+  drag = { type: 'create', start: pos, crop0: null };
+}, { passive: false });
+
+// Drag on the crop box interior → move
+cropEl.addEventListener('mousedown',  e => { if (!e.target.dataset.h) beginDrag(e, 'move'); });
+cropEl.addEventListener('touchstart', e => { if (!e.target.dataset.h) beginDrag(e, 'move'); }, { passive: false });
+
+// Drag on a resize handle → resize
+cropEl.querySelectorAll('.handle').forEach(h => {
+  h.addEventListener('mousedown',  e => { e.stopPropagation(); beginDrag(e, 'resize', h.dataset.h); });
+  h.addEventListener('touchstart', e => { e.stopPropagation(); beginDrag(e, 'resize', h.dataset.h); }, { passive: false });
+});
+
+document.addEventListener('mousemove', onMove);
+document.addEventListener('touchmove', onMove, { passive: false });
+document.addEventListener('mouseup',   () => { drag = null; });
+document.addEventListener('touchend',  () => { drag = null; });
+
+function onMove(e) {
+  if (!drag || !cropPdf) return;
+  e.preventDefault();
+
+  const pos   = getPos(e);
+  const maxW  = canvas.width;
+  const maxH  = canvas.height;
+  let cc;
+
+  if (drag.type === 'create') {
+    // Draw crop box from the drag start to current pointer
+    const x = clamp(pos.x, 0, maxW);
+    const y = clamp(pos.y, 0, maxH);
+    const s = drag.start;
+    cc = { x: Math.min(s.x, x), y: Math.min(s.y, y),
+           w: Math.abs(x - s.x), h: Math.abs(y - s.y) };
+    // Show the growing box immediately for visual feedback even if tiny
+    cropEl.style.left   = cc.x + 'px';
+    cropEl.style.top    = cc.y + 'px';
+    cropEl.style.width  = cc.w + 'px';
+    cropEl.style.height = cc.h + 'px';
+    // Only commit once large enough to be a valid crop
+    if (cc.w >= MIN_PX && cc.h >= MIN_PX) {
+      cropPdf = canvasToPdf(cc);
+      updateInfo();
+    }
+    return;
+  }
+
+  const { crop0 } = drag;
+
+  if (drag.type === 'move') {
+    cc = {
+      x: clamp(crop0.x + (pos.x - drag.start.x), 0, maxW - crop0.w),
+      y: clamp(crop0.y + (pos.y - drag.start.y), 0, maxH - crop0.h),
+      w: crop0.w,
+      h: crop0.h,
+    };
+  } else {
+    // resize — apply delta to the relevant edges
+    let { x, y, w, h } = crop0;
+    const dx  = pos.x - drag.start.x;
+    const dy  = pos.y - drag.start.y;
+    const dir = drag.handle;
+
+    if (dir.includes('e')) w = clamp(w + dx, MIN_PX, maxW - x);
+    if (dir.includes('s')) h = clamp(h + dy, MIN_PX, maxH - y);
+    if (dir.includes('w')) {
+      const nx = clamp(x + dx, 0, x + w - MIN_PX);
+      w = x + w - nx; x = nx;
+    }
+    if (dir.includes('n')) {
+      const ny = clamp(y + dy, 0, y + h - MIN_PX);
+      h = y + h - ny; y = ny;
+    }
+    cc = { x, y, w, h };
+  }
+
+  if (cc.w >= MIN_PX && cc.h >= MIN_PX) {
+    cropPdf = canvasToPdf(cc);
+    updateCropEl();
+    updateInfo();
+  }
+}
+
+// ── Download ─────────────────────────────────────────────────────────────────
+downloadBtn.addEventListener('click', async () => {
+  if (!cropPdf || !pdfBytes) return;
+  downloadBtn.textContent = 'Processing…';
+  downloadBtn.disabled    = true;
+
+  try {
+    const { PDFDocument } = PDFLib;
+    const doc   = await PDFDocument.load(pdfBytes);
+    const pages = doc.getPages();
+
+    // Apply the identical crop box (in PDF user-space points) to every page
+    for (const page of pages) {
+      page.setCropBox(cropPdf.x, cropPdf.y, cropPdf.w, cropPdf.h);
+    }
+
+    const out  = await doc.save();
+    const blob = new Blob([out], { type: 'application/pdf' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'cropped.pdf';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error('PDF crop failed:', err);
+    alert('Error generating PDF: ' + err.message);
+  } finally {
+    downloadBtn.textContent = 'Download cropped PDF';
+    downloadBtn.disabled    = false;
+  }
+});
+</script>
+</body>
+</html>
