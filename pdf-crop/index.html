@@ -130,7 +130,7 @@
     }
     /* Cursor changes per mode */
     #canvas-wrap.mode-crop   { cursor: crosshair; }
-    #canvas-wrap.mode-slice  { cursor: col-resize; }
+    #canvas-wrap.mode-slice  { cursor: row-resize; }
 
     #pdf-canvas { display: block; }
 
@@ -171,8 +171,8 @@
     /* ── Slice line ──────────────────────────── */
     #slice-line {
       position: absolute;
-      top: 0; height: 100%; width: 0;
-      border-left: 2px dashed rgba(255, 180, 0, 0.9);
+      left: 0; width: 100%; height: 0;
+      border-top: 2px dashed rgba(255, 180, 0, 0.9);
       display: none;
       z-index: 5;
       user-select: none;
@@ -182,15 +182,15 @@
     #slice-line::before {
       content: '';
       position: absolute;
-      top: 0; bottom: 0;
-      left: -8px; right: -8px;
-      cursor: col-resize;
+      left: 0; right: 0;
+      top: -8px; bottom: -8px;
+      cursor: row-resize;
     }
     /* Position label */
     #slice-line::after {
       content: attr(data-label);
       position: absolute;
-      top: 8px; left: 7px;
+      top: 4px; left: 8px;
       background: #f90;
       color: #000;
       font-size: 0.72rem;
@@ -327,7 +327,7 @@
         <div class="handle s"  data-h="s"></div>
         <div class="handle se" data-h="se"></div>
       </div>
-      <!-- Slice cut line; dragged horizontally to set the split point -->
+      <!-- Slice cut line; dragged vertically to set the split point -->
       <div id="slice-line" data-label=""></div>
     </div>
   </div>
@@ -391,7 +391,7 @@ let cropPdf = null;
 
 /**
  * Slice cut points, sorted ascending by fromPage.
- * Each entry: { fromPage: number, xPdf: number }
+ * Each entry: { fromPage: number, yPdf: number }
  * The cut at entry[i] applies from entry[i].fromPage up to (entry[i+1].fromPage - 1).
  */
 let sliceCuts = [];
@@ -472,10 +472,10 @@ function setDefaultCrop() {
   });
 }
 
-/** Default slice: cut at the horizontal midpoint of the first page. */
+/** Default slice: cut at the vertical midpoint of the first page. */
 function setDefaultSlice() {
-  const [vbX, , vbX2] = viewport.viewBox; // viewBox is [x0, y0, x1, y1]
-  sliceCuts = [{ fromPage: 1, xPdf: vbX + (vbX2 - vbX) / 2 }];
+  const [, vbY, , vbY2] = viewport.viewBox; // viewBox is [x0, y0, x1, y1]
+  sliceCuts = [{ fromPage: 1, yPdf: (vbY + vbY2) / 2 }];
 }
 
 // ── Coordinate helpers ───────────────────────────────────────────────────────
@@ -520,12 +520,12 @@ function updateInfo() {
     cropInfo.textContent =
       `Crop: ${Math.round(cropPdf.w)} × ${Math.round(cropPdf.h)} pt  (${mmW} × ${mmH} mm)`;
   } else {
-    const xPdf = getCutXForPage(curPage);
-    if (xPdf === null) return;
-    const [vbX, , vbX2] = viewport.viewBox;
-    const pageW = vbX2 - vbX;
-    const pct = (xPdf / pageW * 100).toFixed(1);
-    cropInfo.textContent = `Slice at ${Math.round(xPdf)} pt from left  (${pct}% of page width)`;
+    const yPdf = getCutYForPage(curPage);
+    if (yPdf === null) return;
+    // Convert PDF Y to canvas Y, then express as % from top
+    const [, cy] = viewport.convertToViewportPoint(0, yPdf);
+    const pct = (cy / canvas.height * 100).toFixed(1);
+    cropInfo.textContent = `Slice at ${pct}% from top  (${Math.round(yPdf)} pt from page bottom)`;
   }
 }
 
@@ -587,14 +587,14 @@ kindleFitBtn.addEventListener('click', () => {
  * Return the cut X position (PDF points) that applies to the given page number.
  * Finds the last cut entry whose fromPage <= pageNum.
  */
-function getCutXForPage(pageNum) {
+function getCutYForPage(pageNum) {
   if (!sliceCuts.length) return null;
   let cut = sliceCuts[0];
   for (const c of sliceCuts) {
     if (c.fromPage <= pageNum) cut = c;
     else break;
   }
-  return cut.xPdf;
+  return cut.yPdf;
 }
 
 /**
@@ -602,12 +602,12 @@ function getCutXForPage(pageNum) {
  * If there's already an entry with fromPage === pageNum, update it;
  * otherwise insert a new entry and keep the array sorted.
  */
-function setCutForPage(pageNum, xPdf) {
+function setCutForPage(pageNum, yPdf) {
   const existing = sliceCuts.find(c => c.fromPage === pageNum);
   if (existing) {
-    existing.xPdf = xPdf;
+    existing.yPdf = yPdf;
   } else {
-    sliceCuts.push({ fromPage: pageNum, xPdf });
+    sliceCuts.push({ fromPage: pageNum, yPdf });
     sliceCuts.sort((a, b) => a.fromPage - b.fromPage);
   }
 }
@@ -624,17 +624,16 @@ function removeCutForPage(pageNum) {
   }
 }
 
-/** Position the slice-line div from the current cropPdf state. */
+/** Position the slice-line div from the current sliceCuts state. */
 function updateSliceLine() {
   if (!viewport || !sliceCuts.length) return;
-  const xPdf = getCutXForPage(curPage);
-  if (xPdf === null) return;
-  const [cx] = viewport.convertToViewportPoint(xPdf, 0);
-  sliceLine.style.left = cx + 'px';
+  const yPdf = getCutYForPage(curPage);
+  if (yPdf === null) return;
+  const [, cy] = viewport.convertToViewportPoint(0, yPdf);
+  sliceLine.style.top = cy + 'px';
 
-  const [vbX, , vbX2] = viewport.viewBox;
-  const pct = Math.round((xPdf - vbX) / (vbX2 - vbX) * 100);
-  sliceLine.dataset.label = `${Math.round(xPdf)} pt  ${pct}%`;
+  const pct = Math.round(cy / canvas.height * 100);
+  sliceLine.dataset.label = `${pct}%  (${Math.round(yPdf)} pt)`;
 }
 
 /** Rebuild the segments list panel from the current sliceCuts. */
@@ -642,15 +641,14 @@ function updateSegmentsPanel() {
   segmentsList.innerHTML = '';
   if (!sliceCuts.length || !viewport) return;
 
-  const [vbX, , vbX2] = viewport.viewBox;
-  const pageW = vbX2 - vbX;
-
   sliceCuts.forEach((cut, i) => {
     const next  = sliceCuts[i + 1];
     const label = next
       ? `Pages ${cut.fromPage}–${next.fromPage - 1}`
       : `Pages ${cut.fromPage}+`;
-    const pct = Math.round((cut.xPdf - vbX) / pageW * 100);
+    // Express as % from top (visual), using current viewport as reference
+    const [, cy] = viewport.convertToViewportPoint(0, cut.yPdf);
+    const pct = Math.round(cy / canvas.height * 100);
     const isCurrent = cut.fromPage === curPage ||
       (!next && curPage >= cut.fromPage) ||
       (next && curPage >= cut.fromPage && curPage < next.fromPage);
@@ -659,7 +657,7 @@ function updateSegmentsPanel() {
     row.className = 'seg-row' + (isCurrent ? ' current' : '');
     row.innerHTML =
       `<span class="seg-dot"></span>` +
-      `<span class="seg-info"><strong>${label}</strong>: cut at ${Math.round(cut.xPdf)} pt (${pct}% from left)</span>` +
+      `<span class="seg-info"><strong>${label}</strong>: cut at ${pct}% from top</span>` +
       (i > 0
         ? `<button class="seg-remove" onclick="removeCutForPage(${cut.fromPage})">×</button>`
         : '');
@@ -691,10 +689,10 @@ sliceLine.addEventListener('touchstart', e => {
 }, { passive: false });
 
 function applySliceFromPointer(e) {
-  const pos = getPos(e);
-  const cx  = clamp(pos.x, 0, canvas.width);
-  const xPdf = viewport.convertToPdfPoint(cx, 0)[0];
-  setCutForPage(curPage, xPdf);
+  const pos  = getPos(e);
+  const cy   = clamp(pos.y, 0, canvas.height);
+  const yPdf = viewport.convertToPdfPoint(0, cy)[1];
+  setCutForPage(curPage, yPdf);
   updateSliceLine();
   updateSegmentsPanel();
   updateInfo();
@@ -821,21 +819,20 @@ downloadSlice.addEventListener('click', async () => {
     for (let i = 0; i < srcDoc.getPageCount(); i++) {
       const srcPage = srcDoc.getPage(i);
       const { width: pageW, height: pageH } = srcPage.getSize();
-      const cutX = getCutXForPage(i + 1);
+      const cutY = getCutYForPage(i + 1); // PDF Y (0 = bottom, pageH = top)
 
       // Copy the same source page twice — one for each half
-      const [leftPage, rightPage] = await dstDoc.copyPages(srcDoc, [i, i]);
+      const [topPage, bottomPage] = await dstDoc.copyPages(srcDoc, [i, i]);
 
-      // Left half: show x = 0 … cutX
-      leftPage.setMediaBox(0, 0, cutX, pageH);
-      leftPage.setCropBox(0, 0, cutX, pageH);
-      dstDoc.addPage(leftPage);
+      // Top half: PDF y = cutY … pageH (visually the upper portion)
+      topPage.setMediaBox(0, cutY, pageW, pageH - cutY);
+      topPage.setCropBox(0, cutY, pageW, pageH - cutY);
+      dstDoc.addPage(topPage);
 
-      // Right half: show x = cutX … pageW
-      // The MediaBox origin shifts so the right-side content fills the new page.
-      rightPage.setMediaBox(cutX, 0, pageW - cutX, pageH);
-      rightPage.setCropBox(cutX, 0, pageW - cutX, pageH);
-      dstDoc.addPage(rightPage);
+      // Bottom half: PDF y = 0 … cutY (visually the lower portion)
+      bottomPage.setMediaBox(0, 0, pageW, cutY);
+      bottomPage.setCropBox(0, 0, pageW, cutY);
+      dstDoc.addPage(bottomPage);
     }
 
     triggerDownload(await dstDoc.save(), 'sliced.pdf');
