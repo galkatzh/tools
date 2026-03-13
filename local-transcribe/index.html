@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Local Transcribe</title>
+  <meta name="description" content="Transcribe audio locally in your browser using AI — no server, no API keys.">
+  <meta name="theme-color" content="#1a1a2e">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="app">
+    <h1>Local Transcribe</h1>
+    <p class="subtitle">Speech-to-text powered by <a href="https://huggingface.co/docs/transformers.js" target="_blank">Transformers.js</a> — runs entirely in your browser.</p>
+
+    <div class="model-row">
+      <label for="model-select">Model</label>
+      <select id="model-select"></select>
+      <span id="model-info" class="hint"></span>
+    </div>
+    <div id="timestamps-row" class="model-row hidden">
+      <label for="timestamps-select">Timestamps</label>
+      <select id="timestamps-select">
+        <option value="none">None</option>
+        <option value="segments">Segments</option>
+        <option value="words">Words</option>
+      </select>
+    </div>
+
+    <div class="input-row">
+      <div id="drop-zone" tabindex="0" role="button" aria-label="Upload audio file">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        <span>Drop audio here or click to upload</span>
+        <input type="file" id="file-input" accept="audio/*,.m4a,.mp3,.wav,.ogg,.webm,.flac" hidden>
+      </div>
+      <button id="record-btn" title="Record audio" aria-label="Record audio">
+        <svg class="mic-icon" viewBox="0 0 24 24" width="28" height="28" fill="currentColor">
+          <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm-1-9a1 1 0 1 1 2 0v6a1 1 0 1 1-2 0V5z"/>
+          <path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H8a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2h-3v-2.07A7 7 0 0 0 19 11z"/>
+        </svg>
+        <svg class="stop-icon hidden" viewBox="0 0 24 24" width="28" height="28" fill="currentColor">
+          <rect x="6" y="6" width="12" height="12" rx="2"/>
+        </svg>
+        <span id="record-timer" class="record-timer hidden">0:00</span>
+      </button>
+    </div>
+    <p id="file-name" class="file-name"></p>
+
+    <section id="progress" class="hidden">
+      <div class="progress-track">
+        <div id="progress-bar" class="progress-fill"></div>
+      </div>
+      <p id="progress-text" class="progress-label"></p>
+    </section>
+
+    <section id="results" class="hidden">
+      <div class="result-box">
+        <div class="result-header">
+          <h2>Transcription</h2>
+          <button id="copy-btn" class="copy-btn">Copy</button>
+        </div>
+        <div id="result-text" class="result-text"></div>
+      </div>
+    </section>
+
+    <details class="settings">
+      <summary>Settings</summary>
+      <label for="worker-count">Workers <span class="hint">(each loads its own model instance)</span></label>
+      <div class="setting-row">
+        <input type="range" id="worker-count" min="1" max="8" value="2">
+        <span id="worker-count-val">2</span>
+      </div>
+      <label for="chunk-size">Chunk length <span class="hint">(seconds per worker chunk)</span></label>
+      <div class="setting-row">
+        <input type="range" id="chunk-size" min="5" max="120" value="30" step="5">
+        <span id="chunk-size-val">30s</span>
+      </div>
+    </details>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
