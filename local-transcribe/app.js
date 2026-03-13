@@ -21,6 +21,16 @@ const MODELS = [
     ram: '~120 MB',
   },
   {
+    id: 'moonshine-base',
+    name: 'Moonshine Base (61 M)',
+    repo: 'onnx-community/moonshine-base-ONNX',
+    apiType: 'pipeline',
+    dtype: 'fp32',
+    device: 'wasm',
+    download: '~250 MB',
+    ram: '~500 MB',
+  },
+  {
     id: 'whisper-base',
     name: 'Whisper Base (74 M)',
     repo: 'onnx-community/whisper-base',
