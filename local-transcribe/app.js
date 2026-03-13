@@ -39,6 +39,7 @@ const MODELS = [
     device: 'wasm',
     download: '~150 MB',
     ram: '~300 MB',
+    timestamps: true,
   },
   {
     id: 'whisper-large-v3-turbo',
@@ -52,6 +53,7 @@ const MODELS = [
     device: 'webgpu',
     download: '~560 MB',
     ram: '~1 GB',
+    timestamps: true,
   },
   {
     id: 'voxtral-4b-realtime',
@@ -86,6 +88,8 @@ const el = {
   results: $('#results'),
   resultText: $('#result-text'),
   copyBtn: $('#copy-btn'),
+  timestampsRow: $('#timestamps-row'),
+  timestampsSelect: $('#timestamps-select'),
   workerCount: $('#worker-count'),
   workerCountVal: $('#worker-count-val'),
   chunkSize: $('#chunk-size'),
@@ -118,6 +122,14 @@ function getChunkSeconds() {
 
 function getSelectedModel() {
   return MODELS.find((m) => m.id === el.modelSelect.value) || MODELS[0];
+}
+
+/** Returns the return_timestamps value for the pipeline, or false. */
+function getTimestampsOption() {
+  const val = el.timestampsSelect.value;
+  if (val === 'words') return 'word';
+  if (val === 'segments') return true;
+  return false;
 }
 
 // ── Progress helpers ────────────────────────────────────────────────────────
@@ -178,7 +190,7 @@ class TranscribeWorker {
         this._pending.get('init')?.resolve();
         this._pending.delete('init');
       } else if (data.type === 'result') {
-        this._pending.get(data.chunkIdx)?.resolve(data.text);
+        this._pending.get(data.chunkIdx)?.resolve(data.result);
         this._pending.delete(data.chunkIdx);
       } else if (data.type === 'error') {
         const key = data.chunkIdx ?? 'init';
@@ -200,12 +212,12 @@ class TranscribeWorker {
   }
 
   /** Send an audio chunk (Float32Array) for transcription. */
-  transcribe(audioChunk, chunkIdx) {
+  transcribe(audioChunk, chunkIdx, { returnTimestamps = false } = {}) {
     return new Promise((resolve, reject) => {
       this._pending.set(chunkIdx, { resolve, reject });
       const copy = new Float32Array(audioChunk);
       this.worker.postMessage(
-        { type: 'transcribe', chunkIdx, audio: copy.buffer },
+        { type: 'transcribe', chunkIdx, audio: copy.buffer, returnTimestamps },
         [copy.buffer],
       );
     });
@@ -258,6 +270,7 @@ async function transcribeAudio(audio) {
   const results = new Array(nChunks);
   const queue = Array.from({ length: nChunks }, (_, i) => i);
   const startTime = Date.now();
+  const returnTimestamps = getTimestampsOption();
   let completed = 0;
 
   await Promise.all(workers.map(async (worker) => {
@@ -266,8 +279,19 @@ async function transcribeAudio(audio) {
       const start = i * chunkSamples;
       const end = Math.min(start + chunkSamples, audio.length);
       const chunk = audio.subarray(start, end);
+      const chunkOffsetSec = start / 16000;
 
-      results[i] = await worker.transcribe(chunk, i);
+      const result = await worker.transcribe(chunk, i, { returnTimestamps });
+
+      /* Offset timestamps by the chunk's position in the full audio. */
+      if (result.chunks) {
+        for (const c of result.chunks) {
+          if (c.timestamp) {
+            c.timestamp = c.timestamp.map((t) => t != null ? t + chunkOffsetSec : t);
+          }
+        }
+      }
+      results[i] = result;
 
       completed++;
       const elapsed = (Date.now() - startTime) / 1000;
@@ -279,7 +303,33 @@ async function transcribeAudio(audio) {
   }));
 
   const elapsed = (Date.now() - startTime) / 1000;
-  return { text: results.join(' ').trim(), elapsed };
+
+  /* Merge results: plain text or timestamped chunks. */
+  if (returnTimestamps) {
+    const allChunks = results.flatMap((r) => r.chunks || []);
+    return { text: results.map((r) => r.text).join(' ').trim(), chunks: allChunks, elapsed };
+  }
+  return { text: results.map((r) => r.text).join(' ').trim(), elapsed };
+}
+
+// ── Result formatting ────────────────────────────────────────────────────────
+
+/** Format seconds as [MM:SS.ms] for timestamp display. */
+function fmtTs(sec) {
+  if (sec == null) return '??:??';
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${s.toFixed(2).padStart(5, '0')}`;
+}
+
+/** Format a transcription result, optionally including timestamps. */
+function formatResult(result) {
+  if (!result.chunks || result.chunks.length === 0) {
+    return result.text || '(no speech detected)';
+  }
+  return result.chunks
+    .map((c) => `[${fmtTs(c.timestamp[0])} → ${fmtTs(c.timestamp[1])}]  ${c.text.trim()}`)
+    .join('\n');
 }
 
 // ── File handling ───────────────────────────────────────────────────────────
@@ -306,10 +356,11 @@ async function handleFile(file) {
     const duration = audio.length / 16000;
     showProgress(`Decoded ${fmtTime(duration)} of audio`, 1);
 
-    const { text, elapsed } = await transcribeAudio(audio);
+    const result = await transcribeAudio(audio);
 
-    showProgress(`Done in ${fmtTime(elapsed)}`, 1);
-    el.resultText.textContent = text || '(no speech detected)';
+    showProgress(`Done in ${fmtTime(result.elapsed)}`, 1);
+    el.resultText.textContent = formatResult(result);
+    el.resultText.classList.toggle('timestamped', !!result.chunks);
     el.results.classList.remove('hidden');
   } catch (err) {
     console.error('Processing failed:', err);
@@ -434,7 +485,12 @@ el.modelSelect.addEventListener('change', () => {
   const model = getSelectedModel();
   el.modelInfo.textContent = `Download: ${model.download} · RAM per worker: ${model.ram}`;
   setSetting('model', model.id);
+  el.timestampsRow.classList.toggle('hidden', !model.timestamps);
   teardownWorkers(); // force re-init on next transcription
+});
+
+el.timestampsSelect.addEventListener('change', () => {
+  setSetting('timestamps', el.timestampsSelect.value);
 });
 
 el.workerCount.addEventListener('input', () => {
@@ -471,6 +527,8 @@ function init() {
 
   el.chunkSize.value = getChunkSeconds();
   el.chunkSizeVal.textContent = `${getChunkSeconds()}s`;
+
+  el.timestampsSelect.value = getSetting('timestamps', 'none');
 }
 
 init();

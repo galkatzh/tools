@@ -51,8 +51,10 @@ h1 {
 /* ── Model selector ──────────────────────────────────────────── */
 
 .model-row {
-  margin-bottom: 1.5rem;
+  margin-bottom: 1rem;
 }
+
+#timestamps-row { margin-bottom: 1.5rem; }
 
 .model-row label {
   display: block;
@@ -224,6 +226,12 @@ h1 {
   max-height: 400px;
   overflow-y: auto;
   color: var(--text);
+}
+
+.result-text.timestamped {
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 0.82rem;
+  line-height: 1.8;
 }
 
 /* ── Settings ────────────────────────────────────────────────── */
