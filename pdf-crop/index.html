@@ -135,6 +135,30 @@
     .handle.s  { bottom: -5px; left: calc(50% - 4px);cursor: s-resize;  }
     .handle.se { bottom: -5px; right: -5px;           cursor: se-resize; }
 
+    /* ── Kindle select ───────────────────────── */
+    select {
+      background: #252535;
+      color: #ddd;
+      border: 1px solid #444;
+      border-radius: 6px;
+      padding: 0.4rem 0.6rem;
+      font-size: 0.85rem;
+      cursor: pointer;
+      appearance: none;
+      padding-right: 1.6rem;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 0.5rem center;
+    }
+    select:focus { outline: 1px solid #4488ff; }
+
+    #kindle-fit-btn {
+      background: #1e3a2a;
+      border-color: #2d5a3d;
+      color: #7ecfa0;
+    }
+    #kindle-fit-btn:hover:not(:disabled) { background: #264d38; }
+
     /* ── Info bar ────────────────────────────── */
     .info-bar {
       margin-top: 0.75rem;
@@ -177,7 +201,14 @@
       <span id="page-info">Page 1 / 1</span>
       <button id="next-btn">Next →</button>
     </div>
-    <div style="display:flex;gap:.5rem;align-items:center;">
+    <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+      <select id="kindle-select" title="Kindle screen to fit">
+        <option value="1072/1448">Kindle Basic 6"</option>
+        <option value="1236/1648" selected>Kindle Paperwhite 6.8"</option>
+        <option value="1264/1680">Kindle Oasis / Colorsoft 7"</option>
+        <option value="1860/2480">Kindle Scribe 10.2"</option>
+      </select>
+      <button id="kindle-fit-btn" title="Crop page to fill this Kindle screen exactly">Fit to Kindle</button>
       <button id="reset-btn" title="Reset crop to full-page inset">Reset crop</button>
       <button id="download-btn">Download cropped PDF</button>
     </div>
@@ -226,8 +257,10 @@ const nextBtn    = document.getElementById('next-btn');
 const pageInfo   = document.getElementById('page-info');
 const cropInfo   = document.getElementById('crop-info');
 const pdfName    = document.getElementById('pdf-name');
-const downloadBtn= document.getElementById('download-btn');
-const resetBtn   = document.getElementById('reset-btn');
+const downloadBtn  = document.getElementById('download-btn');
+const resetBtn     = document.getElementById('reset-btn');
+const kindleSelect = document.getElementById('kindle-select');
+const kindleFitBtn = document.getElementById('kindle-fit-btn');
 
 // ── State ────────────────────────────────────────────────────────────────────
 let pdfDoc   = null;  // PDF.js document
@@ -385,6 +418,42 @@ function updateNav() {
 prevBtn.addEventListener('click', () => { if (curPage > 1)        { curPage--; renderPage(curPage); } });
 nextBtn.addEventListener('click', () => { if (curPage < numPages) { curPage++; renderPage(curPage); } });
 resetBtn.addEventListener('click', () => { setDefaultCrop(); updateCropEl(); updateInfo(); });
+
+// ── Kindle fit ───────────────────────────────────────────────────────────────
+kindleFitBtn.addEventListener('click', () => {
+  if (!viewport) return;
+
+  // Parse "w/h" ratio string from the selected option value
+  const [pw, ph] = kindleSelect.value.split('/').map(Number);
+  const targetRatio = pw / ph;  // Kindle screen width / height
+
+  // Page dimensions in PDF points from the viewport's viewBox [x, y, w, h]
+  const [vbX, vbY, vbW, vbH] = viewport.viewBox;
+  const pageW = vbW - vbX;
+  const pageH = vbH - vbY;
+  const pageRatio = pageW / pageH;
+
+  // Largest centered rect that fits the page and matches the Kindle aspect ratio
+  let cropW, cropH;
+  if (pageRatio > targetRatio) {
+    // Page is wider than the Kindle screen → letterbox on left/right
+    cropH = pageH;
+    cropW = cropH * targetRatio;
+  } else {
+    // Page is taller than the Kindle screen → letterbox on top/bottom
+    cropW = pageW;
+    cropH = cropW / targetRatio;
+  }
+
+  cropPdf = {
+    x: vbX + (pageW - cropW) / 2,
+    y: vbY + (pageH - cropH) / 2,
+    w: cropW,
+    h: cropH,
+  };
+  updateCropEl();
+  updateInfo();
+});
 
 // ── Drag interaction ─────────────────────────────────────────────────────────
 /**
