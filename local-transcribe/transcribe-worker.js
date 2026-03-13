@@ -62,16 +62,17 @@ self.onmessage = async ({ data: msg }) => {
   if (msg.type === 'transcribe') {
     try {
       const audio = new Float32Array(msg.audio);
-      let text;
+      let result;
 
       if (config.apiType === 'pipeline') {
-        const result = await transcriber(audio);
-        text = result.text;
+        const opts = {};
+        if (msg.returnTimestamps) opts.return_timestamps = msg.returnTimestamps;
+        result = await transcriber(audio, opts);
       } else if (config.apiType === 'voxtral') {
-        text = await transcribeVoxtral(audio);
+        result = { text: await transcribeVoxtral(audio) };
       }
 
-      self.postMessage({ type: 'result', chunkIdx: msg.chunkIdx, text: (text || '').trim() });
+      self.postMessage({ type: 'result', chunkIdx: msg.chunkIdx, result });
     } catch (err) {
       console.error('[worker] transcribe failed:', err);
       self.postMessage({ type: 'error', chunkIdx: msg.chunkIdx, message: err.message });
