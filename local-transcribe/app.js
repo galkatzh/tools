@@ -36,7 +36,7 @@ const MODELS = [
     repo: 'onnx-community/whisper-large-v3-turbo',
     apiType: 'pipeline',
     dtype: {
-      encoder_model: 'q4f16',
+      encoder_model: 'fp32',
       decoder_model_merged: 'q4f16',
     },
     device: 'webgpu',
