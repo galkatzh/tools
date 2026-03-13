@@ -36,12 +36,12 @@ const MODELS = [
     repo: 'onnx-community/whisper-large-v3-turbo',
     apiType: 'pipeline',
     dtype: {
-      encoder_model: 'fp32',
+      encoder_model: 'fp16',
       decoder_model_merged: 'q4f16',
     },
     device: 'webgpu',
     download: '~560 MB',
-    ram: '~800 MB',
+    ram: '~1 GB',
   },
   {
     id: 'voxtral-4b-realtime',
