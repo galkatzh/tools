@@ -35,8 +35,56 @@ h1 {
 
 .subtitle {
   color: var(--text-dim);
-  margin-bottom: 2rem;
+  margin-bottom: 1rem;
   font-size: 0.9rem;
+}
+
+/* ── Settings ─────────────────────────────────────────────────── */
+
+.settings-toggle {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0.25rem;
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  transition: color 0.2s;
+}
+
+.settings-toggle:hover,
+.settings-toggle[aria-expanded="true"] {
+  color: var(--accent);
+}
+
+.settings {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 2rem;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+.setting-row input[type="number"] {
+  width: 3.5rem;
+  padding: 0.25rem 0.4rem;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  text-align: center;
 }
 
 /* ── Drop zone ─────────────────────────────────────────────────── */
