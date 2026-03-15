@@ -67,6 +67,7 @@ self.onmessage = async ({ data: msg }) => {
       if (config.apiType === 'pipeline') {
         const opts = {};
         if (msg.returnTimestamps) opts.return_timestamps = msg.returnTimestamps;
+        if (msg.language) opts.language = msg.language;
         result = await transcriber(audio, opts);
       } else if (config.apiType === 'voxtral') {
         result = { text: await transcribeVoxtral(audio) };

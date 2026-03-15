@@ -52,6 +52,10 @@ const el = {
   settings: $('#settings'),
   splitWorkers: $('#split-workers'),
   transcribeWorkers: $('#transcribe-workers'),
+  language: $('#language'),
+  fontSize: $('#font-size'),
+  fontSizeVal: $('#font-size-val'),
+  highlightColor: $('#highlight-color'),
 };
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -340,7 +344,7 @@ class TranscribeWorker {
   }
 
   /** Send one chunk and wait for its result. */
-  transcribe(chunkIdx, audioChunk) {
+  transcribe(chunkIdx, audioChunk, language) {
     return new Promise((resolve, reject) => {
       this._resolve = resolve;
       this._reject = reject;
@@ -348,10 +352,9 @@ class TranscribeWorker {
         audioChunk.byteOffset,
         audioChunk.byteOffset + audioChunk.byteLength,
       );
-      this.worker.postMessage(
-        { type: 'transcribe', chunkIdx, audio: buf, returnTimestamps: 'word' },
-        [buf],
-      );
+      const msg = { type: 'transcribe', chunkIdx, audio: buf, returnTimestamps: 'word' };
+      if (language) msg.language = language;
+      this.worker.postMessage(msg, [buf]);
     });
   }
 
@@ -365,6 +368,7 @@ class TranscribeWorker {
  */
 async function transcribeVocals(mono16k) {
   const numWorkers = parseInt(el.transcribeWorkers.value, 10) || 2;
+  const language = el.language.value || null;
   showProgress('Loading transcription model...', 0);
 
   const workers = Array.from({ length: numWorkers }, () => new TranscribeWorker());
@@ -384,7 +388,7 @@ async function transcribeVocals(mono16k) {
       const i = queue.shift();
       const start = i * chunkSize;
       const chunk = mono16k.slice(start, start + chunkSize);
-      results[i] = await worker.transcribe(i, chunk);
+      results[i] = await worker.transcribe(i, chunk, language);
       completed++;
       showProgress(`Transcribing lyrics... ${completed}/${nChunks}`, completed / nChunks);
       await tick();
@@ -697,6 +701,16 @@ el.settingsToggle.addEventListener('click', () => {
   const open = el.settings.classList.toggle('hidden');
   el.settingsToggle.setAttribute('aria-expanded', !open);
 });
+
+/** Apply lyrics appearance settings to CSS custom properties. */
+function applyAppearance() {
+  el.lyrics.style.setProperty('--lyrics-size', el.fontSize.value + 'rem');
+  el.lyrics.style.setProperty('--highlight', el.highlightColor.value);
+  el.fontSizeVal.textContent = el.fontSize.value;
+}
+
+el.fontSize.addEventListener('input', applyAppearance);
+el.highlightColor.addEventListener('input', applyAppearance);
 
 el.dropZone.addEventListener('click', () => el.fileInput.click());
 el.fileInput.addEventListener('change', (e) => { if (e.target.files[0]) handleFile(e.target.files[0]); });
