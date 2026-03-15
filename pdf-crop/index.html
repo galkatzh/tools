@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF Batch Crop</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #16161e;
+      color: #ccc;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+      gap: 1.5rem;
+    }
+
+    header { text-align: center; }
+    h1 { font-size: 1.8rem; color: #eee; }
+    .subtitle { color: #777; margin-top: 0.3rem; font-size: 0.95rem; }
+
+    /* ── Upload zone ─────────────────────────── */
+    #drop-zone {
+      border: 2px dashed #444;
+      border-radius: 12px;
+      padding: 3rem 4rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      width: 100%;
+      max-width: 500px;
+    }
+    #drop-zone:hover, #drop-zone.over {
+      border-color: #4488ff;
+      background: rgba(68, 136, 255, 0.05);
+    }
+    #drop-zone svg { stroke: #666; display: block; margin: 0 auto 1rem; }
+    #drop-zone p   { color: #888; }
+
+    /* ── Editor ──────────────────────────────── */
+    #editor { display: none; width: 100%; max-width: 860px; }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .page-nav { display: flex; align-items: center; gap: 0.5rem; }
+
+    /* ── Mode tabs ───────────────────────────── */
+    .mode-tabs {
+      display: flex;
+      border: 1px solid #444;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .mode-tabs .tab {
+      border: none;
+      border-radius: 0;
+      border-right: 1px solid #444;
+      padding: 0.4rem 0.9rem;
+      font-size: 0.85rem;
+    }
+    .mode-tabs .tab:last-child { border-right: none; }
+    .mode-tabs .tab.active { background: #353550; color: #fff; }
+
+    button {
+      background: #252535;
+      color: #ddd;
+      border: 1px solid #444;
+      border-radius: 6px;
+      padding: 0.4rem 0.9rem;
+      cursor: pointer;
+      font-size: 0.85rem;
+      transition: background 0.15s;
+      white-space: nowrap;
+    }
+    button:hover:not(:disabled) { background: #353550; }
+    button:disabled { opacity: 0.4; cursor: default; }
+
+    .dl-btn {
+      background: #1a4ecf;
+      border-color: #1a3fa0;
+      color: #fff;
+      font-size: 0.9rem;
+      padding: 0.5rem 1.2rem;
+    }
+    .dl-btn:hover:not(:disabled) { background: #1a3fa0; }
+
+    /* ── Kindle select ───────────────────────── */
+    select {
+      background: #252535;
+      color: #ddd;
+      border: 1px solid #444;
+      border-radius: 6px;
+      padding: 0.4rem 0.6rem;
+      font-size: 0.85rem;
+      cursor: pointer;
+      appearance: none;
+      padding-right: 1.6rem;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 0.5rem center;
+    }
+    select:focus { outline: 1px solid #4488ff; }
+
+    #kindle-fit-btn {
+      background: #1e3a2a;
+      border-color: #2d5a3d;
+      color: #7ecfa0;
+    }
+    #kindle-fit-btn:hover:not(:disabled) { background: #264d38; }
+
+    /* ── Canvas area ─────────────────────────── */
+    #viewport-area { text-align: center; overflow-x: auto; }
+
+    #canvas-wrap {
+      position: relative;
+      display: inline-block;
+      overflow: hidden;
+      line-height: 0;
+    }
+    /* Cursor changes per mode */
+    #canvas-wrap.mode-crop   { cursor: crosshair; }
+    #canvas-wrap.mode-slice  { cursor: row-resize; }
+
+    #pdf-canvas { display: block; }
+
+    /* ── Crop box ────────────────────────────── */
+    #crop-box {
+      position: absolute;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+      border: 1.5px solid rgba(255, 255, 255, 0.85);
+      cursor: move;
+      touch-action: none;
+    }
+    #crop-box::after {
+      content: '';
+      position: absolute;
+      inset: -1.5px;
+      border: 1.5px dashed rgba(255, 255, 255, 0.35);
+      pointer-events: none;
+    }
+
+    /* ── Resize handles ──────────────────────── */
+    .handle {
+      position: absolute;
+      width: 9px; height: 9px;
+      background: #fff;
+      border: 1px solid #555;
+      border-radius: 2px;
+      z-index: 1;
+    }
+    .handle.nw { top: -5px;  left: -5px;             cursor: nw-resize; }
+    .handle.n  { top: -5px;  left: calc(50% - 4px);  cursor: n-resize;  }
+    .handle.ne { top: -5px;  right: -5px;             cursor: ne-resize; }
+    .handle.w  { top: calc(50% - 4px); left: -5px;   cursor: w-resize;  }
+    .handle.e  { top: calc(50% - 4px); right: -5px;  cursor: e-resize;  }
+    .handle.sw { bottom: -5px; left: -5px;            cursor: sw-resize; }
+    .handle.s  { bottom: -5px; left: calc(50% - 4px);cursor: s-resize;  }
+    .handle.se { bottom: -5px; right: -5px;           cursor: se-resize; }
+
+    /* ── Slice line ──────────────────────────── */
+    #slice-line {
+      position: absolute;
+      left: 0; width: 100%; height: 0;
+      border-top: 2px dashed rgba(255, 180, 0, 0.9);
+      display: none;
+      z-index: 5;
+      user-select: none;
+      touch-action: none;
+    }
+    /* Wide invisible hit area */
+    #slice-line::before {
+      content: '';
+      position: absolute;
+      left: 0; right: 0;
+      top: -8px; bottom: -8px;
+      cursor: row-resize;
+    }
+    /* Position label */
+    #slice-line::after {
+      content: attr(data-label);
+      position: absolute;
+      top: 4px; left: 8px;
+      background: #f90;
+      color: #000;
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 2px 5px;
+      border-radius: 3px;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+
+    /* ── Info bar ────────────────────────────── */
+    .info-bar {
+      margin-top: 0.75rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      padding: 0.6rem 0.9rem;
+      background: #1e1e2e;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      color: #888;
+    }
+
+    /* ── Segments panel (slice mode) ─────────── */
+    #segments-panel {
+      margin-top: 0.5rem;
+      background: #1e1e2e;
+      border-radius: 8px;
+      padding: 0.65rem 0.9rem;
+      font-size: 0.82rem;
+      display: none;
+    }
+    #segments-panel .panel-title {
+      color: #777;
+      margin-bottom: 0.5rem;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .seg-row {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.2rem 0;
+      color: #bbb;
+      border-radius: 4px;
+      padding: 0.25rem 0.4rem;
+    }
+    .seg-row.current { background: rgba(255,180,0,0.08); }
+    .seg-dot {
+      width: 10px; height: 10px;
+      border-radius: 2px;
+      background: #f90;
+      flex-shrink: 0;
+    }
+    .seg-info { flex: 1; }
+    .seg-info strong { color: #eee; }
+    .seg-remove {
+      background: transparent;
+      border: 1px solid #555;
+      color: #888;
+      padding: 0.1rem 0.45rem;
+      font-size: 0.75rem;
+      border-radius: 4px;
+    }
+    .seg-remove:hover { color: #f66; border-color: #f66; background: transparent; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>PDF Batch Crop</h1>
+  <p class="subtitle">Crop all pages identically, or slice each page in two.</p>
+</header>
+
+<div id="drop-zone" tabindex="0" role="button" aria-label="Upload PDF">
+  <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke-width="1.5"
+       stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+    <polyline points="14 2 14 8 20 8"/>
+    <line x1="12" y1="18" x2="12" y2="12"/>
+    <line x1="9"  y1="15" x2="15" y2="15"/>
+  </svg>
+  <p>Drop a PDF here or click to upload</p>
+  <input type="file" id="file-input" accept="application/pdf" hidden>
+</div>
+
+<div id="editor">
+  <div class="toolbar">
+    <!-- Left: mode tabs + page nav -->
+    <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;">
+      <div class="mode-tabs" role="tablist">
+        <button id="crop-tab" class="tab active" role="tab">✂ Crop</button>
+        <button id="slice-tab" class="tab" role="tab">⊟ Slice</button>
+      </div>
+      <div class="page-nav">
+        <button id="prev-btn" disabled>← Prev</button>
+        <span id="page-info">Page 1 / 1</span>
+        <button id="next-btn">Next →</button>
+      </div>
+    </div>
+
+    <!-- Right: mode-specific actions -->
+    <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+      <div id="crop-actions" style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+        <select id="kindle-select" title="Kindle screen to fit">
+          <option value="1072/1448">Kindle Basic 6"</option>
+          <option value="1236/1648" selected>Kindle Paperwhite 6.8"</option>
+          <option value="1264/1680">Kindle Oasis / Colorsoft 7"</option>
+          <option value="1860/2480">Kindle Scribe 10.2"</option>
+        </select>
+        <button id="kindle-fit-btn" title="Crop page to fill this Kindle screen exactly">Fit to Kindle</button>
+        <button id="reset-btn" title="Reset crop to full-page inset">Reset crop</button>
+        <button id="download-btn" class="dl-btn">Download cropped PDF</button>
+      </div>
+      <div id="slice-actions" style="display:none;gap:.5rem;align-items:center;">
+        <button id="download-slice-btn" class="dl-btn">Download sliced PDF</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="viewport-area">
+    <div id="canvas-wrap" class="mode-crop">
+      <canvas id="pdf-canvas"></canvas>
+      <div id="crop-box">
+        <div class="handle nw" data-h="nw"></div>
+        <div class="handle n"  data-h="n"></div>
+        <div class="handle ne" data-h="ne"></div>
+        <div class="handle w"  data-h="w"></div>
+        <div class="handle e"  data-h="e"></div>
+        <div class="handle sw" data-h="sw"></div>
+        <div class="handle s"  data-h="s"></div>
+        <div class="handle se" data-h="se"></div>
+      </div>
+      <!-- Slice cut line; dragged vertically to set the split point -->
+      <div id="slice-line" data-label=""></div>
+    </div>
+  </div>
+
+  <div class="info-bar">
+    <span id="crop-info">Drag to create a crop box, or drag an edge/corner to resize</span>
+    <span id="pdf-name"></span>
+  </div>
+
+  <!-- Slice mode: shows all cut segments with delete buttons -->
+  <div id="segments-panel">
+    <div class="panel-title">Cut segments — drag the line on any page to set a per-page cut point</div>
+    <div id="segments-list"></div>
+  </div>
+</div>
+
+<!-- PDF.js for rendering; pdf-lib for writing the output -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script>
+'use strict';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// ── DOM refs ────────────────────────────────────────────────────────────────
+const dropZone      = document.getElementById('drop-zone');
+const fileInput     = document.getElementById('file-input');
+const editor        = document.getElementById('editor');
+const canvas        = document.getElementById('pdf-canvas');
+const canvasWrap    = document.getElementById('canvas-wrap');
+const cropEl        = document.getElementById('crop-box');
+const sliceLine     = document.getElementById('slice-line');
+const prevBtn       = document.getElementById('prev-btn');
+const nextBtn       = document.getElementById('next-btn');
+const pageInfo      = document.getElementById('page-info');
+const cropInfo      = document.getElementById('crop-info');
+const pdfName       = document.getElementById('pdf-name');
+const downloadBtn   = document.getElementById('download-btn');
+const downloadSlice = document.getElementById('download-slice-btn');
+const resetBtn      = document.getElementById('reset-btn');
+const kindleSelect  = document.getElementById('kindle-select');
+const kindleFitBtn  = document.getElementById('kindle-fit-btn');
+const segmentsPanel = document.getElementById('segments-panel');
+const segmentsList  = document.getElementById('segments-list');
+const cropTab       = document.getElementById('crop-tab');
+const sliceTab      = document.getElementById('slice-tab');
+const cropActions   = document.getElementById('crop-actions');
+const sliceActions  = document.getElementById('slice-actions');
+
+// ── State ────────────────────────────────────────────────────────────────────
+let pdfDoc   = null;
+let viewport = null;
+let curPage  = 1;
+let numPages = 0;
+let pdfBytes = null;
+let mode     = 'crop'; // 'crop' | 'slice'
+
+/** Crop stored in PDF user-space points (lower-left origin). Applied to all pages. */
+let cropPdf = null;
+
+/**
+ * Slice cut points, sorted ascending by fromPage.
+ * Each entry: { fromPage: number, yPdf: number }
+ * The cut at entry[i] applies from entry[i].fromPage up to (entry[i+1].fromPage - 1).
+ */
+let sliceCuts = [];
+
+let drag      = null; // crop drag state
+let sliceDrag = false; // whether a slice-line drag is in progress
+
+const MIN_PX = 16;
+
+// ── File loading ─────────────────────────────────────────────────────────────
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') fileInput.click();
+});
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('over');
+  const f = e.dataTransfer.files[0];
+  if (f?.type === 'application/pdf') loadFile(f);
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) loadFile(fileInput.files[0]);
+});
+
+async function loadFile(file) {
+  pdfBytes = await file.arrayBuffer();
+  // Pass a copy to PDF.js so it can transfer the buffer without detaching pdfBytes,
+  // which we still need for pdf-lib at download time.
+  pdfDoc   = await pdfjsLib.getDocument({ data: pdfBytes.slice(0) }).promise;
+  numPages = pdfDoc.numPages;
+  curPage  = 1;
+  cropPdf  = null;
+  sliceCuts = [];
+  dropZone.style.display = 'none';
+  editor.style.display   = 'block';
+  pdfName.textContent    = file.name;
+  await renderPage(curPage, /* initDefaults= */ true);
+}
+
+// ── Rendering ────────────────────────────────────────────────────────────────
+async function renderPage(pageNum, initDefaults = false) {
+  const page   = await pdfDoc.getPage(pageNum);
+  const maxW   = Math.min(800, document.getElementById('viewport-area').clientWidth || 800);
+  const baseVp = page.getViewport({ scale: 1 });
+  const scale  = maxW / baseVp.width;
+  viewport = page.getViewport({ scale });
+
+  const W = Math.floor(viewport.width);
+  const H = Math.floor(viewport.height);
+  canvas.width  = W;
+  canvas.height = H;
+  // Pin CSS size = canvas pixel size to avoid implicit browser scaling
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+
+  if (initDefaults || !cropPdf)    setDefaultCrop();
+  if (initDefaults || !sliceCuts.length) setDefaultSlice();
+
+  updateCropEl();
+  updateSliceLine();
+  updateNav();
+  updateInfo();
+  updateSegmentsPanel();
+}
+
+/** Default crop: 10 % inset on each side. */
+function setDefaultCrop() {
+  const inset = 0.1;
+  cropPdf = canvasToPdf({
+    x: canvas.width  * inset,
+    y: canvas.height * inset,
+    w: canvas.width  * (1 - 2 * inset),
+    h: canvas.height * (1 - 2 * inset),
+  });
+}
+
+/** Default slice: cut at the vertical midpoint of the first page. */
+function setDefaultSlice() {
+  const [, vbY, , vbY2] = viewport.viewBox; // viewBox is [x0, y0, x1, y1]
+  sliceCuts = [{ fromPage: 1, yPdf: (vbY + vbY2) / 2 }];
+}
+
+// ── Coordinate helpers ───────────────────────────────────────────────────────
+/**
+ * Convert a crop rect from canvas-pixel space to PDF user-space.
+ * PDF origin is bottom-left; canvas is top-left — the viewport handles the Y flip.
+ */
+function canvasToPdf({ x, y, w, h }) {
+  const [px1, py1] = viewport.convertToPdfPoint(x,     y + h); // canvas BL → PDF LL
+  const [px2, py2] = viewport.convertToPdfPoint(x + w, y);     // canvas TR → PDF UR
+  return {
+    x: Math.min(px1, px2), y: Math.min(py1, py2),
+    w: Math.abs(px2 - px1), h: Math.abs(py2 - py1),
+  };
+}
+
+/** Convert a crop rect from PDF user-space back to canvas-pixel space. */
+function pdfToCanvas({ x, y, w, h }) {
+  const [cx1, cy1] = viewport.convertToViewportPoint(x,     y);     // PDF LL → canvas BL
+  const [cx2, cy2] = viewport.convertToViewportPoint(x + w, y + h); // PDF UR → canvas TL
+  return {
+    x: Math.min(cx1, cx2), y: Math.min(cy1, cy2),
+    w: Math.abs(cx2 - cx1), h: Math.abs(cy2 - cy1),
+  };
+}
+
+// ── Crop overlay ─────────────────────────────────────────────────────────────
+function updateCropEl() {
+  if (!cropPdf || !viewport) return;
+  const { x, y, w, h } = pdfToCanvas(cropPdf);
+  cropEl.style.left   = x + 'px';
+  cropEl.style.top    = y + 'px';
+  cropEl.style.width  = w + 'px';
+  cropEl.style.height = h + 'px';
+}
+
+function updateInfo() {
+  if (mode === 'crop') {
+    if (!cropPdf) return;
+    const mmW = Math.round(cropPdf.w / 72 * 25.4);
+    const mmH = Math.round(cropPdf.h / 72 * 25.4);
+    cropInfo.textContent =
+      `Crop: ${Math.round(cropPdf.w)} × ${Math.round(cropPdf.h)} pt  (${mmW} × ${mmH} mm)`;
+  } else {
+    const yPdf = getCutYForPage(curPage);
+    if (yPdf === null) return;
+    // Convert PDF Y to canvas Y, then express as % from top
+    const [, cy] = viewport.convertToViewportPoint(0, yPdf);
+    const pct = (cy / canvas.height * 100).toFixed(1);
+    cropInfo.textContent = `Slice at ${pct}% from top  (${Math.round(yPdf)} pt from page bottom)`;
+  }
+}
+
+function updateNav() {
+  pageInfo.textContent = `Page ${curPage} / ${numPages}`;
+  prevBtn.disabled = curPage <= 1;
+  nextBtn.disabled = curPage >= numPages;
+}
+
+// ── Navigation ───────────────────────────────────────────────────────────────
+prevBtn.addEventListener('click', () => { if (curPage > 1)        { curPage--; renderPage(curPage); } });
+nextBtn.addEventListener('click', () => { if (curPage < numPages) { curPage++; renderPage(curPage); } });
+resetBtn.addEventListener('click', () => { setDefaultCrop(); updateCropEl(); updateInfo(); });
+
+// ── Mode switching ────────────────────────────────────────────────────────────
+cropTab.addEventListener('click', () => setMode('crop'));
+sliceTab.addEventListener('click', () => setMode('slice'));
+
+function setMode(m) {
+  mode = m;
+  cropTab.classList.toggle('active', m === 'crop');
+  sliceTab.classList.toggle('active', m === 'slice');
+  cropActions.style.display   = m === 'crop'  ? 'flex' : 'none';
+  sliceActions.style.display  = m === 'slice' ? 'flex' : 'none';
+  cropEl.style.display        = m === 'crop'  ? ''      : 'none';
+  sliceLine.style.display     = m === 'slice' ? 'block' : 'none';
+  segmentsPanel.style.display = m === 'slice' ? 'block' : 'none';
+  canvasWrap.className        = m === 'crop'  ? 'mode-crop' : 'mode-slice';
+  cropInfo.textContent = m === 'crop'
+    ? 'Drag to create a crop box, or drag an edge/corner to resize'
+    : 'Drag the line to set the cut point for this page and all following pages';
+  updateInfo();
+  if (m === 'slice') { updateSliceLine(); updateSegmentsPanel(); }
+}
+
+// ── Kindle fit ───────────────────────────────────────────────────────────────
+kindleFitBtn.addEventListener('click', () => {
+  if (!viewport) return;
+  const [pw, ph] = kindleSelect.value.split('/').map(Number);
+  const targetRatio = pw / ph;
+  const [vbX, vbY, vbX2, vbY2] = viewport.viewBox;
+  const pageW = vbX2 - vbX, pageH = vbY2 - vbY;
+
+  let cropW, cropH;
+  if (pageW / pageH > targetRatio) { cropH = pageH; cropW = cropH * targetRatio; }
+  else                             { cropW = pageW; cropH = cropW / targetRatio; }
+
+  cropPdf = {
+    x: vbX + (pageW - cropW) / 2,
+    y: vbY + (pageH - cropH) / 2,
+    w: cropW, h: cropH,
+  };
+  updateCropEl();
+  updateInfo();
+});
+
+// ── Slice line ────────────────────────────────────────────────────────────────
+/**
+ * Return the cut X position (PDF points) that applies to the given page number.
+ * Finds the last cut entry whose fromPage <= pageNum.
+ */
+function getCutYForPage(pageNum) {
+  if (!sliceCuts.length) return null;
+  let cut = sliceCuts[0];
+  for (const c of sliceCuts) {
+    if (c.fromPage <= pageNum) cut = c;
+    else break;
+  }
+  return cut.yPdf;
+}
+
+/**
+ * Set or update the cut X for a given page.
+ * If there's already an entry with fromPage === pageNum, update it;
+ * otherwise insert a new entry and keep the array sorted.
+ */
+function setCutForPage(pageNum, yPdf) {
+  const existing = sliceCuts.find(c => c.fromPage === pageNum);
+  if (existing) {
+    existing.yPdf = yPdf;
+  } else {
+    sliceCuts.push({ fromPage: pageNum, yPdf });
+    sliceCuts.sort((a, b) => a.fromPage - b.fromPage);
+  }
+}
+
+/** Remove a cut point for the given page (not allowed for fromPage=1). */
+function removeCutForPage(pageNum) {
+  if (pageNum === sliceCuts[0].fromPage) return; // can't remove the first
+  const i = sliceCuts.findIndex(c => c.fromPage === pageNum);
+  if (i >= 0) {
+    sliceCuts.splice(i, 1);
+    updateSliceLine();
+    updateSegmentsPanel();
+    updateInfo();
+  }
+}
+
+/** Position the slice-line div from the current sliceCuts state. */
+function updateSliceLine() {
+  if (!viewport || !sliceCuts.length) return;
+  const yPdf = getCutYForPage(curPage);
+  if (yPdf === null) return;
+  const [, cy] = viewport.convertToViewportPoint(0, yPdf);
+  sliceLine.style.top = cy + 'px';
+
+  const pct = Math.round(cy / canvas.height * 100);
+  sliceLine.dataset.label = `${pct}%  (${Math.round(yPdf)} pt)`;
+}
+
+/** Rebuild the segments list panel from the current sliceCuts. */
+function updateSegmentsPanel() {
+  segmentsList.innerHTML = '';
+  if (!sliceCuts.length || !viewport) return;
+
+  sliceCuts.forEach((cut, i) => {
+    const next  = sliceCuts[i + 1];
+    const label = next
+      ? `Pages ${cut.fromPage}–${next.fromPage - 1}`
+      : `Pages ${cut.fromPage}+`;
+    // Express as % from top (visual), using current viewport as reference
+    const [, cy] = viewport.convertToViewportPoint(0, cut.yPdf);
+    const pct = Math.round(cy / canvas.height * 100);
+    const isCurrent = cut.fromPage === curPage ||
+      (!next && curPage >= cut.fromPage) ||
+      (next && curPage >= cut.fromPage && curPage < next.fromPage);
+
+    const row = document.createElement('div');
+    row.className = 'seg-row' + (isCurrent ? ' current' : '');
+    row.innerHTML =
+      `<span class="seg-dot"></span>` +
+      `<span class="seg-info"><strong>${label}</strong>: cut at ${pct}% from top</span>` +
+      (i > 0
+        ? `<button class="seg-remove" onclick="removeCutForPage(${cut.fromPage})">×</button>`
+        : '');
+    segmentsList.appendChild(row);
+  });
+}
+
+// ── Pointer helpers ───────────────────────────────────────────────────────────
+function getPos(e) {
+  const rect = canvasWrap.getBoundingClientRect();
+  const src  = e.touches?.[0] ?? e;
+  return { x: src.clientX - rect.left, y: src.clientY - rect.top };
+}
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+// ── Slice drag ────────────────────────────────────────────────────────────────
+// Clicking anywhere on the canvas in slice mode drags the line.
+// The line element itself also captures the event.
+sliceLine.addEventListener('mousedown', e => {
+  if (mode !== 'slice') return;
+  e.preventDefault(); e.stopPropagation();
+  sliceDrag = true;
+});
+sliceLine.addEventListener('touchstart', e => {
+  if (mode !== 'slice') return;
+  e.preventDefault(); e.stopPropagation();
+  sliceDrag = true;
+}, { passive: false });
+
+function applySliceFromPointer(e) {
+  const pos  = getPos(e);
+  const cy   = clamp(pos.y, 0, canvas.height);
+  const yPdf = viewport.convertToPdfPoint(0, cy)[1];
+  setCutForPage(curPage, yPdf);
+  updateSliceLine();
+  updateSegmentsPanel();
+  updateInfo();
+}
+
+// ── Crop drag ─────────────────────────────────────────────────────────────────
+function beginCropDrag(e, type, handle = null) {
+  e.preventDefault();
+  const pos = getPos(e);
+  const cc  = pdfToCanvas(cropPdf);
+  drag = { type, handle, start: pos, crop0: { ...cc } };
+}
+
+canvasWrap.addEventListener('mousedown', e => {
+  if (mode === 'slice') {
+    e.preventDefault();
+    sliceDrag = true;
+    applySliceFromPointer(e);
+    return;
+  }
+  if (e.target === cropEl || cropEl.contains(e.target)) return;
+  e.preventDefault();
+  const pos = getPos(e);
+  drag = { type: 'create', start: pos, crop0: null };
+});
+canvasWrap.addEventListener('touchstart', e => {
+  if (mode === 'slice') {
+    e.preventDefault();
+    sliceDrag = true;
+    applySliceFromPointer(e);
+    return;
+  }
+  if (e.target === cropEl || cropEl.contains(e.target)) return;
+  e.preventDefault();
+  const pos = getPos(e);
+  drag = { type: 'create', start: pos, crop0: null };
+}, { passive: false });
+
+cropEl.addEventListener('mousedown',  e => { if (!e.target.dataset.h && mode === 'crop') beginCropDrag(e, 'move'); });
+cropEl.addEventListener('touchstart', e => { if (!e.target.dataset.h && mode === 'crop') beginCropDrag(e, 'move'); }, { passive: false });
+
+cropEl.querySelectorAll('.handle').forEach(h => {
+  h.addEventListener('mousedown',  e => { e.stopPropagation(); if (mode === 'crop') beginCropDrag(e, 'resize', h.dataset.h); });
+  h.addEventListener('touchstart', e => { e.stopPropagation(); if (mode === 'crop') beginCropDrag(e, 'resize', h.dataset.h); }, { passive: false });
+});
+
+document.addEventListener('mousemove', onMove);
+document.addEventListener('touchmove', onMove, { passive: false });
+document.addEventListener('mouseup',  () => { drag = null; sliceDrag = false; });
+document.addEventListener('touchend', () => { drag = null; sliceDrag = false; });
+
+function onMove(e) {
+  if (sliceDrag) {
+    e.preventDefault();
+    applySliceFromPointer(e);
+    return;
+  }
+
+  if (!drag || !cropPdf) return;
+  e.preventDefault();
+
+  const pos  = getPos(e);
+  const maxW = canvas.width, maxH = canvas.height;
+  let cc;
+
+  if (drag.type === 'create') {
+    const x = clamp(pos.x, 0, maxW), y = clamp(pos.y, 0, maxH);
+    const s = drag.start;
+    cc = { x: Math.min(s.x, x), y: Math.min(s.y, y), w: Math.abs(x - s.x), h: Math.abs(y - s.y) };
+    // Show the growing box immediately for visual feedback
+    cropEl.style.left   = cc.x + 'px'; cropEl.style.top    = cc.y + 'px';
+    cropEl.style.width  = cc.w + 'px'; cropEl.style.height = cc.h + 'px';
+    if (cc.w >= MIN_PX && cc.h >= MIN_PX) { cropPdf = canvasToPdf(cc); updateInfo(); }
+    return;
+  }
+
+  const { crop0 } = drag;
+  if (drag.type === 'move') {
+    cc = {
+      x: clamp(crop0.x + (pos.x - drag.start.x), 0, maxW - crop0.w),
+      y: clamp(crop0.y + (pos.y - drag.start.y), 0, maxH - crop0.h),
+      w: crop0.w, h: crop0.h,
+    };
+  } else {
+    let { x, y, w, h } = crop0;
+    const dx = pos.x - drag.start.x, dy = pos.y - drag.start.y;
+    const dir = drag.handle;
+    if (dir.includes('e')) w = clamp(w + dx, MIN_PX, maxW - x);
+    if (dir.includes('s')) h = clamp(h + dy, MIN_PX, maxH - y);
+    if (dir.includes('w')) { const nx = clamp(x + dx, 0, x + w - MIN_PX); w = x + w - nx; x = nx; }
+    if (dir.includes('n')) { const ny = clamp(y + dy, 0, y + h - MIN_PX); h = y + h - ny; y = ny; }
+    cc = { x, y, w, h };
+  }
+  if (cc.w >= MIN_PX && cc.h >= MIN_PX) { cropPdf = canvasToPdf(cc); updateCropEl(); updateInfo(); }
+}
+
+// ── Crop download ─────────────────────────────────────────────────────────────
+downloadBtn.addEventListener('click', async () => {
+  if (!cropPdf || !pdfBytes) return;
+  downloadBtn.textContent = 'Processing…'; downloadBtn.disabled = true;
+  try {
+    const { PDFDocument } = PDFLib;
+    const doc = await PDFDocument.load(pdfBytes);
+    for (const page of doc.getPages())
+      page.setCropBox(cropPdf.x, cropPdf.y, cropPdf.w, cropPdf.h);
+    triggerDownload(await doc.save(), 'cropped.pdf');
+  } catch (err) {
+    console.error('PDF crop failed:', err);
+    alert('Error generating PDF: ' + err.message);
+  } finally {
+    downloadBtn.textContent = 'Download cropped PDF'; downloadBtn.disabled = false;
+  }
+});
+
+// ── Slice download ────────────────────────────────────────────────────────────
+downloadSlice.addEventListener('click', async () => {
+  if (!sliceCuts.length || !pdfBytes) return;
+  downloadSlice.textContent = 'Processing…'; downloadSlice.disabled = true;
+  try {
+    const { PDFDocument } = PDFLib;
+    const srcDoc = await PDFDocument.load(pdfBytes);
+    const dstDoc = await PDFDocument.create();
+
+    for (let i = 0; i < srcDoc.getPageCount(); i++) {
+      const srcPage = srcDoc.getPage(i);
+      const { width: pageW, height: pageH } = srcPage.getSize();
+      const cutY = getCutYForPage(i + 1); // PDF Y (0 = bottom, pageH = top)
+
+      // Copy the same source page twice — one for each half
+      const [topPage, bottomPage] = await dstDoc.copyPages(srcDoc, [i, i]);
+
+      // Top half: PDF y = cutY … pageH (visually the upper portion)
+      topPage.setMediaBox(0, cutY, pageW, pageH - cutY);
+      topPage.setCropBox(0, cutY, pageW, pageH - cutY);
+      dstDoc.addPage(topPage);
+
+      // Bottom half: PDF y = 0 … cutY (visually the lower portion)
+      bottomPage.setMediaBox(0, 0, pageW, cutY);
+      bottomPage.setCropBox(0, 0, pageW, cutY);
+      dstDoc.addPage(bottomPage);
+    }
+
+    triggerDownload(await dstDoc.save(), 'sliced.pdf');
+  } catch (err) {
+    console.error('PDF slice failed:', err);
+    alert('Error slicing PDF: ' + err.message);
+  } finally {
+    downloadSlice.textContent = 'Download sliced PDF'; downloadSlice.disabled = false;
+  }
+});
+
+function triggerDownload(bytes, filename) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: filename });
+  a.click();
+  URL.revokeObjectURL(url);
+}
+</script>
+</body>
+</html>
