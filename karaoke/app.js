@@ -48,6 +48,10 @@ const el = {
   timeTotal: $('#time-total'),
   exportLrc: $('#export-lrc'),
   exportAss: $('#export-ass'),
+  settingsToggle: $('#settings-toggle'),
+  settings: $('#settings'),
+  splitWorkers: $('#split-workers'),
+  transcribeWorkers: $('#transcribe-workers'),
 };
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -213,7 +217,7 @@ function padToChunkSize(signal) {
 async function splitStems(left, right) {
   const modelBytes = await loadSplitterModel();
 
-  const numWorkers = 2;
+  const numWorkers = parseInt(el.splitWorkers.value, 10) || 2;
   showProgress(`Initializing ${numWorkers} stem-split workers...`, 0);
   const workers = Array.from({ length: numWorkers }, () => new ChunkWorker(modelBytes));
   await Promise.all(workers.map(w => w.ready));
@@ -294,79 +298,115 @@ async function resampleToMono16k(left, right) {
   return rendered.getChannelData(0);
 }
 
-// ── Transcription ──────────────────────────────────────────────────────────
+// ── Transcription (parallel worker pool) ────────────────────────────────────
 
 /**
- * Transcribe audio using Whisper with word-level timestamps.
- * Sends vocals in 30s chunks to the transcribe worker, offsets timestamps.
- * @param {Float32Array} mono16k - 16 kHz mono Float32Array of vocals
- * @returns {Promise<Array<{ text: string, start: number, end: number }>>}
+ * Wrapper for a transcribe worker — handles init, ready, and one-chunk-at-a-time
+ * processing via a queue so each worker stays busy.
+ */
+class TranscribeWorker {
+  constructor() {
+    this.worker = new Worker(
+      new URL('../local-transcribe/transcribe-worker.js', import.meta.url),
+      { type: 'module' },
+    );
+    this._resolve = null;
+    this._reject = null;
+    this.ready = new Promise((resolve, reject) => {
+      this._initResolve = resolve;
+      this._initReject = reject;
+    });
+    this.worker.onmessage = ({ data }) => this._onMessage(data);
+    this.worker.onerror = (e) => {
+      console.error('[TranscribeWorker]', e);
+      (this._reject || this._initReject)?.(new Error(e.message));
+    };
+    this.worker.postMessage({ type: 'init', model: WHISPER_MODEL });
+  }
+
+  _onMessage(data) {
+    if (data.type === 'load-progress') {
+      // Only report model-loading progress from the first worker
+      const pct = data.progress != null ? data.progress : 0;
+      showProgress(`Loading transcription model... ${Math.round(pct)}%`, pct / 100);
+    } else if (data.type === 'ready') {
+      this._initResolve();
+    } else if (data.type === 'result') {
+      this._resolve?.(data);
+    } else if (data.type === 'error') {
+      console.error('[TranscribeWorker]', data.message);
+      this._reject?.(new Error(data.message));
+    }
+  }
+
+  /** Send one chunk and wait for its result. */
+  transcribe(chunkIdx, audioChunk) {
+    return new Promise((resolve, reject) => {
+      this._resolve = resolve;
+      this._reject = reject;
+      const buf = audioChunk.buffer.slice(
+        audioChunk.byteOffset,
+        audioChunk.byteOffset + audioChunk.byteLength,
+      );
+      this.worker.postMessage(
+        { type: 'transcribe', chunkIdx, audio: buf, returnTimestamps: 'word' },
+        [buf],
+      );
+    });
+  }
+
+  terminate() { this.worker.terminate(); }
+}
+
+/**
+ * Transcribe audio using a pool of parallel Whisper workers.
+ * Each worker loads its own model copy (browser caches the download).
+ * Chunks are distributed via a shared queue, results sorted by time.
  */
 async function transcribeVocals(mono16k) {
+  const numWorkers = parseInt(el.transcribeWorkers.value, 10) || 2;
   showProgress('Loading transcription model...', 0);
 
-  const worker = new Worker(
-    new URL('../local-transcribe/transcribe-worker.js', import.meta.url),
-    { type: 'module' },
-  );
+  const workers = Array.from({ length: numWorkers }, () => new TranscribeWorker());
+  await Promise.all(workers.map((w) => w.ready));
 
-  /** Promise wrapper for worker messaging. */
-  const wordsResult = await new Promise((resolveAll, rejectAll) => {
-    const allWords = [];
-    const chunkSize = WHISPER_CHUNK_SECONDS * WHISPER_SAMPLE_RATE;
-    const nChunks = Math.ceil(mono16k.length / chunkSize);
-    let completed = 0;
-    let ready = false;
+  const chunkSize = WHISPER_CHUNK_SECONDS * WHISPER_SAMPLE_RATE;
+  const nChunks = Math.ceil(mono16k.length / chunkSize);
+  const results = new Array(nChunks);
+  const queue = Array.from({ length: nChunks }, (_, i) => i);
+  let completed = 0;
 
-    worker.onmessage = ({ data }) => {
-      if (data.type === 'load-progress') {
-        const pct = data.progress != null ? data.progress : 0;
-        showProgress(`Loading transcription model... ${Math.round(pct)}%`, pct / 100);
-      } else if (data.type === 'ready') {
-        ready = true;
-        // Send all chunks
-        for (let i = 0; i < nChunks; i++) {
-          const start = i * chunkSize;
-          const chunk = mono16k.slice(start, start + chunkSize);
-          worker.postMessage(
-            { type: 'transcribe', chunkIdx: i, audio: chunk.buffer, returnTimestamps: 'word' },
-            [chunk.buffer],
-          );
-        }
-        showProgress('Transcribing lyrics...', 0);
-      } else if (data.type === 'result') {
-        const chunkOffset = data.chunkIdx * WHISPER_CHUNK_SECONDS;
-        const chunks = data.result?.chunks || [];
-        for (const w of chunks) {
-          allWords.push({
-            text: w.text,
-            start: (w.timestamp?.[0] ?? 0) + chunkOffset,
-            end: (w.timestamp?.[1] ?? 0) + chunkOffset,
-          });
-        }
-        completed++;
-        showProgress(`Transcribing lyrics... ${completed}/${nChunks}`, completed / nChunks);
-        if (completed === nChunks) {
-          worker.terminate();
-          resolveAll(allWords);
-        }
-      } else if (data.type === 'error') {
-        console.error('[transcribe-worker]', data.message);
-        worker.terminate();
-        rejectAll(new Error(data.message));
-      }
-    };
+  showProgress('Transcribing lyrics...', 0);
 
-    worker.onerror = (e) => {
-      console.error('[transcribe-worker]', e);
-      worker.terminate();
-      rejectAll(new Error(e.message));
-    };
+  // Each worker pulls from the shared queue until empty
+  await Promise.all(workers.map(async (worker) => {
+    while (queue.length > 0) {
+      const i = queue.shift();
+      const start = i * chunkSize;
+      const chunk = mono16k.slice(start, start + chunkSize);
+      results[i] = await worker.transcribe(i, chunk);
+      completed++;
+      showProgress(`Transcribing lyrics... ${completed}/${nChunks}`, completed / nChunks);
+      await tick();
+    }
+  }));
 
-    worker.postMessage({ type: 'init', model: WHISPER_MODEL });
-  });
+  workers.forEach((w) => w.terminate());
 
-  return wordsResult;
+  // Merge results in order
+  const allWords = [];
+  for (let i = 0; i < nChunks; i++) {
+    const chunkOffset = i * WHISPER_CHUNK_SECONDS;
+    for (const w of results[i].result?.chunks || []) {
+      allWords.push({
+        text: w.text,
+        start: (w.timestamp?.[0] ?? 0) + chunkOffset,
+        end: (w.timestamp?.[1] ?? 0) + chunkOffset,
+      });
+    }
+  }
+
+  return allWords;
 }
 
 // ── Lyrics rendering ───────────────────────────────────────────────────────
@@ -652,6 +692,11 @@ async function handleFile(file) {
 }
 
 // ── Event listeners ────────────────────────────────────────────────────────
+
+el.settingsToggle.addEventListener('click', () => {
+  const open = el.settings.classList.toggle('hidden');
+  el.settingsToggle.setAttribute('aria-expanded', !open);
+});
 
 el.dropZone.addEventListener('click', () => el.fileInput.click());
 el.fileInput.addEventListener('change', (e) => { if (e.target.files[0]) handleFile(e.target.files[0]); });
