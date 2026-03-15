@@ -46,6 +46,8 @@ const el = {
   seek: $('#seek'),
   timeCurrent: $('#time-current'),
   timeTotal: $('#time-total'),
+  exportLrc: $('#export-lrc'),
+  exportAss: $('#export-ass'),
 };
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -58,6 +60,7 @@ let playing = false;
 let startedAt = 0;             // audioCtx.currentTime when playback started
 let pausedAt = 0;              // offset in seconds when paused
 let animFrameId = null;
+let songBaseName = 'karaoke';       // filename stem for exports
 
 // ── Progress helpers ───────────────────────────────────────────────────────
 
@@ -511,6 +514,83 @@ function updateUI(time) {
   }
 }
 
+// ── Export: LRC & ASS serializers ────────────────────────────────────────
+
+/** Format seconds as mm:ss.xx for Enhanced LRC. */
+function lrcTime(s) {
+  const m = Math.floor(s / 60);
+  const sec = (s % 60).toFixed(2).padStart(5, '0');
+  return `${String(m).padStart(2, '0')}:${sec}`;
+}
+
+/** Format seconds as h:mm:ss.cc for ASS. */
+function assTime(s) {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = (s % 60).toFixed(2).padStart(5, '0');
+  return `${h}:${String(m).padStart(2, '0')}:${sec}`;
+}
+
+/**
+ * Serialize word timestamps to Enhanced LRC format.
+ * Each line uses inline <mm:ss.xx> tags for word-level timing.
+ */
+function buildLRC(wordList) {
+  const lines = buildLyricLines(wordList);
+  return lines.map((line) => {
+    const lineTag = `[${lrcTime(line[0].start)}]`;
+    const wordTags = line
+      .map((w) => `<${lrcTime(w.start)}>${w.text.trim()}`)
+      .join(' ');
+    return `${lineTag}${wordTags}`;
+  }).join('\n');
+}
+
+/**
+ * Serialize word timestamps to ASS (Advanced SubStation Alpha) with \k karaoke tags.
+ * Each line becomes a Dialogue event; word durations are expressed in centiseconds.
+ */
+function buildASS(wordList) {
+  const header =
+`[Script Info]
+Title: Karaoke Export
+ScriptType: v4.00+
+WrapStyle: 0
+PlayResX: 1280
+PlayResY: 720
+
+[V4+ Styles]
+Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
+Style: Default,Arial,48,&H00FFFFFF,&H000045E9,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,2,1,2,30,30,40,1
+
+[Events]
+Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text`;
+
+  const lines = buildLyricLines(wordList);
+  const dialogues = lines.map((line) => {
+    const start = assTime(line[0].start);
+    const end = assTime(line[line.length - 1].end);
+    const text = line.map((w) => {
+      const dur = Math.round((w.end - w.start) * 100); // centiseconds
+      return `{\\kf${dur}}${w.text.trim()}`;
+    }).join(' ');
+    return `Dialogue: 0,${start},${end},Default,,0,0,0,karaoke,${text}`;
+  });
+
+  return header + '\n' + dialogues.join('\n') + '\n';
+}
+
+/** Trigger a file download from a string. */
+function downloadText(content, filename, mime = 'text/plain') {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ── Main pipeline ──────────────────────────────────────────────────────────
 
 async function handleFile(file) {
@@ -520,6 +600,7 @@ async function handleFile(file) {
   }
 
   el.fileName.textContent = file.name;
+  songBaseName = file.name.replace(/\.[^.]+$/, '');
   el.player.classList.add('hidden');
   playing = false;
   pausedAt = 0;
@@ -592,4 +673,14 @@ el.seek.addEventListener('input', () => {
   if (!instrumentalBuffer) return;
   const time = (parseInt(el.seek.value, 10) / 1000) * instrumentalBuffer.duration;
   seekTo(time);
+});
+
+el.exportLrc.addEventListener('click', () => {
+  if (!words.length) return;
+  downloadText(buildLRC(words), `${songBaseName}.lrc`);
+});
+
+el.exportAss.addEventListener('click', () => {
+  if (!words.length) return;
+  downloadText(buildASS(words), `${songBaseName}.ass`);
 });

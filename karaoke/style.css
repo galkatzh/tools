@@ -185,6 +185,34 @@ h1 {
   cursor: pointer;
 }
 
+/* ── Export buttons ────────────────────────────────────────────── */
+
+.export-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.export-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.85rem;
+  background: var(--surface);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.export-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 /* ── Responsive ────────────────────────────────────────────────── */
 
 @media (max-width: 480px) {
