@@ -343,7 +343,11 @@ class TranscribeWorker {
     }
   }
 
-  /** Send one chunk and wait for its result. */
+  /**
+   * Send one chunk and wait for its result.
+   * Uses segment-level timestamps (no cross-attention outputs needed),
+   * then splits phrases into words with character-proportional timing.
+   */
   transcribe(chunkIdx, audioChunk, language) {
     return new Promise((resolve, reject) => {
       this._resolve = resolve;
@@ -352,13 +356,36 @@ class TranscribeWorker {
         audioChunk.byteOffset,
         audioChunk.byteOffset + audioChunk.byteLength,
       );
-      const msg = { type: 'transcribe', chunkIdx, audio: buf, returnTimestamps: 'word' };
+      const msg = { type: 'transcribe', chunkIdx, audio: buf, returnTimestamps: true };
       if (language) msg.language = language;
       this.worker.postMessage(msg, [buf]);
     });
   }
 
   terminate() { this.worker.terminate(); }
+}
+
+/**
+ * Split a transcribed segment into individual words with
+ * character-proportional timestamp interpolation.
+ * Longer words get proportionally more time than shorter ones.
+ */
+function splitSegmentToWords(text, segStart, segEnd) {
+  const tokens = text.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return [];
+
+  const totalChars = tokens.reduce((sum, t) => sum + t.length, 0);
+  const duration = segEnd - segStart;
+  const words = [];
+  let cursor = segStart;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const frac = tokens[i].length / totalChars;
+    const wordDur = i < tokens.length - 1 ? frac * duration : segEnd - cursor;
+    words.push({ text: tokens[i], start: cursor, end: cursor + wordDur });
+    cursor += wordDur;
+  }
+  return words;
 }
 
 /**
@@ -397,16 +424,15 @@ async function transcribeVocals(mono16k) {
 
   workers.forEach((w) => w.terminate());
 
-  // Merge results in order
+  // Merge results: split segment-level timestamps into word-level
   const allWords = [];
   for (let i = 0; i < nChunks; i++) {
     const chunkOffset = i * WHISPER_CHUNK_SECONDS;
-    for (const w of results[i].result?.chunks || []) {
-      allWords.push({
-        text: w.text,
-        start: (w.timestamp?.[0] ?? 0) + chunkOffset,
-        end: (w.timestamp?.[1] ?? 0) + chunkOffset,
-      });
+    for (const seg of results[i].result?.chunks || []) {
+      const segStart = (seg.timestamp?.[0] ?? 0) + chunkOffset;
+      const segEnd = (seg.timestamp?.[1] ?? segStart) + chunkOffset;
+      const segWords = splitSegmentToWords(seg.text, segStart, segEnd);
+      allWords.push(...segWords);
     }
   }
 
