@@ -1,0 +1,194 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg: #1a1a2e;
+  --surface: #16213e;
+  --border: #0f3460;
+  --accent: #e94560;
+  --text: #e0e0e0;
+  --text-dim: #8888a0;
+  --radius: 10px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+#app {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+}
+
+h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}
+
+.subtitle {
+  color: var(--text-dim);
+  margin-bottom: 2rem;
+  font-size: 0.9rem;
+}
+
+/* ── Drop zone ─────────────────────────────────────────────────── */
+
+#drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 3rem 1.5rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--text-dim);
+}
+
+#drop-zone:hover,
+#drop-zone.dragover {
+  border-color: var(--accent);
+  background: rgba(233, 69, 96, 0.05);
+  color: var(--text);
+}
+
+#drop-zone svg { opacity: 0.6; }
+
+.file-name {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+  min-height: 1.2em;
+}
+
+/* ── Progress ──────────────────────────────────────────────────── */
+
+.hidden { display: none !important; }
+
+.progress-track {
+  width: 100%;
+  height: 6px;
+  background: var(--surface);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 1.5rem;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+
+.progress-label {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+}
+
+/* ── Karaoke player ────────────────────────────────────────────── */
+
+#player {
+  margin-top: 2rem;
+}
+
+#lyrics {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 2rem 1.5rem;
+  min-height: 220px;
+  max-height: 400px;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  text-align: center;
+  line-height: 2.2;
+  font-size: 1.35rem;
+  font-weight: 500;
+}
+
+.lyric-line {
+  margin-bottom: 0.5rem;
+  transition: opacity 0.3s;
+}
+
+.lyric-line.past { opacity: 0.4; }
+.lyric-line.future { opacity: 0.5; }
+.lyric-line.active { opacity: 1; }
+
+.lyric-word {
+  display: inline;
+  padding: 0.1em 0.05em;
+  border-radius: 3px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.lyric-word.sung {
+  color: var(--accent);
+}
+
+.lyric-word.current {
+  color: #fff;
+  background: var(--accent);
+}
+
+/* ── Controls ──────────────────────────────────────────────────── */
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  background: var(--surface);
+  border-radius: var(--radius);
+}
+
+#play-btn {
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+#play-btn:hover { color: var(--accent); }
+
+#time-current, #time-total {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  min-width: 3em;
+  flex-shrink: 0;
+}
+
+#time-total { text-align: right; }
+
+#seek {
+  flex: 1;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* ── Responsive ────────────────────────────────────────────────── */
+
+@media (max-width: 480px) {
+  #app { padding: 1.25rem 1rem; }
+  #drop-zone { padding: 2rem 1rem; }
+  #lyrics { font-size: 1.1rem; min-height: 180px; }
+}
