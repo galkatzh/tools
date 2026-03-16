@@ -1,5 +1,5 @@
 // Service Worker for Expense Report Manager PWA
-const CACHE_NAME = 'expense-report-v3';
+const CACHE_NAME = 'expense-report-v4';
 const STATIC_ASSETS = [
     './',
     './index.html',
