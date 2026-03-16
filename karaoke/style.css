@@ -222,22 +222,9 @@ h1 {
 
 .lyric-line.past { opacity: 0.4; }
 .lyric-line.future { opacity: 0.5; }
-.lyric-line.active { opacity: 1; }
-
-.lyric-word {
-  display: inline;
-  padding: 0.1em 0.05em;
-  border-radius: 3px;
-  transition: color 0.15s, background 0.15s;
-}
-
-.lyric-word.sung {
+.lyric-line.active {
+  opacity: 1;
   color: var(--highlight, var(--accent));
-}
-
-.lyric-word.current {
-  color: #fff;
-  background: var(--highlight, var(--accent));
 }
 
 /* ── Controls ──────────────────────────────────────────────────── */
@@ -278,6 +265,21 @@ h1 {
 
 #seek {
   flex: 1;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.vocal-mix {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.vocal-mix input[type="range"] {
+  width: 4rem;
   accent-color: var(--accent);
   cursor: pointer;
 }
