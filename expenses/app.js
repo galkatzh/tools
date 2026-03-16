@@ -9,6 +9,7 @@ class ExpenseManager {
     constructor() {
         this.db = null;
         this.expenses = [];
+        this.lastCurrency = 'USD';
         this.init();
     }
 
@@ -236,11 +237,17 @@ class ExpenseManager {
         const date = form.date.value;
         const time = form.time.value || null;
         const file = form.file.files[0];
+        const amountVal = form.amount.value;
+        const amount = amountVal !== '' ? parseFloat(amountVal) : null;
+        const currency = form.currency.value;
 
         if (!file) {
             this.showToast('Please select a file', 'error');
             return;
         }
+
+        // Remember currency choice for next expense
+        if (amount !== null) this.lastCurrency = currency;
 
         try {
             // Read file as base64
@@ -251,6 +258,8 @@ class ExpenseManager {
                 title: title || '',
                 date: date,
                 time: time,
+                amount: amount,
+                currency: amount !== null ? currency : null,
                 fileName: file.name,
                 fileType: file.type,
                 fileSize: file.size,
@@ -262,9 +271,10 @@ class ExpenseManager {
             await this.addExpense(expense);
             this.showToast('Expense added successfully', 'success');
 
-            // Reset form
+            // Reset form, but restore last-used currency
             form.reset();
             this.setDefaultDate();
+            document.getElementById('expenseCurrency').value = this.lastCurrency;
             document.getElementById('fileLabel').textContent = 'Choose a file or drag it here';
             document.getElementById('filePreview').classList.add('hidden');
         } catch (error) {
@@ -303,10 +313,13 @@ class ExpenseManager {
                     <p>No expenses yet. Add your first expense above.</p>
                 </div>
             `;
+            this.renderCurrencyTotals();
             return;
         }
 
         list.innerHTML = this.expenses.map((expense, index) => this.createExpenseCard(expense, index)).join('');
+
+        this.renderCurrencyTotals();
 
         // Add delete event listeners
         list.querySelectorAll('.delete-btn').forEach(btn => {
@@ -467,6 +480,9 @@ class ExpenseManager {
                     </div>
                     <div class="expense-date">${dateTimeDisplay}</div>
                     <div class="expense-file-info">${expense.fileName} (${fileSize})</div>
+                    ${expense.amount !== null && expense.amount !== undefined
+                        ? `<div class="expense-amount">${this.formatAmount(expense.amount, expense.currency)}</div>`
+                        : ''}
                 </div>
                 <div class="expense-actions">
                     <button class="btn-icon delete-btn" data-id="${expense.id}" title="Delete expense">
@@ -484,6 +500,40 @@ class ExpenseManager {
         if (bytes < 1024) return bytes + ' B';
         if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
         return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    /** Format a monetary amount using the browser's Intl API. */
+    formatAmount(amount, currency) {
+        try {
+            return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(amount);
+        } catch (e) {
+            return `${currency} ${amount.toFixed(2)}`;
+        }
+    }
+
+    /** Compute per-currency totals and render the summary strip. */
+    renderCurrencyTotals() {
+        const totalsEl = document.getElementById('currencyTotals');
+        if (!totalsEl) return;
+
+        const totals = {};
+        for (const expense of this.expenses) {
+            if (expense.amount !== null && expense.amount !== undefined && expense.currency) {
+                totals[expense.currency] = (totals[expense.currency] || 0) + expense.amount;
+            }
+        }
+
+        const currencies = Object.keys(totals);
+        if (currencies.length === 0) {
+            totalsEl.classList.add('hidden');
+            return;
+        }
+
+        totalsEl.innerHTML = `
+            <span class="currency-totals-label">Totals:</span>
+            ${currencies.map(c => `<span class="currency-total-item">${this.formatAmount(totals[c], c)}</span>`).join('')}
+        `;
+        totalsEl.classList.remove('hidden');
     }
 
     // Convert base64 data URL to Uint8Array
@@ -633,7 +683,10 @@ class ExpenseManager {
                     ? `Pages ${expenseStartPages[i]}-${expenseStartPages[i] + pageCount - 1}`
                     : `Page ${expenseStartPages[i]}`;
 
-                const tocEntry = `${i + 1}. ${title} (${dateTimeStr})`;
+                const amountStr = expense.amount !== null && expense.amount !== undefined
+                    ? `  ${this.formatAmount(expense.amount, expense.currency)}`
+                    : '';
+                const tocEntry = `${i + 1}. ${title} (${dateTimeStr})${amountStr}`;
 
                 titlePage.drawText(tocEntry, {
                     x: margin,
@@ -652,6 +705,35 @@ class ExpenseManager {
                 });
 
                 yPos += 20;
+            }
+
+            // Currency totals section on title page
+            const totalsMap = {};
+            for (const expense of sortedExpenses) {
+                if (expense.amount !== null && expense.amount !== undefined && expense.currency) {
+                    totalsMap[expense.currency] = (totalsMap[expense.currency] || 0) + expense.amount;
+                }
+            }
+            const totalsCurrencies = Object.keys(totalsMap);
+            if (totalsCurrencies.length > 0) {
+                titlePage.drawText('Totals', {
+                    x: margin,
+                    y: pageHeight - yPos - 10,
+                    size: 13,
+                    font: helveticaBold,
+                    color: rgb(0, 0, 0)
+                });
+                yPos += 30;
+                for (const c of totalsCurrencies) {
+                    titlePage.drawText(`${c}: ${this.formatAmount(totalsMap[c], c)}`, {
+                        x: margin + 12,
+                        y: pageHeight - yPos,
+                        size: 11,
+                        font: helvetica,
+                        color: rgb(0, 0, 0)
+                    });
+                    yPos += 18;
+                }
             }
 
             // Page number on title page
@@ -711,7 +793,10 @@ class ExpenseManager {
                                 color: rgb(0, 0, 0)
                             });
 
-                            addedPage.drawText(`Date: ${dateTimeForPage}  |  File: ${expense.fileName}  |  Page ${j + 1} of ${sourcePages.length}`, {
+                            const amountLinePdf = expense.amount !== null && expense.amount !== undefined
+                                ? `  |  Amount: ${this.formatAmount(expense.amount, expense.currency)}`
+                                : '';
+                            addedPage.drawText(`Date: ${dateTimeForPage}${amountLinePdf}  |  File: ${expense.fileName}  |  Page ${j + 1} of ${sourcePages.length}`, {
                                 x: 40,
                                 y: height - 55,
                                 size: 9,
@@ -754,7 +839,10 @@ class ExpenseManager {
 
                     tempPdf.setFontSize(11);
                     tempPdf.setFont(undefined, 'normal');
-                    tempPdf.text(`Date: ${dateTimeForPage}`, pdfMargin, pdfMargin + 14);
+                    const amountLineImg = expense.amount !== null && expense.amount !== undefined
+                        ? `  |  Amount: ${this.formatAmount(expense.amount, expense.currency)}`
+                        : '';
+                    tempPdf.text(`Date: ${dateTimeForPage}${amountLineImg}`, pdfMargin, pdfMargin + 14);
                     tempPdf.text(`File: ${expense.fileName}`, pdfMargin, pdfMargin + 21);
 
                     // Separator line
@@ -854,6 +942,8 @@ class ExpenseManager {
                     title: expense.title,
                     date: expense.date,
                     time: expense.time || null,
+                    amount: expense.amount ?? null,
+                    currency: expense.currency ?? null,
                     order: index,
                     fileName: expense.fileName,
                     fileType: expense.fileType,
@@ -960,6 +1050,8 @@ class ExpenseManager {
                         title: expenseMeta.title || '',
                         date: expenseMeta.date,
                         time: expenseMeta.time || null,
+                        amount: expenseMeta.amount ?? null,
+                        currency: expenseMeta.currency ?? null,
                         fileName: expenseMeta.fileName,
                         fileType: expenseMeta.fileType,
                         fileSize: expenseMeta.fileSize,
