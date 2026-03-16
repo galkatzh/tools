@@ -502,13 +502,22 @@ class ExpenseManager {
         return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     }
 
-    /** Format a monetary amount using the browser's Intl API. */
+    /** Format a monetary amount using the browser's Intl API (for UI display). */
     formatAmount(amount, currency) {
         try {
             return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(amount);
         } catch (e) {
             return `${currency} ${amount.toFixed(2)}`;
         }
+    }
+
+    /**
+     * Format a monetary amount for PDF embedding.
+     * pdf-lib standard fonts only support WinAnsi (Latin-1), so we use the
+     * currency code instead of a locale symbol to avoid encoding errors (e.g. ₪).
+     */
+    formatAmountForPDF(amount, currency) {
+        return `${currency} ${amount.toFixed(2)}`;
     }
 
     /** Compute per-currency totals and render the summary strip. */
@@ -684,7 +693,7 @@ class ExpenseManager {
                     : `Page ${expenseStartPages[i]}`;
 
                 const amountStr = expense.amount !== null && expense.amount !== undefined
-                    ? `  ${this.formatAmount(expense.amount, expense.currency)}`
+                    ? `  ${this.formatAmountForPDF(expense.amount, expense.currency)}`
                     : '';
                 const tocEntry = `${i + 1}. ${title} (${dateTimeStr})${amountStr}`;
 
@@ -725,7 +734,7 @@ class ExpenseManager {
                 });
                 yPos += 30;
                 for (const c of totalsCurrencies) {
-                    titlePage.drawText(`${c}: ${this.formatAmount(totalsMap[c], c)}`, {
+                    titlePage.drawText(`${c}: ${this.formatAmountForPDF(totalsMap[c], c)}`, {
                         x: margin + 12,
                         y: pageHeight - yPos,
                         size: 11,
@@ -794,7 +803,7 @@ class ExpenseManager {
                             });
 
                             const amountLinePdf = expense.amount !== null && expense.amount !== undefined
-                                ? `  |  Amount: ${this.formatAmount(expense.amount, expense.currency)}`
+                                ? `  |  Amount: ${this.formatAmountForPDF(expense.amount, expense.currency)}`
                                 : '';
                             addedPage.drawText(`Date: ${dateTimeForPage}${amountLinePdf}  |  File: ${expense.fileName}  |  Page ${j + 1} of ${sourcePages.length}`, {
                                 x: 40,
@@ -840,7 +849,7 @@ class ExpenseManager {
                     tempPdf.setFontSize(11);
                     tempPdf.setFont(undefined, 'normal');
                     const amountLineImg = expense.amount !== null && expense.amount !== undefined
-                        ? `  |  Amount: ${this.formatAmount(expense.amount, expense.currency)}`
+                        ? `  |  Amount: ${this.formatAmountForPDF(expense.amount, expense.currency)}`
                         : '';
                     tempPdf.text(`Date: ${dateTimeForPage}${amountLineImg}`, pdfMargin, pdfMargin + 14);
                     tempPdf.text(`File: ${expense.fileName}`, pdfMargin, pdfMargin + 21);
