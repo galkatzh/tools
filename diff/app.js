@@ -100,6 +100,35 @@ function intraLine(oldLine, newLine) {
   return { del: delParts.join(''), ins: insParts.join('') };
 }
 
+/* ── Word-level diff ───────────────────────────────── */
+
+/**
+ * Tokenise text into alternating word and whitespace tokens so the diff
+ * operates on whole words while preserving all spacing in the output.
+ * e.g. "hello world\nfoo" → ["hello", " ", "world", "\n", "foo"]
+ */
+function tokenizeWords(text) {
+  return text.split(/(\s+)/).filter(t => t.length > 0);
+}
+
+function renderWord(a, b) {
+  const ops = diff(tokenizeWords(a), tokenizeWords(b));
+  const groups = group(ops);
+  let add = 0, del = 0, eq = 0;
+
+  const isSpace = t => /^\s+$/.test(t);
+
+  const html = groups.map(([op, toks]) => {
+    const t = esc(toks.join(''));
+    const wordCount = toks.filter(t => !isSpace(t)).length;
+    if (op === 0)  { eq  += wordCount; return t; }
+    if (op === -1) { del += wordCount; return `<span class="del">${t}</span>`; }
+    add += wordCount; return `<span class="ins">${t}</span>`;
+  }).join('');
+
+  return { html: `<pre class="char-diff">${html || '&nbsp;'}</pre>`, add, del, eq };
+}
+
 /* ── Line-level diff with intra-line highlighting ──── */
 
 function renderLine(a, b) {
@@ -177,7 +206,8 @@ function update() {
     return;
   }
 
-  const r = mode() === 'char' ? renderChar(a, b) : renderLine(a, b);
+  const m = mode();
+  const r = m === 'char' ? renderChar(a, b) : m === 'word' ? renderWord(a, b) : renderLine(a, b);
 
   if (r.add === 0 && r.del === 0) {
     output.innerHTML = '<p class="identical">Texts are identical.</p>';
