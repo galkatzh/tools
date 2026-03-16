@@ -46,6 +46,7 @@ const el = {
   seek: $('#seek'),
   timeCurrent: $('#time-current'),
   timeTotal: $('#time-total'),
+  vocalVolume: $('#vocal-volume'),
   exportLrc: $('#export-lrc'),
   exportAss: $('#export-ass'),
   settingsToggle: $('#settings-toggle'),
@@ -61,8 +62,12 @@ const el = {
 // ── State ──────────────────────────────────────────────────────────────────
 
 let audioCtx = null;
-let sourceNode = null;
+let instrSource = null;
+let vocalSource = null;
+let instrGain = null;          // GainNode for instrumental
+let vocalGain = null;          // GainNode for vocals
 let instrumentalBuffer = null; // AudioBuffer for playback
+let vocalBuffer = null;        // AudioBuffer for vocal mix
 let words = [];                // [{ text, start, end }]
 let playing = false;
 let startedAt = 0;             // audioCtx.currentTime when playback started
@@ -460,7 +465,7 @@ function buildLyricLines(wordList) {
   return lines;
 }
 
-/** Render lyrics into the DOM. Each word gets a span with data attributes. */
+/** Render lyrics into the DOM — one div per line, no per-word spans. */
 function renderLyrics(lines) {
   el.lyrics.innerHTML = '';
   for (const line of lines) {
@@ -468,14 +473,7 @@ function renderLyrics(lines) {
     div.className = 'lyric-line future';
     div.dataset.start = line[0].start;
     div.dataset.end = line[line.length - 1].end;
-    for (const w of line) {
-      const span = document.createElement('span');
-      span.className = 'lyric-word';
-      span.textContent = w.text + ' ';
-      span.dataset.start = w.start;
-      span.dataset.end = w.end;
-      div.appendChild(span);
-    }
+    div.textContent = line.map((w) => w.text).join(' ');
     el.lyrics.appendChild(div);
   }
 }
@@ -486,19 +484,30 @@ function initAudioContext() {
   if (audioCtx) return;
   audioCtx = new AudioContext();
   if (navigator.audioSession) navigator.audioSession.type = 'playback';
+  instrGain = audioCtx.createGain();
+  instrGain.connect(audioCtx.destination);
+  vocalGain = audioCtx.createGain();
+  vocalGain.gain.value = 0;
+  vocalGain.connect(audioCtx.destination);
 }
 
 function play(offset = 0) {
   initAudioContext();
-  if (sourceNode) { sourceNode.stop(); sourceNode.disconnect(); }
+  if (instrSource) { instrSource.stop(); instrSource.disconnect(); }
+  if (vocalSource) { vocalSource.stop(); vocalSource.disconnect(); }
 
-  sourceNode = audioCtx.createBufferSource();
-  sourceNode.buffer = instrumentalBuffer;
-  sourceNode.connect(audioCtx.destination);
-  sourceNode.start(0, offset);
-  sourceNode.onended = () => {
-    if (playing) stop();
-  };
+  instrSource = audioCtx.createBufferSource();
+  instrSource.buffer = instrumentalBuffer;
+  instrSource.connect(instrGain);
+  instrSource.start(0, offset);
+  instrSource.onended = () => { if (playing) stop(); };
+
+  if (vocalBuffer) {
+    vocalSource = audioCtx.createBufferSource();
+    vocalSource.buffer = vocalBuffer;
+    vocalSource.connect(vocalGain);
+    vocalSource.start(0, offset);
+  }
 
   startedAt = audioCtx.currentTime - offset;
   playing = true;
@@ -510,9 +519,8 @@ function play(offset = 0) {
 function pause() {
   if (!playing) return;
   pausedAt = audioCtx.currentTime - startedAt;
-  sourceNode.stop();
-  sourceNode.disconnect();
-  sourceNode = null;
+  if (instrSource) { instrSource.stop(); instrSource.disconnect(); instrSource = null; }
+  if (vocalSource) { vocalSource.stop(); vocalSource.disconnect(); vocalSource = null; }
   playing = false;
   el.iconPlay.classList.remove('hidden');
   el.iconPause.classList.add('hidden');
@@ -527,7 +535,11 @@ function stop() {
 
 function seekTo(time) {
   const wasPlaying = playing;
-  if (playing) { sourceNode.stop(); sourceNode.disconnect(); sourceNode = null; playing = false; }
+  if (playing) {
+    if (instrSource) { instrSource.stop(); instrSource.disconnect(); instrSource = null; }
+    if (vocalSource) { vocalSource.stop(); vocalSource.disconnect(); vocalSource = null; }
+    playing = false;
+  }
   pausedAt = time;
   if (wasPlaying) play(time);
   else updateUI(time);
@@ -551,7 +563,7 @@ function updateUI(time) {
   el.timeCurrent.textContent = fmt(time);
   el.seek.value = Math.round((time / duration) * 1000);
 
-  // Update line and word highlights
+  // Update line highlights (whole-line, no per-word tracking)
   const lineEls = el.lyrics.querySelectorAll('.lyric-line');
   let activeLineEl = null;
 
@@ -567,18 +579,8 @@ function updateUI(time) {
       lineEl.className = 'lyric-line active';
       activeLineEl = lineEl;
     }
-
-    // Update word classes within this line
-    for (const span of lineEl.querySelectorAll('.lyric-word')) {
-      const ws = parseFloat(span.dataset.start);
-      const we = parseFloat(span.dataset.end);
-      if (time >= we) span.className = 'lyric-word sung';
-      else if (time >= ws) span.className = 'lyric-word current';
-      else span.className = 'lyric-word';
-    }
   }
 
-  // Auto-scroll active line into view
   if (activeLineEl) {
     activeLineEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }
@@ -686,11 +688,15 @@ async function handleFile(file) {
     // 2. Stem separation
     const { vocalL, vocalR, instrL, instrR } = await splitStems(left, right);
 
-    // 3. Build instrumental AudioBuffer for playback
+    // 3. Build AudioBuffers for playback (instrumental + optional vocal mix)
     initAudioContext();
     instrumentalBuffer = audioCtx.createBuffer(2, instrL.length, SAMPLE_RATE);
     instrumentalBuffer.getChannelData(0).set(instrL);
     instrumentalBuffer.getChannelData(1).set(instrR);
+
+    vocalBuffer = audioCtx.createBuffer(2, vocalL.length, SAMPLE_RATE);
+    vocalBuffer.getChannelData(0).set(vocalL);
+    vocalBuffer.getChannelData(1).set(vocalR);
 
     // 4. Resample vocals to 16 kHz mono
     showProgress('Preparing vocals for transcription...', 0);
@@ -758,6 +764,10 @@ el.seek.addEventListener('input', () => {
   if (!instrumentalBuffer) return;
   const time = (parseInt(el.seek.value, 10) / 1000) * instrumentalBuffer.duration;
   seekTo(time);
+});
+
+el.vocalVolume.addEventListener('input', () => {
+  if (vocalGain) vocalGain.gain.value = parseFloat(el.vocalVolume.value);
 });
 
 el.exportLrc.addEventListener('click', () => {
