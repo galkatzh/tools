@@ -136,9 +136,9 @@ exportBtn.addEventListener('click', () => {
 <title>Marp Presentation</title>
 <style>${css}</style>
 <style>
-  body { margin: 0; background: #222; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; }
-  svg[data-marpit-svg] { display: none; max-width: 100vw; max-height: 100vh; }
-  svg[data-marpit-svg].active { display: block; }
+  body { margin: 0; background: #222; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
+  .marpit { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+  .marpit > svg { max-width: 100vw; max-height: 100vh; }
   .controls { position: fixed; bottom: 1rem; display: flex; gap: 0.5rem; z-index: 10; }
   .controls button {
     background: rgba(0,0,0,0.6); color: #fff; border: none; padding: 0.5rem 1rem;
@@ -158,7 +158,7 @@ ${html}
   const svgs = [...document.querySelectorAll('svg[data-marpit-svg]')];
   let cur = 0;
   function show() {
-    svgs.forEach((s, i) => s.classList.toggle('active', i === cur));
+    svgs.forEach((s, i) => s.style.display = i === cur ? '' : 'none');
     document.getElementById('ind').textContent = (cur+1)+'/'+svgs.length;
   }
   function nav(d) { cur = Math.max(0, Math.min(svgs.length-1, cur+d)); show(); }
