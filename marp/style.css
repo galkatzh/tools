@@ -57,7 +57,7 @@ header h1 {
   color: #fff;
 }
 
-#clear-theme {
+#clear-theme, #clear-preamble {
   background: transparent;
   color: var(--accent);
   font-size: 0.75rem;
