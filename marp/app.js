@@ -1,5 +1,5 @@
 import { Marp } from 'https://esm.sh/@marp-team/marp-core@3?bundle';
-import applyBrowser from 'https://esm.sh/@marp-team/marp-core@3/browser?bundle';
+import 'https://esm.sh/@marp-team/marp-core@3/browser?bundle'; // side-effect: registers custom elements
 import jsPDF from 'https://esm.sh/jspdf@2?bundle';
 import html2canvas from 'https://esm.sh/html2canvas@1?bundle';
 
@@ -183,8 +183,6 @@ function showSlide() {
   marpitDiv.className = 'marpit';
   marpitDiv.appendChild(svgSlides[currentSlide].cloneNode(true));
   shadow.appendChild(marpitDiv);
-
-  try { applyBrowser(shadow); } catch (e) { console.warn('Marp browser helper:', e); }
 
   container.appendChild(wrapper);
   requestAnimationFrame(() => fitSlide(wrapper));
@@ -457,8 +455,6 @@ pdfBtn.addEventListener('click', async () => {
 
       slideHost.innerHTML = '';
       slideHost.appendChild(slides[i].cloneNode(true));
-      try { applyBrowser(shadow); } catch (_) { /* best-effort */ }
-
       // html2canvas needs a real DOM element (not shadow DOM), so clone out
       const renderTarget = document.createElement('div');
       renderTarget.style.cssText = `position:fixed;left:-9999px;top:0;width:${W}px;height:${H}px;overflow:hidden;`;
