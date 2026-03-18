@@ -280,7 +280,7 @@ document.head.appendChild(vtDynamic);
 
 /** Inject the correct ::view-transition-* CSS for a given transition name + direction. */
 function setTransitionCSS(name, forward) {
-  const factory = TRANSITIONS[name] || TRANSITIONS.fade;
+  const factory = TRANSITIONS[name] || TRANSITIONS.none;
   const t = factory(forward);
   vtDynamic.textContent = `
 ::view-transition-old(slide) { animation: ${t.old} !important; }
@@ -312,7 +312,7 @@ function navigate(delta) {
   if (next < 0 || next >= svgSlides.length) return;
 
   // Use the target slide's transition (the slide being revealed)
-  const transName = slideTransitions[next] || 'fade';
+  const transName = slideTransitions[next] || 'none';
 
   currentSlide = next;
 
