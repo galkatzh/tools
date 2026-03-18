@@ -1,5 +1,7 @@
 import { Marp } from 'https://esm.sh/@marp-team/marp-core@3?bundle';
 import applyBrowser from 'https://esm.sh/@marp-team/marp-core@3/browser?bundle';
+import jsPDF from 'https://esm.sh/jspdf@2?bundle';
+import html2canvas from 'https://esm.sh/html2canvas@1?bundle';
 
 const textarea = document.getElementById('markdown');
 const container = document.getElementById('slide-container');
@@ -7,16 +9,72 @@ const prevBtn = document.getElementById('prev-slide');
 const nextBtn = document.getElementById('next-slide');
 const indicator = document.getElementById('slide-indicator');
 const exportBtn = document.getElementById('export-html');
-const printBtn = document.getElementById('print-btn');
+const pdfBtn = document.getElementById('pdf-btn');
 const themeInput = document.getElementById('theme-input');
 const clearThemeBtn = document.getElementById('clear-theme');
 
 let currentSlide = 0;
-let svgSlides = [];   // array of <svg> elements (one per slide)
+let svgSlides = [];
 let renderedCss = '';
-let renderedHtml = '';
 let customThemeCss = '';
 let customThemeName = '';
+let customThemeFileName = '';
+
+// ---------------------------------------------------------------------------
+// IndexedDB helpers for theme persistence
+// ---------------------------------------------------------------------------
+
+const DB_NAME = 'marp-renderer';
+const DB_VERSION = 1;
+const THEME_STORE = 'themes';
+
+/** Open (or create) the IndexedDB database. */
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => req.result.createObjectStore(THEME_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => { console.error('IndexedDB open failed:', req.error); reject(req.error); };
+  });
+}
+
+/** Save the current custom theme to IndexedDB. */
+async function saveTheme() {
+  const db = await openDB();
+  const tx = db.transaction(THEME_STORE, 'readwrite');
+  const store = tx.objectStore(THEME_STORE);
+  store.put({ css: customThemeCss, name: customThemeName, fileName: customThemeFileName }, 'current');
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = resolve;
+    tx.onerror = () => { console.error('Theme save failed:', tx.error); reject(tx.error); };
+  });
+}
+
+/** Delete the stored theme from IndexedDB. */
+async function deleteTheme() {
+  const db = await openDB();
+  const tx = db.transaction(THEME_STORE, 'readwrite');
+  tx.objectStore(THEME_STORE).delete('current');
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = resolve;
+    tx.onerror = () => { console.error('Theme delete failed:', tx.error); reject(tx.error); };
+  });
+}
+
+/** Load a previously saved theme from IndexedDB. Returns null if none. */
+async function loadTheme() {
+  const db = await openDB();
+  const tx = db.transaction(THEME_STORE, 'readonly');
+  const req = tx.objectStore(THEME_STORE).get('current');
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => { console.error('Theme load failed:', req.error); reject(req.error); };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Marp rendering
+// ---------------------------------------------------------------------------
 
 /** Create a Marp instance, optionally with a custom theme registered. */
 function createMarp() {
@@ -33,16 +91,12 @@ function render() {
     const marp = createMarp();
     const { html, css } = marp.render(textarea.value);
     renderedCss = css;
-    renderedHtml = html;
 
-    // Marp v3 wraps each slide in <svg> inside a <div class="marpit">
     const tmp = document.createElement('div');
     tmp.innerHTML = html;
     svgSlides = [...tmp.querySelectorAll('svg[data-marpit-svg]')];
 
-    // Clamp current slide index
     if (currentSlide >= svgSlides.length) currentSlide = Math.max(0, svgSlides.length - 1);
-
     showSlide();
   } catch (err) {
     console.error('Marp render error:', err);
@@ -60,7 +114,6 @@ function showSlide() {
     return;
   }
 
-  // Use shadow DOM to isolate Marp styles from the app
   container.innerHTML = '';
   const wrapper = document.createElement('div');
   wrapper.id = 'slide-wrapper';
@@ -70,18 +123,14 @@ function showSlide() {
   style.textContent = renderedCss;
   shadow.appendChild(style);
 
-  // Wrap in marpit div so Marp's CSS selectors match
   const marpitDiv = document.createElement('div');
   marpitDiv.className = 'marpit';
   marpitDiv.appendChild(svgSlides[currentSlide].cloneNode(true));
   shadow.appendChild(marpitDiv);
 
-  // Apply Marp browser helper for auto-scaling text
   try { applyBrowser(shadow); } catch (e) { console.warn('Marp browser helper:', e); }
 
   container.appendChild(wrapper);
-
-  // Scale to fit
   requestAnimationFrame(() => fitSlide(wrapper));
 
   indicator.textContent = `${currentSlide + 1} / ${svgSlides.length}`;
@@ -91,16 +140,17 @@ function showSlide() {
 
 /** Scale the slide wrapper to fit within #slide-container. */
 function fitSlide(wrapper) {
-  // Marp default viewBox is 1280x720
-  const slideW = 1280;
-  const slideH = 720;
+  const slideW = 1280, slideH = 720;
   const cw = container.clientWidth - 32;
   const ch = container.clientHeight - 32;
   const scale = Math.min(cw / slideW, ch / slideH);
   wrapper.style.cssText = `width:${slideW}px;height:${slideH}px;transform:scale(${scale});transform-origin:center center;`;
 }
 
-// --- Navigation ---
+// ---------------------------------------------------------------------------
+// Navigation
+// ---------------------------------------------------------------------------
+
 prevBtn.addEventListener('click', () => { if (currentSlide > 0) { currentSlide--; showSlide(); } });
 nextBtn.addEventListener('click', () => { if (currentSlide < svgSlides.length - 1) { currentSlide++; showSlide(); } });
 
@@ -110,20 +160,25 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowRight') { nextBtn.click(); e.preventDefault(); }
 });
 
-// --- Live rendering with debounce ---
+// ---------------------------------------------------------------------------
+// Live rendering with debounce
+// ---------------------------------------------------------------------------
+
 let debounceTimer;
 textarea.addEventListener('input', () => {
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(render, 300);
 });
 
-// --- Resize handling ---
 window.addEventListener('resize', () => {
   const wrapper = container.querySelector('#slide-wrapper');
   if (wrapper) fitSlide(wrapper);
 });
 
-// --- Export to HTML ---
+// ---------------------------------------------------------------------------
+// Export to HTML
+// ---------------------------------------------------------------------------
+
 exportBtn.addEventListener('click', () => {
   const marp = createMarp();
   const { html, css } = marp.render(textarea.value);
@@ -179,64 +234,115 @@ ${html}
   URL.revokeObjectURL(a.href);
 });
 
-// --- Print / PDF ---
-printBtn.addEventListener('click', () => {
+// ---------------------------------------------------------------------------
+// PDF export — renders each slide via html2canvas, then assembles into PDF.
+// Bypasses window.print() entirely so there are no browser-imposed margins.
+// ---------------------------------------------------------------------------
+
+pdfBtn.addEventListener('click', async () => {
   const marp = createMarp();
   const { html, css } = marp.render(textarea.value);
 
-  const printDoc = `<!DOCTYPE html>
-<html><head>
-<meta charset="UTF-8">
-<title>Print Presentation</title>
-<style>${css}</style>
-<style>
-  @page { size: landscape; margin: 0; }
-  body { margin: 0; background: #fff; }
-  svg[data-marpit-svg] { page-break-after: always; break-after: page; width: 100vw; height: 100vh; }
-  svg[data-marpit-svg]:last-of-type { page-break-after: avoid; }
-</style>
-</head><body>${html}
-<script>window.onload = () => { window.print(); }<\/script>
-</body></html>`;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const slides = [...tmp.querySelectorAll('svg[data-marpit-svg]')];
+  if (!slides.length) return;
 
-  const w = window.open('', '_blank');
-  if (!w) {
-    console.error('Popup blocked — allow popups for print export');
-    alert('Please allow popups to use the print feature.');
-    return;
+  pdfBtn.disabled = true;
+  pdfBtn.textContent = 'Exporting\u2026';
+
+  try {
+    const W = 1280, H = 720;
+    const pdf = new jsPDF({ orientation: 'landscape', unit: 'px', format: [W, H], hotfixes: ['px_scaling'] });
+
+    // Offscreen container for rendering slides with Marp CSS applied
+    const offscreen = document.createElement('div');
+    offscreen.style.cssText = `position:fixed;left:-9999px;top:0;width:${W}px;height:${H}px;`;
+    const shadow = offscreen.attachShadow({ mode: 'open' });
+    const style = document.createElement('style');
+    style.textContent = css + `\n.marpit { width:${W}px; height:${H}px; }`;
+    shadow.appendChild(style);
+    const slideHost = document.createElement('div');
+    slideHost.className = 'marpit';
+    shadow.appendChild(slideHost);
+    document.body.appendChild(offscreen);
+
+    for (let i = 0; i < slides.length; i++) {
+      if (i > 0) pdf.addPage([W, H], 'landscape');
+
+      slideHost.innerHTML = '';
+      slideHost.appendChild(slides[i].cloneNode(true));
+      try { applyBrowser(shadow); } catch (_) { /* best-effort */ }
+
+      // html2canvas needs a real DOM element (not shadow DOM), so clone out
+      const renderTarget = document.createElement('div');
+      renderTarget.style.cssText = `position:fixed;left:-9999px;top:0;width:${W}px;height:${H}px;overflow:hidden;`;
+      renderTarget.innerHTML = `<style>${css}\n.marpit{width:${W}px;height:${H}px;}</style>` +
+        `<div class="marpit">${slides[i].outerHTML}</div>`;
+      document.body.appendChild(renderTarget);
+
+      const canvas = await html2canvas(renderTarget, {
+        width: W, height: H, scale: 2, useCORS: true, backgroundColor: '#ffffff',
+      });
+      pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, W, H);
+      document.body.removeChild(renderTarget);
+    }
+
+    document.body.removeChild(offscreen);
+    pdf.save('presentation.pdf');
+  } catch (err) {
+    console.error('PDF export failed:', err);
+    alert('PDF export failed: ' + err.message);
+  } finally {
+    pdfBtn.disabled = false;
+    pdfBtn.textContent = '\u2B07 PDF';
   }
-  w.document.write(printDoc);
-  w.document.close();
 });
 
-// --- Custom theme loading ---
-themeInput.addEventListener('change', (e) => {
+// ---------------------------------------------------------------------------
+// Custom theme loading (with IndexedDB persistence)
+// ---------------------------------------------------------------------------
+
+/** Apply a theme (update state + UI + re-render). */
+function applyTheme(css, name, fileName) {
+  customThemeCss = css;
+  customThemeName = name;
+  customThemeFileName = fileName;
+  clearThemeBtn.hidden = false;
+  clearThemeBtn.textContent = `\u2715 ${fileName}`;
+  render();
+}
+
+themeInput.addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
 
   const reader = new FileReader();
-  reader.onload = () => {
-    customThemeCss = reader.result;
-    // Extract theme name from CSS comment: /* @theme my-theme */
-    const match = customThemeCss.match(/@theme\s+([\w-]+)/);
-    customThemeName = match ? match[1] : 'custom';
-    clearThemeBtn.hidden = false;
-    clearThemeBtn.textContent = `\u2715 ${file.name}`;
-    render();
+  reader.onload = async () => {
+    const css = reader.result;
+    const match = css.match(/@theme\s+([\w-]+)/);
+    const name = match ? match[1] : 'custom';
+    applyTheme(css, name, file.name);
+    await saveTheme().catch(err => console.error('Failed to persist theme:', err));
   };
   reader.onerror = () => console.error('Failed to read theme file:', reader.error);
   reader.readAsText(file);
 });
 
-clearThemeBtn.addEventListener('click', () => {
+clearThemeBtn.addEventListener('click', async () => {
   customThemeCss = '';
   customThemeName = '';
+  customThemeFileName = '';
   themeInput.value = '';
   clearThemeBtn.hidden = true;
   render();
+  await deleteTheme().catch(err => console.error('Failed to delete theme:', err));
 });
 
-// --- Tab key inserts spaces in textarea ---
+// ---------------------------------------------------------------------------
+// Tab key inserts spaces in textarea
+// ---------------------------------------------------------------------------
+
 textarea.addEventListener('keydown', (e) => {
   if (e.key === 'Tab') {
     e.preventDefault();
@@ -248,5 +354,12 @@ textarea.addEventListener('keydown', (e) => {
   }
 });
 
-// Initial render
-render();
+// ---------------------------------------------------------------------------
+// Init: restore persisted theme, then render
+// ---------------------------------------------------------------------------
+
+(async () => {
+  const saved = await loadTheme().catch(() => null);
+  if (saved) applyTheme(saved.css, saved.name, saved.fileName);
+  else render();
+})();
