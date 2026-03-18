@@ -19,6 +19,8 @@ let renderedCss = '';
 let customThemeCss = '';
 let customThemeName = '';
 let customThemeFileName = '';
+let fragmentIndex = 0;
+let fragmentCount = 0;
 
 // ---------------------------------------------------------------------------
 // IndexedDB helpers for theme persistence
@@ -104,6 +106,31 @@ function render() {
   }
 }
 
+/** Return fragment elements inside the slide shadow DOM, sorted by index. */
+function getFragments() {
+  const shadow = container.querySelector('#slide-wrapper')?.shadowRoot;
+  if (!shadow) return [];
+  return [...shadow.querySelectorAll('[data-marpit-fragment]')]
+    .sort((a, b) => (+a.dataset.marpitFragment || 0) - (+b.dataset.marpitFragment || 0));
+}
+
+/** Show/hide fragments based on the current fragmentIndex. */
+function applyFragmentVisibility() {
+  for (const el of getFragments()) {
+    const idx = +el.dataset.marpitFragment || 0;
+    el.style.opacity = idx <= fragmentIndex ? '' : '0';
+    el.style.transition = 'opacity 0.3s';
+  }
+  updateNav();
+}
+
+/** Update nav buttons and indicator text. */
+function updateNav() {
+  indicator.textContent = `${currentSlide + 1} / ${svgSlides.length}`;
+  prevBtn.disabled = currentSlide === 0 && fragmentIndex === 0;
+  nextBtn.disabled = currentSlide === svgSlides.length - 1 && fragmentIndex >= fragmentCount;
+}
+
 /** Display the current slide in the preview pane. */
 function showSlide() {
   if (!svgSlides.length) {
@@ -133,9 +160,12 @@ function showSlide() {
   container.appendChild(wrapper);
   requestAnimationFrame(() => fitSlide(wrapper));
 
-  indicator.textContent = `${currentSlide + 1} / ${svgSlides.length}`;
-  prevBtn.disabled = currentSlide === 0;
-  nextBtn.disabled = currentSlide === svgSlides.length - 1;
+  // Discover fragments and apply visibility
+  const frags = getFragments();
+  fragmentCount = frags.length
+    ? Math.max(...frags.map(f => +f.dataset.marpitFragment || 0))
+    : 0;
+  applyFragmentVisibility();
 }
 
 /** Scale the slide wrapper to fit within #slide-container. */
@@ -148,16 +178,53 @@ function fitSlide(wrapper) {
 }
 
 // ---------------------------------------------------------------------------
-// Navigation
+// Navigation — handles fragments, then slides, with View Transitions
 // ---------------------------------------------------------------------------
 
-prevBtn.addEventListener('click', () => { if (currentSlide > 0) { currentSlide--; showSlide(); } });
-nextBtn.addEventListener('click', () => { if (currentSlide < svgSlides.length - 1) { currentSlide++; showSlide(); } });
+/** Navigate forward (delta=1) or backward (delta=-1), stepping through fragments first. */
+function navigate(delta) {
+  if (!svgSlides.length) return;
+
+  // Step through fragments before changing slides
+  if (delta > 0 && fragmentIndex < fragmentCount) {
+    fragmentIndex++;
+    applyFragmentVisibility();
+    return;
+  }
+  if (delta < 0 && fragmentIndex > 0) {
+    fragmentIndex--;
+    applyFragmentVisibility();
+    return;
+  }
+
+  const next = currentSlide + delta;
+  if (next < 0 || next >= svgSlides.length) return;
+  currentSlide = next;
+
+  // When going back, reveal all fragments of the target slide
+  const reveal = () => {
+    fragmentIndex = 0;
+    showSlide();
+    if (delta < 0) {
+      fragmentIndex = fragmentCount;
+      applyFragmentVisibility();
+    }
+  };
+
+  if (document.startViewTransition) {
+    document.startViewTransition(reveal);
+  } else {
+    reveal();
+  }
+}
+
+prevBtn.addEventListener('click', () => navigate(-1));
+nextBtn.addEventListener('click', () => navigate(1));
 
 document.addEventListener('keydown', (e) => {
   if (e.target === textarea) return;
-  if (e.key === 'ArrowLeft') { prevBtn.click(); e.preventDefault(); }
-  if (e.key === 'ArrowRight') { nextBtn.click(); e.preventDefault(); }
+  if (e.key === 'ArrowLeft') { navigate(-1); e.preventDefault(); }
+  if (e.key === 'ArrowRight') { navigate(1); e.preventDefault(); }
 });
 
 // ---------------------------------------------------------------------------

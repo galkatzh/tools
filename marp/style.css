@@ -162,6 +162,11 @@ main {
   color: #aaa;
 }
 
+/* Slide transitions */
+#slide-wrapper { view-transition-name: slide; }
+::view-transition-old(slide),
+::view-transition-new(slide) { animation-duration: 0.2s; }
+
 /* Mobile */
 @media (max-width: 768px) {
   main { flex-direction: column; }
