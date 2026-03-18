@@ -378,12 +378,14 @@ exportBtn.addEventListener('click', () => {
   body { margin: 0; background: #222; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
   .marpit { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; view-transition-name: slide; }
   .marpit > svg { max-width: 100vw; max-height: 100vh; }
-  .controls { position: fixed; bottom: 1rem; display: flex; gap: 0.5rem; z-index: 10; }
+  .controls { position: fixed; bottom: 1rem; display: flex; gap: 0.5rem; z-index: 10; transition: opacity 0.3s; }
   .controls button {
     background: rgba(0,0,0,0.6); color: #fff; border: none; padding: 0.5rem 1rem;
     border-radius: 4px; cursor: pointer; font-size: 1rem;
   }
   .controls button:hover { background: rgba(0,0,0,0.8); }
+  body.idle { cursor: none; }
+  body.idle .controls { opacity: 0; pointer-events: none; }
   @keyframes vt-fade-out { to { opacity: 0 } }
   @keyframes vt-fade-in { from { opacity: 0 } }
   @keyframes vt-to-left { to { transform: translateX(-100%) } }
@@ -458,6 +460,14 @@ ${html}
     if (e.key==='ArrowRight') nav(1);
   });
   show();
+
+  /* Hide cursor and controls after 2s of mouse inactivity */
+  var idleTimer = setTimeout(() => document.body.classList.add('idle'), 2000);
+  document.addEventListener('mousemove', () => {
+    document.body.classList.remove('idle');
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => document.body.classList.add('idle'), 2000);
+  });
 <\/script>
 </body>
 </html>`;
