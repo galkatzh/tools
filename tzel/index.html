@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jerusalem Shadow Viewer</title>
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    #cesiumContainer {
+      width: 100%;
+      height: 100vh;
+    }
+
+    #controls {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(38, 38, 38, 0.95);
+      padding: 15px;
+      border-radius: 8px;
+      color: white;
+      z-index: 1000;
+      min-width: 300px;
+      max-height: calc(100vh - 40px);
+      overflow-y: auto;
+    }
+
+    #controls h3 {
+      margin-bottom: 12px;
+      font-size: 16px;
+      border-bottom: 1px solid #555;
+      padding-bottom: 8px;
+    }
+
+    .control-group {
+      margin-bottom: 12px;
+    }
+
+    .control-group label {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 13px;
+      color: #ccc;
+    }
+
+    .control-group input[type="date"],
+    .control-group input[type="number"],
+    .control-group input[type="range"],
+    .control-group select {
+      width: 100%;
+      padding: 6px;
+      border-radius: 4px;
+      border: 1px solid #555;
+      background: #333;
+      color: white;
+    }
+
+    .control-group input[type="range"] {
+      padding: 0;
+      cursor: pointer;
+    }
+
+    #timeDisplay {
+      text-align: center;
+      font-size: 24px;
+      font-weight: bold;
+      margin: 10px 0;
+      font-family: monospace;
+    }
+
+    #loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.8);
+      color: white;
+      padding: 20px 40px;
+      border-radius: 8px;
+      z-index: 2000;
+      font-size: 16px;
+    }
+
+    #loading.hidden {
+      display: none;
+    }
+
+    .quick-times {
+      display: flex;
+      gap: 5px;
+      flex-wrap: wrap;
+    }
+
+    .quick-times button {
+      flex: 1;
+      min-width: 45px;
+      padding: 6px 8px;
+      border: 1px solid #555;
+      background: #444;
+      color: white;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .quick-times button:hover {
+      background: #666;
+    }
+
+    .quick-times button.active {
+      background: #0078d4;
+      border-color: #0078d4;
+    }
+
+    #shadowToggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid #555;
+    }
+
+    #shadowToggle input {
+      width: 18px;
+      height: 18px;
+      cursor: pointer;
+    }
+
+    #shadowToggle label {
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    #status {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid #555;
+      font-size: 12px;
+      color: #aaa;
+    }
+
+    .cesium-credit-logoContainer,
+    .cesium-credit-expand-link {
+      display: none !important;
+    }
+
+    /* Sunlight Analysis Section */
+    .section-header {
+      margin-top: 15px;
+      padding-top: 12px;
+      border-top: 1px solid #555;
+      font-size: 14px;
+      font-weight: bold;
+      margin-bottom: 10px;
+    }
+
+    .inline-inputs {
+      display: flex;
+      gap: 10px;
+    }
+
+    .inline-inputs .control-group {
+      flex: 1;
+      margin-bottom: 8px;
+    }
+
+    .inline-inputs input[type="number"] {
+      width: 100%;
+    }
+
+    #analyzeBtn {
+      width: 100%;
+      padding: 10px;
+      background: #0078d4;
+      border: none;
+      border-radius: 4px;
+      color: white;
+      font-size: 14px;
+      font-weight: bold;
+      cursor: pointer;
+      margin-top: 5px;
+    }
+
+    #analyzeBtn:hover {
+      background: #1084d8;
+    }
+
+    #analyzeBtn:disabled {
+      background: #555;
+      cursor: not-allowed;
+    }
+
+    #clearAnalysisBtn {
+      width: 100%;
+      padding: 8px;
+      background: #444;
+      border: 1px solid #666;
+      border-radius: 4px;
+      color: white;
+      font-size: 13px;
+      cursor: pointer;
+      margin-top: 8px;
+    }
+
+    #clearAnalysisBtn:hover {
+      background: #555;
+    }
+
+    #analysisProgress {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #aaa;
+    }
+
+    #analysisProgress .progress-bar {
+      height: 6px;
+      background: #333;
+      border-radius: 3px;
+      margin-top: 5px;
+      overflow: hidden;
+    }
+
+    #analysisProgress .progress-fill {
+      height: 100%;
+      background: #0078d4;
+      width: 0%;
+      transition: width 0.2s;
+    }
+
+    .legend {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 10px;
+      font-size: 11px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .legend-color {
+      width: 14px;
+      height: 14px;
+      border-radius: 2px;
+    }
+
+    #locationBtn {
+      width: 100%;
+      padding: 8px;
+      background: #444;
+      border: 1px solid #666;
+      border-radius: 4px;
+      color: white;
+      font-size: 13px;
+      cursor: pointer;
+      margin-bottom: 12px;
+    }
+
+    #locationBtn:hover {
+      background: #555;
+    }
+  </style>
+</head>
+<body>
+  <div id="cesiumContainer"></div>
+
+  <div id="controls">
+    <h3>Jerusalem Shadow Viewer</h3>
+
+    <button id="locationBtn">Go to My Location</button>
+
+    <div class="control-group">
+      <label for="dateInput">Date</label>
+      <input type="date" id="dateInput">
+    </div>
+
+    <div class="control-group">
+      <label>Time</label>
+      <div id="timeDisplay">12:00</div>
+      <input type="range" id="timeSlider" min="0" max="1440" value="720" step="15">
+    </div>
+
+    <div class="control-group">
+      <label>Quick Times</label>
+      <div class="quick-times">
+        <button data-hour="6">6:00</button>
+        <button data-hour="8">8:00</button>
+        <button data-hour="10">10:00</button>
+        <button data-hour="12">12:00</button>
+        <button data-hour="14">14:00</button>
+        <button data-hour="16">16:00</button>
+        <button data-hour="18">18:00</button>
+        <button data-hour="20">20:00</button>
+      </div>
+    </div>
+
+    <div id="shadowToggle">
+      <input type="checkbox" id="shadowsEnabled" checked>
+      <label for="shadowsEnabled">Show Shadows</label>
+    </div>
+
+    <!-- Sunlight Analysis Section -->
+    <div class="section-header">Sunlight Analysis</div>
+
+    <div class="inline-inputs">
+      <div class="control-group">
+        <label for="analysisStart">From</label>
+        <input type="number" id="analysisStart" min="0" max="23" value="8">
+      </div>
+      <div class="control-group">
+        <label for="analysisEnd">To</label>
+        <input type="number" id="analysisEnd" min="0" max="23" value="16">
+      </div>
+      <div class="control-group">
+        <label for="analysisInterval">Interval</label>
+        <select id="analysisInterval">
+          <option value="15">15 min</option>
+          <option value="30" selected>30 min</option>
+          <option value="60">1 hour</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label for="gridDensity">Grid Density</label>
+      <select id="gridDensity">
+        <option value="10">Low (faster)</option>
+        <option value="20" selected>Medium</option>
+        <option value="35">High (slower)</option>
+      </select>
+    </div>
+
+    <button id="analyzeBtn">Analyze Sunlight in View</button>
+    <button id="clearAnalysisBtn">Clear Analysis</button>
+
+    <div id="analysisProgress" style="display: none;">
+      <span id="progressText">Analyzing...</span>
+      <div class="progress-bar">
+        <div class="progress-fill" id="progressFill"></div>
+      </div>
+    </div>
+
+    <div class="legend" id="legend" style="display: none;">
+      <div class="legend-item">
+        <div class="legend-color" style="background: #ffeb3b;"></div>
+        <span>Always Sun</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: #ff9800;"></div>
+        <span>Partial</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: #5c4033;"></div>
+        <span>Always Shade</span>
+      </div>
+    </div>
+
+    <div id="status">
+      Loading tiles: <span id="tilesLoaded">0</span>/7
+    </div>
+  </div>
+
+  <div id="loading">Loading Jerusalem 3D Model...</div>
+
+  <script>
+    // Suppress Ion token warning
+    Cesium.Ion.defaultAccessToken = undefined;
+
+    // Jerusalem center coordinates (approximate)
+    const JERUSALEM_CENTER = Cesium.Cartesian3.fromDegrees(35.2137, 31.7683, 1500);
+
+    // Tileset URLs for Jerusalem 2022
+    const TILESET_URLS = [
+      'https://gis.ofek-air.com/DATA/Jerusalem_2022/Area1/Cesium/tileset.json',
+      'https://gis.ofek-air.com/DATA/Jerusalem_2022/Area2/Cesium/tileset.json',
+      'https://gis.ofek-air.com/DATA/Jerusalem_2022/Area3/Cesium/tileset.json',
+      'https://gis.ofek-air.com/DATA/Jerusalem_2022/Area4/Cesium/tileset.json',
+      'https://gis.ofek-air.com/DATA/Jerusalem_2022/Area5/Cesium/tileset.json',
+      'https://gis.ofek-air.com/DATA/Jerusalem_2022/Area6/tileset.json',
+      'https://gis.ofek-air.com/DATA/Jerusalem_2022/Area7/Cesium/tileset.json'
+    ];
+
+    // Initialize viewer
+    const viewer = new Cesium.Viewer('cesiumContainer', {
+      imageryProvider: new Cesium.UrlTemplateImageryProvider({
+        url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+        subdomains: ['a', 'b', 'c', 'd'],
+        credit: 'Map tiles by Carto, under CC BY 3.0. Data by OpenStreetMap, under ODbL.'
+      }),
+      terrainProvider: undefined,
+      baseLayerPicker: false,
+      geocoder: false,
+      homeButton: false,
+      sceneModePicker: false,
+      navigationHelpButton: false,
+      animation: false,
+      timeline: false,
+      fullscreenButton: false,
+      vrButton: false,
+      infoBox: false,
+      selectionIndicator: false,
+      shadows: true,
+      shouldAnimate: false
+    });
+
+    // Enable shadows
+    viewer.shadows = true;
+    viewer.scene.globe.enableLighting = true;
+    viewer.scene.shadowMap.size = 4096;
+    viewer.scene.shadowMap.softShadows = true;
+    viewer.scene.shadowMap.darkness = 0.4;
+
+    // Set initial camera position
+    viewer.camera.flyTo({
+      destination: JERUSALEM_CENTER,
+      orientation: {
+        heading: Cesium.Math.toRadians(0),
+        pitch: Cesium.Math.toRadians(-45),
+        roll: 0
+      },
+      duration: 0
+    });
+
+    // Load tilesets
+    let loadedCount = 0;
+    const tilesets = [];
+
+    async function loadTilesets() {
+      for (const url of TILESET_URLS) {
+        try {
+          const tileset = await Cesium.Cesium3DTileset.fromUrl(url, {
+            shadows: Cesium.ShadowMode.ENABLED,
+            maximumScreenSpaceError: 16
+          });
+          viewer.scene.primitives.add(tileset);
+          tilesets.push(tileset);
+          loadedCount++;
+          document.getElementById('tilesLoaded').textContent = loadedCount;
+        } catch (error) {
+          console.error('Error loading tileset:', url, error);
+          loadedCount++;
+          document.getElementById('tilesLoaded').textContent = loadedCount;
+        }
+      }
+
+      document.getElementById('loading').classList.add('hidden');
+      document.getElementById('status').innerHTML = 'Tiles loaded. Drag to navigate, scroll to zoom.';
+    }
+
+    loadTilesets();
+
+    // Time controls
+    const dateInput = document.getElementById('dateInput');
+    const timeSlider = document.getElementById('timeSlider');
+    const timeDisplay = document.getElementById('timeDisplay');
+    const shadowsEnabled = document.getElementById('shadowsEnabled');
+    const quickTimeButtons = document.querySelectorAll('.quick-times button');
+
+    // Set default date to today
+    const today = new Date();
+    dateInput.value = today.toISOString().split('T')[0];
+
+    function updateTime() {
+      const date = new Date(dateInput.value + 'T00:00:00');
+      const minutes = parseInt(timeSlider.value);
+      const hours = Math.floor(minutes / 60);
+      const mins = minutes % 60;
+
+      // Set time (Jerusalem is UTC+2 or UTC+3 depending on DST)
+      date.setUTCHours(hours - 2, mins, 0, 0);
+
+      // Update display
+      timeDisplay.textContent = `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+
+      // Update Cesium clock
+      viewer.clock.currentTime = Cesium.JulianDate.fromDate(date);
+
+      // Update quick time button states
+      quickTimeButtons.forEach(btn => {
+        const btnHour = parseInt(btn.dataset.hour);
+        btn.classList.toggle('active', btnHour === hours && mins === 0);
+      });
+    }
+
+    dateInput.addEventListener('change', updateTime);
+    timeSlider.addEventListener('input', updateTime);
+
+    quickTimeButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const hour = parseInt(btn.dataset.hour);
+        timeSlider.value = hour * 60;
+        updateTime();
+      });
+    });
+
+    shadowsEnabled.addEventListener('change', () => {
+      viewer.shadows = shadowsEnabled.checked;
+      viewer.scene.globe.enableLighting = shadowsEnabled.checked;
+    });
+
+    // Initialize time
+    timeSlider.value = 720; // 12:00
+    updateTime();
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT') return;
+
+      const step = e.shiftKey ? 60 : 15; // Shift = 1 hour, otherwise 15 min
+
+      if (e.key === 'ArrowLeft') {
+        timeSlider.value = Math.max(0, parseInt(timeSlider.value) - step);
+        updateTime();
+      } else if (e.key === 'ArrowRight') {
+        timeSlider.value = Math.min(1440, parseInt(timeSlider.value) + step);
+        updateTime();
+      }
+    });
+
+    // ==================== GEOLOCATION ====================
+    const locationBtn = document.getElementById('locationBtn');
+
+    // Jerusalem bounds (approximate)
+    const JERUSALEM_BOUNDS = {
+      minLon: 35.1,
+      maxLon: 35.3,
+      minLat: 31.7,
+      maxLat: 31.85
+    };
+
+    function isInJerusalem(lon, lat) {
+      return lon >= JERUSALEM_BOUNDS.minLon && lon <= JERUSALEM_BOUNDS.maxLon &&
+             lat >= JERUSALEM_BOUNDS.minLat && lat <= JERUSALEM_BOUNDS.maxLat;
+    }
+
+    function flyToLocation(lon, lat, height = 500) {
+      viewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(lon, lat, height),
+        orientation: {
+          heading: Cesium.Math.toRadians(0),
+          pitch: Cesium.Math.toRadians(-50),
+          roll: 0
+        },
+        duration: 2
+      });
+    }
+
+    function getUserLocation() {
+      if (!navigator.geolocation) {
+        alert('Geolocation is not supported by your browser');
+        return;
+      }
+
+      locationBtn.textContent = 'Getting location...';
+      locationBtn.disabled = true;
+
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const lon = position.coords.longitude;
+          const lat = position.coords.latitude;
+
+          if (isInJerusalem(lon, lat)) {
+            flyToLocation(lon, lat, 400);
+            locationBtn.textContent = 'Go to My Location';
+          } else {
+            alert('You are not in Jerusalem. The 3D model only covers Jerusalem.');
+            locationBtn.textContent = 'Go to My Location';
+          }
+          locationBtn.disabled = false;
+        },
+        (error) => {
+          alert('Unable to get your location: ' + error.message);
+          locationBtn.textContent = 'Go to My Location';
+          locationBtn.disabled = false;
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    }
+
+    locationBtn.addEventListener('click', getUserLocation);
+
+    // Try to get location on startup
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const lon = position.coords.longitude;
+          const lat = position.coords.latitude;
+          if (isInJerusalem(lon, lat)) {
+            // Wait for tiles to load a bit, then fly to user location
+            setTimeout(() => flyToLocation(lon, lat, 400), 3000);
+          }
+        },
+        () => {}, // Ignore errors on auto-locate
+        { enableHighAccuracy: true, timeout: 5000 }
+      );
+    }
+
+    // ==================== SUNLIGHT ANALYSIS ====================
+    const analyzeBtn = document.getElementById('analyzeBtn');
+    const clearAnalysisBtn = document.getElementById('clearAnalysisBtn');
+    const analysisProgress = document.getElementById('analysisProgress');
+    const progressText = document.getElementById('progressText');
+    const progressFill = document.getElementById('progressFill');
+    const legend = document.getElementById('legend');
+
+    let analysisPoints = null;
+    let analysisRunning = false;
+
+    // Get sun direction for a given date/time
+    function getSunDirection(date) {
+      const julianDate = Cesium.JulianDate.fromDate(date);
+      const sunPosition = Cesium.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(julianDate);
+      const transformMatrix = Cesium.Transforms.computeTemeToPseudoFixedMatrix(julianDate);
+      const sunPositionFixed = Cesium.Matrix3.multiplyByVector(transformMatrix, sunPosition, new Cesium.Cartesian3());
+      return Cesium.Cartesian3.normalize(sunPositionFixed, new Cesium.Cartesian3());
+    }
+
+    // Check if a point is in shadow at a given time
+    function isPointInShadow(point, sunDirection) {
+      const rayDirection = Cesium.Cartesian3.negate(sunDirection, new Cesium.Cartesian3());
+      const ray = new Cesium.Ray(point, Cesium.Cartesian3.negate(rayDirection, new Cesium.Cartesian3()));
+
+      // Cast ray toward the sun
+      const result = viewer.scene.pickFromRay(ray, []);
+      return result !== undefined && result.object !== undefined;
+    }
+
+    // Generate grid of sample points in current view
+    function generateSamplePoints(gridSize) {
+      const points = [];
+      const canvas = viewer.canvas;
+      const width = canvas.width;
+      const height = canvas.height;
+
+      const stepX = width / (gridSize + 1);
+      const stepY = height / (gridSize + 1);
+
+      for (let i = 1; i <= gridSize; i++) {
+        for (let j = 1; j <= gridSize; j++) {
+          const screenPos = new Cesium.Cartesian2(stepX * i, stepY * j);
+          const ray = viewer.camera.getPickRay(screenPos);
+
+          if (ray) {
+            const position = viewer.scene.globe.pick(ray, viewer.scene);
+            if (position) {
+              // Lift point slightly above ground to avoid self-intersection
+              const cartographic = Cesium.Cartographic.fromCartesian(position);
+              const elevatedPosition = Cesium.Cartesian3.fromRadians(
+                cartographic.longitude,
+                cartographic.latitude,
+                cartographic.height + 2 // 2 meters above ground
+              );
+              points.push({
+                position: elevatedPosition,
+                screenPos: screenPos,
+                sunCount: 0,
+                totalSamples: 0
+              });
+            }
+          }
+        }
+      }
+      return points;
+    }
+
+    // Run sunlight analysis
+    async function runAnalysis() {
+      if (analysisRunning) return;
+
+      const startHour = parseInt(document.getElementById('analysisStart').value);
+      const endHour = parseInt(document.getElementById('analysisEnd').value);
+      const interval = parseInt(document.getElementById('analysisInterval').value);
+      const gridSize = parseInt(document.getElementById('gridDensity').value);
+
+      if (startHour >= endHour) {
+        alert('Start time must be before end time');
+        return;
+      }
+
+      analysisRunning = true;
+      analyzeBtn.disabled = true;
+      analysisProgress.style.display = 'block';
+      legend.style.display = 'none';
+
+      // Clear previous analysis
+      clearAnalysis();
+
+      // Generate sample points
+      progressText.textContent = 'Generating sample points...';
+      progressFill.style.width = '0%';
+      await new Promise(r => setTimeout(r, 100));
+
+      const points = generateSamplePoints(gridSize);
+      if (points.length === 0) {
+        alert('No valid sample points in view. Try zooming in to an area with 3D tiles.');
+        analysisRunning = false;
+        analyzeBtn.disabled = false;
+        analysisProgress.style.display = 'none';
+        return;
+      }
+
+      // Generate time samples
+      const date = new Date(dateInput.value + 'T00:00:00');
+      const timeSamples = [];
+      for (let h = startHour; h <= endHour; h++) {
+        for (let m = 0; m < 60; m += interval) {
+          if (h === endHour && m > 0) break;
+          const sampleDate = new Date(date);
+          sampleDate.setUTCHours(h - 2, m, 0, 0); // Jerusalem UTC+2
+          timeSamples.push(sampleDate);
+        }
+      }
+
+      const totalWork = points.length * timeSamples.length;
+      let completed = 0;
+
+      // Analyze each point at each time
+      for (const timePoint of timeSamples) {
+        const sunDir = getSunDirection(timePoint);
+
+        // Check if sun is above horizon (simplified check)
+        const cameraPos = viewer.camera.position;
+        const cameraCart = Cesium.Cartographic.fromCartesian(cameraPos);
+        const localUp = Cesium.Cartesian3.normalize(
+          Cesium.Cartesian3.fromRadians(cameraCart.longitude, cameraCart.latitude, 0),
+          new Cesium.Cartesian3()
+        );
+        const sunElevation = Cesium.Cartesian3.dot(sunDir, localUp);
+
+        if (sunElevation < 0.05) {
+          // Sun below horizon, all points in shade
+          points.forEach(p => p.totalSamples++);
+          completed += points.length;
+        } else {
+          for (const point of points) {
+            const inShadow = isPointInShadow(point.position, sunDir);
+            if (!inShadow) {
+              point.sunCount++;
+            }
+            point.totalSamples++;
+            completed++;
+          }
+        }
+
+        const progress = (completed / totalWork) * 100;
+        progressFill.style.width = progress + '%';
+        progressText.textContent = `Analyzing: ${Math.round(progress)}%`;
+
+        // Yield to UI
+        await new Promise(r => setTimeout(r, 0));
+      }
+
+      // Create visualization
+      progressText.textContent = 'Creating visualization...';
+      await new Promise(r => setTimeout(r, 100));
+
+      analysisPoints = viewer.entities.add({
+        id: 'sunlightAnalysis',
+        show: true
+      });
+
+      const pointCollection = viewer.scene.primitives.add(new Cesium.PointPrimitiveCollection());
+
+      for (const point of points) {
+        const sunRatio = point.totalSamples > 0 ? point.sunCount / point.totalSamples : 0;
+
+        let color;
+        if (sunRatio >= 0.95) {
+          // Always sunny - bright yellow
+          color = Cesium.Color.fromCssColorString('#ffeb3b');
+        } else if (sunRatio >= 0.5) {
+          // Mostly sunny - orange gradient
+          const t = (sunRatio - 0.5) / 0.45;
+          color = Cesium.Color.lerp(
+            Cesium.Color.fromCssColorString('#ff9800'),
+            Cesium.Color.fromCssColorString('#ffeb3b'),
+            t,
+            new Cesium.Color()
+          );
+        } else if (sunRatio > 0.05) {
+          // Partial shade - orange to brown gradient
+          const t = sunRatio / 0.5;
+          color = Cesium.Color.lerp(
+            Cesium.Color.fromCssColorString('#5c4033'),
+            Cesium.Color.fromCssColorString('#ff9800'),
+            t,
+            new Cesium.Color()
+          );
+        } else {
+          // Always shaded - dark brown
+          color = Cesium.Color.fromCssColorString('#5c4033');
+        }
+
+        pointCollection.add({
+          position: point.position,
+          pixelSize: 12,
+          color: color,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 1,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY
+        });
+      }
+
+      analysisPoints._pointCollection = pointCollection;
+
+      analysisRunning = false;
+      analyzeBtn.disabled = false;
+      progressText.textContent = `Done! ${points.length} points analyzed`;
+      legend.style.display = 'flex';
+    }
+
+    function clearAnalysis() {
+      if (analysisPoints) {
+        if (analysisPoints._pointCollection) {
+          viewer.scene.primitives.remove(analysisPoints._pointCollection);
+        }
+        viewer.entities.remove(analysisPoints);
+        analysisPoints = null;
+      }
+      legend.style.display = 'none';
+      analysisProgress.style.display = 'none';
+    }
+
+    analyzeBtn.addEventListener('click', runAnalysis);
+    clearAnalysisBtn.addEventListener('click', clearAnalysis);
+  </script>
+</body>
+</html>
