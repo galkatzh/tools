@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Marp Renderer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Marp Renderer</h1>
+    <div class="toolbar">
+      <label class="theme-btn" title="Load custom CSS theme">
+        <input type="file" id="theme-input" accept=".css" hidden>
+        🎨 Theme
+      </label>
+      <button id="clear-theme" title="Clear custom theme" hidden>✕ Clear Theme</button>
+      <label class="preamble-btn" title="Load LaTeX preamble with macros (.tex)">
+        <input type="file" id="preamble-input" accept=".tex,.sty,.txt" hidden>
+        ∑ Preamble
+      </label>
+      <button id="clear-preamble" title="Clear preamble" hidden>✕ Preamble</button>
+      <button id="export-html" title="Export as standalone HTML">⬇ HTML</button>
+      <button id="pdf-btn" title="Export to PDF">⬇ PDF</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="editor-pane">
+      <textarea id="markdown" spellcheck="false" placeholder="Write Marp markdown here...">---
+marp: true
+---
+
+# Welcome to Marp Renderer
+
+Write your slides in Markdown on the left.
+
+Browse them on the right →
+
+---
+
+## Features
+
+- **Live preview** as you type
+- **Slide navigation** with buttons or keyboard
+- **Export** to standalone HTML
+- **Print** to PDF
+- **Custom CSS themes**
+
+---
+
+## Slide Separators
+
+Use `---` to separate slides.
+
+Each `---` on its own line starts a new slide.
+
+---
+
+## Markdown Support
+
+- Lists, **bold**, *italic*, ~~strikethrough~~
+- `inline code` and code blocks
+- Images, links, tables
+- Math expressions with KaTeX
+
+```js
+console.log('Hello, Marp!');
+```
+
+---
+
+# Thank You!
+
+Start editing to create your own presentation.
+</textarea>
+    </section>
+
+    <section class="preview-pane">
+      <div id="slide-container"></div>
+      <nav class="slide-nav">
+        <button id="prev-slide" title="Previous slide (←)">◀</button>
+        <span id="slide-indicator">1 / 1</span>
+        <button id="next-slide" title="Next slide (→)">▶</button>
+      </nav>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
