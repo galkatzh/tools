@@ -593,22 +593,6 @@
 
     locationBtn.addEventListener('click', getUserLocation);
 
-    // Try to get location on startup
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          const lon = position.coords.longitude;
-          const lat = position.coords.latitude;
-          if (isInJerusalem(lon, lat)) {
-            // Wait for tiles to load a bit, then fly to user location
-            setTimeout(() => flyToLocation(lon, lat, 400), 3000);
-          }
-        },
-        () => {}, // Ignore errors on auto-locate
-        { enableHighAccuracy: true, timeout: 5000 }
-      );
-    }
-
     // ==================== SUNLIGHT ANALYSIS ====================
     const analyzeBtn = document.getElementById('analyzeBtn');
     const clearAnalysisBtn = document.getElementById('clearAnalysisBtn');
