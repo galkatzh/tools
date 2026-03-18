@@ -365,6 +365,7 @@ window.addEventListener('resize', () => {
 exportBtn.addEventListener('click', () => {
   const marp = createMarp();
   const { html, css } = marp.render(textarea.value);
+  const transitions = JSON.stringify(parseTransitions(textarea.value));
 
   const doc = `<!DOCTYPE html>
 <html lang="en">
@@ -375,7 +376,7 @@ exportBtn.addEventListener('click', () => {
 <style>${css}</style>
 <style>
   body { margin: 0; background: #222; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
-  .marpit { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+  .marpit { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; view-transition-name: slide; }
   .marpit > svg { max-width: 100vw; max-height: 100vh; }
   .controls { position: fixed; bottom: 1rem; display: flex; gap: 0.5rem; z-index: 10; }
   .controls button {
@@ -383,7 +384,23 @@ exportBtn.addEventListener('click', () => {
     border-radius: 4px; cursor: pointer; font-size: 1rem;
   }
   .controls button:hover { background: rgba(0,0,0,0.8); }
+  @keyframes vt-fade-out { to { opacity: 0 } }
+  @keyframes vt-fade-in { from { opacity: 0 } }
+  @keyframes vt-to-left { to { transform: translateX(-100%) } }
+  @keyframes vt-from-right { from { transform: translateX(100%) } }
+  @keyframes vt-to-right { to { transform: translateX(100%) } }
+  @keyframes vt-from-left { from { transform: translateX(-100%) } }
+  @keyframes vt-wipe-ltr { from { clip-path: inset(0 100% 0 0) } to { clip-path: inset(0) } }
+  @keyframes vt-wipe-rtl { from { clip-path: inset(0 0 0 100%) } to { clip-path: inset(0) } }
+  @keyframes vt-zoom-out { to { transform: scale(0); opacity: 0 } }
+  @keyframes vt-zoom-in { from { transform: scale(0); opacity: 0 } }
+  @keyframes vt-drop-in { from { transform: translateY(-100%); opacity: 0 } }
+  @keyframes vt-flip-out { to { transform: perspective(1200px) rotateY(-90deg) } }
+  @keyframes vt-flip-in { from { transform: perspective(1200px) rotateY(90deg) } }
+  @keyframes vt-flip-out-rev { to { transform: perspective(1200px) rotateY(90deg) } }
+  @keyframes vt-flip-in-rev { from { transform: perspective(1200px) rotateY(-90deg) } }
 </style>
+<style id="vt-dynamic"></style>
 </head>
 <body>
 ${html}
@@ -394,12 +411,48 @@ ${html}
 </div>
 <script>
   const svgs = [...document.querySelectorAll('svg[data-marpit-svg]')];
+  const slideTransitions = ${transitions};
   let cur = 0;
+
+  /** Transition animation definitions matching the app. */
+  const TR = {
+    none: () => ({ old: 'none', new: 'none' }),
+    fade: () => ({ old: 'vt-fade-out 0.3s ease', new: 'vt-fade-in 0.3s ease' }),
+    slide: f => ({ old: (f?'vt-to-left':'vt-to-right')+' 0.4s ease-in-out', new: (f?'vt-from-right':'vt-from-left')+' 0.4s ease-in-out' }),
+    push: f => ({ old: (f?'vt-to-left':'vt-to-right')+' 0.35s ease-out', new: (f?'vt-from-right':'vt-from-left')+' 0.35s ease-out' }),
+    cover: f => ({ old: 'none', new: (f?'vt-from-right':'vt-from-left')+' 0.35s ease-out' }),
+    reveal: f => ({ old: (f?'vt-to-left':'vt-to-right')+' 0.35s ease-in', new: 'none', extra: '::view-transition-old(slide){z-index:1}::view-transition-new(slide){z-index:0}' }),
+    wipe: f => ({ old: 'none', new: (f?'vt-wipe-ltr':'vt-wipe-rtl')+' 0.4s ease-in-out' }),
+    zoom: () => ({ old: 'vt-zoom-out 0.35s ease-in', new: 'vt-zoom-in 0.35s ease-out' }),
+    drop: () => ({ old: 'vt-fade-out 0.3s ease', new: 'vt-drop-in 0.4s ease-out' }),
+    flip: f => ({ old: (f?'vt-flip-out':'vt-flip-out-rev')+' 0.3s ease-in', new: (f?'vt-flip-in':'vt-flip-in-rev')+' 0.3s 0.15s ease-out' }),
+  };
+
   function show() {
     svgs.forEach((s, i) => s.style.display = i === cur ? '' : 'none');
     document.getElementById('ind').textContent = (cur+1)+'/'+svgs.length;
   }
-  function nav(d) { cur = Math.max(0, Math.min(svgs.length-1, cur+d)); show(); }
+
+  function nav(d) {
+    const next = Math.max(0, Math.min(svgs.length - 1, cur + d));
+    if (next === cur) return;
+    const name = slideTransitions[next] || 'none';
+    cur = next;
+    const reveal = () => show();
+
+    if (document.startViewTransition && name !== 'none') {
+      const fac = TR[name] || TR.none;
+      const t = fac(d > 0);
+      document.getElementById('vt-dynamic').textContent =
+        '::view-transition-old(slide){animation:'+t.old+' !important}' +
+        '::view-transition-new(slide){animation:'+t.new+' !important}' +
+        (t.extra || '');
+      document.startViewTransition(reveal);
+    } else {
+      reveal();
+    }
+  }
+
   document.addEventListener('keydown', e => {
     if (e.key==='ArrowLeft') nav(-1);
     if (e.key==='ArrowRight') nav(1);
