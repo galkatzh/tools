@@ -21,6 +21,7 @@ let customThemeName = '';
 let customThemeFileName = '';
 let fragmentIndex = 0;
 let fragmentCount = 0;
+let slideTransitions = []; // per-slide transition name (e.g. 'slide', 'fade')
 
 // ---------------------------------------------------------------------------
 // IndexedDB helpers for theme persistence
@@ -87,6 +88,32 @@ function createMarp() {
   return marp;
 }
 
+/**
+ * Parse transition directives from markdown source.
+ * Reads global `transition: X` from frontmatter and per-slide `<!-- _transition: X -->`.
+ * Returns an array of transition names, one per slide.
+ */
+function parseTransitions(md) {
+  // Split into slides on horizontal rules (--- on its own line)
+  const slides = md.split(/^---$/m);
+  // First chunk may be frontmatter if the doc starts with ---
+  let globalTransition = null;
+  const fmMatch = slides[0]?.trim() === ''
+    ? slides[1]?.match(/^transition:\s*(.+)$/m)
+    : null;
+  if (fmMatch) globalTransition = fmMatch[1].trim().split(/\s+/)[0];
+
+  // The actual slide content starts after frontmatter (index 2+) or index 0 if no FM
+  const slideContents = fmMatch ? slides.slice(2) : slides;
+  // First "slide" before any --- could also be content if there's frontmatter
+  // But with marp: true, structure is: "" | frontmatter | slide1 | slide2 ...
+
+  return slideContents.map(content => {
+    const m = content?.match(/<!--\s*_transition:\s*(\S+)\s*-->/);
+    return m ? m[1] : (globalTransition || null);
+  });
+}
+
 /** Render markdown into slides and update the preview. */
 function render() {
   try {
@@ -97,6 +124,8 @@ function render() {
     const tmp = document.createElement('div');
     tmp.innerHTML = html;
     svgSlides = [...tmp.querySelectorAll('svg[data-marpit-svg]')];
+
+    slideTransitions = parseTransitions(textarea.value);
 
     if (currentSlide >= svgSlides.length) currentSlide = Math.max(0, svgSlides.length - 1);
     showSlide();
@@ -178,6 +207,90 @@ function fitSlide(wrapper) {
 }
 
 // ---------------------------------------------------------------------------
+// Slide transitions — CSS keyframes for the View Transitions API
+// ---------------------------------------------------------------------------
+
+/** Transition animation definitions: { old, new } CSS animation values per direction. */
+const TRANSITIONS = {
+  none: () => ({ old: 'none', new: 'none' }),
+  fade: () => ({
+    old: 'vt-fade-out 0.3s ease',
+    new: 'vt-fade-in 0.3s ease',
+  }),
+  slide: (fwd) => ({
+    old: `${fwd ? 'vt-to-left' : 'vt-to-right'} 0.4s ease-in-out`,
+    new: `${fwd ? 'vt-from-right' : 'vt-from-left'} 0.4s ease-in-out`,
+  }),
+  push: (fwd) => ({
+    old: `${fwd ? 'vt-to-left' : 'vt-to-right'} 0.35s ease-out`,
+    new: `${fwd ? 'vt-from-right' : 'vt-from-left'} 0.35s ease-out`,
+  }),
+  cover: (fwd) => ({
+    old: 'none',
+    new: `${fwd ? 'vt-from-right' : 'vt-from-left'} 0.35s ease-out`,
+  }),
+  reveal: (fwd) => ({
+    old: `${fwd ? 'vt-to-left' : 'vt-to-right'} 0.35s ease-in`,
+    new: 'none',
+    // Old snapshot must stay on top to "reveal" new underneath
+    extra: '::view-transition-old(slide){z-index:1}::view-transition-new(slide){z-index:0}',
+  }),
+  wipe: (fwd) => ({
+    old: 'none',
+    new: `${fwd ? 'vt-wipe-ltr' : 'vt-wipe-rtl'} 0.4s ease-in-out`,
+  }),
+  zoom: () => ({
+    old: 'vt-zoom-out 0.35s ease-in',
+    new: 'vt-zoom-in 0.35s ease-out',
+  }),
+  drop: () => ({
+    old: 'vt-fade-out 0.3s ease',
+    new: 'vt-drop-in 0.4s ease-out',
+  }),
+  flip: (fwd) => ({
+    old: `${fwd ? 'vt-flip-out' : 'vt-flip-out-rev'} 0.3s ease-in`,
+    new: `${fwd ? 'vt-flip-in' : 'vt-flip-in-rev'} 0.3s 0.15s ease-out`,
+  }),
+};
+
+// Inject keyframes once into the document
+const vtStyle = document.createElement('style');
+vtStyle.id = 'vt-keyframes';
+vtStyle.textContent = `
+@keyframes vt-fade-out { to { opacity: 0 } }
+@keyframes vt-fade-in { from { opacity: 0 } }
+@keyframes vt-to-left { to { transform: translateX(-100%) } }
+@keyframes vt-from-right { from { transform: translateX(100%) } }
+@keyframes vt-to-right { to { transform: translateX(100%) } }
+@keyframes vt-from-left { from { transform: translateX(-100%) } }
+@keyframes vt-wipe-ltr { from { clip-path: inset(0 100% 0 0) } to { clip-path: inset(0) } }
+@keyframes vt-wipe-rtl { from { clip-path: inset(0 0 0 100%) } to { clip-path: inset(0) } }
+@keyframes vt-zoom-out { to { transform: scale(0); opacity: 0 } }
+@keyframes vt-zoom-in { from { transform: scale(0); opacity: 0 } }
+@keyframes vt-drop-in { from { transform: translateY(-100%); opacity: 0 } }
+@keyframes vt-flip-out { to { transform: perspective(1200px) rotateY(-90deg) } }
+@keyframes vt-flip-in { from { transform: perspective(1200px) rotateY(90deg) } }
+@keyframes vt-flip-out-rev { to { transform: perspective(1200px) rotateY(90deg) } }
+@keyframes vt-flip-in-rev { from { transform: perspective(1200px) rotateY(-90deg) } }
+`;
+document.head.appendChild(vtStyle);
+
+// Dynamic style element for per-transition animation rules
+const vtDynamic = document.createElement('style');
+vtDynamic.id = 'vt-dynamic';
+document.head.appendChild(vtDynamic);
+
+/** Inject the correct ::view-transition-* CSS for a given transition name + direction. */
+function setTransitionCSS(name, forward) {
+  const factory = TRANSITIONS[name] || TRANSITIONS.fade;
+  const t = factory(forward);
+  vtDynamic.textContent = `
+::view-transition-old(slide) { animation: ${t.old} !important; }
+::view-transition-new(slide) { animation: ${t.new} !important; }
+${t.extra || ''}`;
+}
+
+// ---------------------------------------------------------------------------
 // Navigation — handles fragments, then slides, with View Transitions
 // ---------------------------------------------------------------------------
 
@@ -199,6 +312,10 @@ function navigate(delta) {
 
   const next = currentSlide + delta;
   if (next < 0 || next >= svgSlides.length) return;
+
+  // Use the target slide's transition (the slide being revealed)
+  const transName = slideTransitions[next] || 'fade';
+
   currentSlide = next;
 
   // When going back, reveal all fragments of the target slide
@@ -211,7 +328,8 @@ function navigate(delta) {
     }
   };
 
-  if (document.startViewTransition) {
+  if (document.startViewTransition && transName !== 'none') {
+    setTransitionCSS(transName, delta > 0);
     document.startViewTransition(reveal);
   } else {
     reveal();

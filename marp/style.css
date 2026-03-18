@@ -162,10 +162,8 @@ main {
   color: #aaa;
 }
 
-/* Slide transitions */
+/* Slide transitions (animations injected dynamically by app.js) */
 #slide-wrapper { view-transition-name: slide; }
-::view-transition-old(slide),
-::view-transition-new(slide) { animation-duration: 0.2s; }
 
 /* Mobile */
 @media (max-width: 768px) {
