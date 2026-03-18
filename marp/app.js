@@ -12,6 +12,8 @@ const exportBtn = document.getElementById('export-html');
 const pdfBtn = document.getElementById('pdf-btn');
 const themeInput = document.getElementById('theme-input');
 const clearThemeBtn = document.getElementById('clear-theme');
+const preambleInput = document.getElementById('preamble-input');
+const clearPreambleBtn = document.getElementById('clear-preamble');
 
 let currentSlide = 0;
 let svgSlides = [];
@@ -19,6 +21,8 @@ let renderedCss = '';
 let customThemeCss = '';
 let customThemeName = '';
 let customThemeFileName = '';
+let preambleText = '';
+let preambleFileName = '';
 let fragmentIndex = 0;
 let fragmentCount = 0;
 let slideTransitions = []; // per-slide transition name (e.g. 'slide', 'fade')
@@ -28,14 +32,19 @@ let slideTransitions = []; // per-slide transition name (e.g. 'slide', 'fade')
 // ---------------------------------------------------------------------------
 
 const DB_NAME = 'marp-renderer';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const THEME_STORE = 'themes';
+const PREAMBLE_STORE = 'preambles';
 
 /** Open (or create) the IndexedDB database. */
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => req.result.createObjectStore(THEME_STORE);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(THEME_STORE)) db.createObjectStore(THEME_STORE);
+      if (!db.objectStoreNames.contains(PREAMBLE_STORE)) db.createObjectStore(PREAMBLE_STORE);
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => { console.error('IndexedDB open failed:', req.error); reject(req.error); };
   });
@@ -73,6 +82,65 @@ async function loadTheme() {
     req.onsuccess = () => resolve(req.result || null);
     req.onerror = () => { console.error('Theme load failed:', req.error); reject(req.error); };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Preamble persistence
+// ---------------------------------------------------------------------------
+
+/** Save the current preamble to IndexedDB. */
+async function savePreamble() {
+  const db = await openDB();
+  const tx = db.transaction(PREAMBLE_STORE, 'readwrite');
+  tx.objectStore(PREAMBLE_STORE).put({ text: preambleText, fileName: preambleFileName }, 'current');
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = resolve;
+    tx.onerror = () => { console.error('Preamble save failed:', tx.error); reject(tx.error); };
+  });
+}
+
+/** Delete the stored preamble from IndexedDB. */
+async function deletePreamble() {
+  const db = await openDB();
+  const tx = db.transaction(PREAMBLE_STORE, 'readwrite');
+  tx.objectStore(PREAMBLE_STORE).delete('current');
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = resolve;
+    tx.onerror = () => { console.error('Preamble delete failed:', tx.error); reject(tx.error); };
+  });
+}
+
+/** Load a previously saved preamble from IndexedDB. Returns null if none. */
+async function loadPreamble() {
+  const db = await openDB();
+  const tx = db.transaction(PREAMBLE_STORE, 'readonly');
+  const req = tx.objectStore(PREAMBLE_STORE).get('current');
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => { console.error('Preamble load failed:', req.error); reject(req.error); };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Preamble injection — prepends macro definitions to the first slide
+// ---------------------------------------------------------------------------
+
+/**
+ * Inject preamble macros into markdown as a hidden math block after frontmatter.
+ * MathJax processes \newcommand and makes macros available to all subsequent
+ * math blocks. The definitions produce no visible output on the slide.
+ */
+function injectPreamble(md) {
+  if (!preambleText.trim()) return md;
+  const preambleBlock = `\n$$\n${preambleText.trim()}\n$$\n`;
+  // Insert after frontmatter closing '---' so it lands on the first slide
+  const fmClose = md.match(/^---\s*\n[\s\S]*?\n---\s*$/m);
+  if (fmClose) {
+    const insertAt = fmClose.index + fmClose[0].length;
+    return md.slice(0, insertAt) + preambleBlock + md.slice(insertAt);
+  }
+  // No frontmatter — prepend directly
+  return preambleBlock + md;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +186,7 @@ function parseTransitions(md) {
 function render() {
   try {
     const marp = createMarp();
-    const { html, css } = marp.render(textarea.value);
+    const { html, css } = marp.render(injectPreamble(textarea.value));
     renderedCss = css;
 
     const tmp = document.createElement('div');
@@ -363,8 +431,9 @@ window.addEventListener('resize', () => {
 // ---------------------------------------------------------------------------
 
 exportBtn.addEventListener('click', () => {
+  const md = injectPreamble(textarea.value);
   const marp = createMarp();
-  const { html, css } = marp.render(textarea.value);
+  const { html, css } = marp.render(md);
   const transitions = JSON.stringify(parseTransitions(textarea.value));
 
   const doc = `<!DOCTYPE html>
@@ -487,7 +556,7 @@ ${html}
 
 pdfBtn.addEventListener('click', async () => {
   const marp = createMarp();
-  const { html, css } = marp.render(textarea.value);
+  const { html, css } = marp.render(injectPreamble(textarea.value));
 
   const tmp = document.createElement('div');
   tmp.innerHTML = html;
@@ -584,6 +653,41 @@ clearThemeBtn.addEventListener('click', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Preamble loading (with IndexedDB persistence)
+// ---------------------------------------------------------------------------
+
+/** Apply a preamble (update state + UI + re-render). */
+function applyPreamble(text, fileName) {
+  preambleText = text;
+  preambleFileName = fileName;
+  clearPreambleBtn.hidden = false;
+  clearPreambleBtn.textContent = `\u2715 ${fileName}`;
+  render();
+}
+
+preambleInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = async () => {
+    applyPreamble(reader.result, file.name);
+    await savePreamble().catch(err => console.error('Failed to persist preamble:', err));
+  };
+  reader.onerror = () => console.error('Failed to read preamble file:', reader.error);
+  reader.readAsText(file);
+});
+
+clearPreambleBtn.addEventListener('click', async () => {
+  preambleText = '';
+  preambleFileName = '';
+  preambleInput.value = '';
+  clearPreambleBtn.hidden = true;
+  render();
+  await deletePreamble().catch(err => console.error('Failed to delete preamble:', err));
+});
+
+// ---------------------------------------------------------------------------
 // Tab key inserts spaces in textarea
 // ---------------------------------------------------------------------------
 
@@ -599,11 +703,22 @@ textarea.addEventListener('keydown', (e) => {
 });
 
 // ---------------------------------------------------------------------------
-// Init: restore persisted theme, then render
+// Init: restore persisted theme + preamble, then render
 // ---------------------------------------------------------------------------
 
 (async () => {
-  const saved = await loadTheme().catch(() => null);
-  if (saved) applyTheme(saved.css, saved.name, saved.fileName);
+  const [savedTheme, savedPreamble] = await Promise.all([
+    loadTheme().catch(() => null),
+    loadPreamble().catch(() => null),
+  ]);
+
+  if (savedPreamble) {
+    preambleText = savedPreamble.text;
+    preambleFileName = savedPreamble.fileName;
+    clearPreambleBtn.hidden = false;
+    clearPreambleBtn.textContent = `\u2715 ${savedPreamble.fileName}`;
+  }
+
+  if (savedTheme) applyTheme(savedTheme.css, savedTheme.name, savedTheme.fileName);
   else render();
 })();
