@@ -162,29 +162,6 @@ main {
   color: #aaa;
 }
 
-/* Print styles — show all slides stacked for PDF export */
-@media print {
-  body { background: #fff; height: auto; overflow: visible; }
-  header, .editor-pane, .slide-nav { display: none !important; }
-  .preview-pane {
-    width: 100%; position: static; background: #fff; display: block;
-  }
-  #slide-container {
-    display: block; padding: 0; overflow: visible;
-  }
-  #slide-container section {
-    box-shadow: none;
-    border-radius: 0;
-    page-break-after: always;
-    break-after: page;
-    width: 100%;
-    max-width: none;
-    max-height: none;
-    aspect-ratio: auto;
-  }
-  #slide-container section:last-child { page-break-after: avoid; }
-}
-
 /* Mobile */
 @media (max-width: 768px) {
   main { flex-direction: column; }
