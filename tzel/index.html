@@ -43,6 +43,15 @@
       padding-bottom: 8px;
     }
 
+    #panelToggle {
+      display: none;
+    }
+
+    /* Collapsible sections for mobile */
+    .collapsible-section {
+      display: block;
+    }
+
     .control-group {
       margin-bottom: 12px;
     }
@@ -349,15 +358,103 @@
       font-size: 12px;
       color: #888;
     }
+
+    /* ==================== MOBILE LAYOUT ==================== */
+    @media (max-width: 600px) {
+      #controls {
+        position: fixed;
+        top: auto;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        min-width: unset;
+        border-radius: 16px 16px 0 0;
+        padding: 10px 15px 15px;
+        max-height: 70vh;
+        transition: max-height 0.3s ease;
+      }
+
+      #controls.collapsed {
+        max-height: none;
+        overflow: hidden;
+      }
+
+      /* Drag handle / toggle button at top of panel */
+      #panelToggle {
+        display: block;
+        width: 40px;
+        height: 5px;
+        background: #666;
+        border-radius: 3px;
+        margin: 0 auto 8px;
+        border: none;
+        cursor: pointer;
+        padding: 0;
+      }
+
+      #controls h3 {
+        font-size: 14px;
+        margin-bottom: 8px;
+        padding-bottom: 6px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      /* Always-visible core controls on mobile */
+      #controls.collapsed .collapsible-section {
+        display: none;
+      }
+
+      /* Larger touch targets */
+      .quick-times button {
+        padding: 10px 8px;
+        font-size: 13px;
+        min-width: 40px;
+      }
+
+      #locationBtn,
+      #analyzeBtn,
+      #clearAnalysisBtn {
+        padding: 12px;
+        font-size: 14px;
+      }
+
+      .control-group input[type="date"],
+      .control-group input[type="number"],
+      .control-group select {
+        padding: 10px 8px;
+        font-size: 14px;
+      }
+
+      /* Taller range slider for easier touch */
+      .control-group input[type="range"] {
+        height: 36px;
+      }
+
+      #shadowToggle input {
+        width: 22px;
+        height: 22px;
+      }
+
+      #timeDisplay {
+        font-size: 28px;
+      }
+
+      /* Cesium container should not be hidden behind the panel */
+      #cesiumContainer {
+        height: 100vh;
+        height: 100dvh;
+      }
+    }
   </style>
 </head>
 <body>
   <div id="cesiumContainer"></div>
 
-  <div id="controls">
+  <div id="controls" class="collapsed">
+    <button id="panelToggle" aria-label="Toggle panel"></button>
     <h3>Jerusalem Shadow Viewer</h3>
-
-    <button id="locationBtn">Go to My Location</button>
 
     <div class="control-group">
       <label for="dateInput">Date</label>
@@ -383,6 +480,10 @@
         <button data-hour="20">20:00</button>
       </div>
     </div>
+
+    <div class="collapsible-section">
+
+    <button id="locationBtn">Go to My Location</button>
 
     <div id="shadowToggle">
       <input type="checkbox" id="shadowsEnabled" checked>
@@ -448,6 +549,8 @@
     <div id="status">
       Loading tiles: <span id="tilesLoaded">0</span>/7
     </div>
+
+    </div><!-- end .collapsible-section -->
 
     <!-- Weather Info Panel -->
     <div id="weatherPanel">
@@ -1124,6 +1227,11 @@
 
     // Load weather data on startup
     fetchWeather().then(updateWeatherDisplay);
+
+    // ==================== MOBILE PANEL TOGGLE ====================
+    document.getElementById('panelToggle').addEventListener('click', () => {
+      document.getElementById('controls').classList.toggle('collapsed');
+    });
   </script>
 </body>
 </html>
