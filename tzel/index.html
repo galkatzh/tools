@@ -273,6 +273,82 @@
     #locationBtn:hover {
       background: #555;
     }
+
+    /* Weather info panel */
+    #weatherPanel {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #555;
+    }
+
+    #weatherPanel .section-header {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: none;
+    }
+
+    .weather-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px 12px;
+      font-size: 12px;
+    }
+
+    .weather-grid .weather-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .weather-grid .weather-label {
+      color: #999;
+    }
+
+    .weather-grid .weather-value {
+      color: #fff;
+      font-weight: 500;
+    }
+
+    .uv-badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-weight: bold;
+      font-size: 11px;
+    }
+
+    .uv-low { background: #4caf50; color: #fff; }
+    .uv-moderate { background: #ffeb3b; color: #333; }
+    .uv-high { background: #ff9800; color: #fff; }
+    .uv-very-high { background: #f44336; color: #fff; }
+    .uv-extreme { background: #9c27b0; color: #fff; }
+
+    .weather-desc {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #bbb;
+      font-style: italic;
+    }
+
+    .weather-source {
+      margin-top: 6px;
+      font-size: 10px;
+      color: #666;
+    }
+
+    .weather-source a {
+      color: #888;
+      text-decoration: none;
+    }
+
+    .weather-source a:hover {
+      color: #aaa;
+    }
+
+    #weatherLoading {
+      font-size: 12px;
+      color: #888;
+    }
   </style>
 </head>
 <body>
@@ -371,6 +447,44 @@
 
     <div id="status">
       Loading tiles: <span id="tilesLoaded">0</span>/7
+    </div>
+
+    <!-- Weather Info Panel -->
+    <div id="weatherPanel">
+      <div class="section-header">Weather Forecast</div>
+      <div id="weatherLoading">Loading weather data...</div>
+      <div id="weatherContent" style="display: none;">
+        <div class="weather-grid">
+          <div class="weather-item">
+            <span class="weather-label">Sky:</span>
+            <span class="weather-value" id="wxSky">—</span>
+          </div>
+          <div class="weather-item">
+            <span class="weather-label">UV:</span>
+            <span class="weather-value" id="wxUV">—</span>
+          </div>
+          <div class="weather-item">
+            <span class="weather-label">Temp:</span>
+            <span class="weather-value" id="wxTemp">—</span>
+          </div>
+          <div class="weather-item">
+            <span class="weather-label">Rain:</span>
+            <span class="weather-value" id="wxRain">—</span>
+          </div>
+          <div class="weather-item">
+            <span class="weather-label">Cloud:</span>
+            <span class="weather-value" id="wxCloud">—</span>
+          </div>
+          <div class="weather-item">
+            <span class="weather-label">UV Max:</span>
+            <span class="weather-value" id="wxUVMax">—</span>
+          </div>
+        </div>
+        <div class="weather-desc" id="wxDesc"></div>
+        <div class="weather-source">
+          Data: <a href="https://www.02ws.co.il" target="_blank">02ws</a> · <a href="https://ims.gov.il" target="_blank">IMS</a>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -504,6 +618,7 @@
         const hour = parseInt(btn.dataset.hour);
         timeSlider.value = hour * 60;
         updateTime();
+        updateWeatherDisplay();
       });
     });
 
@@ -525,9 +640,11 @@
       if (e.key === 'ArrowLeft') {
         timeSlider.value = Math.max(0, parseInt(timeSlider.value) - step);
         updateTime();
+        updateWeatherDisplay();
       } else if (e.key === 'ArrowRight') {
         timeSlider.value = Math.min(1440, parseInt(timeSlider.value) + step);
         updateTime();
+        updateWeatherDisplay();
       }
     });
 
@@ -821,6 +938,192 @@
 
     analyzeBtn.addEventListener('click', runAnalysis);
     clearAnalysisBtn.addEventListener('click', clearAnalysis);
+
+    // ==================== WEATHER DATA ====================
+
+    /**
+     * Weather data from 02ws (Jerusalem weather service, has CORS).
+     * Stores current conditions, hourly forecasts, and daily forecasts.
+     */
+    let weatherData = {
+      current: null,    // { cloudiness, uv, temp, humidity, rainChance }
+      hourly: {},       // keyed by "YYYY-MM-DD HH" → { temp, uv, rain, sky, dust }
+      daily: {},        // keyed by "YYYY-MM-DD" → { uvmax, desc, tempLow, tempHigh }
+    };
+
+    /**
+     * Extract sky condition from 02ws icon filename.
+     * Icons follow a pattern like "n4_rainmostlycloudy.svg" or "n4_sun.svg".
+     */
+    function skyFromIcon(icon) {
+      if (!icon) return null;
+      const name = icon.replace(/.*\//, '').replace('.svg', '').replace(/^n\d_/, '');
+      if (/clear|sun(?!_rain)/.test(name) && !/cloud|rain/.test(name)) return { text: 'Clear', oktas: 1 };
+      if (/partlycloudy|suncloud|sun_rain/.test(name)) return { text: 'Partly cloudy', oktas: 3 };
+      if (/mostlycloudy/.test(name)) return { text: 'Mostly cloudy', oktas: 6 };
+      if (/rain|thunder|storm/.test(name)) return { text: 'Rainy', oktas: 8 };
+      if (/cloudy|overcast/.test(name)) return { text: 'Cloudy', oktas: 7 };
+      if (/moon/.test(name) && !/cloud/.test(name)) return { text: 'Clear', oktas: 0 };
+      if (/moonpc|mooncloud/.test(name)) return { text: 'Partly cloudy', oktas: 3 };
+      return null;
+    }
+
+    /** Cloud oktas (0-8) to descriptive text */
+    function cloudText(oktas) {
+      if (oktas <= 1) return 'Clear';
+      if (oktas <= 3) return 'Partly cloudy';
+      if (oktas <= 5) return 'Mostly cloudy';
+      if (oktas <= 7) return 'Cloudy';
+      return 'Overcast';
+    }
+
+    /** Fetch weather data from 02ws (Jerusalem-specific, has CORS) */
+    async function fetchWeather() {
+      try {
+        const res = await fetch('https://v2013.02ws.co.il/02wsjson.txt');
+        const json = await res.json();
+        const jws = json.jws;
+
+        // Current conditions
+        const c = jws.current;
+        weatherData.current = {
+          cloudiness: parseInt(c.cloudiness) || 0,
+          uv: parseFloat(c.uv) || 0,
+          temp: parseFloat(c.temp) || null,
+          humidity: parseInt(c.hum) || null,
+          rainChance: parseInt(c.rainchance) || 0,
+        };
+
+        // Hourly forecasts (next ~48h)
+        if (jws.forecastHours) {
+          for (const entry of Object.values(jws.forecastHours)) {
+            const ts = parseInt(entry.currentDateTime) * 1000;
+            const d = new Date(ts);
+            const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}`;
+            const sky = skyFromIcon(entry.icon);
+            weatherData.hourly[key] = {
+              temp: entry.temp,
+              uv: entry.uv,
+              rain: entry.rain,
+              dust: entry.dust,
+              sky: sky ? sky.text : null,
+              oktas: sky ? sky.oktas : null,
+            };
+          }
+        }
+
+        // Daily forecasts (next 7 days)
+        if (jws.forecastDays) {
+          for (const entry of Object.values(jws.forecastDays)) {
+            // Date format from 02ws: "DD/MM" → convert to "YYYY-MM-DD"
+            const [dd, mm] = entry.date.split('/');
+            const year = new Date().getFullYear();
+            const dateKey = `${year}-${mm}-${dd}`;
+            const sky = skyFromIcon(entry.icon);
+            weatherData.daily[dateKey] = {
+              uvmax: entry.uvmax,
+              tempLow: entry.TempLow,
+              tempHigh: entry.TempHigh,
+              desc: entry.lang0 || '',
+              sky: sky ? sky.text : null,
+              oktas: sky ? sky.oktas : null,
+            };
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch weather data:', err);
+      }
+    }
+
+    /** Returns UV index badge HTML */
+    function uvBadge(uv) {
+      const n = parseFloat(uv);
+      if (isNaN(n)) return '<span class="uv-badge uv-low">—</span>';
+      let cls, label;
+      if (n <= 2) { cls = 'uv-low'; label = 'Low'; }
+      else if (n <= 5) { cls = 'uv-moderate'; label = 'Moderate'; }
+      else if (n <= 7) { cls = 'uv-high'; label = 'High'; }
+      else if (n <= 10) { cls = 'uv-very-high'; label = 'Very High'; }
+      else { cls = 'uv-extreme'; label = 'Extreme'; }
+      return `<span class="uv-badge ${cls}">${n} ${label}</span>`;
+    }
+
+    /**
+     * Update the weather panel to match the currently selected date/time.
+     * Uses hourly data when available, falls back to daily or current.
+     */
+    function updateWeatherDisplay() {
+      const weatherContent = document.getElementById('weatherContent');
+      const weatherLoading = document.getElementById('weatherLoading');
+
+      if (!Object.keys(weatherData.hourly).length && !weatherData.current) {
+        weatherLoading.textContent = 'No weather data available';
+        return;
+      }
+
+      weatherContent.style.display = 'block';
+      weatherLoading.style.display = 'none';
+
+      const minutes = parseInt(timeSlider.value);
+      const hours = Math.floor(minutes / 60);
+      const dateStr = dateInput.value;
+      const hourKey = `${dateStr} ${String(hours).padStart(2, '0')}`;
+
+      const hourly = weatherData.hourly[hourKey];
+      const daily = weatherData.daily[dateStr];
+      const cur = weatherData.current;
+
+      // Sky / cloud conditions
+      let skyText = '—', cloudOktas = null;
+      if (hourly && hourly.sky) {
+        skyText = hourly.sky;
+        cloudOktas = hourly.oktas;
+      } else if (daily && daily.sky) {
+        skyText = daily.sky;
+        cloudOktas = daily.oktas;
+      } else if (cur) {
+        cloudOktas = cur.cloudiness;
+        skyText = cloudText(cloudOktas);
+      }
+
+      // UV index (hourly → current fallback)
+      let uv = hourly ? hourly.uv : null;
+      if ((uv === null || uv === undefined || uv === '') && cur) uv = cur.uv;
+
+      // Temperature (hourly → current fallback)
+      let temp = hourly ? hourly.temp : null;
+      if (temp === null && cur) temp = cur.temp;
+
+      // Rain chance (hourly → current fallback)
+      let rain = hourly ? hourly.rain : null;
+      if (rain === null && cur) rain = cur.rainChance;
+
+      // Daily UV max
+      const uvMax = daily ? daily.uvmax : null;
+
+      document.getElementById('wxSky').textContent = skyText;
+      document.getElementById('wxUV').innerHTML = uvBadge(uv);
+      document.getElementById('wxTemp').textContent = temp !== null ? `${temp}°C` : '—';
+      document.getElementById('wxRain').textContent = rain !== null ? `${rain}%` : '—';
+      document.getElementById('wxCloud').textContent = cloudOktas !== null ? `${cloudOktas}/8` : '—';
+      document.getElementById('wxUVMax').innerHTML = uvMax ? uvBadge(uvMax) : '—';
+
+      // Daily description
+      const wxDesc = document.getElementById('wxDesc');
+      if (daily && daily.desc) {
+        wxDesc.textContent = daily.desc.trim();
+        wxDesc.style.display = 'block';
+      } else {
+        wxDesc.style.display = 'none';
+      }
+    }
+
+    // Hook weather display into existing time change events
+    dateInput.addEventListener('change', updateWeatherDisplay);
+    timeSlider.addEventListener('input', updateWeatherDisplay);
+
+    // Load weather data on startup
+    fetchWeather().then(updateWeatherDisplay);
   </script>
 </body>
 </html>
