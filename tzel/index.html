@@ -248,26 +248,32 @@
       transition: width 0.2s;
     }
 
-    .legend {
+    #analysisResult {
       margin-top: 10px;
-      font-size: 11px;
+      padding-top: 10px;
+      border-top: 1px solid #555;
     }
 
-    .legend-bar {
-      height: 14px;
-      border-radius: 3px;
-      background: linear-gradient(to right, #5c4033 0%, #ff9800 50%, #ffeb3b 95%);
+    #sunBar {
+      height: 18px;
+      background: #5c4033;
+      border-radius: 4px;
+      overflow: hidden;
     }
 
-    .legend-labels {
-      display: flex;
-      justify-content: space-between;
-      margin-top: 3px;
-      color: #aaa;
+    #sunFill {
+      height: 100%;
+      background: linear-gradient(to right, #ff9800, #ffeb3b);
+      width: 0%;
+      transition: width 0.5s ease;
+      border-radius: 4px;
     }
 
-    .legend-labels span {
-      font-size: 10px;
+    #sunLabel {
+      margin-top: 4px;
+      font-size: 12px;
+      color: #ccc;
+      text-align: center;
     }
 
     #locationBtn {
@@ -540,13 +546,11 @@
 
     </div><!-- end .collapsible-section -->
 
-    <div class="legend" id="legend" style="display: none;">
-      <div class="legend-bar"></div>
-      <div class="legend-labels">
-        <span>Always Shade</span>
-        <span>Partial Sun</span>
-        <span>Always Sun</span>
+    <div id="analysisResult" style="display: none;">
+      <div id="sunBar">
+        <div id="sunFill"></div>
       </div>
+      <div id="sunLabel"></div>
     </div>
 
     <!-- Weather Info Panel -->
@@ -812,13 +816,11 @@
 
     // ==================== SUNLIGHT ANALYSIS ====================
     const analyzeBtn = document.getElementById('analyzeBtn');
-    const clearAnalysisBtn = document.getElementById('clearAnalysisBtn');
     const analysisProgress = document.getElementById('analysisProgress');
     const progressText = document.getElementById('progressText');
     const progressFill = document.getElementById('progressFill');
-    const legend = document.getElementById('legend');
+    const analysisResult = document.getElementById('analysisResult');
 
-    let analysisPoints = null;
     let analysisRunning = false;
 
     // Get sun direction for a given date/time
@@ -878,7 +880,11 @@
       return points;
     }
 
-    // Run sunlight analysis
+    /**
+     * Run sunlight analysis: sample a grid of points across the view,
+     * test shadow at each time step, render a heatmap overlay on a
+     * canvas positioned over the Cesium viewer.
+     */
     async function runAnalysis() {
       if (analysisRunning) return;
 
@@ -895,12 +901,9 @@
       analysisRunning = true;
       analyzeBtn.disabled = true;
       analysisProgress.style.display = 'block';
-      legend.style.display = 'none';
-
-      // Clear previous analysis
+      analysisResult.style.display = 'none';
       clearAnalysis();
 
-      // Generate sample points
       progressText.textContent = 'Generating sample points...';
       progressFill.style.width = '0%';
       await new Promise(r => setTimeout(r, 100));
@@ -933,7 +936,6 @@
       for (const timePoint of timeSamples) {
         const sunDir = getSunDirection(timePoint);
 
-        // Check if sun is above horizon (simplified check)
         const cameraPos = viewer.camera.position;
         const cameraCart = Cesium.Cartographic.fromCartesian(cameraPos);
         const localUp = Cesium.Cartesian3.normalize(
@@ -943,13 +945,11 @@
         const sunElevation = Cesium.Cartesian3.dot(sunDir, localUp);
 
         if (sunElevation < 0.05) {
-          // Sun below horizon, all points in shade
           points.forEach(p => p.totalSamples++);
           completed += points.length;
         } else {
           for (const point of points) {
-            const inShadow = isPointInShadow(point.position, sunDir);
-            if (!inShadow) {
+            if (!isPointInShadow(point.position, sunDir)) {
               point.sunCount++;
             }
             point.totalSamples++;
@@ -960,84 +960,79 @@
         const progress = (completed / totalWork) * 100;
         progressFill.style.width = progress + '%';
         progressText.textContent = `Analyzing: ${Math.round(progress)}%`;
-
-        // Yield to UI
         await new Promise(r => setTimeout(r, 0));
       }
 
-      // Create visualization
-      progressText.textContent = 'Creating visualization...';
-      await new Promise(r => setTimeout(r, 100));
+      // Render heatmap on an overlay canvas
+      progressText.textContent = 'Rendering heatmap...';
+      await new Promise(r => setTimeout(r, 50));
 
-      analysisPoints = viewer.entities.add({
-        id: 'sunlightAnalysis',
-        show: true
-      });
+      const cesiumCanvas = viewer.canvas;
+      const heatCanvas = document.createElement('canvas');
+      heatCanvas.id = 'heatmapOverlay';
+      heatCanvas.width = cesiumCanvas.width;
+      heatCanvas.height = cesiumCanvas.height;
+      heatCanvas.style.cssText =
+        'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:1;';
+      cesiumCanvas.parentElement.appendChild(heatCanvas);
 
-      const pointCollection = viewer.scene.primitives.add(new Cesium.PointPrimitiveCollection());
+      const ctx = heatCanvas.getContext('2d');
+      // Radius large enough for neighboring blobs to overlap and blend
+      const radius = Math.max(cesiumCanvas.width, cesiumCanvas.height) / (gridSize + 1) * 1.2;
 
+      // Draw each sample as a radial gradient blob for smooth blending
       for (const point of points) {
-        const sunRatio = point.totalSamples > 0 ? point.sunCount / point.totalSamples : 0;
+        const ratio = point.totalSamples > 0 ? point.sunCount / point.totalSamples : 0;
 
-        let color;
-        if (sunRatio >= 0.95) {
-          // Always sunny - bright yellow
-          color = Cesium.Color.fromCssColorString('#ffeb3b');
-        } else if (sunRatio >= 0.5) {
-          // Mostly sunny - orange gradient
-          const t = (sunRatio - 0.5) / 0.45;
-          color = Cesium.Color.lerp(
-            Cesium.Color.fromCssColorString('#ff9800'),
-            Cesium.Color.fromCssColorString('#ffeb3b'),
-            t,
-            new Cesium.Color()
-          );
-        } else if (sunRatio > 0.05) {
-          // Partial shade - orange to brown gradient
-          const t = sunRatio / 0.5;
-          color = Cesium.Color.lerp(
-            Cesium.Color.fromCssColorString('#5c4033'),
-            Cesium.Color.fromCssColorString('#ff9800'),
-            t,
-            new Cesium.Color()
-          );
+        // Color: brown(shade) → orange → yellow(sun)
+        let r, g, b;
+        if (ratio <= 0.5) {
+          const t = ratio / 0.5;
+          r = Math.round(92 + (255 - 92) * t);
+          g = Math.round(64 + (152 - 64) * t);
+          b = Math.round(51 + (0 - 51) * t);
         } else {
-          // Always shaded - dark brown
-          color = Cesium.Color.fromCssColorString('#5c4033');
+          const t = (ratio - 0.5) / 0.5;
+          r = 255;
+          g = Math.round(152 + (235 - 152) * t);
+          b = Math.round(0 + 59 * t);
         }
 
-        pointCollection.add({
-          position: point.position,
-          pixelSize: 12,
-          color: color,
-          outlineColor: Cesium.Color.BLACK,
-          outlineWidth: 1,
-          disableDepthTestDistance: Number.POSITIVE_INFINITY
-        });
+        const cx = point.screenPos.x;
+        const cy = point.screenPos.y;
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+        grad.addColorStop(0, `rgba(${r},${g},${b},0.45)`);
+        grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+        ctx.fillStyle = grad;
+        ctx.fillRect(cx - radius, cy - radius, radius * 2, radius * 2);
       }
 
-      analysisPoints._pointCollection = pointCollection;
+      // Compute aggregate sun %
+      let totalSun = 0;
+      for (const p of points) {
+        totalSun += p.totalSamples > 0 ? p.sunCount / p.totalSamples : 0;
+      }
+      const sunPct = Math.round((totalSun / points.length) * 100);
+
+      document.getElementById('sunFill').style.width = sunPct + '%';
+      document.getElementById('sunLabel').textContent =
+        `${sunPct}% sun · ${points.length} points · ${startHour}:00–${endHour}:00`;
 
       analysisRunning = false;
       analyzeBtn.disabled = false;
-      progressText.textContent = `Done! ${points.length} points analyzed`;
-      legend.style.display = 'block';
+      analysisProgress.style.display = 'none';
+      analysisResult.style.display = 'block';
     }
 
     function clearAnalysis() {
-      if (analysisPoints) {
-        if (analysisPoints._pointCollection) {
-          viewer.scene.primitives.remove(analysisPoints._pointCollection);
-        }
-        viewer.entities.remove(analysisPoints);
-        analysisPoints = null;
-      }
-      legend.style.display = 'none';
+      const overlay = document.getElementById('heatmapOverlay');
+      if (overlay) overlay.remove();
+      analysisResult.style.display = 'none';
       analysisProgress.style.display = 'none';
     }
 
     analyzeBtn.addEventListener('click', runAnalysis);
-    clearAnalysisBtn.addEventListener('click', clearAnalysis);
+    document.getElementById('clearAnalysisBtn').addEventListener('click', clearAnalysis);
 
     // ==================== WEATHER DATA ====================
 
