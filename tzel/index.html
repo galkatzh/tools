@@ -53,14 +53,42 @@
     }
 
     .control-group {
-      margin-bottom: 12px;
+      margin-bottom: 8px;
     }
 
     .control-group label {
       display: block;
-      margin-bottom: 5px;
-      font-size: 13px;
+      margin-bottom: 3px;
+      font-size: 12px;
       color: #ccc;
+    }
+
+    .time-row, .date-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .time-row label, .date-row label {
+      font-size: 12px;
+      color: #ccc;
+      margin: 0;
+      white-space: nowrap;
+    }
+
+    .time-row #timeDisplay {
+      font-size: 12px;
+      font-weight: bold;
+      margin: 0;
+      font-family: monospace;
+    }
+
+    .date-row input[type="date"] {
+      flex: 1;
+    }
+
+    .time-row input[type="range"] {
+      flex: 1;
     }
 
     .control-group input[type="date"],
@@ -82,9 +110,9 @@
 
     #timeDisplay {
       text-align: center;
-      font-size: 24px;
+      font-size: 12px;
       font-weight: bold;
-      margin: 10px 0;
+      margin: 0;
       font-family: monospace;
     }
 
@@ -438,7 +466,7 @@
       }
 
       #timeDisplay {
-        font-size: 28px;
+        font-size: 13px;
       }
 
       /* Cesium container should not be hidden behind the panel */
@@ -457,18 +485,21 @@
     <h3>Jerusalem Shadow Viewer</h3>
 
     <div class="control-group">
-      <label for="dateInput">Date</label>
-      <input type="date" id="dateInput">
+      <div class="date-row">
+        <label for="dateInput">Date</label>
+        <input type="date" id="dateInput">
+      </div>
     </div>
 
     <div class="control-group">
-      <label>Time</label>
-      <div id="timeDisplay">12:00</div>
-      <input type="range" id="timeSlider" min="0" max="1440" value="720" step="15">
+      <div class="time-row">
+        <label>Time</label>
+        <div id="timeDisplay">12:00</div>
+        <input type="range" id="timeSlider" min="0" max="1440" value="720" step="15">
+      </div>
     </div>
 
     <div class="control-group">
-      <label>Quick Times</label>
       <div class="quick-times">
         <button data-hour="6">6:00</button>
         <button data-hour="8">8:00</button>
@@ -482,6 +513,19 @@
     </div>
 
     <div class="collapsible-section">
+
+    <div class="control-group">
+      <div class="quick-times">
+        <button data-hour="6">6:00</button>
+        <button data-hour="8">8:00</button>
+        <button data-hour="10">10:00</button>
+        <button data-hour="12">12:00</button>
+        <button data-hour="14">14:00</button>
+        <button data-hour="16">16:00</button>
+        <button data-hour="18">18:00</button>
+        <button data-hour="20">20:00</button>
+      </div>
+    </div>
 
     <button id="locationBtn">Go to My Location</button>
 
