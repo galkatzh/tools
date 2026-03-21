@@ -249,22 +249,25 @@
     }
 
     .legend {
-      display: flex;
-      justify-content: space-between;
       margin-top: 10px;
       font-size: 11px;
     }
 
-    .legend-item {
-      display: flex;
-      align-items: center;
-      gap: 4px;
+    .legend-bar {
+      height: 14px;
+      border-radius: 3px;
+      background: linear-gradient(to right, #5c4033 0%, #ff9800 50%, #ffeb3b 95%);
     }
 
-    .legend-color {
-      width: 14px;
-      height: 14px;
-      border-radius: 2px;
+    .legend-labels {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 3px;
+      color: #aaa;
+    }
+
+    .legend-labels span {
+      font-size: 10px;
     }
 
     #locationBtn {
@@ -531,26 +534,20 @@
       </div>
     </div>
 
-    <div class="legend" id="legend" style="display: none;">
-      <div class="legend-item">
-        <div class="legend-color" style="background: #ffeb3b;"></div>
-        <span>Always Sun</span>
-      </div>
-      <div class="legend-item">
-        <div class="legend-color" style="background: #ff9800;"></div>
-        <span>Partial</span>
-      </div>
-      <div class="legend-item">
-        <div class="legend-color" style="background: #5c4033;"></div>
-        <span>Always Shade</span>
-      </div>
-    </div>
-
     <div id="status">
       Loading tiles: <span id="tilesLoaded">0</span>/7
     </div>
 
     </div><!-- end .collapsible-section -->
+
+    <div class="legend" id="legend" style="display: none;">
+      <div class="legend-bar"></div>
+      <div class="legend-labels">
+        <span>Always Shade</span>
+        <span>Partial Sun</span>
+        <span>Always Sun</span>
+      </div>
+    </div>
 
     <!-- Weather Info Panel -->
     <div id="weatherPanel">
@@ -1024,7 +1021,7 @@
       analysisRunning = false;
       analyzeBtn.disabled = false;
       progressText.textContent = `Done! ${points.length} points analyzed`;
-      legend.style.display = 'flex';
+      legend.style.display = 'block';
     }
 
     function clearAnalysis() {
