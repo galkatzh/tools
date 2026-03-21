@@ -53,14 +53,42 @@
     }
 
     .control-group {
-      margin-bottom: 12px;
+      margin-bottom: 8px;
     }
 
     .control-group label {
       display: block;
-      margin-bottom: 5px;
-      font-size: 13px;
+      margin-bottom: 3px;
+      font-size: 12px;
       color: #ccc;
+    }
+
+    .time-row, .date-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .time-row label, .date-row label {
+      font-size: 12px;
+      color: #ccc;
+      margin: 0;
+      white-space: nowrap;
+    }
+
+    .time-row #timeDisplay {
+      font-size: 12px;
+      font-weight: bold;
+      margin: 0;
+      font-family: monospace;
+    }
+
+    .date-row input[type="date"] {
+      flex: 1;
+    }
+
+    .time-row input[type="range"] {
+      flex: 1;
     }
 
     .control-group input[type="date"],
@@ -82,9 +110,9 @@
 
     #timeDisplay {
       text-align: center;
-      font-size: 24px;
+      font-size: 12px;
       font-weight: bold;
-      margin: 10px 0;
+      margin: 0;
       font-family: monospace;
     }
 
@@ -438,7 +466,7 @@
       }
 
       #timeDisplay {
-        font-size: 28px;
+        font-size: 13px;
       }
 
       /* Cesium container should not be hidden behind the panel */
@@ -457,15 +485,21 @@
     <h3>Jerusalem Shadow Viewer</h3>
 
     <div class="control-group">
-      <label for="dateInput">Date</label>
-      <input type="date" id="dateInput">
+      <div class="date-row">
+        <label for="dateInput">Date</label>
+        <input type="date" id="dateInput">
+      </div>
     </div>
 
     <div class="control-group">
-      <label>Time</label>
-      <div id="timeDisplay">12:00</div>
-      <input type="range" id="timeSlider" min="0" max="1440" value="720" step="15">
+      <div class="time-row">
+        <label>Time</label>
+        <div id="timeDisplay">12:00</div>
+        <input type="range" id="timeSlider" min="0" max="1440" value="720" step="15">
+      </div>
     </div>
+
+    <div class="collapsible-section">
 
     <div class="control-group">
       <label>Quick Times</label>
@@ -480,8 +514,6 @@
         <button data-hour="20">20:00</button>
       </div>
     </div>
-
-    <div class="collapsible-section">
 
     <button id="locationBtn">Go to My Location</button>
 
@@ -550,8 +582,6 @@
       Loading tiles: <span id="tilesLoaded">0</span>/7
     </div>
 
-    </div><!-- end .collapsible-section -->
-
     <!-- Weather Info Panel -->
     <div id="weatherPanel">
       <div class="section-header">Weather Forecast</div>
@@ -589,6 +619,8 @@
         </div>
       </div>
     </div>
+
+    </div><!-- end .collapsible-section -->
   </div>
 
   <div id="loading">Loading Jerusalem 3D Model...</div>
@@ -821,7 +853,7 @@
     const progressFill = document.getElementById('progressFill');
     const legend = document.getElementById('legend');
 
-    let analysisPoints = null;
+    let analysisPolygons = [];
     let analysisRunning = false;
 
     // Get sun direction for a given date/time
@@ -843,42 +875,48 @@
       return result !== undefined && result.object !== undefined;
     }
 
-    // Generate grid of sample points in current view
+    /**
+     * Generate grid of sample points in current view.
+     * Returns { points, grid } where grid[i][j] gives quick 2D lookup
+     * for polygon corner computation.
+     */
     function generateSamplePoints(gridSize) {
       const points = [];
+      const grid = Array.from({length: gridSize}, () => Array(gridSize).fill(null));
       const canvas = viewer.canvas;
-      const width = canvas.width;
-      const height = canvas.height;
 
-      const stepX = width / (gridSize + 1);
-      const stepY = height / (gridSize + 1);
+      const stepX = canvas.width / (gridSize + 1);
+      const stepY = canvas.height / (gridSize + 1);
 
-      for (let i = 1; i <= gridSize; i++) {
-        for (let j = 1; j <= gridSize; j++) {
-          const screenPos = new Cesium.Cartesian2(stepX * i, stepY * j);
+      for (let i = 0; i < gridSize; i++) {
+        for (let j = 0; j < gridSize; j++) {
+          const screenPos = new Cesium.Cartesian2(stepX * (i + 1), stepY * (j + 1));
           const ray = viewer.camera.getPickRay(screenPos);
 
           if (ray) {
             const position = viewer.scene.globe.pick(ray, viewer.scene);
             if (position) {
-              // Lift point slightly above ground to avoid self-intersection
               const cartographic = Cesium.Cartographic.fromCartesian(position);
+              // Lift 2m above ground to avoid self-intersection during ray-casting
               const elevatedPosition = Cesium.Cartesian3.fromRadians(
-                cartographic.longitude,
-                cartographic.latitude,
-                cartographic.height + 2 // 2 meters above ground
+                cartographic.longitude, cartographic.latitude, cartographic.height + 2
               );
-              points.push({
+              const point = {
                 position: elevatedPosition,
-                screenPos: screenPos,
+                lon: cartographic.longitude,
+                lat: cartographic.latitude,
+                gridI: i,
+                gridJ: j,
                 sunCount: 0,
                 totalSamples: 0
-              });
+              };
+              points.push(point);
+              grid[i][j] = point;
             }
           }
         }
       }
-      return points;
+      return { points, grid };
     }
 
     // Run sunlight analysis
@@ -908,7 +946,7 @@
       progressFill.style.width = '0%';
       await new Promise(r => setTimeout(r, 100));
 
-      const points = generateSamplePoints(gridSize);
+      const { points, grid } = generateSamplePoints(gridSize);
       if (points.length === 0) {
         alert('No valid sample points in view. Try zooming in to an area with 3D tiles.');
         analysisRunning = false;
@@ -968,73 +1006,78 @@
         await new Promise(r => setTimeout(r, 0));
       }
 
-      // Create visualization
+      // Create polygon visualization clamped to 3D tiles
       progressText.textContent = 'Creating visualization...';
       await new Promise(r => setTimeout(r, 100));
 
-      analysisPoints = viewer.entities.add({
-        id: 'sunlightAnalysis',
-        show: true
-      });
-
-      const pointCollection = viewer.scene.primitives.add(new Cesium.PointPrimitiveCollection());
+      analysisPolygons = [];
 
       for (const point of points) {
+        const { gridI: i, gridJ: j, lon, lat } = point;
         const sunRatio = point.totalSamples > 0 ? point.sunCount / point.totalSamples : 0;
 
+        // Compute cell boundaries as midpoints to neighbors; extrapolate at edges
+        const left = grid[i - 1]?.[j];
+        const right = grid[i + 1]?.[j];
+        const top = grid[i]?.[j - 1];
+        const bottom = grid[i]?.[j + 1];
+
+        const lonL = left ? (lon + left.lon) / 2 : right ? lon - (right.lon - lon) / 2 : lon - 0.00005;
+        const lonR = right ? (lon + right.lon) / 2 : left ? lon + (lon - left.lon) / 2 : lon + 0.00005;
+        const latT = top ? (lat + top.lat) / 2 : bottom ? lat - (bottom.lat - lat) / 2 : lat - 0.00005;
+        const latB = bottom ? (lat + bottom.lat) / 2 : top ? lat + (lat - top.lat) / 2 : lat + 0.00005;
+
+        // Sun ratio → color with transparency
         let color;
         if (sunRatio >= 0.95) {
-          // Always sunny - bright yellow
           color = Cesium.Color.fromCssColorString('#ffeb3b');
         } else if (sunRatio >= 0.5) {
-          // Mostly sunny - orange gradient
           const t = (sunRatio - 0.5) / 0.45;
           color = Cesium.Color.lerp(
             Cesium.Color.fromCssColorString('#ff9800'),
             Cesium.Color.fromCssColorString('#ffeb3b'),
-            t,
-            new Cesium.Color()
+            t, new Cesium.Color()
           );
         } else if (sunRatio > 0.05) {
-          // Partial shade - orange to brown gradient
           const t = sunRatio / 0.5;
           color = Cesium.Color.lerp(
             Cesium.Color.fromCssColorString('#5c4033'),
             Cesium.Color.fromCssColorString('#ff9800'),
-            t,
-            new Cesium.Color()
+            t, new Cesium.Color()
           );
         } else {
-          // Always shaded - dark brown
           color = Cesium.Color.fromCssColorString('#5c4033');
         }
+        color = color.withAlpha(0.6);
 
-        pointCollection.add({
-          position: point.position,
-          pixelSize: 12,
-          color: color,
-          outlineColor: Cesium.Color.BLACK,
-          outlineWidth: 1,
-          disableDepthTestDistance: Number.POSITIVE_INFINITY
+        const corners = Cesium.Cartesian3.fromRadiansArray([
+          lonL, latT,
+          lonR, latT,
+          lonR, latB,
+          lonL, latB,
+        ]);
+
+        const entity = viewer.entities.add({
+          polygon: {
+            hierarchy: corners,
+            material: color,
+            classificationType: Cesium.ClassificationType.BOTH,
+          }
         });
+        analysisPolygons.push(entity);
       }
-
-      analysisPoints._pointCollection = pointCollection;
 
       analysisRunning = false;
       analyzeBtn.disabled = false;
-      progressText.textContent = `Done! ${points.length} points analyzed`;
+      progressText.textContent = `Done! ${points.length} cells analyzed`;
       legend.style.display = 'flex';
     }
 
     function clearAnalysis() {
-      if (analysisPoints) {
-        if (analysisPoints._pointCollection) {
-          viewer.scene.primitives.remove(analysisPoints._pointCollection);
-        }
-        viewer.entities.remove(analysisPoints);
-        analysisPoints = null;
+      for (const entity of analysisPolygons) {
+        viewer.entities.remove(entity);
       }
+      analysisPolygons = [];
       legend.style.display = 'none';
       analysisProgress.style.display = 'none';
     }
