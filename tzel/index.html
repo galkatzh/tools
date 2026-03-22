@@ -547,9 +547,9 @@
     <div class="control-group">
       <label for="gridDensity">Grid Density</label>
       <select id="gridDensity">
-        <option value="10">Low (faster)</option>
-        <option value="20" selected>Medium</option>
-        <option value="35">High (slower)</option>
+        <option value="20">Low</option>
+        <option value="35" selected>Medium</option>
+        <option value="60">High</option>
       </select>
     </div>
 
@@ -645,6 +645,7 @@
 
     // Initialize viewer
     const viewer = new Cesium.Viewer('cesiumContainer', {
+      contextOptions: { webgl: { preserveDrawingBuffer: true } },
       imageryProvider: new Cesium.UrlTemplateImageryProvider({
         url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
         subdomains: ['a', 'b', 'c', 'd'],
@@ -856,33 +857,34 @@
     let analysisPolygons = [];
     let analysisRunning = false;
 
-    // Get sun direction for a given date/time
-    function getSunDirection(date) {
-      const julianDate = Cesium.JulianDate.fromDate(date);
-      const sunPosition = Cesium.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(julianDate);
-      const transformMatrix = Cesium.Transforms.computeTemeToPseudoFixedMatrix(julianDate);
-      const sunPositionFixed = Cesium.Matrix3.multiplyByVector(transformMatrix, sunPosition, new Cesium.Cartesian3());
-      return Cesium.Cartesian3.normalize(sunPositionFixed, new Cesium.Cartesian3());
-    }
-
-    // Check if a point is in shadow at a given time
-    function isPointInShadow(point, sunDirection) {
-      const rayDirection = Cesium.Cartesian3.negate(sunDirection, new Cesium.Cartesian3());
-      const ray = new Cesium.Ray(point, Cesium.Cartesian3.negate(rayDirection, new Cesium.Cartesian3()));
-
-      // Cast ray toward the sun
-      const result = viewer.scene.pickFromRay(ray, []);
-      return result !== undefined && result.object !== undefined;
+    /**
+     * Read pixel brightness at specific screen positions from the WebGL canvas.
+     * Uses readPixels on the GL context directly for reliable access.
+     */
+    function readBrightnessAtPoints(gl, canvas, screenPositions) {
+      const results = new Float32Array(screenPositions.length);
+      const pixel = new Uint8Array(4);
+      for (let i = 0; i < screenPositions.length; i++) {
+        const pos = screenPositions[i];
+        // WebGL y-axis is flipped relative to screen
+        const x = Math.round(pos.x);
+        const y = canvas.height - Math.round(pos.y);
+        gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+        // Perceived luminance (rec. 709)
+        results[i] = 0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2];
+      }
+      return results;
     }
 
     /**
      * Generate grid of sample points in current view.
-     * Returns { points, grid } where grid[i][j] gives quick 2D lookup
-     * for polygon corner computation.
+     * Returns { points, grid, screenPositions } where grid[i][j] gives quick 2D lookup
+     * for polygon corner computation, and screenPositions are the screen coords for GPU readback.
      */
     function generateSamplePoints(gridSize) {
       const points = [];
       const grid = Array.from({length: gridSize}, () => Array(gridSize).fill(null));
+      const screenPositions = [];
       const canvas = viewer.canvas;
 
       const stepX = canvas.width / (gridSize + 1);
@@ -897,29 +899,38 @@
             const position = viewer.scene.globe.pick(ray, viewer.scene);
             if (position) {
               const cartographic = Cesium.Cartographic.fromCartesian(position);
-              // Lift 2m above ground to avoid self-intersection during ray-casting
-              const elevatedPosition = Cesium.Cartesian3.fromRadians(
-                cartographic.longitude, cartographic.latitude, cartographic.height + 2
-              );
               const point = {
-                position: elevatedPosition,
+                position,
                 lon: cartographic.longitude,
                 lat: cartographic.latitude,
                 gridI: i,
                 gridJ: j,
                 sunCount: 0,
-                totalSamples: 0
+                totalSamples: 0,
+                screenIndex: screenPositions.length
               };
               points.push(point);
               grid[i][j] = point;
+              screenPositions.push(screenPos);
             }
           }
         }
       }
-      return { points, grid };
+      return { points, grid, screenPositions };
     }
 
-    // Run sunlight analysis
+    /**
+     * Render one frame synchronously and return pixel brightness at sample points.
+     * Temporarily enables preserveDrawingBuffer-like behavior by reading
+     * immediately after render before the buffer is swapped.
+     */
+    function renderAndSample(gl, canvas, screenPositions) {
+      viewer.scene.render();
+      return readBrightnessAtPoints(gl, canvas, screenPositions);
+    }
+
+    // Run sunlight analysis using GPU pixel-diff approach.
+    // For each time step, renders with and without shadows to detect shaded pixels.
     async function runAnalysis() {
       if (analysisRunning) return;
 
@@ -946,7 +957,7 @@
       progressFill.style.width = '0%';
       await new Promise(r => setTimeout(r, 100));
 
-      const { points, grid } = generateSamplePoints(gridSize);
+      const { points, grid, screenPositions } = generateSamplePoints(gridSize);
       if (points.length === 0) {
         alert('No valid sample points in view. Try zooming in to an area with 3D tiles.');
         analysisRunning = false;
@@ -967,43 +978,53 @@
         }
       }
 
-      const totalWork = points.length * timeSamples.length;
-      let completed = 0;
+      const gl = viewer.scene.canvas.getContext('webgl2') || viewer.scene.canvas.getContext('webgl');
+      const canvas = viewer.scene.canvas;
 
-      // Analyze each point at each time
-      for (const timePoint of timeSamples) {
-        const sunDir = getSunDirection(timePoint);
+      // Shadow brightness threshold — if a pixel is this much darker with
+      // shadows enabled, we consider it in shadow.
+      const SHADOW_THRESHOLD = 15;
 
-        // Check if sun is above horizon (simplified check)
-        const cameraPos = viewer.camera.position;
-        const cameraCart = Cesium.Cartographic.fromCartesian(cameraPos);
-        const localUp = Cesium.Cartesian3.normalize(
-          Cesium.Cartesian3.fromRadians(cameraCart.longitude, cameraCart.latitude, 0),
-          new Cesium.Cartesian3()
-        );
-        const sunElevation = Cesium.Cartesian3.dot(sunDir, localUp);
+      // Disable automatic rendering so we control frame timing
+      viewer.useDefaultRenderLoop = false;
 
-        if (sunElevation < 0.05) {
-          // Sun below horizon, all points in shade
-          points.forEach(p => p.totalSamples++);
-          completed += points.length;
-        } else {
+      try {
+        for (let t = 0; t < timeSamples.length; t++) {
+          const timePoint = timeSamples[t];
+          viewer.clock.currentTime = Cesium.JulianDate.fromDate(timePoint);
+
+          // Render WITH shadows and sample brightness
+          viewer.shadows = true;
+          const litWithShadows = renderAndSample(gl, canvas, screenPositions);
+
+          // Render WITHOUT shadows and sample brightness
+          viewer.shadows = false;
+          const litNoShadows = renderAndSample(gl, canvas, screenPositions);
+
+          // Compare: points where shadow rendering is significantly darker are in shadow
           for (const point of points) {
-            const inShadow = isPointInShadow(point.position, sunDir);
-            if (!inShadow) {
+            const idx = point.screenIndex;
+            const diff = litNoShadows[idx] - litWithShadows[idx];
+            if (diff < SHADOW_THRESHOLD) {
+              // Not significantly darker → in sun
               point.sunCount++;
             }
             point.totalSamples++;
-            completed++;
           }
+
+          const progress = ((t + 1) / timeSamples.length) * 100;
+          progressFill.style.width = progress + '%';
+          progressText.textContent = `Analyzing: ${Math.round(progress)}%`;
+
+          // Yield to UI periodically
+          if (t % 3 === 0) await new Promise(r => setTimeout(r, 0));
         }
-
-        const progress = (completed / totalWork) * 100;
-        progressFill.style.width = progress + '%';
-        progressText.textContent = `Analyzing: ${Math.round(progress)}%`;
-
-        // Yield to UI
-        await new Promise(r => setTimeout(r, 0));
+      } finally {
+        // Restore rendering state
+        viewer.shadows = shadowsEnabled.checked;
+        viewer.useDefaultRenderLoop = true;
+        // Restore original time
+        updateTime();
       }
 
       // Create polygon visualization clamped to 3D tiles
