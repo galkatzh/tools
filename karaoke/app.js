@@ -52,9 +52,15 @@ const el = {
   iconRecordStop: $('#icon-record-stop'),
   mixVocal: $('#mix-vocal'),
   fxReverb: $('#fx-reverb'),
+  fxReverbDecay: $('#fx-reverb-decay'),
   fxDelay: $('#fx-delay'),
+  fxDelayTime: $('#fx-delay-time'),
+  fxDelayFb: $('#fx-delay-fb'),
   fxChorus: $('#fx-chorus'),
-  mixLevel: $('#mix-level'),
+  fxPanel: $('#fx-panel'),
+  previewBtn: $('#preview-btn'),
+  iconPreviewPlay: $('#icon-preview-play'),
+  iconPreviewStop: $('#icon-preview-stop'),
   exportRecording: $('#export-recording'),
   exportLrc: $('#export-lrc'),
   exportAss: $('#export-ass'),
@@ -93,6 +99,16 @@ let micSamples = [];               // captured Float32Array chunks
 let recordingStartOffset = 0;      // playback offset when recording began
 let recordingMic = null;           // finished recording: { mono, sampleRate, offset, duration }
 let workletReady = false;          // AudioWorklet module registered
+
+// Preview state
+let previewing = false;
+let previewCtx = null;             // separate AudioContext for preview
+let previewInstrSource = null;
+let previewMicSource = null;
+let previewFx = null;
+let previewMicGain = null;
+let previewStartedAt = 0;
+let previewAnimId = null;
 
 // ── Progress helpers ───────────────────────────────────────────────────────
 
@@ -511,6 +527,7 @@ function initAudioContext() {
 }
 
 function play(offset = 0) {
+  if (previewing) stopPreview();
   initAudioContext();
   if (instrSource) { instrSource.stop(); instrSource.disconnect(); }
   if (vocalSource) { vocalSource.stop(); vocalSource.disconnect(); }
@@ -574,40 +591,44 @@ function getCurrentTime() {
 
 /**
  * Generate a synthetic reverb impulse response.
- * Exponentially decaying noise — duration and decay control the size.
+ * @param {BaseAudioContext} ctx
+ * @param {number} decay - reverb decay time in seconds (controls IR length + envelope)
  */
-function createReverbIR(ctx, duration = 2.5, decay = 3) {
-  const len = Math.round(ctx.sampleRate * duration);
+function createReverbIR(ctx, decay = 2.5) {
+  const len = Math.round(ctx.sampleRate * decay);
   const buf = ctx.createBuffer(2, len, ctx.sampleRate);
   for (let ch = 0; ch < 2; ch++) {
     const data = buf.getChannelData(ch);
     for (let i = 0; i < len; i++) {
-      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
     }
   }
   return buf;
 }
 
 /**
- * Build the effects chain for mic audio on a given AudioContext.
- * Returns { input, output } — connect mic to input, output to destination.
- * All effect levels are controlled by the wet mix (0 = dry, 1 = full wet).
+ * Build an effects chain on a given AudioContext.
+ * Returns { input, output } plus exposed nodes for live parameter updates.
  *
- * Graph:  input → dry gain ──────────────────────→ merger → output
- *           ├──→ reverb convolver → reverb gain ──→ merger
- *           ├──→ delay → feedback loop → delay gain → merger
- *           └──→ chorus (detuned delays + LFO) → chorus gain → merger
+ * Graph:  input → dry ──────────────────────────────→ merger → output
+ *           ├──→ convolver → reverbGain ────────────→ merger
+ *           ├──→ delayNode → feedback → delayWet ──→ merger
+ *           └──→ chorusDelays + LFO → chorusWet ───→ merger
  */
-function buildEffectsChain(ctx, { reverb = 0, delay = 0, chorus = 0 } = {}) {
+function buildEffectsChain(ctx, {
+  reverb = 0, reverbDecay = 2.5,
+  delay = 0, delayTime = 0.3, delayFb = 0.4,
+  chorus = 0,
+} = {}) {
   const input = ctx.createGain();
   const output = ctx.createGain();
 
-  // Dry path (always full volume)
+  // Dry path
   input.connect(output);
 
-  // ── Reverb (convolution) ──
+  // ── Reverb ──
   const convolver = ctx.createConvolver();
-  convolver.buffer = createReverbIR(ctx);
+  convolver.buffer = createReverbIR(ctx, reverbDecay);
   const reverbGain = ctx.createGain();
   reverbGain.gain.value = reverb;
   input.connect(convolver);
@@ -616,18 +637,18 @@ function buildEffectsChain(ctx, { reverb = 0, delay = 0, chorus = 0 } = {}) {
 
   // ── Delay (feedback echo) ──
   const delayNode = ctx.createDelay(1.0);
-  delayNode.delayTime.value = 0.3;
+  delayNode.delayTime.value = delayTime;
   const feedbackGain = ctx.createGain();
-  feedbackGain.gain.value = 0.4;
+  feedbackGain.gain.value = delayFb;
   const delayWet = ctx.createGain();
   delayWet.gain.value = delay;
   input.connect(delayNode);
   delayNode.connect(feedbackGain);
-  feedbackGain.connect(delayNode); // feedback loop
+  feedbackGain.connect(delayNode);
   delayNode.connect(delayWet);
   delayWet.connect(output);
 
-  // ── Chorus (two detuned delay lines modulated by LFO) ──
+  // ── Chorus ──
   const chorusWet = ctx.createGain();
   chorusWet.gain.value = chorus * 0.5;
 
@@ -636,7 +657,6 @@ function buildEffectsChain(ctx, { reverb = 0, delay = 0, chorus = 0 } = {}) {
   const chorusDelay2 = ctx.createDelay(0.05);
   chorusDelay2.delayTime.value = 0.035;
 
-  // LFO modulates delay times for the shimmering effect
   const lfo = ctx.createOscillator();
   lfo.type = 'sine';
   lfo.frequency.value = 1.5;
@@ -658,22 +678,22 @@ function buildEffectsChain(ctx, { reverb = 0, delay = 0, chorus = 0 } = {}) {
 
   return {
     input, output,
-    // Expose gain nodes so live sliders can update them
-    reverbGain, delayWet, chorusWet,
+    reverbGain, delayWet, feedbackGain, delayNode, chorusWet,
+    convolver, // exposed so we can rebuild IR on decay change
   };
 }
 
-/** Read current effect levels from the UI sliders. */
-function getEffectLevels() {
+/** Read all effect parameters from the UI sliders. */
+function getEffectParams() {
   return {
     reverb: parseFloat(el.fxReverb.value),
+    reverbDecay: parseFloat(el.fxReverbDecay.value),
     delay: parseFloat(el.fxDelay.value),
+    delayTime: parseFloat(el.fxDelayTime.value),
+    delayFb: parseFloat(el.fxDelayFb.value),
     chorus: parseFloat(el.fxChorus.value),
   };
 }
-
-// Live effect gain nodes (updated by slider input events)
-let liveFx = null;
 
 // ── Recording: raw PCM mic capture via AudioWorklet + WAV mixdown ────────────
 
@@ -705,6 +725,7 @@ async function ensureWorklet() {
  * render mixes instrumental + mic into a lossless WAV.
  */
 async function startRecording() {
+  if (previewing) stopPreview();
   initAudioContext();
   try {
     micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -717,17 +738,16 @@ async function startRecording() {
 
   micSamples = [];
   recordingMic = null;
-  el.mixLevel.classList.add('hidden');
   el.exportRecording.classList.add('hidden');
+  el.previewBtn.classList.add('hidden');
+  el.fxPanel.classList.add('hidden');
 
   micSource = audioCtx.createMediaStreamSource(micStream);
   micWorklet = new AudioWorkletNode(audioCtx, 'pcm-capture');
   micWorklet.port.onmessage = (e) => micSamples.push(e.data);
 
-  // mic → effects chain → worklet (captures processed PCM) → nowhere
-  liveFx = buildEffectsChain(audioCtx, getEffectLevels());
-  micSource.connect(liveFx.input);
-  liveFx.output.connect(micWorklet);
+  // Dry capture: mic → worklet → nowhere (effects applied post-recording)
+  micSource.connect(micWorklet);
 
   recordingStartOffset = pausedAt;
   recording = true;
@@ -738,21 +758,15 @@ async function startRecording() {
   play(pausedAt);
 }
 
-/**
- * Stop recording, mix instrumental + raw mic PCM offline, encode as WAV.
- */
 async function stopRecording() {
   if (!recording) return;
 
   const recEnd = getCurrentTime();
 
-  // Tear down mic capture + effects
+  // Tear down mic capture
   micWorklet.port.onmessage = null;
   micWorklet.disconnect();
   micWorklet = null;
-  liveFx.input.disconnect();
-  liveFx.output.disconnect();
-  liveFx = null;
   micSource.disconnect();
   micSource = null;
   micStream.getTracks().forEach((t) => t.stop());
@@ -775,40 +789,127 @@ async function stopRecording() {
   const duration = recEnd - recordingStartOffset;
   if (duration <= 0) return;
 
-  // Store raw mic data — WAV is rendered on export with chosen vocal volume
+  // Store raw mic data — effects + mix are applied on preview/export
   recordingMic = {
     mono: micMono,
     sampleRate: audioCtx.sampleRate,
     offset: recordingStartOffset,
     duration,
   };
-  el.mixLevel.classList.remove('hidden');
+  el.fxPanel.classList.remove('hidden');
+  el.previewBtn.classList.remove('hidden');
   el.exportRecording.classList.remove('hidden');
 }
 
+// ── Preview: replay recording with effects + mix through speakers ────────
+
+function startPreview() {
+  if (!recordingMic) return;
+  if (playing) pause();
+
+  const params = getEffectParams();
+  const vocalLevel = parseFloat(el.mixVocal.value);
+  const { mono, sampleRate: micRate, offset, duration } = recordingMic;
+
+  // Use main audioCtx for realtime preview
+  initAudioContext();
+
+  // Instrumental from recording offset
+  previewInstrSource = audioCtx.createBufferSource();
+  previewInstrSource.buffer = instrumentalBuffer;
+  previewInstrSource.connect(audioCtx.destination);
+
+  // Mic through effects chain → gain → destination
+  const micBuf = audioCtx.createBuffer(1, mono.length, micRate);
+  micBuf.getChannelData(0).set(mono);
+  previewMicSource = audioCtx.createBufferSource();
+  previewMicSource.buffer = micBuf;
+
+  previewFx = buildEffectsChain(audioCtx, params);
+  previewMicGain = audioCtx.createGain();
+  previewMicGain.gain.value = vocalLevel;
+
+  previewMicSource.connect(previewFx.input);
+  previewFx.output.connect(previewMicGain);
+  previewMicGain.connect(audioCtx.destination);
+
+  previewInstrSource.start(0, offset, duration);
+  previewMicSource.start(0);
+  previewStartedAt = audioCtx.currentTime;
+  previewing = true;
+
+  el.iconPreviewPlay.classList.add('hidden');
+  el.iconPreviewStop.classList.remove('hidden');
+
+  previewInstrSource.onended = () => { if (previewing) stopPreview(); };
+  previewAnimId = requestAnimationFrame(previewLoop);
+}
+
+function stopPreview() {
+  if (!previewing) return;
+  previewing = false;
+
+  try { previewInstrSource?.stop(); } catch (_) { /* already stopped */ }
+  try { previewMicSource?.stop(); } catch (_) { /* already stopped */ }
+  previewInstrSource?.disconnect();
+  previewMicSource?.disconnect();
+  previewFx?.input.disconnect();
+  previewFx?.output.disconnect();
+  previewMicGain?.disconnect();
+
+  previewInstrSource = null;
+  previewMicSource = null;
+  previewFx = null;
+  previewMicGain = null;
+
+  cancelAnimationFrame(previewAnimId);
+  el.iconPreviewPlay.classList.remove('hidden');
+  el.iconPreviewStop.classList.add('hidden');
+}
+
+/** Animation loop during preview: updates seek bar and lyrics. */
+function previewLoop() {
+  if (!previewing) return;
+  const elapsed = audioCtx.currentTime - previewStartedAt;
+  const songTime = recordingMic.offset + elapsed;
+  updateUI(songTime);
+  previewAnimId = requestAnimationFrame(previewLoop);
+}
+
 /**
- * Render instrumental + recorded vocals into a WAV blob.
- * vocalLevel controls the mic volume relative to instrumental (0–2).
+ * Render instrumental + recorded vocals with effects into a WAV blob.
+ * Uses OfflineAudioContext for lossless offline rendering.
  */
-async function renderRecordingWAV(vocalLevel) {
+async function renderRecordingWAV() {
+  const params = getEffectParams();
+  const vocalLevel = parseFloat(el.mixVocal.value);
   const { mono, sampleRate: micRate, offset, duration } = recordingMic;
   const sampleRate = instrumentalBuffer.sampleRate;
-  const renderLen = Math.round(duration * sampleRate);
+
+  // Add tail for reverb/delay decay
+  const tailSeconds = Math.max(params.reverbDecay, params.delayTime * 4);
+  const renderLen = Math.round((duration + tailSeconds) * sampleRate);
 
   const offCtx = new OfflineAudioContext(2, renderLen, sampleRate);
 
+  // Instrumental
   const instrSrc = offCtx.createBufferSource();
   instrSrc.buffer = instrumentalBuffer;
   instrSrc.connect(offCtx.destination);
   instrSrc.start(0, offset, duration);
 
+  // Mic → effects → gain → destination
   const micBuf = offCtx.createBuffer(1, mono.length, micRate);
   micBuf.getChannelData(0).set(mono);
   const micSrc = offCtx.createBufferSource();
   micSrc.buffer = micBuf;
+
+  const fx = buildEffectsChain(offCtx, params);
   const micGain = offCtx.createGain();
   micGain.gain.value = vocalLevel;
-  micSrc.connect(micGain);
+
+  micSrc.connect(fx.input);
+  fx.output.connect(micGain);
   micGain.connect(offCtx.destination);
   micSrc.start(0);
 
@@ -1084,15 +1185,28 @@ el.vocalVolume.addEventListener('input', () => {
   if (vocalGain) vocalGain.gain.value = parseFloat(el.vocalVolume.value);
 });
 
-// Update live effect levels during recording
+// Live-update effects during preview
 el.fxReverb.addEventListener('input', () => {
-  if (liveFx) liveFx.reverbGain.gain.value = parseFloat(el.fxReverb.value);
+  if (previewFx) previewFx.reverbGain.gain.value = parseFloat(el.fxReverb.value);
+});
+el.fxReverbDecay.addEventListener('input', () => {
+  // Rebuild IR on decay change (can't update convolver buffer params live)
+  if (previewFx) previewFx.convolver.buffer = createReverbIR(audioCtx, parseFloat(el.fxReverbDecay.value));
 });
 el.fxDelay.addEventListener('input', () => {
-  if (liveFx) liveFx.delayWet.gain.value = parseFloat(el.fxDelay.value);
+  if (previewFx) previewFx.delayWet.gain.value = parseFloat(el.fxDelay.value);
+});
+el.fxDelayTime.addEventListener('input', () => {
+  if (previewFx) previewFx.delayNode.delayTime.value = parseFloat(el.fxDelayTime.value);
+});
+el.fxDelayFb.addEventListener('input', () => {
+  if (previewFx) previewFx.feedbackGain.gain.value = parseFloat(el.fxDelayFb.value);
 });
 el.fxChorus.addEventListener('input', () => {
-  if (liveFx) liveFx.chorusWet.gain.value = parseFloat(el.fxChorus.value) * 0.5;
+  if (previewFx) previewFx.chorusWet.gain.value = parseFloat(el.fxChorus.value) * 0.5;
+});
+el.mixVocal.addEventListener('input', () => {
+  if (previewMicGain) previewMicGain.gain.value = parseFloat(el.mixVocal.value);
 });
 
 el.recordBtn.addEventListener('click', () => {
@@ -1101,10 +1215,14 @@ el.recordBtn.addEventListener('click', () => {
   else startRecording();
 });
 
+el.previewBtn.addEventListener('click', () => {
+  if (previewing) stopPreview();
+  else startPreview();
+});
+
 el.exportRecording.addEventListener('click', async () => {
   if (!recordingMic) return;
-  const vocalLevel = parseFloat(el.mixVocal.value);
-  const blob = await renderRecordingWAV(vocalLevel);
+  const blob = await renderRecordingWAV();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
