@@ -666,7 +666,8 @@ function downloadText(content, filename, mime = 'text/plain') {
 // ── Main pipeline ──────────────────────────────────────────────────────────
 
 async function handleFile(file) {
-  if (!file || !file.type.startsWith('audio/')) {
+  const validType = file && (file.type.startsWith('audio/') || file.type === 'video/mp4' || file.type === 'video/webm');
+  if (!validType) {
     console.error('Invalid file type:', file?.type);
     return;
   }
