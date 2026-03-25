@@ -81,12 +81,12 @@ let songBaseName = 'karaoke';       // filename stem for exports
 
 // Recording state
 let recording = false;
-let mediaRecorder = null;
-let recordedChunks = [];
 let micStream = null;              // MediaStream from getUserMedia
 let micSource = null;              // MediaStreamAudioSourceNode
-let mixDest = null;                // MediaStreamAudioDestinationNode
-let recordingBlob = null;          // finished recording blob
+let micProcessor = null;           // ScriptProcessorNode for raw PCM capture
+let micSamples = [];               // captured Float32Array chunks
+let recordingStartOffset = 0;      // playback offset when recording began
+let recordingBlob = null;          // finished WAV blob
 
 // ── Progress helpers ───────────────────────────────────────────────────────
 
@@ -564,12 +564,12 @@ function getCurrentTime() {
   return pausedAt;
 }
 
-// ── Recording: mic + instrumental mix ────────────────────────────────────────
+// ── Recording: raw PCM mic capture + offline WAV mixdown ─────────────────────
 
 /**
- * Start recording: captures mic + instrumental into a single stream.
- * Mic goes only to the mix destination (not speakers) to avoid feedback.
- * Instrumental goes to both speakers and the mix destination.
+ * Start recording: captures raw mic PCM samples via ScriptProcessorNode.
+ * Mic is NOT routed to speakers (avoids feedback). On stop, an offline
+ * render mixes instrumental + mic into a lossless WAV.
  */
 async function startRecording() {
   initAudioContext();
@@ -580,48 +580,45 @@ async function startRecording() {
     return;
   }
 
-  // Create mix destination and route mic into it
-  mixDest = audioCtx.createMediaStreamDestination();
-  micSource = audioCtx.createMediaStreamAudioSource(micStream);
-  micSource.connect(mixDest);
-
-  // Also route instrumental into the mix destination
-  instrGain.connect(mixDest);
-
-  // Set up MediaRecorder
-  recordedChunks = [];
+  micSamples = [];
   recordingBlob = null;
   el.exportRecording.classList.add('hidden');
-  mediaRecorder = new MediaRecorder(mixDest.stream);
-  mediaRecorder.ondataavailable = (e) => {
-    if (e.data.size > 0) recordedChunks.push(e.data);
-  };
-  mediaRecorder.onstop = () => {
-    recordingBlob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
-    el.exportRecording.classList.remove('hidden');
-  };
-  mediaRecorder.start();
 
+  // Capture raw mono PCM from mic via ScriptProcessorNode
+  micSource = audioCtx.createMediaStreamAudioSource(micStream);
+  micProcessor = audioCtx.createScriptProcessor(4096, 1, 1);
+  micProcessor.onaudioprocess = (e) => {
+    micSamples.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  };
+  // Connect mic -> processor -> nowhere (processor needs a destination to fire)
+  micSource.connect(micProcessor);
+  micProcessor.connect(audioCtx.destination);
+  // Processor outputs silence (we only read inputBuffer), so no feedback.
+
+  recordingStartOffset = pausedAt;
   recording = true;
   el.iconRecord.classList.add('hidden');
   el.iconRecordStop.classList.remove('hidden');
   el.recordBtn.classList.add('recording');
 
-  // Start playback from current position
   play(pausedAt);
 }
 
-function stopRecording() {
+/**
+ * Stop recording, then mix instrumental + mic offline into a WAV blob.
+ * Uses OfflineAudioContext for sample-accurate lossless rendering.
+ */
+async function stopRecording() {
   if (!recording) return;
 
-  mediaRecorder.stop();
-  mediaRecorder = null;
+  const recEnd = getCurrentTime();
 
-  // Disconnect recording-only nodes
-  instrGain.disconnect(mixDest);
+  // Tear down mic capture
+  micProcessor.disconnect();
+  micProcessor.onaudioprocess = null;
+  micProcessor = null;
   micSource.disconnect();
   micSource = null;
-  mixDest = null;
   micStream.getTracks().forEach((t) => t.stop());
   micStream = null;
 
@@ -631,6 +628,87 @@ function stopRecording() {
   el.recordBtn.classList.remove('recording');
 
   pause();
+
+  // Concatenate captured mic chunks into a single buffer
+  const totalMicSamples = micSamples.reduce((n, c) => n + c.length, 0);
+  const micMono = new Float32Array(totalMicSamples);
+  let off = 0;
+  for (const chunk of micSamples) { micMono.set(chunk, off); off += chunk.length; }
+  micSamples = [];
+
+  // Offline render: instrumental (stereo) + mic (mono→center-panned stereo)
+  const sampleRate = instrumentalBuffer.sampleRate;
+  const startSample = Math.round(recordingStartOffset * sampleRate);
+  const endSample = Math.round(recEnd * sampleRate);
+  const renderLen = endSample - startSample;
+  if (renderLen <= 0) return;
+
+  const offCtx = new OfflineAudioContext(2, renderLen, sampleRate);
+
+  // Instrumental slice
+  const instrSrc = offCtx.createBufferSource();
+  instrSrc.buffer = instrumentalBuffer;
+  instrSrc.connect(offCtx.destination);
+  instrSrc.start(0, recordingStartOffset, recEnd - recordingStartOffset);
+
+  // Mic buffer (mono at audioCtx.sampleRate, resample if needed)
+  const micBuf = offCtx.createBuffer(1, micMono.length, audioCtx.sampleRate);
+  micBuf.getChannelData(0).set(micMono);
+  const micSrc = offCtx.createBufferSource();
+  micSrc.buffer = micBuf;
+  micSrc.connect(offCtx.destination);
+  micSrc.start(0);
+
+  const rendered = await offCtx.startRendering();
+  recordingBlob = encodeWAV(rendered);
+  el.exportRecording.classList.remove('hidden');
+}
+
+/** Encode an AudioBuffer as a 16-bit PCM WAV Blob. */
+function encodeWAV(buffer) {
+  const numCh = buffer.numberOfChannels;
+  const sampleRate = buffer.sampleRate;
+  const bitsPerSample = 16;
+  const bytesPerSample = bitsPerSample / 8;
+  const blockAlign = numCh * bytesPerSample;
+  const numFrames = buffer.length;
+  const dataSize = numFrames * blockAlign;
+
+  const headerSize = 44;
+  const out = new ArrayBuffer(headerSize + dataSize);
+  const view = new DataView(out);
+
+  // Helper to write ASCII
+  const writeStr = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
+
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);           // fmt chunk size
+  view.setUint16(20, 1, true);            // PCM
+  view.setUint16(22, numCh, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+  writeStr(36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  // Interleave channels and convert float → int16
+  const channels = [];
+  for (let c = 0; c < numCh; c++) channels.push(buffer.getChannelData(c));
+
+  let offset = headerSize;
+  for (let i = 0; i < numFrames; i++) {
+    for (let c = 0; c < numCh; c++) {
+      const s = Math.max(-1, Math.min(1, channels[c][i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      offset += 2;
+    }
+  }
+
+  return new Blob([out], { type: 'audio/wav' });
 }
 
 // ── Animation loop: sync lyrics + seek bar ─────────────────────────────────
@@ -862,11 +940,10 @@ el.recordBtn.addEventListener('click', () => {
 
 el.exportRecording.addEventListener('click', () => {
   if (!recordingBlob) return;
-  const ext = recordingBlob.type.includes('webm') ? 'webm' : 'ogg';
   const url = URL.createObjectURL(recordingBlob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${songBaseName}-recording.${ext}`;
+  a.download = `${songBaseName}-recording.wav`;
   a.click();
   URL.revokeObjectURL(url);
 });
