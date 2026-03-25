@@ -82,9 +82,8 @@ let songBaseName = 'karaoke';       // filename stem for exports
 // Recording state
 let recording = false;
 let micStream = null;              // MediaStream from getUserMedia
-let micSource = null;              // MediaStreamAudioSourceNode
-let micProcessor = null;           // ScriptProcessorNode for raw PCM capture
-let micSamples = [];               // captured Float32Array chunks
+let micRecorder = null;            // MediaRecorder for mic-only capture
+let micChunks = [];                // recorded mic Blob chunks
 let recordingStartOffset = 0;      // playback offset when recording began
 let recordingBlob = null;          // finished WAV blob
 
@@ -564,12 +563,12 @@ function getCurrentTime() {
   return pausedAt;
 }
 
-// ── Recording: raw PCM mic capture + offline WAV mixdown ─────────────────────
+// ── Recording: mic capture + offline WAV mixdown ─────────────────────────────
 
 /**
- * Start recording: captures raw mic PCM samples via ScriptProcessorNode.
- * Mic is NOT routed to speakers (avoids feedback). On stop, an offline
- * render mixes instrumental + mic into a lossless WAV.
+ * Start recording: captures mic via MediaRecorder (mic-only, not routed
+ * to speakers). On stop, the mic blob is decoded and mixed with the
+ * instrumental offline into a lossless WAV.
  */
 async function startRecording() {
   initAudioContext();
@@ -580,20 +579,15 @@ async function startRecording() {
     return;
   }
 
-  micSamples = [];
+  micChunks = [];
   recordingBlob = null;
   el.exportRecording.classList.add('hidden');
 
-  // Capture raw mono PCM from mic via ScriptProcessorNode
-  micSource = audioCtx.createMediaStreamAudioSource(micStream);
-  micProcessor = audioCtx.createScriptProcessor(4096, 1, 1);
-  micProcessor.onaudioprocess = (e) => {
-    micSamples.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  micRecorder = new MediaRecorder(micStream);
+  micRecorder.ondataavailable = (e) => {
+    if (e.data.size > 0) micChunks.push(e.data);
   };
-  // Connect mic -> processor -> nowhere (processor needs a destination to fire)
-  micSource.connect(micProcessor);
-  micProcessor.connect(audioCtx.destination);
-  // Processor outputs silence (we only read inputBuffer), so no feedback.
+  micRecorder.start();
 
   recordingStartOffset = pausedAt;
   recording = true;
@@ -605,20 +599,25 @@ async function startRecording() {
 }
 
 /**
- * Stop recording, then mix instrumental + mic offline into a WAV blob.
- * Uses OfflineAudioContext for sample-accurate lossless rendering.
+ * Stop recording, decode the mic blob, mix with instrumental offline,
+ * and encode as a lossless 16-bit WAV.
  */
 async function stopRecording() {
   if (!recording) return;
 
   const recEnd = getCurrentTime();
 
-  // Tear down mic capture
-  micProcessor.disconnect();
-  micProcessor.onaudioprocess = null;
-  micProcessor = null;
-  micSource.disconnect();
-  micSource = null;
+  // Stop mic recorder and wait for final data
+  const micBlobPromise = new Promise((resolve) => {
+    micRecorder.onstop = () => {
+      resolve(new Blob(micChunks, { type: micRecorder.mimeType }));
+    };
+  });
+  micRecorder.stop();
+  const micBlob = await micBlobPromise;
+  micRecorder = null;
+  micChunks = [];
+
   micStream.getTracks().forEach((t) => t.stop());
   micStream = null;
 
@@ -629,33 +628,25 @@ async function stopRecording() {
 
   pause();
 
-  // Concatenate captured mic chunks into a single buffer
-  const totalMicSamples = micSamples.reduce((n, c) => n + c.length, 0);
-  const micMono = new Float32Array(totalMicSamples);
-  let off = 0;
-  for (const chunk of micSamples) { micMono.set(chunk, off); off += chunk.length; }
-  micSamples = [];
+  // Decode mic audio into an AudioBuffer
+  const micArrayBuf = await micBlob.arrayBuffer();
+  const micDecoded = await audioCtx.decodeAudioData(micArrayBuf);
 
-  // Offline render: instrumental (stereo) + mic (mono→center-panned stereo)
+  // Offline render: instrumental (stereo) + mic (mono/stereo → center-panned)
   const sampleRate = instrumentalBuffer.sampleRate;
-  const startSample = Math.round(recordingStartOffset * sampleRate);
-  const endSample = Math.round(recEnd * sampleRate);
-  const renderLen = endSample - startSample;
+  const duration = recEnd - recordingStartOffset;
+  const renderLen = Math.round(duration * sampleRate);
   if (renderLen <= 0) return;
 
   const offCtx = new OfflineAudioContext(2, renderLen, sampleRate);
 
-  // Instrumental slice
   const instrSrc = offCtx.createBufferSource();
   instrSrc.buffer = instrumentalBuffer;
   instrSrc.connect(offCtx.destination);
-  instrSrc.start(0, recordingStartOffset, recEnd - recordingStartOffset);
+  instrSrc.start(0, recordingStartOffset, duration);
 
-  // Mic buffer (mono at audioCtx.sampleRate, resample if needed)
-  const micBuf = offCtx.createBuffer(1, micMono.length, audioCtx.sampleRate);
-  micBuf.getChannelData(0).set(micMono);
   const micSrc = offCtx.createBufferSource();
-  micSrc.buffer = micBuf;
+  micSrc.buffer = micDecoded;
   micSrc.connect(offCtx.destination);
   micSrc.start(0);
 
