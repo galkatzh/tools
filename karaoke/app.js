@@ -50,6 +50,9 @@ const el = {
   recordBtn: $('#record-btn'),
   iconRecord: $('#icon-record'),
   iconRecordStop: $('#icon-record-stop'),
+  fxReverb: $('#fx-reverb'),
+  fxDelay: $('#fx-delay'),
+  fxChorus: $('#fx-chorus'),
   exportRecording: $('#export-recording'),
   exportLrc: $('#export-lrc'),
   exportAss: $('#export-ass'),
@@ -565,6 +568,111 @@ function getCurrentTime() {
   return pausedAt;
 }
 
+// ── Vocal effects ────────────────────────────────────────────────────────────
+
+/**
+ * Generate a synthetic reverb impulse response.
+ * Exponentially decaying noise — duration and decay control the size.
+ */
+function createReverbIR(ctx, duration = 2.5, decay = 3) {
+  const len = Math.round(ctx.sampleRate * duration);
+  const buf = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const data = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+    }
+  }
+  return buf;
+}
+
+/**
+ * Build the effects chain for mic audio on a given AudioContext.
+ * Returns { input, output } — connect mic to input, output to destination.
+ * All effect levels are controlled by the wet mix (0 = dry, 1 = full wet).
+ *
+ * Graph:  input → dry gain ──────────────────────→ merger → output
+ *           ├──→ reverb convolver → reverb gain ──→ merger
+ *           ├──→ delay → feedback loop → delay gain → merger
+ *           └──→ chorus (detuned delays + LFO) → chorus gain → merger
+ */
+function buildEffectsChain(ctx, { reverb = 0, delay = 0, chorus = 0 } = {}) {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+
+  // Dry path (always full volume)
+  input.connect(output);
+
+  // ── Reverb (convolution) ──
+  const convolver = ctx.createConvolver();
+  convolver.buffer = createReverbIR(ctx);
+  const reverbGain = ctx.createGain();
+  reverbGain.gain.value = reverb;
+  input.connect(convolver);
+  convolver.connect(reverbGain);
+  reverbGain.connect(output);
+
+  // ── Delay (feedback echo) ──
+  const delayNode = ctx.createDelay(1.0);
+  delayNode.delayTime.value = 0.3;
+  const feedbackGain = ctx.createGain();
+  feedbackGain.gain.value = 0.4;
+  const delayWet = ctx.createGain();
+  delayWet.gain.value = delay;
+  input.connect(delayNode);
+  delayNode.connect(feedbackGain);
+  feedbackGain.connect(delayNode); // feedback loop
+  delayNode.connect(delayWet);
+  delayWet.connect(output);
+
+  // ── Chorus (two detuned delay lines modulated by LFO) ──
+  const chorusWet = ctx.createGain();
+  chorusWet.gain.value = chorus * 0.5;
+
+  const chorusDelay1 = ctx.createDelay(0.05);
+  chorusDelay1.delayTime.value = 0.025;
+  const chorusDelay2 = ctx.createDelay(0.05);
+  chorusDelay2.delayTime.value = 0.035;
+
+  // LFO modulates delay times for the shimmering effect
+  const lfo = ctx.createOscillator();
+  lfo.type = 'sine';
+  lfo.frequency.value = 1.5;
+  const lfoGain1 = ctx.createGain();
+  lfoGain1.gain.value = 0.005;
+  const lfoGain2 = ctx.createGain();
+  lfoGain2.gain.value = 0.005;
+  lfo.connect(lfoGain1);
+  lfo.connect(lfoGain2);
+  lfoGain1.connect(chorusDelay1.delayTime);
+  lfoGain2.connect(chorusDelay2.delayTime);
+  lfo.start(0);
+
+  input.connect(chorusDelay1);
+  input.connect(chorusDelay2);
+  chorusDelay1.connect(chorusWet);
+  chorusDelay2.connect(chorusWet);
+  chorusWet.connect(output);
+
+  return {
+    input, output,
+    // Expose gain nodes so live sliders can update them
+    reverbGain, delayWet, chorusWet,
+  };
+}
+
+/** Read current effect levels from the UI sliders. */
+function getEffectLevels() {
+  return {
+    reverb: parseFloat(el.fxReverb.value),
+    delay: parseFloat(el.fxDelay.value),
+    chorus: parseFloat(el.fxChorus.value),
+  };
+}
+
+// Live effect gain nodes (updated by slider input events)
+let liveFx = null;
+
 // ── Recording: raw PCM mic capture via AudioWorklet + WAV mixdown ────────────
 
 /** Inline AudioWorklet processor: copies input samples to the main thread. */
@@ -612,8 +720,11 @@ async function startRecording() {
   micSource = audioCtx.createMediaStreamSource(micStream);
   micWorklet = new AudioWorkletNode(audioCtx, 'pcm-capture');
   micWorklet.port.onmessage = (e) => micSamples.push(e.data);
-  // mic → worklet (captures PCM) → nowhere (no speaker output, no feedback)
-  micSource.connect(micWorklet);
+
+  // mic → effects chain → worklet (captures processed PCM) → nowhere
+  liveFx = buildEffectsChain(audioCtx, getEffectLevels());
+  micSource.connect(liveFx.input);
+  liveFx.output.connect(micWorklet);
 
   recordingStartOffset = pausedAt;
   recording = true;
@@ -632,10 +743,13 @@ async function stopRecording() {
 
   const recEnd = getCurrentTime();
 
-  // Tear down mic capture
+  // Tear down mic capture + effects
   micWorklet.port.onmessage = null;
   micWorklet.disconnect();
   micWorklet = null;
+  liveFx.input.disconnect();
+  liveFx.output.disconnect();
+  liveFx = null;
   micSource.disconnect();
   micSource = null;
   micStream.getTracks().forEach((t) => t.stop());
@@ -947,6 +1061,17 @@ el.seek.addEventListener('input', () => {
 
 el.vocalVolume.addEventListener('input', () => {
   if (vocalGain) vocalGain.gain.value = parseFloat(el.vocalVolume.value);
+});
+
+// Update live effect levels during recording
+el.fxReverb.addEventListener('input', () => {
+  if (liveFx) liveFx.reverbGain.gain.value = parseFloat(el.fxReverb.value);
+});
+el.fxDelay.addEventListener('input', () => {
+  if (liveFx) liveFx.delayWet.gain.value = parseFloat(el.fxDelay.value);
+});
+el.fxChorus.addEventListener('input', () => {
+  if (liveFx) liveFx.chorusWet.gain.value = parseFloat(el.fxChorus.value) * 0.5;
 });
 
 el.recordBtn.addEventListener('click', () => {
