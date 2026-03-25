@@ -306,6 +306,33 @@ h1 {
   cursor: pointer;
 }
 
+/* ── Vocal effects ────────────────────────────────────────────── */
+
+.fx-row {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--surface);
+  border-radius: var(--radius);
+}
+
+.fx-control {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  cursor: pointer;
+  flex: 1;
+}
+
+.fx-control input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 /* ── Export buttons ────────────────────────────────────────────── */
 
 .export-row {
