@@ -98,6 +98,10 @@
           <svg id="icon-play" width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
           <svg id="icon-pause" class="hidden" width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
         </button>
+        <button id="record-btn" aria-label="Record">
+          <svg id="icon-record" width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="var(--accent)"/></svg>
+          <svg id="icon-record-stop" class="hidden" width="24" height="24" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="var(--accent)"/></svg>
+        </button>
         <span id="time-current">0:00</span>
         <input type="range" id="seek" min="0" max="1000" value="0">
         <span id="time-total">0:00</span>
@@ -107,6 +111,10 @@
         </label>
       </div>
       <div class="export-row">
+        <button id="export-recording" class="export-btn hidden" aria-label="Save recording">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Recording
+        </button>
         <button id="export-lrc" class="export-btn" aria-label="Export LRC">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           LRC

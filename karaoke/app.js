@@ -47,6 +47,10 @@ const el = {
   timeCurrent: $('#time-current'),
   timeTotal: $('#time-total'),
   vocalVolume: $('#vocal-volume'),
+  recordBtn: $('#record-btn'),
+  iconRecord: $('#icon-record'),
+  iconRecordStop: $('#icon-record-stop'),
+  exportRecording: $('#export-recording'),
   exportLrc: $('#export-lrc'),
   exportAss: $('#export-ass'),
   settingsToggle: $('#settings-toggle'),
@@ -74,6 +78,15 @@ let startedAt = 0;             // audioCtx.currentTime when playback started
 let pausedAt = 0;              // offset in seconds when paused
 let animFrameId = null;
 let songBaseName = 'karaoke';       // filename stem for exports
+
+// Recording state
+let recording = false;
+let mediaRecorder = null;
+let recordedChunks = [];
+let micStream = null;              // MediaStream from getUserMedia
+let micSource = null;              // MediaStreamAudioSourceNode
+let mixDest = null;                // MediaStreamAudioDestinationNode
+let recordingBlob = null;          // finished recording blob
 
 // ── Progress helpers ───────────────────────────────────────────────────────
 
@@ -528,7 +541,8 @@ function pause() {
 }
 
 function stop() {
-  pause();
+  if (recording) stopRecording();
+  else pause();
   pausedAt = 0;
   updateUI(0);
 }
@@ -548,6 +562,75 @@ function seekTo(time) {
 function getCurrentTime() {
   if (playing) return audioCtx.currentTime - startedAt;
   return pausedAt;
+}
+
+// ── Recording: mic + instrumental mix ────────────────────────────────────────
+
+/**
+ * Start recording: captures mic + instrumental into a single stream.
+ * Mic goes only to the mix destination (not speakers) to avoid feedback.
+ * Instrumental goes to both speakers and the mix destination.
+ */
+async function startRecording() {
+  initAudioContext();
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    console.error('Microphone access denied:', err);
+    return;
+  }
+
+  // Create mix destination and route mic into it
+  mixDest = audioCtx.createMediaStreamDestination();
+  micSource = audioCtx.createMediaStreamAudioSource(micStream);
+  micSource.connect(mixDest);
+
+  // Also route instrumental into the mix destination
+  instrGain.connect(mixDest);
+
+  // Set up MediaRecorder
+  recordedChunks = [];
+  recordingBlob = null;
+  el.exportRecording.classList.add('hidden');
+  mediaRecorder = new MediaRecorder(mixDest.stream);
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data.size > 0) recordedChunks.push(e.data);
+  };
+  mediaRecorder.onstop = () => {
+    recordingBlob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
+    el.exportRecording.classList.remove('hidden');
+  };
+  mediaRecorder.start();
+
+  recording = true;
+  el.iconRecord.classList.add('hidden');
+  el.iconRecordStop.classList.remove('hidden');
+  el.recordBtn.classList.add('recording');
+
+  // Start playback from current position
+  play(pausedAt);
+}
+
+function stopRecording() {
+  if (!recording) return;
+
+  mediaRecorder.stop();
+  mediaRecorder = null;
+
+  // Disconnect recording-only nodes
+  instrGain.disconnect(mixDest);
+  micSource.disconnect();
+  micSource = null;
+  mixDest = null;
+  micStream.getTracks().forEach((t) => t.stop());
+  micStream = null;
+
+  recording = false;
+  el.iconRecord.classList.remove('hidden');
+  el.iconRecordStop.classList.add('hidden');
+  el.recordBtn.classList.remove('recording');
+
+  pause();
 }
 
 // ── Animation loop: sync lyrics + seek bar ─────────────────────────────────
@@ -769,6 +852,23 @@ el.seek.addEventListener('input', () => {
 
 el.vocalVolume.addEventListener('input', () => {
   if (vocalGain) vocalGain.gain.value = parseFloat(el.vocalVolume.value);
+});
+
+el.recordBtn.addEventListener('click', () => {
+  if (!instrumentalBuffer) return;
+  if (recording) stopRecording();
+  else startRecording();
+});
+
+el.exportRecording.addEventListener('click', () => {
+  if (!recordingBlob) return;
+  const ext = recordingBlob.type.includes('webm') ? 'webm' : 'ogg';
+  const url = URL.createObjectURL(recordingBlob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${songBaseName}-recording.${ext}`;
+  a.click();
+  URL.revokeObjectURL(url);
 });
 
 el.exportLrc.addEventListener('click', () => {
