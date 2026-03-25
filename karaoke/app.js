@@ -82,10 +82,12 @@ let songBaseName = 'karaoke';       // filename stem for exports
 // Recording state
 let recording = false;
 let micStream = null;              // MediaStream from getUserMedia
-let micRecorder = null;            // MediaRecorder for mic-only capture
-let micChunks = [];                // recorded mic Blob chunks
+let micWorklet = null;             // AudioWorkletNode for raw PCM capture
+let micSource = null;              // MediaStreamAudioSourceNode
+let micSamples = [];               // captured Float32Array chunks
 let recordingStartOffset = 0;      // playback offset when recording began
 let recordingBlob = null;          // finished WAV blob
+let workletReady = false;          // AudioWorklet module registered
 
 // ── Progress helpers ───────────────────────────────────────────────────────
 
@@ -563,12 +565,34 @@ function getCurrentTime() {
   return pausedAt;
 }
 
-// ── Recording: mic capture + offline WAV mixdown ─────────────────────────────
+// ── Recording: raw PCM mic capture via AudioWorklet + WAV mixdown ────────────
+
+/** Inline AudioWorklet processor: copies input samples to the main thread. */
+const PCM_WORKLET_CODE = `
+class PcmCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0]?.[0];
+    if (ch) this.port.postMessage(new Float32Array(ch));
+    return true;
+  }
+}
+registerProcessor('pcm-capture', PcmCaptureProcessor);
+`;
+
+/** Register the worklet module once (uses a Blob URL, no extra file). */
+async function ensureWorklet() {
+  if (workletReady) return;
+  const blob = new Blob([PCM_WORKLET_CODE], { type: 'application/javascript' });
+  const url = URL.createObjectURL(blob);
+  await audioCtx.audioWorklet.addModule(url);
+  URL.revokeObjectURL(url);
+  workletReady = true;
+}
 
 /**
- * Start recording: captures mic via MediaRecorder (mic-only, not routed
- * to speakers). On stop, the mic blob is decoded and mixed with the
- * instrumental offline into a lossless WAV.
+ * Start recording: captures raw PCM mic samples via AudioWorkletNode.
+ * Mic is NOT routed to speakers (avoids feedback). On stop, an offline
+ * render mixes instrumental + mic into a lossless WAV.
  */
 async function startRecording() {
   initAudioContext();
@@ -579,15 +603,17 @@ async function startRecording() {
     return;
   }
 
-  micChunks = [];
+  await ensureWorklet();
+
+  micSamples = [];
   recordingBlob = null;
   el.exportRecording.classList.add('hidden');
 
-  micRecorder = new MediaRecorder(micStream);
-  micRecorder.ondataavailable = (e) => {
-    if (e.data.size > 0) micChunks.push(e.data);
-  };
-  micRecorder.start();
+  micSource = audioCtx.createMediaStreamSource(micStream);
+  micWorklet = new AudioWorkletNode(audioCtx, 'pcm-capture');
+  micWorklet.port.onmessage = (e) => micSamples.push(e.data);
+  // mic → worklet (captures PCM) → nowhere (no speaker output, no feedback)
+  micSource.connect(micWorklet);
 
   recordingStartOffset = pausedAt;
   recording = true;
@@ -599,25 +625,19 @@ async function startRecording() {
 }
 
 /**
- * Stop recording, decode the mic blob, mix with instrumental offline,
- * and encode as a lossless 16-bit WAV.
+ * Stop recording, mix instrumental + raw mic PCM offline, encode as WAV.
  */
 async function stopRecording() {
   if (!recording) return;
 
   const recEnd = getCurrentTime();
 
-  // Stop mic recorder and wait for final data
-  const micBlobPromise = new Promise((resolve) => {
-    micRecorder.onstop = () => {
-      resolve(new Blob(micChunks, { type: micRecorder.mimeType }));
-    };
-  });
-  micRecorder.stop();
-  const micBlob = await micBlobPromise;
-  micRecorder = null;
-  micChunks = [];
-
+  // Tear down mic capture
+  micWorklet.port.onmessage = null;
+  micWorklet.disconnect();
+  micWorklet = null;
+  micSource.disconnect();
+  micSource = null;
   micStream.getTracks().forEach((t) => t.stop());
   micStream = null;
 
@@ -628,11 +648,14 @@ async function stopRecording() {
 
   pause();
 
-  // Decode mic audio into an AudioBuffer
-  const micArrayBuf = await micBlob.arrayBuffer();
-  const micDecoded = await audioCtx.decodeAudioData(micArrayBuf);
+  // Concatenate captured mic chunks into a single buffer
+  const totalLen = micSamples.reduce((n, c) => n + c.length, 0);
+  const micMono = new Float32Array(totalLen);
+  let off = 0;
+  for (const chunk of micSamples) { micMono.set(chunk, off); off += chunk.length; }
+  micSamples = [];
 
-  // Offline render: instrumental (stereo) + mic (mono/stereo → center-panned)
+  // Offline render: instrumental (stereo) + mic (mono → center-panned stereo)
   const sampleRate = instrumentalBuffer.sampleRate;
   const duration = recEnd - recordingStartOffset;
   const renderLen = Math.round(duration * sampleRate);
@@ -645,8 +668,11 @@ async function stopRecording() {
   instrSrc.connect(offCtx.destination);
   instrSrc.start(0, recordingStartOffset, duration);
 
+  // Mic was captured at audioCtx.sampleRate; OfflineAudioContext resamples if needed
+  const micBuf = offCtx.createBuffer(1, micMono.length, audioCtx.sampleRate);
+  micBuf.getChannelData(0).set(micMono);
   const micSrc = offCtx.createBufferSource();
-  micSrc.buffer = micDecoded;
+  micSrc.buffer = micBuf;
   micSrc.connect(offCtx.destination);
   micSrc.start(0);
 
