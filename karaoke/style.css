@@ -253,6 +253,28 @@ h1 {
 
 #play-btn:hover { color: var(--accent); }
 
+#record-btn {
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+#record-btn.recording svg circle,
+#record-btn.recording svg rect {
+  animation: pulse-record 1s ease-in-out infinite;
+}
+
+@keyframes pulse-record {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 #time-current, #time-total {
   font-size: 0.8rem;
   color: var(--text-dim);
