@@ -50,9 +50,11 @@ const el = {
   recordBtn: $('#record-btn'),
   iconRecord: $('#icon-record'),
   iconRecordStop: $('#icon-record-stop'),
+  mixVocal: $('#mix-vocal'),
   fxReverb: $('#fx-reverb'),
   fxDelay: $('#fx-delay'),
   fxChorus: $('#fx-chorus'),
+  mixLevel: $('#mix-level'),
   exportRecording: $('#export-recording'),
   exportLrc: $('#export-lrc'),
   exportAss: $('#export-ass'),
@@ -89,7 +91,7 @@ let micWorklet = null;             // AudioWorkletNode for raw PCM capture
 let micSource = null;              // MediaStreamAudioSourceNode
 let micSamples = [];               // captured Float32Array chunks
 let recordingStartOffset = 0;      // playback offset when recording began
-let recordingBlob = null;          // finished WAV blob
+let recordingMic = null;           // finished recording: { mono, sampleRate, offset, duration }
 let workletReady = false;          // AudioWorklet module registered
 
 // ── Progress helpers ───────────────────────────────────────────────────────
@@ -714,7 +716,8 @@ async function startRecording() {
   await ensureWorklet();
 
   micSamples = [];
-  recordingBlob = null;
+  recordingMic = null;
+  el.mixLevel.classList.add('hidden');
   el.exportRecording.classList.add('hidden');
 
   micSource = audioCtx.createMediaStreamSource(micStream);
@@ -769,30 +772,48 @@ async function stopRecording() {
   for (const chunk of micSamples) { micMono.set(chunk, off); off += chunk.length; }
   micSamples = [];
 
-  // Offline render: instrumental (stereo) + mic (mono → center-panned stereo)
-  const sampleRate = instrumentalBuffer.sampleRate;
   const duration = recEnd - recordingStartOffset;
+  if (duration <= 0) return;
+
+  // Store raw mic data — WAV is rendered on export with chosen vocal volume
+  recordingMic = {
+    mono: micMono,
+    sampleRate: audioCtx.sampleRate,
+    offset: recordingStartOffset,
+    duration,
+  };
+  el.mixLevel.classList.remove('hidden');
+  el.exportRecording.classList.remove('hidden');
+}
+
+/**
+ * Render instrumental + recorded vocals into a WAV blob.
+ * vocalLevel controls the mic volume relative to instrumental (0–2).
+ */
+async function renderRecordingWAV(vocalLevel) {
+  const { mono, sampleRate: micRate, offset, duration } = recordingMic;
+  const sampleRate = instrumentalBuffer.sampleRate;
   const renderLen = Math.round(duration * sampleRate);
-  if (renderLen <= 0) return;
 
   const offCtx = new OfflineAudioContext(2, renderLen, sampleRate);
 
   const instrSrc = offCtx.createBufferSource();
   instrSrc.buffer = instrumentalBuffer;
   instrSrc.connect(offCtx.destination);
-  instrSrc.start(0, recordingStartOffset, duration);
+  instrSrc.start(0, offset, duration);
 
-  // Mic was captured at audioCtx.sampleRate; OfflineAudioContext resamples if needed
-  const micBuf = offCtx.createBuffer(1, micMono.length, audioCtx.sampleRate);
-  micBuf.getChannelData(0).set(micMono);
+  const micBuf = offCtx.createBuffer(1, mono.length, micRate);
+  micBuf.getChannelData(0).set(mono);
   const micSrc = offCtx.createBufferSource();
   micSrc.buffer = micBuf;
-  micSrc.connect(offCtx.destination);
+  const micGain = offCtx.createGain();
+  micGain.gain.value = vocalLevel;
+  micSrc.connect(micGain);
+  micGain.connect(offCtx.destination);
   micSrc.start(0);
 
   const rendered = await offCtx.startRendering();
-  recordingBlob = encodeWAV(rendered);
-  el.exportRecording.classList.remove('hidden');
+  return encodeWAV(rendered);
 }
 
 /** Encode an AudioBuffer as a 16-bit PCM WAV Blob. */
@@ -1080,9 +1101,11 @@ el.recordBtn.addEventListener('click', () => {
   else startRecording();
 });
 
-el.exportRecording.addEventListener('click', () => {
-  if (!recordingBlob) return;
-  const url = URL.createObjectURL(recordingBlob);
+el.exportRecording.addEventListener('click', async () => {
+  if (!recordingMic) return;
+  const vocalLevel = parseFloat(el.mixVocal.value);
+  const blob = await renderRecordingWAV(vocalLevel);
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = `${songBaseName}-recording.wav`;
