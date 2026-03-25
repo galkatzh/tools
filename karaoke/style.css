@@ -333,6 +333,23 @@ h1 {
   cursor: pointer;
 }
 
+/* ── Mix level ────────────────────────────────────────────────── */
+
+.mix-level {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.mix-level input[type="range"] {
+  width: 5rem;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 /* ── Export buttons ────────────────────────────────────────────── */
 
 .export-row {
