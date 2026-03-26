@@ -19,7 +19,7 @@ const WHISPER_MODEL = {
   repo: 'onnx-community/whisper-base',
   apiType: 'pipeline',
   dtype: 'fp32',
-  device: 'wasm',
+  device: 'webgpu',
 };
 
 const CHUNK_SECONDS = 11;
