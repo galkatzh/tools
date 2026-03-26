@@ -10,6 +10,7 @@ This script:
 Usage:
     pip install torch torchaudio onnx
     python export_onnx.py [--output scnet.onnx] [--checkpoint path/to/ckpt]
+    python export_onnx.py --fp16           # also export float16 model (recommended)
     python export_onnx.py --quantize-int8  # also export int8 dynamically-quantized model
 
 The resulting .onnx file should be uploaded to HuggingFace for the web app.
@@ -408,6 +409,8 @@ def main():
                         help='ONNX opset version')
     parser.add_argument('--quantize-int8', action='store_true',
                         help='Also export an int8 dynamically-quantized ONNX model')
+    parser.add_argument('--fp16', action='store_true',
+                        help='Also export a float16 model (half size, same inference speed)')
     args = parser.parse_args()
 
     # Build model
@@ -472,6 +475,18 @@ def main():
     print(f"\n✓ Exported: {args.output} ({size_mb:.1f} MB)")
     print(f"  Output shape: [B, {len(model.sources)}, 4, 2049, T]")
     print(f"  Sources: {model.sources}")
+
+    # Float16 conversion
+    if args.fp16:
+        from onnxruntime.transformers.float16 import convert_float_to_float16
+
+        base, ext = os.path.splitext(args.output)
+        fp16_output = f"{base}_fp16{ext}"
+        print(f"\nConverting to float16...")
+        fp16_model = convert_float_to_float16(onnx_model, keep_io_types=True)
+        onnx.save(fp16_model, fp16_output)
+        fp16_size_mb = os.path.getsize(fp16_output) / (1024 * 1024)
+        print(f"✓ FP16: {fp16_output} ({fp16_size_mb:.1f} MB, {fp16_size_mb/size_mb:.0%} of original)")
 
     # Int8 dynamic quantization
     if args.quantize_int8:
