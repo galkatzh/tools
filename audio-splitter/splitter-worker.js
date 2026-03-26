@@ -13,7 +13,7 @@
  */
 
 import { N_FREQ, stft, istft } from './audio-processor.js';
-import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.webgpu.min.mjs';
+import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.mjs';
 
 // ── ORT session ────────────────────────────────────────────────────────────
 
@@ -30,8 +30,7 @@ self.onmessage = async ({ data }) => {
       // imports in workers. Parallelism is achieved via multiple chunk workers instead.
       ort.env.wasm.numThreads = 1;
       ort.env.wasm.proxy = false;
-      const providers = navigator.gpu ? ['webgpu', 'wasm'] : ['wasm'];
-      session = await ort.InferenceSession.create(data.modelBytes, { executionProviders: providers });
+      session = await ort.InferenceSession.create(data.modelBytes, { executionProviders: ['wasm'] });
       self.postMessage({ type: 'ready' });
     } catch (err) {
       console.error('[worker] init failed:', err);
