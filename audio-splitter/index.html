@@ -48,6 +48,17 @@
 
     <details class="settings">
       <summary>Settings</summary>
+      <label>Model quality</label>
+      <div class="quality-row">
+        <label class="radio-label">
+          <input type="radio" id="quality-full" name="model-quality" value="full" checked>
+          Full <span class="hint">(42 MB, best quality)</span>
+        </label>
+        <label class="radio-label">
+          <input type="radio" id="quality-fp16" name="model-quality" value="fp16">
+          FP16 <span class="hint">(22 MB, same speed, half download)</span>
+        </label>
+      </div>
       <label for="worker-count">Workers <span class="hint">(~42 MB RAM each)</span></label>
       <div class="worker-row">
         <input type="range" id="worker-count" min="1" max="8" value="2">
