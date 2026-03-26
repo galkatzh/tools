@@ -15,9 +15,17 @@ import {
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
-/** URL to the ONNX model file. Update after uploading to HuggingFace. */
-const MODEL_URL = localStorage.getItem('scnet_model_url')
-  || 'https://huggingface.co/bgkb/scnet_onnx/resolve/main/scnet.onnx';
+/** ONNX model URLs — full precision and int8 quantized. */
+const MODEL_URLS = {
+  full: 'https://huggingface.co/bgkb/scnet_onnx/resolve/main/scnet.onnx',
+  int8: 'https://huggingface.co/bgkb/scnet_onnx/resolve/main/scnet_int8.onnx',
+};
+
+/** Resolve the active model URL: custom override > quality selection > default. */
+function getModelUrl() {
+  return localStorage.getItem('scnet_model_url')
+    || MODEL_URLS[localStorage.getItem('scnet_model_quality') || 'full'];
+}
 
 /** Process audio in 11-second chunks (matching SCNet training config). */
 const CHUNK_SECONDS = 11;
@@ -45,6 +53,8 @@ const el = {
   modelUrlSave: $('#model-url-save'),
   workerCount: $('#worker-count'),
   workerCountVal: $('#worker-count-val'),
+  qualityFull: $('#quality-full'),
+  qualityInt8: $('#quality-int8'),
 };
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -310,8 +320,7 @@ async function handleFile(file) {
 
   try {
     if (!workers.length) {
-      const url = localStorage.getItem('scnet_model_url') || MODEL_URL;
-      await loadModel(url);
+      await loadModel(getModelUrl());
     }
 
     showProgress('Decoding audio...', 0);
@@ -374,8 +383,17 @@ el.workerCount.addEventListener('input', () => {
   workers = [];  // reinitialize on next run
 });
 
+for (const radio of [el.qualityFull, el.qualityInt8]) {
+  radio.addEventListener('change', () => {
+    localStorage.setItem('scnet_model_quality', radio.value);
+    workers = [];  // force model reload on next run
+  });
+}
+
 // Init: restore saved settings
 const savedUrl = localStorage.getItem('scnet_model_url');
 if (savedUrl) el.modelUrl.placeholder = savedUrl;
 el.workerCount.value = getNumWorkers();
 el.workerCountVal.textContent = getNumWorkers();
+const savedQuality = localStorage.getItem('scnet_model_quality') || 'full';
+document.querySelector(`input[name="model-quality"][value="${savedQuality}"]`).checked = true;
