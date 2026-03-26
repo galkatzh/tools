@@ -10,6 +10,7 @@ This script:
 Usage:
     pip install torch torchaudio onnx
     python export_onnx.py [--output scnet.onnx] [--checkpoint path/to/ckpt]
+    python export_onnx.py --quantize-int8  # also export int8 dynamically-quantized model
 
 The resulting .onnx file should be uploaded to HuggingFace for the web app.
 """
@@ -405,6 +406,8 @@ def main():
                         help='Output ONNX file path')
     parser.add_argument('--opset', type=int, default=18,
                         help='ONNX opset version')
+    parser.add_argument('--quantize-int8', action='store_true',
+                        help='Also export an int8 dynamically-quantized ONNX model')
     args = parser.parse_args()
 
     # Build model
@@ -469,6 +472,22 @@ def main():
     print(f"\n✓ Exported: {args.output} ({size_mb:.1f} MB)")
     print(f"  Output shape: [B, {len(model.sources)}, 4, 2049, T]")
     print(f"  Sources: {model.sources}")
+
+    # Int8 dynamic quantization
+    if args.quantize_int8:
+        from onnxruntime.quantization import quantize_dynamic, QuantType
+
+        base, ext = os.path.splitext(args.output)
+        q_output = f"{base}_int8{ext}"
+        print(f"\nQuantizing to int8 (dynamic)...")
+        quantize_dynamic(
+            model_input=args.output,
+            model_output=q_output,
+            weight_type=QuantType.QInt8,
+        )
+        q_size_mb = os.path.getsize(q_output) / (1024 * 1024)
+        print(f"✓ Quantized: {q_output} ({q_size_mb:.1f} MB, {q_size_mb/size_mb:.0%} of original)")
+
     print()
     print("Next steps:")
     print("  1. Upload to HuggingFace:")
