@@ -177,7 +177,7 @@ async function setCachedModel(url, data) {
 class ChunkWorker {
   constructor(bytes) {
     this._pending = new Map();
-    this.worker = new Worker(new URL('../audio-splitter/splitter-worker.js', import.meta.url));
+    this.worker = new Worker(new URL('../audio-splitter/splitter-worker.js', import.meta.url), { type: 'module' });
     this.worker.onmessage = ({ data }) => {
       if (data.type === 'ready') {
         this._pending.get('init')?.resolve();
