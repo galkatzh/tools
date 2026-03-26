@@ -15,10 +15,10 @@ import {
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
-/** ONNX model URLs — full precision and int8 quantized. */
+/** ONNX model URLs — full precision (fp32) and half precision (fp16). */
 const MODEL_URLS = {
   full: 'https://huggingface.co/bgkb/scnet_onnx/resolve/main/scnet.onnx',
-  int8: 'https://huggingface.co/bgkb/scnet_onnx/resolve/main/scnet_int8.onnx',
+  fp16: 'https://huggingface.co/bgkb/scnet_onnx/resolve/main/scnet_fp16.onnx',
 };
 
 /** Resolve the active model URL: custom override > quality selection > default. */
@@ -54,7 +54,7 @@ const el = {
   workerCount: $('#worker-count'),
   workerCountVal: $('#worker-count-val'),
   qualityFull: $('#quality-full'),
-  qualityInt8: $('#quality-int8'),
+  qualityFp16: $('#quality-fp16'),
 };
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -383,7 +383,7 @@ el.workerCount.addEventListener('input', () => {
   workers = [];  // reinitialize on next run
 });
 
-for (const radio of [el.qualityFull, el.qualityInt8]) {
+for (const radio of [el.qualityFull, el.qualityFp16]) {
   radio.addEventListener('change', () => {
     localStorage.setItem('scnet_model_quality', radio.value);
     workers = [];  // force model reload on next run
