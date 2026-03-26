@@ -13,7 +13,7 @@
  */
 
 /* globals ort */
-importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js');
+importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.webgpu.min.js');
 
 // ── Audio processing constants (must match audio-processor.js) ──────────────
 
@@ -170,7 +170,8 @@ self.onmessage = async ({ data }) => {
       // imports in workers. Parallelism is achieved via multiple chunk workers instead.
       ort.env.wasm.numThreads = 1;
       ort.env.wasm.proxy = false;
-      session = await ort.InferenceSession.create(data.modelBytes, { executionProviders: ['wasm'] });
+      const providers = navigator.gpu ? ['webgpu', 'wasm'] : ['wasm'];
+      session = await ort.InferenceSession.create(data.modelBytes, { executionProviders: providers });
       self.postMessage({ type: 'ready' });
     } catch (err) {
       console.error('[worker] init failed:', err);
