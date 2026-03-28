@@ -23,143 +23,140 @@ for (let i = 0; i < WIN_LENGTH; i++) {
   HANN[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / WIN_LENGTH));
 }
 
-// ── Cooley-Tukey radix-2 FFT ───────────────────────────────────────────────
+// ── Pre-computed twiddle factors for radix-2 FFT ────────────────────────────
+
+const twiddleRe = new Map();
+const twiddleIm = new Map();
+for (let len = 2; len <= N_FFT; len <<= 1) {
+  const half = len >> 1;
+  const re = new Float64Array(half);
+  const im = new Float64Array(half);
+  const angle = (-2 * Math.PI) / len;
+  for (let j = 0; j < half; j++) {
+    re[j] = Math.cos(angle * j);
+    im[j] = Math.sin(angle * j);
+  }
+  twiddleRe.set(len, re);
+  twiddleIm.set(len, im);
+}
+const twiddleReInv = new Map();
+const twiddleImInv = new Map();
+for (let len = 2; len <= N_FFT; len <<= 1) {
+  const half = len >> 1;
+  const re = new Float64Array(half);
+  const im = new Float64Array(half);
+  const angle = (2 * Math.PI) / len;
+  for (let j = 0; j < half; j++) {
+    re[j] = Math.cos(angle * j);
+    im[j] = Math.sin(angle * j);
+  }
+  twiddleReInv.set(len, re);
+  twiddleImInv.set(len, im);
+}
+
+// Pre-computed bit-reversal permutation for N_FFT
+const bitRev = new Uint32Array(N_FFT);
+for (let i = 1, j = 0; i < N_FFT; i++) {
+  let bit = N_FFT >> 1;
+  while (j & bit) { j ^= bit; bit >>= 1; }
+  j ^= bit;
+  bitRev[i] = j;
+}
+
+// ── Optimized Cooley-Tukey radix-2 FFT ──────────────────────────────────────
 
 /**
- * In-place radix-2 FFT. Arrays `re` and `im` are modified in place.
- * @param {Float32Array} re - Real part (length must be power of 2)
+ * In-place radix-2 FFT with pre-computed twiddle factors.
+ * @param {Float32Array} re - Real part (length must be N_FFT)
  * @param {Float32Array} im - Imaginary part
  * @param {boolean} inverse - If true, compute inverse FFT
  */
 function fft(re, im, inverse = false) {
   const n = re.length;
-  // Bit-reversal permutation
-  for (let i = 1, j = 0; i < n; i++) {
-    let bit = n >> 1;
-    while (j & bit) {
-      j ^= bit;
-      bit >>= 1;
-    }
-    j ^= bit;
+  for (let i = 1; i < n; i++) {
+    const j = bitRev[i];
     if (i < j) {
-      [re[i], re[j]] = [re[j], re[i]];
-      [im[i], im[j]] = [im[j], im[i]];
+      const tmpR = re[i]; re[i] = re[j]; re[j] = tmpR;
+      const tmpI = im[i]; im[i] = im[j]; im[j] = tmpI;
     }
   }
-
-  const sign = inverse ? 1 : -1;
-
+  const tRe = inverse ? twiddleReInv : twiddleRe;
+  const tIm = inverse ? twiddleImInv : twiddleIm;
   for (let len = 2; len <= n; len <<= 1) {
     const halfLen = len >> 1;
-    const angle = (sign * 2 * Math.PI) / len;
-    const wRe = Math.cos(angle);
-    const wIm = Math.sin(angle);
-
+    const wRe = tRe.get(len);
+    const wIm = tIm.get(len);
     for (let i = 0; i < n; i += len) {
-      let curRe = 1, curIm = 0;
       for (let j = 0; j < halfLen; j++) {
-        const a = i + j;
-        const b = a + halfLen;
-        const tRe = curRe * re[b] - curIm * im[b];
-        const tIm = curRe * im[b] + curIm * re[b];
-        re[b] = re[a] - tRe;
-        im[b] = im[a] - tIm;
-        re[a] += tRe;
-        im[a] += tIm;
-        const nextRe = curRe * wRe - curIm * wIm;
-        curIm = curRe * wIm + curIm * wRe;
-        curRe = nextRe;
+        const a = i + j, b = a + halfLen;
+        const tpRe = wRe[j] * re[b] - wIm[j] * im[b];
+        const tpIm = wRe[j] * im[b] + wIm[j] * re[b];
+        re[b] = re[a] - tpRe; im[b] = im[a] - tpIm;
+        re[a] += tpRe; im[a] += tpIm;
       }
     }
   }
-
   if (inverse) {
-    for (let i = 0; i < n; i++) {
-      re[i] /= n;
-      im[i] /= n;
-    }
+    for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
   }
 }
 
 // ── STFT ───────────────────────────────────────────────────────────────────
 
 /**
- * Compute Short-Time Fourier Transform for a single channel.
+ * Compute STFT for a single channel. Returns flat Float32Array buffers
+ * [nFrames × N_FREQ] to reduce allocation overhead.
  * Applies center padding (reflect) to match PyTorch's center=True default.
  * Results are normalized by 1/sqrt(n_fft) to match PyTorch's normalized=True.
- * @param {Float32Array} signal - Mono audio signal
- * @returns {{ real: Float32Array[], imag: Float32Array[] }}
- *   Arrays of length nFrames, each containing N_FREQ frequency bins.
  */
 function stftChannel(signal) {
   const padLen = N_FFT / 2;
   const padded = new Float32Array(signal.length + 2 * padLen);
-  // Reflect padding
-  for (let i = 0; i < padLen; i++) {
-    padded[i] = signal[padLen - i] || 0;
-  }
+  for (let i = 0; i < padLen; i++) padded[i] = signal[padLen - i] || 0;
   padded.set(signal, padLen);
   for (let i = 0; i < padLen; i++) {
     padded[padLen + signal.length + i] = signal[signal.length - 2 - i] || 0;
   }
 
   const nFrames = Math.floor((padded.length - N_FFT) / HOP_LENGTH) + 1;
-  const real = [];
-  const imag = [];
-
-  const re = new Float32Array(N_FFT);
-  const im = new Float32Array(N_FFT);
+  const realFlat = new Float32Array(nFrames * N_FREQ);
+  const imagFlat = new Float32Array(nFrames * N_FREQ);
+  const re = new Float32Array(N_FFT), im = new Float32Array(N_FFT);
 
   for (let t = 0; t < nFrames; t++) {
     const offset = t * HOP_LENGTH;
-    for (let i = 0; i < N_FFT; i++) {
-      re[i] = padded[offset + i] * HANN[i];
-      im[i] = 0;
-    }
+    for (let i = 0; i < N_FFT; i++) { re[i] = padded[offset + i] * HANN[i]; im[i] = 0; }
     fft(re, im, false);
-
-    const frameRe = new Float32Array(N_FREQ);
-    const frameIm = new Float32Array(N_FREQ);
+    const base = t * N_FREQ;
     for (let f = 0; f < N_FREQ; f++) {
-      frameRe[f] = re[f] * NORM_FACTOR;
-      frameIm[f] = im[f] * NORM_FACTOR;
+      realFlat[base + f] = re[f] * NORM_FACTOR;
+      imagFlat[base + f] = im[f] * NORM_FACTOR;
     }
-    real.push(frameRe);
-    imag.push(frameIm);
   }
-
-  return { real, imag };
+  return { realFlat, imagFlat, nFrames };
 }
 
 /**
  * Compute STFT for stereo audio and pack into SCNet model input format.
  * Output layout: flat array of shape [1, C=4, F=2049, T] in row-major order.
  * C order: [left_real, left_imag, right_real, right_imag]
- *
- * This matches the official SCNet code's STFT → reshape step:
- *   view_as_real → permute(0,3,1,2) → reshape(B, 4, Fr, T)
- *
- * @param {Float32Array} left - Left channel
- * @param {Float32Array} right - Right channel
- * @returns {{ data: Float32Array, nFrames: number }}
  */
 function stft(left, right) {
   const stftL = stftChannel(left);
   const stftR = stftChannel(right);
-  const T = stftL.real.length;
-
-  // Pack into [C=4, F, T] row-major
+  const T = stftL.nFrames;
   const data = new Float32Array(4 * N_FREQ * T);
+  const s0 = 0, s1 = N_FREQ * T, s2 = 2 * N_FREQ * T, s3 = 3 * N_FREQ * T;
   for (let f = 0; f < N_FREQ; f++) {
+    const fT = f * T;
     for (let t = 0; t < T; t++) {
-      const idx = f * T + t;
-      data[0 * N_FREQ * T + idx] = stftL.real[t][f]; // left real
-      data[1 * N_FREQ * T + idx] = stftL.imag[t][f]; // left imag
-      data[2 * N_FREQ * T + idx] = stftR.real[t][f]; // right real
-      data[3 * N_FREQ * T + idx] = stftR.imag[t][f]; // right imag
+      const tF = t * N_FREQ + f;
+      data[s0 + fT + t] = stftL.realFlat[tF];
+      data[s1 + fT + t] = stftL.imagFlat[tF];
+      data[s2 + fT + t] = stftR.realFlat[tF];
+      data[s3 + fT + t] = stftR.imagFlat[tF];
     }
   }
-
   return { data, nFrames: T };
 }
 
@@ -167,87 +164,61 @@ function stft(left, right) {
 
 /**
  * Inverse STFT for a single channel.
- * Undoes the normalization and reconstructs via overlap-add.
- * @param {Float32Array[]} real - Array of nFrames, each N_FREQ bins (normalized)
- * @param {Float32Array[]} imag - Array of nFrames, each N_FREQ bins (normalized)
+ * @param {Float32Array} realFlat - Flat [nFrames × N_FREQ] real part
+ * @param {Float32Array} imagFlat - Flat [nFrames × N_FREQ] imaginary part
+ * @param {number} nFrames - Number of time frames
  * @param {number} length - Expected output signal length
- * @returns {Float32Array} Reconstructed time-domain signal
  */
-function istftChannel(real, imag, length) {
-  const nFrames = real.length;
+function istftChannel(realFlat, imagFlat, nFrames, length) {
   const padLen = N_FFT / 2;
   const outLen = (nFrames - 1) * HOP_LENGTH + N_FFT;
   const output = new Float32Array(outLen);
   const windowSum = new Float32Array(outLen);
-
-  const re = new Float32Array(N_FFT);
-  const im = new Float32Array(N_FFT);
+  const re = new Float32Array(N_FFT), im = new Float32Array(N_FFT);
 
   for (let t = 0; t < nFrames; t++) {
-    // Undo normalization and reconstruct full spectrum (Hermitian symmetry)
+    const base = t * N_FREQ;
     for (let f = 0; f < N_FREQ; f++) {
-      re[f] = real[t][f] / NORM_FACTOR;
-      im[f] = imag[t][f] / NORM_FACTOR;
+      re[f] = realFlat[base + f] / NORM_FACTOR;
+      im[f] = imagFlat[base + f] / NORM_FACTOR;
     }
-    for (let f = 1; f < N_FREQ - 1; f++) {
-      re[N_FFT - f] = re[f];
-      im[N_FFT - f] = -im[f];
-    }
-
+    for (let f = 1; f < N_FREQ - 1; f++) { re[N_FFT - f] = re[f]; im[N_FFT - f] = -im[f]; }
     fft(re, im, true);
-
     const offset = t * HOP_LENGTH;
     for (let i = 0; i < N_FFT; i++) {
       output[offset + i] += re[i] * HANN[i];
       windowSum[offset + i] += HANN[i] * HANN[i];
     }
   }
-
-  // Normalize by window sum (COLA condition)
   for (let i = 0; i < outLen; i++) {
-    if (windowSum[i] > 1e-8) {
-      output[i] /= windowSum[i];
-    }
+    if (windowSum[i] > 1e-8) output[i] /= windowSum[i];
   }
-
   return output.subarray(padLen, padLen + length);
 }
 
 /**
  * Inverse STFT from model output for a single source.
- * Input layout: flat array of shape [C=4, F, T] row-major.
- * C order: [left_real, left_imag, right_real, right_imag]
- *
- * @param {Float32Array} data - Flat array for one source, shape [4, F, T]
- * @param {number} nFrames - Number of time frames (T)
- * @param {number} length - Expected output signal length per channel
- * @returns {{ left: Float32Array, right: Float32Array }}
+ * Unpacks [C=4, F, T] layout to flat [nFrames × N_FREQ] per channel.
  */
 function istft(data, nFrames, length) {
   const stride = N_FREQ * nFrames;
-  const lReal = [], lImag = [], rReal = [], rImag = [];
-
+  const lRe = new Float32Array(nFrames * N_FREQ);
+  const lIm = new Float32Array(nFrames * N_FREQ);
+  const rRe = new Float32Array(nFrames * N_FREQ);
+  const rIm = new Float32Array(nFrames * N_FREQ);
   for (let t = 0; t < nFrames; t++) {
-    const lr = new Float32Array(N_FREQ);
-    const li = new Float32Array(N_FREQ);
-    const rr = new Float32Array(N_FREQ);
-    const ri = new Float32Array(N_FREQ);
+    const tBase = t * N_FREQ;
     for (let f = 0; f < N_FREQ; f++) {
       const idx = f * nFrames + t;
-      lr[f] = data[0 * stride + idx];
-      li[f] = data[1 * stride + idx];
-      rr[f] = data[2 * stride + idx];
-      ri[f] = data[3 * stride + idx];
+      lRe[tBase + f] = data[idx];
+      lIm[tBase + f] = data[stride + idx];
+      rRe[tBase + f] = data[2 * stride + idx];
+      rIm[tBase + f] = data[3 * stride + idx];
     }
-    lReal.push(lr);
-    lImag.push(li);
-    rReal.push(rr);
-    rImag.push(ri);
   }
-
   return {
-    left: istftChannel(lReal, lImag, length),
-    right: istftChannel(rReal, rImag, length),
+    left: istftChannel(lRe, lIm, nFrames, length),
+    right: istftChannel(rRe, rIm, nFrames, length),
   };
 }
 

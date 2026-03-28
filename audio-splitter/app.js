@@ -142,7 +142,7 @@ function fmt(s) {
 class ChunkWorker {
   constructor(bytes) {
     this._pending = new Map();
-    this.worker = new Worker(new URL('./splitter-worker.js', import.meta.url));
+    this.worker = new Worker(new URL('./splitter-worker.js', import.meta.url), { type: 'module' });
     this.worker.onmessage = ({ data }) => {
       if (data.type === 'ready') {
         this._pending.get('init')?.resolve(); this._pending.delete('init');
