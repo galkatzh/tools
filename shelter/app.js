@@ -52,24 +52,18 @@ function requestLocation() {
     return;
   }
 
-  // Defer the geolocation call — iOS Safari can suppress the permission
-  // prompt if it fires in the same microtask as DOM/style changes.
-  setTimeout(() => {
-    locateBtn.classList.add('tracking');
-    const loadingTimer = setTimeout(() => {
-      loadingEl.classList.remove('hidden');
-    }, 400);
-
-    navigator.geolocation.getCurrentPosition(
+  // IMPORTANT: call getCurrentPosition synchronously inside the click handler.
+  // iOS Safari only shows the permission prompt when the call originates from
+  // an active user gesture. Any async deferral (setTimeout, promise, etc.)
+  // breaks the gesture chain and iOS silently denies with code 1.
+  navigator.geolocation.getCurrentPosition(
     (pos) => {
-      clearTimeout(loadingTimer);
       loadingEl.classList.add('hidden');
       const { latitude: lat, longitude: lng } = pos.coords;
       setUserMarker(lat, lng);
       showClosestShelters(lat, lng);
     },
     (err) => {
-      clearTimeout(loadingTimer);
       loadingEl.classList.add('hidden');
       locateBtn.classList.remove('tracking');
       console.error('Geolocation error:', err);
@@ -93,7 +87,10 @@ function requestLocation() {
     },
     { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
   );
-  }, 0);
+
+  // Update UI after the geolocation call is dispatched (not before)
+  locateBtn.classList.add('tracking');
+  loadingEl.classList.remove('hidden');
 }
 
 /* ── Map markers ───────────────────────────────────────── */
