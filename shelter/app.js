@@ -52,14 +52,15 @@ function requestLocation() {
     return;
   }
 
-  // Show loading only after a short delay — gives iOS time to show its
-  // permission dialog on top without being obscured by the overlay.
-  const loadingTimer = setTimeout(() => {
-    loadingEl.classList.remove('hidden');
-  }, 500);
-  locateBtn.classList.add('tracking');
+  // Defer the geolocation call — iOS Safari can suppress the permission
+  // prompt if it fires in the same microtask as DOM/style changes.
+  setTimeout(() => {
+    locateBtn.classList.add('tracking');
+    const loadingTimer = setTimeout(() => {
+      loadingEl.classList.remove('hidden');
+    }, 400);
 
-  navigator.geolocation.getCurrentPosition(
+    navigator.geolocation.getCurrentPosition(
     (pos) => {
       clearTimeout(loadingTimer);
       loadingEl.classList.add('hidden');
@@ -92,6 +93,7 @@ function requestLocation() {
     },
     { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
   );
+  }, 0);
 }
 
 /* ── Map markers ───────────────────────────────────────── */

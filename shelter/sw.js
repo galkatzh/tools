@@ -1,4 +1,4 @@
-const CACHE_NAME = 'shelter-v2';
+const CACHE_NAME = 'shelter-v3';
 
 const STATIC_ASSETS = [
   '/shelter/',
