@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Karaoke</title>
+  <meta name="description" content="Upload a song, remove vocals, and sing along with synced lyrics — all in your browser.">
+  <meta name="theme-color" content="#1a1a2e">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="app">
+    <h1>Karaoke</h1>
+    <p class="subtitle">Upload a song — vocals are removed and lyrics appear in sync.</p>
+
+    <!-- Settings toggle -->
+    <button id="settings-toggle" class="settings-toggle" aria-label="Settings" aria-expanded="false">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+
+    <!-- Settings panel -->
+    <section id="settings" class="settings hidden">
+      <fieldset class="setting-group">
+        <legend>Processing</legend>
+        <div class="setting-row">
+          <label for="split-workers">Stem-split workers</label>
+          <input type="number" id="split-workers" min="1" max="8" value="2">
+        </div>
+        <div class="setting-row">
+          <label for="transcribe-workers">Transcribe workers</label>
+          <input type="number" id="transcribe-workers" min="1" max="8" value="2">
+        </div>
+        <div class="setting-row">
+          <label for="language">Language</label>
+          <select id="language">
+            <option value="">Auto-detect</option>
+            <option value="en">English</option>
+            <option value="es">Spanish</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+            <option value="it">Italian</option>
+            <option value="pt">Portuguese</option>
+            <option value="nl">Dutch</option>
+            <option value="ru">Russian</option>
+            <option value="ja">Japanese</option>
+            <option value="ko">Korean</option>
+            <option value="zh">Chinese</option>
+            <option value="ar">Arabic</option>
+            <option value="hi">Hindi</option>
+            <option value="tr">Turkish</option>
+            <option value="pl">Polish</option>
+            <option value="sv">Swedish</option>
+            <option value="he">Hebrew</option>
+          </select>
+        </div>
+      </fieldset>
+      <fieldset class="setting-group">
+        <legend>Lyrics appearance</legend>
+        <div class="setting-row">
+          <label for="font-size">Size</label>
+          <input type="range" id="font-size" min="0.8" max="2.5" step="0.05" value="1.35">
+          <span id="font-size-val">1.35</span>
+        </div>
+        <div class="setting-row">
+          <label for="highlight-color">Highlight</label>
+          <input type="color" id="highlight-color" value="#e94560">
+        </div>
+      </fieldset>
+    </section>
+
+    <!-- Upload -->
+    <div id="drop-zone" tabindex="0" role="button" aria-label="Upload audio file">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 18V5l12-2v13"/>
+        <circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+      </svg>
+      <span>Drop a song here or click to upload</span>
+      <input type="file" id="file-input" accept="audio/*,video/mp4,video/webm" hidden>
+    </div>
+    <p id="file-name" class="file-name"></p>
+
+    <!-- Progress -->
+    <section id="progress" class="hidden">
+      <div class="progress-track">
+        <div id="progress-bar" class="progress-fill"></div>
+      </div>
+      <p id="progress-text" class="progress-label"></p>
+    </section>
+
+    <!-- Karaoke player -->
+    <section id="player" class="hidden">
+      <div id="lyrics"></div>
+      <div class="controls">
+        <button id="play-btn" aria-label="Play">
+          <svg id="icon-play" width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+          <svg id="icon-pause" class="hidden" width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+        </button>
+        <button id="record-btn" aria-label="Record">
+          <svg id="icon-record" width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="var(--accent)"/></svg>
+          <svg id="icon-record-stop" class="hidden" width="24" height="24" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="var(--accent)"/></svg>
+        </button>
+        <span id="time-current">0:00</span>
+        <input type="range" id="seek" min="0" max="1000" value="0">
+        <span id="time-total">0:00</span>
+        <label class="vocal-mix" aria-label="Vocal volume">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          <input type="range" id="vocal-volume" min="0" max="1" step="0.05" value="0">
+        </label>
+      </div>
+
+      <!-- Effects + mix panel (shown after recording) -->
+      <div class="fx-panel hidden" id="fx-panel">
+        <div class="fx-group">
+          <span class="fx-label">Reverb</span>
+          <label class="fx-param"><span>Mix</span><input type="range" id="fx-reverb" min="0" max="1" step="0.05" value="0"></label>
+          <label class="fx-param"><span>Decay</span><input type="range" id="fx-reverb-decay" min="0.5" max="5" step="0.1" value="2.5"></label>
+        </div>
+        <div class="fx-group">
+          <span class="fx-label">Delay</span>
+          <label class="fx-param"><span>Mix</span><input type="range" id="fx-delay" min="0" max="1" step="0.05" value="0"></label>
+          <label class="fx-param"><span>Time</span><input type="range" id="fx-delay-time" min="0.05" max="0.8" step="0.01" value="0.3"></label>
+          <label class="fx-param"><span>Feedback</span><input type="range" id="fx-delay-fb" min="0" max="0.85" step="0.05" value="0.4"></label>
+        </div>
+        <div class="fx-group">
+          <span class="fx-label">Chorus</span>
+          <label class="fx-param"><span>Mix</span><input type="range" id="fx-chorus" min="0" max="1" step="0.05" value="0"></label>
+        </div>
+        <div class="fx-group">
+          <span class="fx-label">Mix</span>
+          <label class="fx-param"><span>Vocal</span><input type="range" id="mix-vocal" min="0" max="2" step="0.05" value="1"></label>
+        </div>
+      </div>
+
+      <div class="export-row">
+        <button id="preview-btn" class="export-btn hidden" aria-label="Preview recording">
+          <svg id="icon-preview-play" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+          <svg id="icon-preview-stop" class="hidden" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+          Preview
+        </button>
+        <button id="export-recording" class="export-btn hidden" aria-label="Save recording">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Recording
+        </button>
+        <button id="export-lrc" class="export-btn" aria-label="Export LRC">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          LRC
+        </button>
+        <button id="export-ass" class="export-btn" aria-label="Export ASS">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          ASS
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
