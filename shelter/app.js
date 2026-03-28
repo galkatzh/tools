@@ -46,27 +46,14 @@ async function loadShelters() {
 
 /* ── Geolocation ───────────────────────────────────────── */
 
-async function requestLocation() {
+function requestLocation() {
   if (!navigator.geolocation) {
     alert('הדפדפן לא תומך באיתור מיקום');
     return;
   }
 
-  // Debug: check Permissions API state before requesting location.
-  // This helps diagnose iOS Safari silently denying without prompting.
-  if (navigator.permissions) {
-    try {
-      const perm = await navigator.permissions.query({ name: 'geolocation' });
-      console.log('Geolocation permission state:', perm.state);
-      if (perm.state === 'denied') {
-        alert('הדפדפן חוסם גישה למיקום עבור אתר זה.\n\nPermission state: denied\n\nנסה: הגדרות > Safari > מיקום > "שאל", או נקה נתוני אתר.');
-        return;
-      }
-    } catch (e) {
-      console.log('Permissions API query failed:', e);
-    }
-  }
-
+  // Call getCurrentPosition FIRST — must be synchronous from the click
+  // handler for iOS Safari to recognize the user gesture.
   navigator.geolocation.getCurrentPosition(
     (pos) => {
       loadingEl.classList.add('hidden');
