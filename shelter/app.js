@@ -51,28 +51,47 @@ function requestLocation() {
     alert('הדפדפן לא תומך באיתור מיקום');
     return;
   }
-  loadingEl.classList.remove('hidden');
+
+  // Show loading only after a short delay — gives iOS time to show its
+  // permission dialog on top without being obscured by the overlay.
+  const loadingTimer = setTimeout(() => {
+    loadingEl.classList.remove('hidden');
+  }, 500);
   locateBtn.classList.add('tracking');
 
-  navigator.geolocation.getCurrentPosition(onPosition, onLocationError, {
-    enableHighAccuracy: true,
-    timeout: 15000,
-    maximumAge: 30000,
-  });
-}
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      clearTimeout(loadingTimer);
+      loadingEl.classList.add('hidden');
+      const { latitude: lat, longitude: lng } = pos.coords;
+      setUserMarker(lat, lng);
+      showClosestShelters(lat, lng);
+    },
+    (err) => {
+      clearTimeout(loadingTimer);
+      loadingEl.classList.add('hidden');
+      locateBtn.classList.remove('tracking');
+      console.error('Geolocation error:', err);
 
-function onPosition(pos) {
-  loadingEl.classList.add('hidden');
-  const { latitude: lat, longitude: lng } = pos.coords;
-  setUserMarker(lat, lng);
-  showClosestShelters(lat, lng);
-}
-
-function onLocationError(err) {
-  loadingEl.classList.add('hidden');
-  locateBtn.classList.remove('tracking');
-  console.error('Geolocation error:', err);
-  alert('לא הצלחנו לאתר את המיקום שלך. אנא אשר הרשאות מיקום.');
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      switch (err.code) {
+        case err.PERMISSION_DENIED:
+          alert(isIOS
+            ? 'גישה למיקום נדחתה.\n\nיש לוודא ש"שירותי מיקום" מופעלים בהגדרות > פרטיות > שירותי מיקום, ושהדפדפן מורשה לגשת למיקום.'
+            : 'גישה למיקום נדחתה. אנא אשר הרשאת מיקום בדפדפן ונסה שוב.');
+          break;
+        case err.POSITION_UNAVAILABLE:
+          alert('לא ניתן לקבוע את המיקום. יש לוודא ששירותי המיקום מופעלים במכשיר.');
+          break;
+        case err.TIMEOUT:
+          alert('חיפוש המיקום ארך יותר מדי זמן. נסה שוב במקום עם קליטה טובה יותר.');
+          break;
+        default:
+          alert('שגיאה לא ידועה באיתור מיקום.');
+      }
+    },
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
+  );
 }
 
 /* ── Map markers ───────────────────────────────────────── */
