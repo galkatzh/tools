@@ -1,6 +1,5 @@
 /** Shelter Finder – finds the 5 closest bomb shelters and shows navigation options. */
 
-const WALKING_SPEED_KMH = 5; // average walking speed
 let map, userMarker, shelterMarkers = [], shelterData = null;
 let panelEl, listEl, locateBtn, loadingEl;
 
@@ -148,7 +147,7 @@ function renderShelterMarkers(shelters) {
 
     marker.bindPopup(
       `<b>מקלט ${i + 1}</b><br>${s.type || 'מקלט'}` +
-      `<br>${formatDist(s.dist)} · ${formatWalk(s.dist)} הליכה`
+      `<br>${formatDist(s.dist)}`
     );
 
     marker.on('click', () => highlightCard(i));
@@ -164,7 +163,6 @@ function renderShelterList(shelters, userLat, userLng) {
         ${s.type ? `<div class="shelter-type">${s.type}</div>` : ''}
         <div class="shelter-distances">
           <span>${formatDist(s.dist)}</span>
-          <span>~${formatWalk(s.dist)} הליכה</span>
         </div>
         <div class="nav-links">
           <a class="nav-link waze" href="${wazeUrl(s.lat, s.lng)}" target="_blank" onclick="event.stopPropagation()">
@@ -265,15 +263,6 @@ function formatDist(m) {
   return m < 1000 ? `${Math.round(m)} מ'` : `${(m / 1000).toFixed(1)} ק"מ`;
 }
 
-/** Approximate walking time string. */
-function formatWalk(meters) {
-  const minutes = Math.round(meters / (WALKING_SPEED_KMH * 1000 / 60));
-  if (minutes < 1) return 'פחות מדקה';
-  if (minutes < 60) return `${minutes} דק'`;
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return m ? `${h} שע' ${m} דק'` : `${h} שע'`;
-}
 
 /** Waze deep link to navigate to coordinates. */
 function wazeUrl(lat, lng) {
