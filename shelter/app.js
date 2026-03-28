@@ -64,20 +64,11 @@ function requestLocation() {
     (err) => {
       loadingEl.classList.add('hidden');
       locateBtn.classList.remove('tracking');
-      console.error('Geolocation error:', err);
-
-      // Show detailed debug info to help diagnose iOS issues
-      const ua = navigator.userAgent;
-      const isIOS = /iPad|iPhone|iPod/.test(ua);
-      const isPWA = window.matchMedia('(display-mode: minimal-ui)').matches ||
-                    window.matchMedia('(display-mode: standalone)').matches ||
-                    navigator.standalone;
-      const debugInfo = `code: ${err.code}, msg: ${err.message}, PWA: ${isPWA}, iOS: ${isIOS}`;
-      console.error('Location debug:', debugInfo);
+      console.error('Geolocation error:', err.code, err.message);
 
       switch (err.code) {
         case err.PERMISSION_DENIED:
-          alert(`גישה למיקום נדחתה.\n\n${debugInfo}\n\nיש לוודא ש"שירותי מיקום" מופעלים בהגדרות > פרטיות, ושהדפדפן מורשה לגשת למיקום.`);
+          alert('גישה למיקום נדחתה.\n\nיש לוודא ש"שירותי מיקום" מופעלים בהגדרות > פרטיות, ושהדפדפן מורשה לגשת למיקום.\n\nנדרשת גישה למיקום מדויק.');
           break;
         case err.POSITION_UNAVAILABLE:
           alert('לא ניתן לקבוע את המיקום. יש לוודא ששירותי המיקום מופעלים במכשיר.');
@@ -86,7 +77,7 @@ function requestLocation() {
           alert('חיפוש המיקום ארך יותר מדי זמן. נסה שוב במקום עם קליטה טובה יותר.');
           break;
         default:
-          alert(`שגיאה לא ידועה באיתור מיקום.\n\n${debugInfo}`);
+          alert('שגיאה לא ידועה באיתור מיקום.');
       }
     },
     { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
@@ -188,11 +179,18 @@ function renderShelterList(shelters, userLat, userLng) {
   `).join('');
 }
 
-/** Zoom map to fit user + all 5 shelters. */
+/** Zoom map to fit user + all 5 shelters, accounting for the open panel. */
 function fitMapBounds(shelters, userLat, userLng) {
   const points = [[userLat, userLng], ...shelters.map(s => [s.lat, s.lng])];
   const bounds = L.latLngBounds(points);
-  map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
+  // The bottom panel covers ~55% of the viewport. Add enough bottom padding
+  // so all markers are visible in the top portion of the map.
+  const panelHeight = Math.round(window.innerHeight * 0.55);
+  map.fitBounds(bounds, {
+    paddingTopLeft: [40, 40],
+    paddingBottomRight: [40, panelHeight + 20],
+    maxZoom: 17,
+  });
 }
 
 /* ── Interaction helpers ───────────────────────────────── */
