@@ -4,7 +4,7 @@
   "description": "מצא את 5 המקלטים הקרובים אליך ונווט אליהם",
   "start_url": "/shelter/",
   "scope": "/shelter/",
-  "display": "standalone",
+  "display": "minimal-ui",
   "background_color": "#1a1a2e",
   "theme_color": "#1a1a2e",
   "dir": "rtl",
