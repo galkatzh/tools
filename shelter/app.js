@@ -52,18 +52,19 @@ function requestLocation() {
     return;
   }
 
-  // IMPORTANT: call getCurrentPosition synchronously inside the click handler.
-  // iOS Safari only shows the permission prompt when the call originates from
-  // an active user gesture. Any async deferral (setTimeout, promise, etc.)
-  // breaks the gesture chain and iOS silently denies with code 1.
-  navigator.geolocation.getCurrentPosition(
+  // Use watchPosition instead of getCurrentPosition — on some iOS Safari
+  // versions, watchPosition reliably triggers the permission prompt while
+  // getCurrentPosition silently denies with code 1.
+  const watchId = navigator.geolocation.watchPosition(
     (pos) => {
+      navigator.geolocation.clearWatch(watchId);
       loadingEl.classList.add('hidden');
       const { latitude: lat, longitude: lng } = pos.coords;
       setUserMarker(lat, lng);
       showClosestShelters(lat, lng);
     },
     (err) => {
+      navigator.geolocation.clearWatch(watchId);
       loadingEl.classList.add('hidden');
       locateBtn.classList.remove('tracking');
       console.error('Geolocation error:', err);
@@ -85,7 +86,7 @@ function requestLocation() {
           alert('שגיאה לא ידועה באיתור מיקום.');
       }
     },
-    { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
+    { timeout: 15000, maximumAge: 30000 }
   );
 
   // Update UI after the geolocation call is dispatched (not before)
