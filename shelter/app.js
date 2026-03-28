@@ -46,35 +46,51 @@ async function loadShelters() {
 
 /* ── Geolocation ───────────────────────────────────────── */
 
-function requestLocation() {
+async function requestLocation() {
   if (!navigator.geolocation) {
     alert('הדפדפן לא תומך באיתור מיקום');
     return;
   }
 
-  // Use watchPosition instead of getCurrentPosition — on some iOS Safari
-  // versions, watchPosition reliably triggers the permission prompt while
-  // getCurrentPosition silently denies with code 1.
-  const watchId = navigator.geolocation.watchPosition(
+  // Debug: check Permissions API state before requesting location.
+  // This helps diagnose iOS Safari silently denying without prompting.
+  if (navigator.permissions) {
+    try {
+      const perm = await navigator.permissions.query({ name: 'geolocation' });
+      console.log('Geolocation permission state:', perm.state);
+      if (perm.state === 'denied') {
+        alert('הדפדפן חוסם גישה למיקום עבור אתר זה.\n\nPermission state: denied\n\nנסה: הגדרות > Safari > מיקום > "שאל", או נקה נתוני אתר.');
+        return;
+      }
+    } catch (e) {
+      console.log('Permissions API query failed:', e);
+    }
+  }
+
+  navigator.geolocation.getCurrentPosition(
     (pos) => {
-      navigator.geolocation.clearWatch(watchId);
       loadingEl.classList.add('hidden');
       const { latitude: lat, longitude: lng } = pos.coords;
       setUserMarker(lat, lng);
       showClosestShelters(lat, lng);
     },
     (err) => {
-      navigator.geolocation.clearWatch(watchId);
       loadingEl.classList.add('hidden');
       locateBtn.classList.remove('tracking');
       console.error('Geolocation error:', err);
 
-      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      // Show detailed debug info to help diagnose iOS issues
+      const ua = navigator.userAgent;
+      const isIOS = /iPad|iPhone|iPod/.test(ua);
+      const isPWA = window.matchMedia('(display-mode: minimal-ui)').matches ||
+                    window.matchMedia('(display-mode: standalone)').matches ||
+                    navigator.standalone;
+      const debugInfo = `code: ${err.code}, msg: ${err.message}, PWA: ${isPWA}, iOS: ${isIOS}`;
+      console.error('Location debug:', debugInfo);
+
       switch (err.code) {
         case err.PERMISSION_DENIED:
-          alert(isIOS
-            ? 'גישה למיקום נדחתה.\n\nיש לוודא ש"שירותי מיקום" מופעלים בהגדרות > פרטיות > שירותי מיקום, ושהדפדפן מורשה לגשת למיקום.'
-            : 'גישה למיקום נדחתה. אנא אשר הרשאת מיקום בדפדפן ונסה שוב.');
+          alert(`גישה למיקום נדחתה.\n\n${debugInfo}\n\nיש לוודא ש"שירותי מיקום" מופעלים בהגדרות > פרטיות, ושהדפדפן מורשה לגשת למיקום.`);
           break;
         case err.POSITION_UNAVAILABLE:
           alert('לא ניתן לקבוע את המיקום. יש לוודא ששירותי המיקום מופעלים במכשיר.');
@@ -83,10 +99,10 @@ function requestLocation() {
           alert('חיפוש המיקום ארך יותר מדי זמן. נסה שוב במקום עם קליטה טובה יותר.');
           break;
         default:
-          alert('שגיאה לא ידועה באיתור מיקום.');
+          alert(`שגיאה לא ידועה באיתור מיקום.\n\n${debugInfo}`);
       }
     },
-    { timeout: 15000, maximumAge: 30000 }
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
   );
 
   // Update UI after the geolocation call is dispatched (not before)
