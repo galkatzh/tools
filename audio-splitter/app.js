@@ -27,7 +27,7 @@ function getModelUrl() {
     || MODEL_URLS[localStorage.getItem('scnet_model_quality') || 'full'];
 }
 
-/** Process audio in 11-second chunks (matching SCNet training config). */
+/** Process audio in 11-second chunks (fixed — the model's DFT matrices require T=474 frames). */
 const CHUNK_SECONDS = 11;
 const CHUNK_SAMPLES = CHUNK_SECONDS * SAMPLE_RATE;
 

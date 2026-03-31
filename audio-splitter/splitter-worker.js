@@ -13,7 +13,7 @@
  */
 
 import { N_FREQ, stft, istft } from './audio-processor.js';
-import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.mjs';
+import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/ort.min.mjs';
 
 // ── ORT session ────────────────────────────────────────────────────────────
 
@@ -25,12 +25,15 @@ let session = null;
 self.onmessage = async ({ data }) => {
   if (data.type === 'init') {
     try {
-      ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/';
+      ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/';
       // SharedArrayBuffer is unavailable without COEP headers, which break CDN
       // imports in workers. Parallelism is achieved via multiple chunk workers instead.
       ort.env.wasm.numThreads = 1;
       ort.env.wasm.proxy = false;
-      session = await ort.InferenceSession.create(data.modelBytes, { executionProviders: ['wasm'] });
+      session = await ort.InferenceSession.create(data.modelBytes, {
+        executionProviders: ['wasm'],
+        graphOptimizationLevel: 'all',
+      });
       self.postMessage({ type: 'ready' });
     } catch (err) {
       console.error('[worker] init failed:', err);
