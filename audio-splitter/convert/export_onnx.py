@@ -8,7 +8,7 @@ This script:
   4. Exports to ONNX with dynamic time axis
 
 Usage:
-    pip install torch torchaudio onnx
+    pip install torch torchaudio onnx onnxsim
     python export_onnx.py [--output scnet.onnx] [--checkpoint path/to/ckpt]
     python export_onnx.py --fp16           # also export float16 model (recommended)
     python export_onnx.py --quantize-int8  # also export int8 dynamically-quantized model
@@ -399,6 +399,31 @@ def download_checkpoint(url, dest):
     return dest
 
 
+def _topological_sort(graph):
+    """Sort ONNX graph nodes so every input is produced before it's consumed."""
+    available = set()
+    for inp in graph.input:
+        available.add(inp.name)
+    for init in graph.initializer:
+        available.add(init.name)
+
+    remaining = list(graph.node)
+    sorted_nodes = []
+    max_iter = len(remaining) ** 2 + 1
+    for _ in range(max_iter):
+        if not remaining:
+            break
+        for i, node in enumerate(remaining):
+            if all(inp == '' or inp in available for inp in node.input):
+                sorted_nodes.append(node)
+                for out in node.output:
+                    available.add(out)
+                remaining.pop(i)
+                break
+    sorted_nodes.extend(remaining)  # append any stragglers
+    return sorted_nodes
+
+
 def main():
     parser = argparse.ArgumentParser(description="Export SCNet to ONNX")
     parser.add_argument('--checkpoint', type=str, default=None,
@@ -476,17 +501,37 @@ def main():
     print(f"  Output shape: [B, {len(model.sources)}, 4, 2049, T]")
     print(f"  Sources: {model.sources}")
 
-    # Float16 conversion
+    # Float16 conversion (with graph optimization)
     if args.fp16:
         from onnxruntime.transformers.float16 import convert_float_to_float16
+        from onnxsim import simplify
 
         base, ext = os.path.splitext(args.output)
         fp16_output = f"{base}_fp16{ext}"
-        print(f"\nConverting to float16...")
-        fp16_model = convert_float_to_float16(onnx_model, keep_io_types=True)
+
+        # Simplify graph first: fold constants, eliminate dead nodes, merge ops.
+        # This halves the node count, reducing parse time and inference overhead.
+        print(f"\nSimplifying graph before fp16 conversion...")
+        sim_model, ok = simplify(onnx_model)
+        if not ok:
+            print("  WARNING: onnxsim validation failed, using simplified model anyway")
+        orig_nodes = len(onnx_model.graph.node)
+        sim_nodes = len(sim_model.graph.node)
+        print(f"  Nodes: {orig_nodes} → {sim_nodes} ({orig_nodes - sim_nodes} removed)")
+
+        print(f"Converting to float16...")
+        fp16_model = convert_float_to_float16(sim_model, keep_io_types=True)
+
+        # fp16 conversion can break topological sort by inserting Cast nodes
+        # in arbitrary positions — re-sort to fix.
+        sorted_nodes = _topological_sort(fp16_model.graph)
+        del fp16_model.graph.node[:]
+        fp16_model.graph.node.extend(sorted_nodes)
+
         onnx.save(fp16_model, fp16_output)
         fp16_size_mb = os.path.getsize(fp16_output) / (1024 * 1024)
-        print(f"✓ FP16: {fp16_output} ({fp16_size_mb:.1f} MB, {fp16_size_mb/size_mb:.0%} of original)")
+        print(f"✓ FP16: {fp16_output} ({fp16_size_mb:.1f} MB, {fp16_size_mb/size_mb:.0%} of original, "
+              f"{len(fp16_model.graph.node)} nodes)")
 
     # Int8 dynamic quantization
     if args.quantize_int8:
