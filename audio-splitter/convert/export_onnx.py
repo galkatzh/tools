@@ -472,6 +472,8 @@ def main():
     print(f"  Input shape:  {list(dummy.shape)} [B, C=4, F=2049, T]")
 
     try:
+        # Use legacy exporter (dynamo=False) — the dynamo exporter can't handle
+        # the fixed-size DFT matrices in FeatureConversion with a dynamic time axis.
         torch.onnx.export(
             core,
             dummy,
@@ -483,6 +485,7 @@ def main():
                 'spectrogram': {0: 'batch', 3: 'time'},
                 'sources': {0: 'batch', 4: 'time'},
             },
+            dynamo=False,
         )
     except Exception as e:
         print(f"\n✗ Export failed: {e}")
