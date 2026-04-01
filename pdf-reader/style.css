@@ -1,0 +1,70 @@
+:root {
+  color-scheme: light dark;
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: Canvas;
+  color: CanvasText;
+}
+
+.app {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 1.25rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.6rem 1rem;
+  align-items: center;
+}
+
+.file-label {
+  font-weight: 600;
+}
+
+input[type='file'],
+input[type='search'],
+input[type='range'] {
+  width: 100%;
+}
+
+.status {
+  padding: 0.75rem;
+  border: 1px solid color-mix(in srgb, CanvasText 25%, Canvas);
+  border-radius: 8px;
+}
+
+.results {
+  display: grid;
+  gap: 0.7rem;
+  padding-left: 1.2rem;
+}
+
+.result {
+  border: 1px solid color-mix(in srgb, CanvasText 20%, Canvas);
+  border-radius: 8px;
+  padding: 0.7rem;
+  background: color-mix(in srgb, CanvasText 4%, Canvas);
+}
+
+.result strong {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.result .meta {
+  font-size: 0.9rem;
+  opacity: 0.85;
+}
+
+mark {
+  background: #f9d949;
+  color: #222;
+  padding: 0 0.1em;
+}

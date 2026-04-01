@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF Fuzzy Reader</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header>
+        <h1>PDF Fuzzy Reader</h1>
+        <p>Upload a PDF and search its text with typo-tolerant fuzzy matching.</p>
+      </header>
+
+      <section class="controls" aria-label="PDF controls">
+        <label class="file-label" for="pdf-file">Choose PDF</label>
+        <input id="pdf-file" type="file" accept="application/pdf" />
+
+        <label for="query">Fuzzy search</label>
+        <input id="query" type="search" placeholder="e.g. intoduction (typo tolerated)" disabled />
+
+        <label for="threshold">Max distance: <span id="threshold-value">2</span></label>
+        <input id="threshold" type="range" min="0" max="6" value="2" step="1" disabled />
+      </section>
+
+      <section class="status" id="status" aria-live="polite">Load a PDF to begin.</section>
+
+      <section>
+        <h2>Results</h2>
+        <ol id="results" class="results"></ol>
+      </section>
+    </main>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
