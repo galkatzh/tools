@@ -83,7 +83,6 @@ async function extractPages(pdf) {
     const rawTokens = rawText.split(/\s+/).filter(Boolean);
     extracted.push({
       page: i,
-      rawText,
       rawTokens,
       normalizedTokens: rawTokens.map(normalize),
     });
@@ -101,6 +100,7 @@ function runSearch() {
     currentMatch = -1;
     renderMatches();
     setStatus(pages.length ? 'Enter a query to fuzzy-search the PDF.' : 'Load a PDF to begin.');
+    goToPage(currentPage);
     updateLabels();
     return;
   }
@@ -109,8 +109,7 @@ function runSearch() {
   const found = [];
 
   for (const page of pages) {
-    const pageMatches = fuzzyMatchesInPage(page, queryTokens, maxDistance);
-    found.push(...pageMatches);
+    found.push(...fuzzyMatchesInPage(page, queryTokens, maxDistance));
   }
 
   matches = found.sort((a, b) => a.distance - b.distance || a.page - b.page || a.start - b.start);
@@ -121,6 +120,7 @@ function runSearch() {
     goToMatch(0);
   } else {
     setStatus('No fuzzy matches found. Increase max distance or change query.');
+    goToPage(currentPage);
     updateLabels();
   }
 }
@@ -135,19 +135,16 @@ function fuzzyMatchesInPage(page, queryTokens, maxDistance) {
     const windowTokens = page.normalizedTokens.slice(i, i + n);
     const distance = levenshtein(joinedQuery, windowTokens.join(' '));
     if (distance <= maxDistance) {
-      const rawNeedle = page.rawTokens.slice(i, i + n).join(' ');
       out.push({
         page: page.page,
         start: i,
         length: n,
         distance,
-        needle: rawNeedle,
-        snippet: buildSnippet(page.rawTokens, i, n),
+        hitTokens: page.rawTokens.slice(i, i + n),
       });
       i += Math.max(0, n - 2);
     }
   }
-
   return out;
 }
 
@@ -159,7 +156,7 @@ function renderMatches() {
     const match = matches[i];
     const li = document.createElement('li');
     li.className = `result${i === currentMatch ? ' active' : ''}`;
-    li.innerHTML = `<strong>Page ${match.page}</strong><div class="meta">Distance: ${match.distance}</div><p>${match.snippet}</p>`;
+    li.innerHTML = `<strong>Page ${match.page}</strong><div class="meta">Distance: ${match.distance}</div>`;
     li.addEventListener('click', () => goToMatch(i));
     fragment.append(li);
   }
@@ -181,8 +178,8 @@ async function goToMatch(matchIndex) {
   if (!matches.length) return;
   const wrapped = ((matchIndex % matches.length) + matches.length) % matches.length;
   currentMatch = wrapped;
-
   const match = matches[currentMatch];
+
   currentPage = match.page;
   await renderPage(currentPage, match);
 
@@ -196,8 +193,15 @@ async function goToMatch(matchIndex) {
 
 async function renderPage(pageNumber, activeMatch = null) {
   if (!pdfDoc) return;
+
   const page = await pdfDoc.getPage(pageNumber);
   const viewport = page.getViewport({ scale: 1.35 });
+  const textContent = await page.getTextContent();
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'page-wrapper';
+  wrapper.style.width = `${viewport.width}px`;
+  wrapper.style.height = `${viewport.height}px`;
 
   const canvas = document.createElement('canvas');
   canvas.width = viewport.width;
@@ -205,32 +209,49 @@ async function renderPage(pageNumber, activeMatch = null) {
 
   await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
 
-  const shell = document.createElement('article');
-  shell.className = 'page-shell';
-  shell.append(canvas);
+  const textLayer = document.createElement('div');
+  textLayer.className = 'textLayer';
+
+  wrapper.append(canvas, textLayer);
+  viewerEl.replaceChildren(wrapper);
+
+  await pdfjsLib.renderTextLayer({
+    textContentSource: textContent,
+    container: textLayer,
+    viewport,
+  }).promise;
 
   if (activeMatch && activeMatch.page === pageNumber) {
-    const matchNote = document.createElement('p');
-    matchNote.className = 'page-match';
-    matchNote.innerHTML = `<strong>Current result:</strong> ${activeMatch.snippet}`;
-    shell.append(matchNote);
+    highlightTextLayer(textLayer, activeMatch.hitTokens);
   }
-
-  viewerEl.replaceChildren(shell);
 }
 
-function buildSnippet(tokens, start, length) {
-  const left = Math.max(0, start - 12);
-  const right = Math.min(tokens.length, start + length + 12);
-  const prefix = tokens.slice(left, start).join(' ');
-  const hit = tokens.slice(start, start + length).join(' ');
-  const suffix = tokens.slice(start + length, right).join(' ');
+function highlightTextLayer(textLayer, hitTokens) {
+  const terms = hitTokens.map((t) => t.toLowerCase()).filter(Boolean);
+  if (!terms.length) return;
 
-  return `${left > 0 ? '…' : ''}${escapeHtml(prefix)} ${hit ? `<mark>${escapeHtml(hit)}</mark>` : ''} ${escapeHtml(suffix)}${right < tokens.length ? '…' : ''}`.replace(/\s+/g, ' ').trim();
+  for (const node of textLayer.querySelectorAll('span')) {
+    const text = node.textContent;
+    if (!text) continue;
+
+    let html = escapeHtml(text);
+    let touched = false;
+
+    for (const term of terms) {
+      if (term.length < 2) continue;
+      const pattern = new RegExp(`(${escapeRegExp(term)})`, 'ig');
+      if (pattern.test(text)) {
+        html = html.replace(pattern, '<mark>$1</mark>');
+        touched = true;
+      }
+    }
+
+    if (touched) node.innerHTML = html;
+  }
 }
 
 function normalize(text) {
-  return text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
 function updateLabels() {
@@ -264,6 +285,10 @@ function escapeHtml(text) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function setStatus(message) {
