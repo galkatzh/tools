@@ -16,6 +16,7 @@ document.addEventListener('DOMContentLoaded', () => {
   locateBtn.addEventListener('click', requestLocation);
   setupPanelDrag();
   registerSW();
+  requestLocation();
 });
 
 /** Initialize Leaflet map centered on Israel. */
@@ -25,7 +26,7 @@ function initMap() {
     zoom: 8,
     zoomControl: false,
   });
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
     attribution: '&copy; OSM &amp; CARTO',
     maxZoom: 19,
   }).addTo(map);
