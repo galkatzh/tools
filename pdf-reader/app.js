@@ -9,8 +9,19 @@ const thresholdInput = document.querySelector('#threshold');
 const thresholdValue = document.querySelector('#threshold-value');
 const resultsEl = document.querySelector('#results');
 const statusEl = document.querySelector('#status');
+const viewerEl = document.querySelector('#viewer');
+const pageLabelEl = document.querySelector('#page-label');
+const matchLabelEl = document.querySelector('#match-label');
+const prevPageBtn = document.querySelector('#prev-page');
+const nextPageBtn = document.querySelector('#next-page');
+const prevMatchBtn = document.querySelector('#prev-match');
+const nextMatchBtn = document.querySelector('#next-match');
 
+let pdfDoc = null;
 let pages = [];
+let matches = [];
+let currentPage = 1;
+let currentMatch = -1;
 
 fileInput.addEventListener('change', async (event) => {
   const file = event.target.files?.[0];
@@ -18,150 +29,214 @@ fileInput.addEventListener('change', async (event) => {
 
   try {
     setStatus('Reading PDF...');
-    pages = await extractPdfText(file);
+    const bytes = await file.arrayBuffer();
+    pdfDoc = await pdfjsLib.getDocument({ data: bytes }).promise;
+    pages = await extractPages(pdfDoc);
+
+    currentPage = 1;
+    matches = [];
+    currentMatch = -1;
+
     queryInput.disabled = false;
     thresholdInput.disabled = false;
-    queryInput.value = '';
-    resultsEl.innerHTML = '';
-    setStatus(`Indexed ${pages.length} page(s). Enter a query to search.`);
+    prevPageBtn.disabled = false;
+    nextPageBtn.disabled = false;
+
+    await renderPage(currentPage);
+    renderMatches();
+    setStatus(`Indexed ${pages.length} page(s). Type a query to fuzzy-search.`);
   } catch (error) {
     console.error('Failed to parse PDF', error);
+    pdfDoc = null;
     pages = [];
+    matches = [];
+    currentMatch = -1;
+    viewerEl.innerHTML = '';
     queryInput.disabled = true;
     thresholdInput.disabled = true;
-    resultsEl.innerHTML = '';
+    prevPageBtn.disabled = true;
+    nextPageBtn.disabled = true;
+    prevMatchBtn.disabled = true;
+    nextMatchBtn.disabled = true;
     setStatus('Failed to read the PDF. Check console for details.');
   }
+
+  updateLabels();
 });
 
-queryInput.addEventListener('input', renderSearchResults);
+queryInput.addEventListener('input', runSearch);
 thresholdInput.addEventListener('input', () => {
   thresholdValue.textContent = thresholdInput.value;
-  renderSearchResults();
+  runSearch();
 });
+prevPageBtn.addEventListener('click', () => goToPage(currentPage - 1));
+nextPageBtn.addEventListener('click', () => goToPage(currentPage + 1));
+prevMatchBtn.addEventListener('click', () => goToMatch(currentMatch - 1));
+nextMatchBtn.addEventListener('click', () => goToMatch(currentMatch + 1));
 
-async function extractPdfText(file) {
-  const bytes = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
-  const extractedPages = [];
-
+async function extractPages(pdf) {
+  const extracted = [];
   for (let i = 1; i <= pdf.numPages; i += 1) {
     const page = await pdf.getPage(i);
     const textContent = await page.getTextContent();
     const rawText = textContent.items.map((item) => item.str).join(' ');
-    extractedPages.push({ page: i, text: normalize(rawText), rawText });
+    const rawTokens = rawText.split(/\s+/).filter(Boolean);
+    extracted.push({
+      page: i,
+      rawText,
+      rawTokens,
+      normalizedTokens: rawTokens.map(normalize),
+    });
     setStatus(`Indexed page ${i}/${pdf.numPages}...`);
   }
-
-  return extractedPages;
+  return extracted;
 }
 
-function renderSearchResults() {
+function runSearch() {
   const query = normalize(queryInput.value.trim());
   const maxDistance = Number(thresholdInput.value);
 
-  if (!query) {
-    resultsEl.innerHTML = '';
-    setStatus(`Indexed ${pages.length} page(s). Enter a query to search.`);
+  if (!query || !pages.length) {
+    matches = [];
+    currentMatch = -1;
+    renderMatches();
+    setStatus(pages.length ? 'Enter a query to fuzzy-search the PDF.' : 'Load a PDF to begin.');
+    updateLabels();
     return;
   }
 
   const queryTokens = query.split(/\s+/).filter(Boolean);
-  const matches = [];
+  const found = [];
 
   for (const page of pages) {
-    const pageTokens = page.text.split(/\s+/).filter(Boolean);
-    const best = bestTokenWindowMatch(queryTokens, pageTokens, maxDistance);
-    if (best) {
-      matches.push({ page: page.page, ...best, rawText: page.rawText });
-    }
+    const pageMatches = fuzzyMatchesInPage(page, queryTokens, maxDistance);
+    found.push(...pageMatches);
   }
 
-  matches.sort((a, b) => a.distance - b.distance || a.page - b.page);
-  render(matches, queryTokens.length);
+  matches = found.sort((a, b) => a.distance - b.distance || a.page - b.page || a.start - b.start);
+  currentMatch = matches.length ? 0 : -1;
+
+  renderMatches();
+  if (currentMatch >= 0) {
+    goToMatch(0);
+  } else {
+    setStatus('No fuzzy matches found. Increase max distance or change query.');
+    updateLabels();
+  }
 }
 
-function bestTokenWindowMatch(queryTokens, tokens, maxDistance) {
-  const length = queryTokens.length;
-  if (!length || tokens.length < length) return null;
+function fuzzyMatchesInPage(page, queryTokens, maxDistance) {
+  const out = [];
+  const n = queryTokens.length;
+  if (page.normalizedTokens.length < n) return out;
 
-  let best = null;
-  for (let i = 0; i <= tokens.length - length; i += 1) {
-    const windowTokens = tokens.slice(i, i + length);
-    const joinedWindow = windowTokens.join(' ');
-    const joinedQuery = queryTokens.join(' ');
-    const distance = levenshtein(joinedQuery, joinedWindow);
-
-    if (distance <= maxDistance && (!best || distance < best.distance)) {
-      best = {
+  const joinedQuery = queryTokens.join(' ');
+  for (let i = 0; i <= page.normalizedTokens.length - n; i += 1) {
+    const windowTokens = page.normalizedTokens.slice(i, i + n);
+    const distance = levenshtein(joinedQuery, windowTokens.join(' '));
+    if (distance <= maxDistance) {
+      const rawNeedle = page.rawTokens.slice(i, i + n).join(' ');
+      out.push({
+        page: page.page,
+        start: i,
+        length: n,
         distance,
-        startTokenIndex: i,
-        endTokenIndex: i + length - 1,
-        matchText: joinedWindow,
-      };
+        needle: rawNeedle,
+        snippet: buildSnippet(page.rawTokens, i, n),
+      });
+      i += Math.max(0, n - 2);
     }
   }
 
-  return best;
+  return out;
 }
 
-function render(matches, queryTokenCount) {
+function renderMatches() {
   resultsEl.innerHTML = '';
-  if (!matches.length) {
-    setStatus('No fuzzy matches found. Increase "Max distance" or adjust the query.');
-    return;
-  }
-
-  setStatus(`Found ${matches.length} matching page(s).`);
-
   const fragment = document.createDocumentFragment();
-  for (const match of matches.slice(0, 100)) {
-    const item = document.createElement('li');
-    item.className = 'result';
 
-    const title = document.createElement('strong');
-    title.textContent = `Page ${match.page}`;
-
-    const meta = document.createElement('div');
-    meta.className = 'meta';
-    meta.textContent = `Distance: ${match.distance}`;
-
-    const snippet = document.createElement('p');
-    snippet.innerHTML = buildSnippet(match.rawText, match.matchText, queryTokenCount);
-
-    item.append(title, meta, snippet);
-    fragment.append(item);
+  for (let i = 0; i < matches.length; i += 1) {
+    const match = matches[i];
+    const li = document.createElement('li');
+    li.className = `result${i === currentMatch ? ' active' : ''}`;
+    li.innerHTML = `<strong>Page ${match.page}</strong><div class="meta">Distance: ${match.distance}</div><p>${match.snippet}</p>`;
+    li.addEventListener('click', () => goToMatch(i));
+    fragment.append(li);
   }
 
   resultsEl.append(fragment);
+  prevMatchBtn.disabled = !matches.length;
+  nextMatchBtn.disabled = !matches.length;
+  updateLabels();
 }
 
-function buildSnippet(rawText, normalizedMatchText, queryTokenCount) {
-  const rawTokens = rawText.split(/\s+/).filter(Boolean);
-  const normalizedTokens = rawTokens.map(normalize);
-  const needleTokens = normalizedMatchText.split(/\s+/);
+async function goToPage(pageNumber) {
+  if (!pdfDoc) return;
+  currentPage = Math.max(1, Math.min(pdfDoc.numPages, pageNumber));
+  await renderPage(currentPage);
+  updateLabels();
+}
 
-  let start = normalizedTokens.findIndex((_, i) => {
-    const candidate = normalizedTokens.slice(i, i + needleTokens.length);
-    return candidate.join(' ') === needleTokens.join(' ');
+async function goToMatch(matchIndex) {
+  if (!matches.length) return;
+  const wrapped = ((matchIndex % matches.length) + matches.length) % matches.length;
+  currentMatch = wrapped;
+
+  const match = matches[currentMatch];
+  currentPage = match.page;
+  await renderPage(currentPage, match);
+
+  document.querySelectorAll('.result').forEach((node, i) => {
+    node.classList.toggle('active', i === currentMatch);
   });
 
-  if (start < 0) start = 0;
+  setStatus(`Showing result ${currentMatch + 1}/${matches.length} on page ${match.page}.`);
+  updateLabels();
+}
+
+async function renderPage(pageNumber, activeMatch = null) {
+  if (!pdfDoc) return;
+  const page = await pdfDoc.getPage(pageNumber);
+  const viewport = page.getViewport({ scale: 1.35 });
+
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+
+  const shell = document.createElement('article');
+  shell.className = 'page-shell';
+  shell.append(canvas);
+
+  if (activeMatch && activeMatch.page === pageNumber) {
+    const matchNote = document.createElement('p');
+    matchNote.className = 'page-match';
+    matchNote.innerHTML = `<strong>Current result:</strong> ${activeMatch.snippet}`;
+    shell.append(matchNote);
+  }
+
+  viewerEl.replaceChildren(shell);
+}
+
+function buildSnippet(tokens, start, length) {
   const left = Math.max(0, start - 12);
-  const right = Math.min(rawTokens.length, start + queryTokenCount + 12);
+  const right = Math.min(tokens.length, start + length + 12);
+  const prefix = tokens.slice(left, start).join(' ');
+  const hit = tokens.slice(start, start + length).join(' ');
+  const suffix = tokens.slice(start + length, right).join(' ');
 
-  const view = rawTokens.slice(left, right).join(' ');
-  const escapedView = escapeHtml(view);
-  const escapedNeedle = escapeRegExp(rawTokens.slice(start, start + queryTokenCount).join(' '));
-
-  if (!escapedNeedle) return `${escapedView}${right < rawTokens.length ? '…' : ''}`;
-
-  const highlighted = escapedView.replace(new RegExp(escapedNeedle, 'i'), '<mark>$&</mark>');
-  return `${left > 0 ? '…' : ''}${highlighted}${right < rawTokens.length ? '…' : ''}`;
+  return `${left > 0 ? '…' : ''}${escapeHtml(prefix)} ${hit ? `<mark>${escapeHtml(hit)}</mark>` : ''} ${escapeHtml(suffix)}${right < tokens.length ? '…' : ''}`.replace(/\s+/g, ' ').trim();
 }
 
 function normalize(text) {
-  return text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+}
+
+function updateLabels() {
+  const totalPages = pdfDoc?.numPages ?? 0;
+  pageLabelEl.textContent = `Page ${totalPages ? currentPage : 0} / ${totalPages}`;
+  matchLabelEl.textContent = `Result ${matches.length ? currentMatch + 1 : 0} / ${matches.length}`;
 }
 
 function levenshtein(a, b) {
@@ -175,11 +250,7 @@ function levenshtein(a, b) {
   for (let i = 1; i < rows; i += 1) {
     for (let j = 1; j < cols; j += 1) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      dp[i][j] = Math.min(
-        dp[i - 1][j] + 1,
-        dp[i][j - 1] + 1,
-        dp[i - 1][j - 1] + cost,
-      );
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
     }
   }
 
@@ -193,10 +264,6 @@ function escapeHtml(text) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
-}
-
-function escapeRegExp(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function setStatus(message) {
