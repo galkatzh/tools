@@ -130,17 +130,39 @@ function fuzzyMatchesInPage(page, queryTokens, maxDistance) {
   const n = queryTokens.length;
   if (page.normalizedTokens.length < n) return out;
 
+
+  if (n === 1) {
+    const q = queryTokens[0];
+    for (let i = 0; i < page.normalizedTokens.length; i += 1) {
+      const token = page.normalizedTokens[i];
+      const distance = token.includes(q) ? 0 : minSubstringDistance(q, token);
+      if (distance <= maxDistance) {
+        out.push({
+          page: page.page,
+          start: i,
+          length: 1,
+          distance,
+          hitTokens: [page.rawTokens[i]],
+          snippet: buildSnippet(page.rawTokens, i, 1),
+        });
+      }
+    }
+    return out;
+  }
+
   const joinedQuery = queryTokens.join(' ');
   for (let i = 0; i <= page.normalizedTokens.length - n; i += 1) {
     const windowTokens = page.normalizedTokens.slice(i, i + n);
     const distance = levenshtein(joinedQuery, windowTokens.join(' '));
     if (distance <= maxDistance) {
+      const hitTokens = page.rawTokens.slice(i, i + n);
       out.push({
         page: page.page,
         start: i,
         length: n,
         distance,
-        hitTokens: page.rawTokens.slice(i, i + n),
+        hitTokens,
+        snippet: buildSnippet(page.rawTokens, i, n),
       });
       i += Math.max(0, n - 2);
     }
@@ -156,7 +178,7 @@ function renderMatches() {
     const match = matches[i];
     const li = document.createElement('li');
     li.className = `result${i === currentMatch ? ' active' : ''}`;
-    li.innerHTML = `<strong>Page ${match.page}</strong><div class="meta">Distance: ${match.distance}</div>`;
+    li.innerHTML = `<strong>Page ${match.page}</strong><div class="meta">Distance: ${match.distance}</div><p>${match.snippet}</p>`;
     li.addEventListener('click', () => goToMatch(i));
     fragment.append(li);
   }
@@ -248,6 +270,28 @@ function highlightTextLayer(textLayer, hitTokens) {
 
     if (touched) node.innerHTML = html;
   }
+}
+
+function buildSnippet(tokens, start, length) {
+  const left = Math.max(0, start - 10);
+  const right = Math.min(tokens.length, start + length + 10);
+  const prefix = escapeHtml(tokens.slice(left, start).join(' '));
+  const hit = escapeHtml(tokens.slice(start, start + length).join(' '));
+  const suffix = escapeHtml(tokens.slice(start + length, right).join(' '));
+  return `${left > 0 ? '…' : ''}${prefix} <mark>${hit}</mark> ${suffix}${right < tokens.length ? '…' : ''}`.replace(/\s+/g, ' ').trim();
+}
+
+function minSubstringDistance(query, token) {
+  if (!token) return query.length;
+  if (token.length <= query.length) return levenshtein(query, token);
+
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 0; i <= token.length - query.length; i += 1) {
+    const d = levenshtein(query, token.slice(i, i + query.length));
+    if (d < best) best = d;
+    if (best === 0) break;
+  }
+  return best;
 }
 
 function normalize(text) {
