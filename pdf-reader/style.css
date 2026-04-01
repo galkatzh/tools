@@ -67,24 +67,35 @@ input[type='range'] {
   background: #80808022;
 }
 
-.page-shell {
-  display: grid;
-  gap: 0.5rem;
-}
-
-canvas {
-  max-width: 100%;
-  height: auto;
-  border-radius: 4px;
+.page-wrapper {
+  position: relative;
   box-shadow: 0 4px 16px #00000030;
 }
 
-.page-match {
-  margin: 0;
-  padding: 0.6rem;
-  border-left: 4px solid #f2c300;
-  background: color-mix(in srgb, #f2c300 12%, Canvas);
+canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
   border-radius: 4px;
+}
+
+/* Minimal PDF.js text layer styles so highlights are rendered over the actual page text. */
+.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  line-height: 1;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+}
+
+.textLayer span,
+.textLayer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
 }
 
 .results-pane {
@@ -119,8 +130,9 @@ canvas {
 }
 
 mark {
-  background: #f9d949;
-  color: #222;
+  background: #f9d949cc;
+  color: transparent;
+  border-radius: 2px;
 }
 
 @media (max-width: 980px) {
