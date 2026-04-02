@@ -63,19 +63,18 @@ input[type='range'] {
   overflow: auto;
   padding: 0.5rem;
   display: grid;
-  place-items: center;
+  place-items: start center;
   background: #80808022;
 }
 
 .page-wrapper {
   position: relative;
   box-shadow: 0 4px 16px #00000030;
+  flex: none;
 }
 
 canvas {
   display: block;
-  max-width: 100%;
-  height: auto;
   border-radius: 4px;
 }
 
@@ -131,8 +130,14 @@ canvas {
 
 mark {
   background: #f9d949cc;
-  color: transparent;
+  color: inherit;
   border-radius: 2px;
+  padding: 0 0.08em;
+}
+
+.textLayer mark {
+  color: transparent;
+  padding: 0;
 }
 
 @media (max-width: 980px) {
