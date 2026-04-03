@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fuzzy Search Explainer (Levenshtein + Token Windows)</title>
+    <style>
+      body { font-family: Inter, system-ui, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+      main { max-width: 900px; margin: 0 auto; padding: 1.25rem; line-height: 1.55; }
+      h1, h2 { color: #f8fafc; }
+      section { background: #111827; border: 1px solid #334155; border-radius: 10px; padding: 1rem; margin-bottom: 1rem; }
+      code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      pre { background: #020617; padding: 0.8rem; border-radius: 8px; overflow: auto; }
+      .note { background: #1e293b; border-left: 4px solid #38bdf8; padding: 0.75rem; border-radius: 6px; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { border: 1px solid #334155; padding: 0.45rem; text-align: left; }
+      th { background: #1f2937; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>How fuzzy search works in this PDF reader</h1>
+      <p>
+        This app uses <strong>Levenshtein distance</strong> over <strong>token windows</strong>.
+        The idea: split text into tokens (words), slide a window over them, compare each window
+        to the query, and keep windows that are close enough.
+      </p>
+
+      <section>
+        <h2>1) Normalize and tokenize</h2>
+        <p>
+          Both the query and PDF text are normalized: lowercased and stripped of punctuation noise.
+          Then text is tokenized into words.
+        </p>
+        <pre><code>"The Encyclopædia Britannica, 1911" -> ["the", "encyclopædia", "britannica", "1911"]</code></pre>
+      </section>
+
+      <section>
+        <h2>2) Sliding token windows</h2>
+        <p>
+          For a query with <code>k</code> words, we slide a window of length <code>k</code> across page tokens.
+          Each window is a candidate match.
+        </p>
+        <table>
+          <thead>
+            <tr><th>Query</th><th>k</th><th>Window examples</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>neural network</code></td><td>2</td><td><code>["neural","netwrok"]</code>, <code>["deep","network"]</code>, ...</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>3) Score each window with Levenshtein distance</h2>
+        <p>
+          Join query tokens and window tokens with spaces, then compute edit distance.
+          Lower distance means more similar.
+        </p>
+        <pre><code>distance("neural network", "neural netwrok") = 2</code></pre>
+        <p>
+          If the distance is <= the user-selected threshold ("Max distance"), the window is a match.
+        </p>
+      </section>
+
+      <section>
+        <h2>4) Rank and navigate</h2>
+        <p>
+          Matches are sorted by:
+        </p>
+        <ol>
+          <li>smaller distance first,</li>
+          <li>then earlier page number,</li>
+          <li>then earlier position on page.</li>
+        </ol>
+        <p>
+          The app lets users jump through these ranked matches and highlights them in the PDF text layer.
+        </p>
+      </section>
+
+      <section>
+        <h2>How partial matching works (single-word query)</h2>
+        <p>
+          For one-word queries, the app also compares the query against substrings of each token,
+          so <code>enc</code> can match <code>encyclopedia</code> even without a space boundary.
+        </p>
+      </section>
+
+      <section>
+        <h2>How to extend this for multiple-word fuzzy search</h2>
+        <p>
+          Current token windows already support multiple words. To make it stronger, you can add:
+        </p>
+        <ol>
+          <li>
+            <strong>Variable window sizes</strong> (e.g. query length ± 1) to tolerate missing/extra words.
+          </li>
+          <li>
+            <strong>Per-token distance + alignment</strong> (dynamic programming over token sequences),
+            instead of only string-level distance on joined text.
+          </li>
+          <li>
+            <strong>N-gram indexing</strong> to prune candidates before expensive Levenshtein checks.
+          </li>
+          <li>
+            <strong>Weighted costs</strong> (smaller penalties for keyboard-neighbor typos/transpositions).
+          </li>
+          <li>
+            <strong>Semantic expansion</strong> (stemming/synonyms) before fuzzy scoring.
+          </li>
+        </ol>
+
+        <div class="note">
+          Practical upgrade path: keep the existing window approach, but score each candidate as a weighted
+          combination of (a) token-level edit distance, (b) word-order penalty, and (c) coverage of query terms.
+          This works well for multi-word queries with insertions/deletions.
+        </div>
+      </section>
+
+      <section>
+        <h2>Pseudocode</h2>
+        <pre><code>tokens = normalize(pdfPageText).splitWords()
+q = normalize(query).splitWords()
+
+for each page:
+  for each window in slidingWindows(tokens, length = len(q)):
+    score = levenshtein(join(q, " "), join(window, " "))
+    if score <= threshold:
+      collect(page, windowStart, score)
+
+sort(matches, by score, then page, then position)</code></pre>
+      </section>
+    </main>
+  </body>
+</html>

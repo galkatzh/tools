@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF Fuzzy Reader</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header>
+        <h1>PDF Fuzzy Reader</h1>
+        <p>Open a PDF, fuzzy-search it, and jump between matches inside the document.</p>
+      </header>
+
+      <section class="controls" aria-label="PDF controls">
+        <label class="file-label" for="pdf-file">Choose PDF</label>
+        <input id="pdf-file" type="file" accept="application/pdf" />
+
+        <label for="query">Fuzzy search</label>
+        <input id="query" type="search" placeholder="e.g. intoduction" disabled />
+
+        <label for="threshold">Max distance: <span id="threshold-value">2</span></label>
+        <input id="threshold" type="range" min="0" max="6" value="2" step="1" disabled />
+      </section>
+
+      <section class="toolbar" aria-label="Navigation">
+        <button id="prev-page" disabled>◀ Prev page</button>
+        <span id="page-label">Page 0 / 0</span>
+        <button id="next-page" disabled>Next page ▶</button>
+        <span class="divider"></span>
+        <button id="prev-match" disabled>↑ Prev result</button>
+        <span id="match-label">Result 0 / 0</span>
+        <button id="next-match" disabled>Next result ↓</button>
+      </section>
+
+      <section class="status" id="status" aria-live="polite">Load a PDF to begin.</section>
+
+      <section class="viewer-wrap">
+        <div id="viewer" class="viewer"></div>
+        <aside class="results-pane">
+          <h2>Matches</h2>
+          <ol id="results" class="results"></ol>
+        </aside>
+      </section>
+    </main>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
