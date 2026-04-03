@@ -1,0 +1,147 @@
+:root {
+  color-scheme: light dark;
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: Canvas;
+  color: CanvasText;
+}
+
+.app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.6rem 1rem;
+  align-items: center;
+}
+
+input[type='file'],
+input[type='search'],
+input[type='range'] {
+  width: 100%;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.divider {
+  width: 1px;
+  height: 1.4rem;
+  background: color-mix(in srgb, CanvasText 25%, Canvas);
+  margin-inline: 0.3rem;
+}
+
+.status {
+  padding: 0.75rem;
+  border: 1px solid color-mix(in srgb, CanvasText 25%, Canvas);
+  border-radius: 8px;
+}
+
+.viewer-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 1rem;
+}
+
+.viewer {
+  border: 1px solid color-mix(in srgb, CanvasText 20%, Canvas);
+  border-radius: 8px;
+  min-height: 70vh;
+  overflow: auto;
+  padding: 0.5rem;
+  display: grid;
+  place-items: start center;
+  background: #80808022;
+}
+
+.page-wrapper {
+  position: relative;
+  box-shadow: 0 4px 16px #00000030;
+  flex: none;
+}
+
+canvas {
+  display: block;
+  border-radius: 4px;
+}
+
+/* Minimal PDF.js text layer styles so highlights are rendered over the actual page text. */
+.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  line-height: 1;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+}
+
+.textLayer span,
+.textLayer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+}
+
+.results-pane {
+  border: 1px solid color-mix(in srgb, CanvasText 20%, Canvas);
+  border-radius: 8px;
+  padding: 0.75rem;
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.results {
+  display: grid;
+  gap: 0.6rem;
+  padding-left: 1.25rem;
+}
+
+.result {
+  border: 1px solid color-mix(in srgb, CanvasText 15%, Canvas);
+  border-radius: 8px;
+  padding: 0.6rem;
+  cursor: pointer;
+}
+
+.result.active {
+  border-color: #f2c300;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #f2c300 35%, transparent);
+}
+
+.result .meta {
+  font-size: 0.9rem;
+  opacity: 0.85;
+}
+
+mark {
+  background: #f9d949cc;
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 0.08em;
+}
+
+.textLayer mark {
+  color: transparent;
+  padding: 0;
+}
+
+@media (max-width: 980px) {
+  .viewer-wrap {
+    grid-template-columns: 1fr;
+  }
+}
