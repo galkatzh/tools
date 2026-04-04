@@ -5,16 +5,18 @@
  *         → Resample vocals (16 kHz mono) → Transcribe (word timestamps)
  *         → Play instrumental + synced lyrics display
  *
- * Reuses workers from sibling apps:
- *   ../audio-splitter/splitter-worker.js  — SCNet ONNX stem separation
- *   ../local-transcribe/transcribe-worker.js — Whisper ASR via Transformers.js
+ * Stem separation uses Spleeter 2-stem ONNX models (vocals + accompaniment),
+ * run in parallel worker pool via karaoke/spleeter-worker.js.
+ * Transcription uses Whisper ASR via ../local-transcribe/transcribe-worker.js.
  */
 
 import { SAMPLE_RATE, decodeAudio } from '../audio-splitter/audio-processor.js';
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
-const MODEL_URL = 'https://huggingface.co/bgkb/scnet_onnx/resolve/main/scnet.onnx';
+const HF_BASE = 'https://huggingface.co/csukuangfj/sherpa-onnx-spleeter-2stems/resolve/main';
+const VOCALS_MODEL_URL = `${HF_BASE}/vocals.onnx`;
+const ACCOMP_MODEL_URL = `${HF_BASE}/accompaniment.onnx`;
 const WHISPER_MODEL = {
   repo: 'onnx-community/whisper-base',
   apiType: 'pipeline',
@@ -22,8 +24,9 @@ const WHISPER_MODEL = {
   device: 'webgpu',
 };
 
-const CHUNK_SECONDS = 11;
-const CHUNK_SAMPLES = CHUNK_SECONDS * SAMPLE_RATE;
+// Each chunk feeds one Spleeter "split" (512 STFT frames ≈ 11.9 s).
+// Overlap allows crossfade stitching between adjacent chunks.
+const CHUNK_SAMPLES = 512 * 1024; // 524 288 samples ≈ 11.9 s at 44.1 kHz
 const OVERLAP_SAMPLES = 1 * SAMPLE_RATE;
 const WHISPER_CHUNK_SECONDS = 30;
 const WHISPER_SAMPLE_RATE = 16000;
@@ -172,12 +175,12 @@ async function setCachedModel(url, data) {
   }
 }
 
-// ── Splitter worker pool (mirrors audio-splitter/app.js ChunkWorker) ───────
+// ── Spleeter worker pool ────────────────────────────────────────────────────
 
 class ChunkWorker {
-  constructor(bytes) {
+  constructor({ vocalsBytes, accompBytes }) {
     this._pending = new Map();
-    this.worker = new Worker(new URL('../audio-splitter/splitter-worker.js', import.meta.url), { type: 'module' });
+    this.worker = new Worker(new URL('./spleeter-worker.js', import.meta.url), { type: 'module' });
     this.worker.onmessage = ({ data }) => {
       if (data.type === 'ready') {
         this._pending.get('init')?.resolve();
@@ -197,9 +200,12 @@ class ChunkWorker {
       this._pending.clear();
     };
     this.ready = new Promise((resolve, reject) => this._pending.set('init', { resolve, reject }));
-    const copy = new ArrayBuffer(bytes.byteLength);
-    new Uint8Array(copy).set(bytes);
-    this.worker.postMessage({ type: 'init', modelBytes: copy }, [copy]);
+    // Each worker needs its own copy of both model buffers (transfer detaches the original).
+    const vCopy = new ArrayBuffer(vocalsBytes.byteLength);
+    new Uint8Array(vCopy).set(vocalsBytes);
+    const aCopy = new ArrayBuffer(accompBytes.byteLength);
+    new Uint8Array(aCopy).set(accompBytes);
+    this.worker.postMessage({ type: 'init', vocalsBytes: vCopy, accompBytes: aCopy }, [vCopy, aCopy]);
   }
 
   process(left, right, originalLen, chunkIdx) {
@@ -217,53 +223,55 @@ class ChunkWorker {
 
 // ── Stem separation ────────────────────────────────────────────────────────
 
-async function loadSplitterModel() {
-  let modelBytes = await getCachedModel(MODEL_URL);
-  if (!modelBytes) {
-    showProgress('Downloading stem-split model...', 0);
-    const resp = await fetch(MODEL_URL);
-    if (!resp.ok) throw new Error(`Model download failed: ${resp.status}`);
-    const total = parseInt(resp.headers.get('content-length') || '0', 10);
-    const reader = resp.body.getReader();
-    const chunks = [];
-    let received = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      received += value.length;
-      if (total > 0) {
-        showProgress(
-          `Downloading stem-split model... ${(received / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB`,
-          received / total,
-        );
-      }
-    }
-    modelBytes = new Uint8Array(received);
-    let off = 0;
-    for (const c of chunks) { modelBytes.set(c, off); off += c.length; }
-    await setCachedModel(MODEL_URL, modelBytes);
+/** Download a single model with streaming progress, returning Uint8Array. */
+async function downloadModel(url, label) {
+  showProgress(`Downloading ${label}...`, 0);
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Model download failed (${label}): ${resp.status}`);
+  const total = parseInt(resp.headers.get('content-length') || '0', 10);
+  const reader = resp.body.getReader();
+  const chunks = [];
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    if (total > 0) showProgress(
+      `Downloading ${label}... ${(received / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB`,
+      received / total,
+    );
   }
-  return modelBytes;
-}
-
-function padToChunkSize(signal) {
-  if (signal.length === CHUNK_SAMPLES) return signal;
-  const out = new Float32Array(CHUNK_SAMPLES);
-  out.set(signal);
+  const out = new Uint8Array(received);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.length; }
   return out;
 }
 
+async function loadSpleeterModels() {
+  let vocalsBytes = await getCachedModel(VOCALS_MODEL_URL);
+  if (!vocalsBytes) {
+    vocalsBytes = await downloadModel(VOCALS_MODEL_URL, 'vocals model');
+    await setCachedModel(VOCALS_MODEL_URL, vocalsBytes);
+  }
+  let accompBytes = await getCachedModel(ACCOMP_MODEL_URL);
+  if (!accompBytes) {
+    accompBytes = await downloadModel(ACCOMP_MODEL_URL, 'accompaniment model');
+    await setCachedModel(ACCOMP_MODEL_URL, accompBytes);
+  }
+  return { vocalsBytes, accompBytes };
+}
+
 /**
- * Split stereo audio into vocals + instrumental using SCNet workers.
+ * Split stereo audio into vocals + instrumental using Spleeter workers.
  * Returns Float32Arrays for each channel of each stem.
  */
 async function splitStems(left, right) {
-  const modelBytes = await loadSplitterModel();
+  const models = await loadSpleeterModels();
 
   const numWorkers = parseInt(el.splitWorkers.value, 10) || 2;
   showProgress(`Initializing ${numWorkers} stem-split workers...`, 0);
-  const workers = Array.from({ length: numWorkers }, () => new ChunkWorker(modelBytes));
+  const workers = Array.from({ length: numWorkers }, () => new ChunkWorker(models));
   await Promise.all(workers.map(w => w.ready));
 
   const totalSamples = left.length;
@@ -285,8 +293,8 @@ async function splitStems(left, right) {
       const start = i * step;
       const end = Math.min(start + CHUNK_SAMPLES, totalSamples);
       results[i] = await worker.process(
-        padToChunkSize(left.slice(start, end)),
-        padToChunkSize(right.slice(start, end)),
+        left.slice(start, end),
+        right.slice(start, end),
         end - start, i,
       );
       completed++;
