@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF Editor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #16161e;
+      color: #cdd6f4;
+      min-height: 100vh;
+    }
+
+    /* ── Toolbar ─────────────────────────────── */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 20px;
+      background: #1e1e2e;
+      border-bottom: 1px solid #313244;
+      position: sticky;
+      top: 0;
+      z-index: 200;
+    }
+    .toolbar h1 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-right: auto;
+      color: #cba6f7;
+    }
+
+    button {
+      padding: 7px 14px;
+      border-radius: 7px;
+      border: none;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: filter 0.15s, opacity 0.15s;
+      white-space: nowrap;
+    }
+    button:hover:not(:disabled) { filter: brightness(1.15); }
+    button:disabled { opacity: 0.35; cursor: default; }
+    .btn-upload { background: #313244; color: #cba6f7; }
+    .btn-export { background: #cba6f7; color: #1e1e2e; font-weight: 700; }
+
+    /* ── Drop zone ───────────────────────────── */
+    #drop-zone {
+      margin: 40px auto;
+      max-width: 500px;
+      border: 2px dashed #45475a;
+      border-radius: 14px;
+      padding: 56px 24px;
+      text-align: center;
+      color: #6c7086;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s, color 0.2s;
+      user-select: none;
+    }
+    #drop-zone.over, #drop-zone:hover {
+      border-color: #cba6f7;
+      background: #1e1e2e;
+      color: #cba6f7;
+    }
+    #drop-zone svg { margin-bottom: 14px; opacity: 0.6; }
+    #drop-zone h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 6px; }
+    #drop-zone p { font-size: 0.85rem; }
+
+    /* ── Pages canvas ────────────────────────── */
+    #canvas {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      align-items: flex-start;
+      padding: 20px;
+      min-height: 60px;
+    }
+    /* Invisible drop target covering empty canvas space */
+    #canvas-end-drop {
+      flex: 1;
+      min-width: 60px;
+      min-height: 180px;
+      border-radius: 8px;
+      transition: background 0.15s;
+    }
+    #canvas-end-drop.over { background: #313244; }
+
+    /* ── Page card ───────────────────────────── */
+    .page-card {
+      width: 130px;
+      background: #1e1e2e;
+      border: 2px solid #313244;
+      border-radius: 8px;
+      position: relative;
+      cursor: grab;
+      transition: box-shadow 0.15s, transform 0.15s, border-color 0.15s;
+      user-select: none;
+      flex-shrink: 0;
+    }
+    .page-card:hover {
+      box-shadow: 0 4px 20px rgba(203, 166, 247, 0.2);
+      transform: translateY(-2px);
+      border-color: #585b70;
+    }
+    .page-card.dragging {
+      opacity: 0.35;
+      transform: scale(0.95);
+      cursor: grabbing;
+    }
+    /* Drop indicators on left/right edge */
+    .page-card.drop-before { border-left: 3px solid #cba6f7; }
+    .page-card.drop-after  { border-right: 3px solid #cba6f7; }
+
+    .page-card img {
+      width: 100%;
+      height: 170px;
+      object-fit: contain;
+      background: #181825;
+      display: block;
+      border-radius: 6px 6px 0 0;
+      pointer-events: none;
+    }
+    .page-num {
+      font-size: 0.68rem;
+      color: #6c7086;
+      padding: 4px 6px;
+      text-align: center;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      border-top: 1px solid #313244;
+    }
+
+    /* Overlay actions (appear on hover) */
+    .card-actions {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      display: none;
+      gap: 4px;
+      padding: 5px;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.65) 60%, transparent);
+      border-radius: 6px 6px 0 0;
+    }
+    .page-card:hover .card-actions { display: flex; }
+    .card-actions button {
+      flex: 1;
+      padding: 3px 4px;
+      font-size: 0.68rem;
+      border-radius: 4px;
+    }
+    .btn-delete { background: rgba(243,139,168,0.9); color: #1e1e2e; }
+    .btn-split  { background: rgba(137,180,250,0.9); color: #1e1e2e; }
+
+    /* ── Split divider ───────────────────────── */
+    .split-item {
+      flex-basis: 100%;  /* force onto its own row */
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 4px 0;
+      color: #89b4fa;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    .split-line {
+      flex: 1;
+      height: 2px;
+      background: linear-gradient(to right, transparent, #89b4fa 30%, #89b4fa 70%, transparent);
+      opacity: 0.5;
+    }
+    .split-label {
+      white-space: nowrap;
+      padding: 3px 12px;
+      background: #1e3a5f;
+      border: 1px solid #89b4fa;
+      border-radius: 20px;
+      opacity: 0.85;
+    }
+    .btn-unsplit {
+      background: transparent;
+      border: 1px solid #45475a;
+      color: #89b4fa;
+      padding: 2px 8px;
+      font-size: 0.72rem;
+      border-radius: 4px;
+    }
+    .btn-unsplit:hover { background: #1e3a5f; }
+
+    /* ── Progress overlay ────────────────────── */
+    #progress {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.55);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    #progress.show { display: flex; }
+    .progress-box {
+      background: #1e1e2e;
+      border: 1px solid #313244;
+      border-radius: 14px;
+      padding: 28px 40px;
+      text-align: center;
+    }
+    .progress-box p {
+      margin-top: 12px;
+      color: #a6adc8;
+      font-size: 0.9rem;
+    }
+    .spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid #313244;
+      border-top-color: #cba6f7;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin: 0 auto;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+<div class="toolbar">
+  <h1>PDF Editor</h1>
+  <button class="btn-upload" id="btnUpload">+ Add PDFs</button>
+  <button class="btn-export" id="btnExport" disabled>⬇ Export</button>
+</div>
+
+<div id="drop-zone">
+  <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+    <polyline points="14 2 14 8 20 8"/>
+    <line x1="12" y1="18" x2="12" y2="12"/>
+    <line x1="9" y1="15" x2="15" y2="15"/>
+  </svg>
+  <h2>Drop PDF files here</h2>
+  <p>or click to browse — supports multiple files</p>
+</div>
+
+<div id="canvas"></div>
+
+<input type="file" id="fileInput" accept=".pdf" multiple hidden>
+
+<div id="progress">
+  <div class="progress-box">
+    <div class="spinner"></div>
+    <p id="progressMsg">Loading…</p>
+  </div>
+</div>
+
+<!-- PDF.js for rendering thumbnails; pdf-lib for exporting -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script>
+'use strict';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// ── State ─────────────────────────────────────────────────────────────────────
+
+let _nextId = 0;
+const uid = () => 's' + _nextId++;
+
+/**
+ * items: Array<PageItem | SplitItem>
+ *   PageItem  = { type:'page',  id, fileId, pageIdx, label, thumb }
+ *   SplitItem = { type:'split', id }
+ * pdfBytes: Map<fileId, Uint8Array>  (source bytes, kept for export)
+ */
+const state = {
+  items: [],
+  pdfBytes: new Map(),
+};
+
+// ── PDF loading ───────────────────────────────────────────────────────────────
+
+/** Render one page of a PDF to a JPEG data-URL thumbnail. */
+async function renderThumb(bytes, pageIdx) {
+  const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+  const page = await pdf.getPage(pageIdx + 1);
+  const vp = page.getViewport({ scale: 1.2 });
+  const canvas = document.createElement('canvas');
+  canvas.width = vp.width;
+  canvas.height = vp.height;
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+  return canvas.toDataURL('image/jpeg', 0.75);
+}
+
+async function loadFile(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const fileId = uid();
+  state.pdfBytes.set(fileId, bytes);
+
+  // Load page count with a fresh task (separate from thumbnail rendering)
+  const pdfInfo = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+  const pages = [];
+  for (let i = 0; i < pdfInfo.numPages; i++) {
+    const thumb = await renderThumb(bytes, i);
+    pages.push({ type: 'page', id: uid(), fileId, pageIdx: i,
+                 label: `${file.name}  p.${i + 1}`, thumb });
+  }
+  return pages;
+}
+
+async function addFiles(files) {
+  setProgress('Loading PDFs…');
+  try {
+    for (const file of files) {
+      const pages = await loadFile(file);
+      state.items.push(...pages);
+    }
+    render();
+  } catch (err) {
+    console.error('PDF load error:', err);
+    alert('Failed to load PDF: ' + err.message);
+  } finally {
+    setProgress(null);
+  }
+}
+
+// ── Export ────────────────────────────────────────────────────────────────────
+
+async function exportPDFs() {
+  setProgress('Exporting…');
+  try {
+    const { PDFDocument } = PDFLib;
+
+    // Cache loaded source docs to avoid re-parsing the same bytes repeatedly
+    const docCache = new Map();
+    const getSrcDoc = async (fileId) => {
+      if (!docCache.has(fileId))
+        docCache.set(fileId, await PDFDocument.load(state.pdfBytes.get(fileId)));
+      return docCache.get(fileId);
+    };
+
+    // Partition items into groups of pages separated by splits
+    const groups = [[]];
+    for (const item of state.items) {
+      if (item.type === 'split') groups.push([]);
+      else groups[groups.length - 1].push(item);
+    }
+    const nonempty = groups.filter(g => g.length > 0);
+
+    for (let i = 0; i < nonempty.length; i++) {
+      const out = await PDFDocument.create();
+      for (const p of nonempty[i]) {
+        const src = await getSrcDoc(p.fileId);
+        const [copied] = await out.copyPages(src, [p.pageIdx]);
+        out.addPage(copied);
+      }
+      const bytes = await out.save();
+      downloadBlob(bytes, nonempty.length === 1 ? 'merged.pdf' : `output-${i + 1}.pdf`);
+    }
+  } catch (err) {
+    console.error('Export error:', err);
+    alert('Export failed: ' + err.message);
+  } finally {
+    setProgress(null);
+  }
+}
+
+function downloadBlob(bytes, name) {
+  const a = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' })),
+    download: name,
+  });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+// ── Drag & drop (reorder) ─────────────────────────────────────────────────────
+
+let draggedId = null;
+
+/** Insert the dragged page before or after the target item. */
+function performDrop(targetId, side) {
+  if (!draggedId || draggedId === targetId) return;
+
+  const fromIdx = state.items.findIndex(i => i.id === draggedId);
+  const [item] = state.items.splice(fromIdx, 1);
+
+  // Re-find target after removal
+  const toIdx = state.items.findIndex(i => i.id === targetId);
+  const insertAt = side === 'after' ? toIdx + 1 : toIdx;
+  state.items.splice(insertAt, 0, item);
+
+  draggedId = null;
+  render();
+}
+
+/** Remove drop-indicator classes from all cards. */
+function clearDropStyles() {
+  document.querySelectorAll('.drop-before, .drop-after')
+    .forEach(el => el.classList.remove('drop-before', 'drop-after'));
+}
+
+// ── Mutations ─────────────────────────────────────────────────────────────────
+
+function deletePage(id) {
+  const idx = state.items.findIndex(i => i.id === id);
+  state.items.splice(idx, 1);
+  // Remove splits that now have no pages on one side
+  cleanOrphanSplits();
+  render();
+}
+
+/**
+ * Insert a split marker directly after the item at itemIdx.
+ * No-op if next item is already a split or there are no pages after.
+ */
+function addSplitAfter(itemIdx) {
+  const after = state.items[itemIdx + 1];
+  if (after && after.type === 'split') return;
+  const hasPageAfter = state.items.slice(itemIdx + 1).some(i => i.type === 'page');
+  if (!hasPageAfter) return;
+  state.items.splice(itemIdx + 1, 0, { type: 'split', id: uid() });
+  render();
+}
+
+function removeSplit(id) {
+  const idx = state.items.findIndex(i => i.id === id);
+  state.items.splice(idx, 1);
+  render();
+}
+
+/** Remove any split that has no pages before it or after it. */
+function cleanOrphanSplits() {
+  for (let i = state.items.length - 1; i >= 0; i--) {
+    if (state.items[i].type !== 'split') continue;
+    const hasBefore = state.items.slice(0, i).some(x => x.type === 'page');
+    const hasAfter  = state.items.slice(i + 1).some(x => x.type === 'page');
+    if (!hasBefore || !hasAfter) state.items.splice(i, 1);
+  }
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+
+function render() {
+  const canvas  = document.getElementById('canvas');
+  const hasPages = state.items.some(i => i.type === 'page');
+
+  document.getElementById('drop-zone').style.display  = hasPages ? 'none' : '';
+  document.getElementById('btnExport').disabled = !hasPages;
+
+  // Count how many splits exist for labels (File 1 / File 2 / …)
+  let splitsSeen = 0;
+  const totalSplits = state.items.filter(i => i.type === 'split').length;
+
+  canvas.innerHTML = '';
+
+  state.items.forEach((item, idx) => {
+    if (item.type === 'page') {
+      canvas.appendChild(makePageCard(item, idx));
+    } else {
+      splitsSeen++;
+      canvas.appendChild(makeSplitEl(item, splitsSeen, totalSplits));
+    }
+  });
+
+  // Invisible end-drop target so pages can be dropped after the last card
+  const endDrop = document.createElement('div');
+  endDrop.id = 'canvas-end-drop';
+  endDrop.addEventListener('dragover', e => { e.preventDefault(); endDrop.classList.add('over'); });
+  endDrop.addEventListener('dragleave', () => endDrop.classList.remove('over'));
+  endDrop.addEventListener('drop', e => {
+    e.preventDefault();
+    endDrop.classList.remove('over');
+    if (!draggedId) return;
+    const fromIdx = state.items.findIndex(i => i.id === draggedId);
+    const [item] = state.items.splice(fromIdx, 1);
+    state.items.push(item);
+    draggedId = null;
+    render();
+  });
+  canvas.appendChild(endDrop);
+}
+
+function makePageCard(item, itemIdx) {
+  const card = document.createElement('div');
+  card.className = 'page-card';
+  card.draggable = true;
+  card.dataset.id = item.id;
+
+  const img = document.createElement('img');
+  img.src = item.thumb;
+  img.alt = item.label;
+  card.appendChild(img);
+
+  const num = document.createElement('div');
+  num.className = 'page-num';
+  num.textContent = item.label;
+  card.appendChild(num);
+
+  // Hover action buttons
+  const actions = document.createElement('div');
+  actions.className = 'card-actions';
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'btn-delete';
+  delBtn.textContent = '✕ Delete';
+  delBtn.onclick = e => { e.stopPropagation(); deletePage(item.id); };
+  actions.appendChild(delBtn);
+
+  const splitBtn = document.createElement('button');
+  splitBtn.className = 'btn-split';
+  splitBtn.title = 'Start a new output file after this page';
+  splitBtn.textContent = '÷ Split after';
+  splitBtn.onclick = e => { e.stopPropagation(); addSplitAfter(itemIdx); };
+  actions.appendChild(splitBtn);
+
+  card.appendChild(actions);
+
+  // ── Drag events ──────────────────────────────
+  card.addEventListener('dragstart', e => {
+    draggedId = item.id;
+    e.dataTransfer.effectAllowed = 'move';
+    // Defer so the card is visible in the ghost image before dimming
+    requestAnimationFrame(() => card.classList.add('dragging'));
+  });
+  card.addEventListener('dragend', () => {
+    card.classList.remove('dragging');
+    clearDropStyles();
+    draggedId = null;
+  });
+
+  card.addEventListener('dragover', e => {
+    if (!draggedId || draggedId === item.id) return;
+    e.preventDefault();
+    clearDropStyles();
+    const { left, width } = card.getBoundingClientRect();
+    const side = e.clientX < left + width / 2 ? 'before' : 'after';
+    card.classList.add(side === 'before' ? 'drop-before' : 'drop-after');
+  });
+  card.addEventListener('dragleave', clearDropStyles);
+  card.addEventListener('drop', e => {
+    e.preventDefault();
+    clearDropStyles();
+    const { left, width } = card.getBoundingClientRect();
+    const side = e.clientX < left + width / 2 ? 'before' : 'after';
+    performDrop(item.id, side);
+  });
+
+  return card;
+}
+
+function makeSplitEl(item, splitNum, totalSplits) {
+  const el = document.createElement('div');
+  el.className = 'split-item';
+
+  const line1 = document.createElement('div');
+  line1.className = 'split-line';
+
+  const label = document.createElement('span');
+  label.className = 'split-label';
+  // Label shows which output files are on either side
+  label.textContent = `↓  File ${splitNum} / File ${splitNum + 1}`;
+
+  const removeBtn = document.createElement('button');
+  removeBtn.className = 'btn-unsplit';
+  removeBtn.textContent = '✕ Remove split';
+  removeBtn.onclick = () => removeSplit(item.id);
+
+  const line2 = document.createElement('div');
+  line2.className = 'split-line';
+
+  el.append(line1, label, removeBtn, line2);
+  return el;
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+
+function setProgress(msg) {
+  const el = document.getElementById('progress');
+  el.classList.toggle('show', !!msg);
+  if (msg) document.getElementById('progressMsg').textContent = msg;
+}
+
+// ── Event wiring ──────────────────────────────────────────────────────────────
+
+document.getElementById('btnUpload').onclick = () =>
+  document.getElementById('fileInput').click();
+
+document.getElementById('btnExport').onclick = exportPDFs;
+
+document.getElementById('fileInput').onchange = e => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  if (files.length) addFiles(files);
+};
+
+// Drop-zone (shown before any pages are loaded)
+const dropZone = document.getElementById('drop-zone');
+dropZone.onclick = () => document.getElementById('fileInput').click();
+['dragover', 'dragenter'].forEach(ev =>
+  dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.add('over'); }));
+['dragleave', 'dragend'].forEach(ev =>
+  dropZone.addEventListener(ev, () => dropZone.classList.remove('over')));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('over');
+  const pdfs = [...e.dataTransfer.files]
+    .filter(f => f.type === 'application/pdf' || f.name.endsWith('.pdf'));
+  if (pdfs.length) addFiles(pdfs);
+});
+
+// Global file drop — works even when pages are already shown
+document.addEventListener('dragover', e => {
+  if ([...e.dataTransfer.types].includes('Files')) e.preventDefault();
+});
+document.addEventListener('drop', e => {
+  if (![...e.dataTransfer.types].includes('Files')) return;
+  e.preventDefault();
+  const pdfs = [...e.dataTransfer.files]
+    .filter(f => f.type === 'application/pdf' || f.name.endsWith('.pdf'));
+  if (pdfs.length) addFiles(pdfs);
+});
+</script>
+</body>
+</html>
