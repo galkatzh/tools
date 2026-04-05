@@ -2,6 +2,9 @@
 
 let map, userMarker, shelterMarkers = [], shelterData = null;
 let panelEl, listEl, locateBtn, loadingEl;
+let travelMode = 'foot'; // 'foot' | 'driving'
+let lastPos = null;      // last known { lat, lng } to re-locate on request
+let lastCandidates = null; // cached candidates with both routing durations
 
 /* ── Bootstrap ─────────────────────────────────────────── */
 
@@ -15,6 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadShelters();
   locateBtn.addEventListener('click', requestLocation);
   setupPanelDrag();
+  setupTravelToggle();
   registerSW();
   requestLocation();
 });
@@ -44,6 +48,20 @@ async function loadShelters() {
   }
 }
 
+/* ── Travel mode toggle ────────────────────────────────── */
+
+function setupTravelToggle() {
+  document.getElementById('travel-toggle').addEventListener('click', (e) => {
+    const btn = e.target.closest('.travel-btn');
+    if (!btn || btn.dataset.mode === travelMode) return;
+    travelMode = btn.dataset.mode;
+    document.querySelectorAll('.travel-btn').forEach(
+      b => b.classList.toggle('active', b.dataset.mode === travelMode)
+    );
+    if (lastCandidates && lastPos) resortAndRender();
+  });
+}
+
 /* ── Geolocation ───────────────────────────────────────── */
 
 function requestLocation() {
@@ -56,7 +74,6 @@ function requestLocation() {
   // handler for iOS Safari to recognize the user gesture.
   navigator.geolocation.getCurrentPosition(
     (pos) => {
-      loadingEl.classList.add('hidden');
       const { latitude: lat, longitude: lng } = pos.coords;
       setUserMarker(lat, lng);
       showClosestShelters(lat, lng);
@@ -106,33 +123,96 @@ function clearShelterMarkers() {
   shelterMarkers = [];
 }
 
+/* ── OSRM routing ──────────────────────────────────────── */
+
+/**
+ * Query OSRM table service for one profile. Returns an array of durations
+ * (seconds) parallel to `candidates`, or null on failure.
+ *
+ * OSRM table API: coordinates are lng,lat (longitude first).
+ * sources=0 means only compute rows for the first coordinate (the user).
+ * durations[0][0] = 0 (user→user), durations[0][i+1] = user→candidates[i].
+ */
+async function fetchOsrmDurations(userLat, userLng, candidates, profile) {
+  try {
+    const coords = [[userLng, userLat], ...candidates.map(s => [s.lng, s.lat])]
+      .map(([lng, lat]) => `${lng},${lat}`)
+      .join(';');
+    const url = `https://router.project-osrm.org/table/v1/${profile}/${coords}?sources=0&annotations=duration`;
+
+    const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.code !== 'Ok') throw new Error(`OSRM code: ${data.code}`);
+
+    // Slice off index 0 (user→user = 0) to align with candidates array.
+    return data.durations[0].slice(1);
+  } catch (err) {
+    console.error(`OSRM ${profile} failed, falling back to haversine:`, err);
+    return null;
+  }
+}
+
 /* ── Core logic: find & display closest shelters ───────── */
 
-function showClosestShelters(userLat, userLng) {
+async function showClosestShelters(userLat, userLng) {
   if (!shelterData) {
     alert('נתוני מקלטים עדיין נטענים, נסה שוב');
     return;
   }
 
-  // Calculate distances for all shelters
+  lastPos = { lat: userLat, lng: userLng };
+  loadingEl.classList.remove('hidden');
+
+  // Calculate haversine distances and take the 20 closest as routing candidates.
   const withDist = shelterData.map(([lat, lng, type]) => ({
     lat, lng, type,
     dist: haversine(userLat, userLng, lat, lng),
   }));
-
-  // Sort and pick 5 closest
   withDist.sort((a, b) => a.dist - b.dist);
-  const closest = withDist.slice(0, 5);
+  const candidates = withDist.slice(0, 20);
 
-  clearShelterMarkers();
-  renderShelterMarkers(closest);
-  renderShelterList(closest, userLat, userLng);
-  fitMapBounds(closest, userLat, userLng);
+  // Fetch durations for current travel mode only.
+  // If the user toggles later, the other profile is fetched then and cached.
+  await fetchAndCacheDurations(userLat, userLng, candidates, travelMode);
 
-  // Open panel
+  lastCandidates = candidates;
+  loadingEl.classList.add('hidden');
   panelEl.classList.remove('collapsed');
   panelEl.classList.add('open');
   locateBtn.style.display = 'none';
+
+  resortAndRender();
+}
+
+/**
+ * Fetch OSRM durations for `profile` and store them on each candidate as
+ * `footDuration` or `drivingDuration`. No-ops if already cached.
+ */
+async function fetchAndCacheDurations(userLat, userLng, candidates, profile) {
+  const key = profile === 'foot' ? 'footDuration' : 'drivingDuration';
+  if (candidates[0][key] !== undefined) return; // already cached
+  const durations = await fetchOsrmDurations(userLat, userLng, candidates, profile);
+  candidates.forEach((s, i) => { s[key] = durations ? durations[i] : null; });
+}
+
+/** Sort cached candidates by current travel mode and re-render. */
+async function resortAndRender() {
+  // Fetch the newly selected profile's durations if not yet cached.
+  await fetchAndCacheDurations(lastPos.lat, lastPos.lng, lastCandidates, travelMode);
+
+  const durationKey = travelMode === 'foot' ? 'footDuration' : 'drivingDuration';
+  const sorted = [...lastCandidates].sort(
+    (a, b) => (a[durationKey] ?? Infinity) - (b[durationKey] ?? Infinity)
+  );
+  const closest = sorted.slice(0, 5).map(s => ({
+    ...s, routeDuration: s[durationKey],
+  }));
+
+  clearShelterMarkers();
+  renderShelterMarkers(closest);
+  renderShelterList(closest, lastPos.lat, lastPos.lng);
+  fitMapBounds(closest, lastPos.lat, lastPos.lng);
 }
 
 function renderShelterMarkers(shelters) {
@@ -148,7 +228,7 @@ function renderShelterMarkers(shelters) {
 
     marker.bindPopup(
       `<b>מקלט ${i + 1}</b><br>${s.type || 'מקלט'}` +
-      `<br>${formatDist(s.dist)}`
+      `<br>${s.routeDuration != null ? formatDuration(s.routeDuration) : formatDist(s.dist)}`
     );
 
     marker.on('click', () => highlightCard(i));
@@ -163,7 +243,7 @@ function renderShelterList(shelters, userLat, userLng) {
       <div class="shelter-info">
         ${s.type ? `<div class="shelter-type">${s.type}</div>` : ''}
         <div class="shelter-distances">
-          <span>${formatDist(s.dist)}</span>
+          <span>${s.routeDuration != null ? formatDuration(s.routeDuration) : formatDist(s.dist)}</span>
         </div>
         <div class="nav-links">
           <a class="nav-link waze" href="${wazeUrl(s.lat, s.lng)}" target="_blank" onclick="event.stopPropagation()">
@@ -264,6 +344,11 @@ function formatDist(m) {
   return m < 1000 ? `${Math.round(m)} מ'` : `${(m / 1000).toFixed(1)} ק"מ`;
 }
 
+/** Format OSRM duration (seconds) as human-readable travel time. */
+function formatDuration(sec) {
+  const min = Math.round(sec / 60);
+  return min < 1 ? `< 1 דק'` : `${min} דק'`;
+}
 
 /** Waze deep link to navigate to coordinates. */
 function wazeUrl(lat, lng) {
