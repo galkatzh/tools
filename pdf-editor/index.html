@@ -48,6 +48,26 @@
     .btn-upload { background: #313244; color: #cba6f7; }
     .btn-export { background: #cba6f7; color: #1e1e2e; font-weight: 700; }
 
+    /* ── Batch bar ───────────────────────────── */
+    #batch-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 20px;
+      background: #181825;
+      border-bottom: 1px solid #3d3d5c;
+      font-size: 0.85rem;
+      animation: slideDown 0.12s ease;
+    }
+    #batch-bar[hidden] { display: none; }
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateY(-5px); }
+      to   { opacity: 1; transform: none; }
+    }
+    #batch-count { color: #cba6f7; font-weight: 600; flex: 1; }
+    .btn-del-sel  { background: rgba(243,139,168,0.9); color: #1e1e2e; font-weight: 700; }
+    .btn-clr-sel  { background: #313244; color: #a6adc8; }
+
     /* ── Drop zone ───────────────────────────── */
     #drop-zone {
       margin: 40px auto;
@@ -90,6 +110,34 @@
     #canvas-end-drop.over { background: #313244; }
 
     /* ── Page card ───────────────────────────── */
+
+    /* Selected state */
+    .page-card.selected {
+      border-color: #cba6f7;
+      box-shadow: 0 0 0 2px rgba(203,166,247,0.3);
+    }
+    .page-card.selected:hover {
+      box-shadow: 0 0 0 2px rgba(203,166,247,0.5), 0 4px 20px rgba(203,166,247,0.2);
+    }
+
+    /* Checkmark badge shown when selected */
+    .sel-badge {
+      position: absolute;
+      bottom: 27px; right: 5px; /* sits just above the page-num bar */
+      width: 18px; height: 18px;
+      background: #cba6f7;
+      color: #1e1e2e;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 900;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 5;
+      pointer-events: none;
+    }
+    .page-card.selected .sel-badge { display: flex; }
+
     .page-card {
       width: 130px;
       background: #1e1e2e;
@@ -140,20 +188,24 @@
       position: absolute;
       top: 0; left: 0; right: 0;
       display: none;
+      flex-direction: column;
       gap: 4px;
       padding: 5px;
-      background: linear-gradient(to bottom, rgba(0,0,0,0.65) 60%, transparent);
+      /* taller gradient to cover two button rows */
+      background: linear-gradient(to bottom, rgba(0,0,0,0.72) 55%, transparent);
       border-radius: 6px 6px 0 0;
     }
     .page-card:hover .card-actions { display: flex; }
+    .card-row { display: flex; gap: 4px; }
     .card-actions button {
-      flex: 1;
       padding: 3px 4px;
-      font-size: 0.68rem;
+      font-size: 0.67rem;
       border-radius: 4px;
     }
+    .card-row button { flex: 1; }
     .btn-delete { background: rgba(243,139,168,0.9); color: #1e1e2e; }
-    .btn-split  { background: rgba(137,180,250,0.9); color: #1e1e2e; }
+    .btn-dup    { background: rgba(166,227,161,0.9); color: #1e1e2e; }
+    .btn-split  { background: rgba(137,180,250,0.9); color: #1e1e2e; width: 100%; }
 
     /* ── Split divider ───────────────────────── */
     .split-item {
@@ -233,6 +285,12 @@
   <button class="btn-export" id="btnExport" disabled>⬇ Export</button>
 </div>
 
+<div id="batch-bar" hidden>
+  <span id="batch-count"></span>
+  <button class="btn-del-sel" id="btnDeleteSel">✕ Delete selected</button>
+  <button class="btn-clr-sel" id="btnClearSel">Deselect all</button>
+</div>
+
 <div id="drop-zone">
   <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
@@ -274,10 +332,12 @@ const uid = () => 's' + _nextId++;
  *   PageItem  = { type:'page',  id, fileId, pageIdx, label, thumb }
  *   SplitItem = { type:'split', id }
  * pdfBytes: Map<fileId, Uint8Array>  (source bytes, kept for export)
+ * selection: Set<id>  (selected page IDs)
  */
 const state = {
   items: [],
   pdfBytes: new Map(),
+  selection: new Set(),
 };
 
 // ── PDF loading ───────────────────────────────────────────────────────────────
@@ -299,7 +359,6 @@ async function loadFile(file) {
   const fileId = uid();
   state.pdfBytes.set(fileId, bytes);
 
-  // Load page count with a fresh task (separate from thumbnail rendering)
   const pdfInfo = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
   const pages = [];
   for (let i = 0; i < pdfInfo.numPages; i++) {
@@ -376,62 +435,95 @@ function downloadBlob(bytes, name) {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
-// ── Drag & drop (reorder) ─────────────────────────────────────────────────────
+// ── Selection ─────────────────────────────────────────────────────────────────
 
-let draggedId = null;
+/** ID of the last card clicked (for shift-click range selection). */
+let lastClickedId = null;
 
-/** Insert the dragged page before or after the target item. */
-function performDrop(targetId, side) {
-  if (!draggedId || draggedId === targetId) return;
-
-  const fromIdx = state.items.findIndex(i => i.id === draggedId);
-  const [item] = state.items.splice(fromIdx, 1);
-
-  // Re-find target after removal
-  const toIdx = state.items.findIndex(i => i.id === targetId);
-  const insertAt = side === 'after' ? toIdx + 1 : toIdx;
-  state.items.splice(insertAt, 0, item);
-
-  draggedId = null;
-  render();
+/**
+ * Toggle selection of a single page, or range-select when shift is held.
+ * Does not call render(); use syncSelectionUI() for a lightweight update.
+ */
+function toggleSelect(id, shiftKey) {
+  const pageItems = state.items.filter(i => i.type === 'page');
+  if (shiftKey && lastClickedId && lastClickedId !== id) {
+    const a = pageItems.findIndex(i => i.id === lastClickedId);
+    const b = pageItems.findIndex(i => i.id === id);
+    const [lo, hi] = [Math.min(a, b), Math.max(a, b)];
+    pageItems.slice(lo, hi + 1).forEach(i => state.selection.add(i.id));
+  } else {
+    state.selection.has(id) ? state.selection.delete(id) : state.selection.add(id);
+    lastClickedId = id;
+  }
+  syncSelectionUI();
 }
 
-/** Remove drop-indicator classes from all cards. */
-function clearDropStyles() {
-  document.querySelectorAll('.drop-before, .drop-after')
-    .forEach(el => el.classList.remove('drop-before', 'drop-after'));
+function clearSelection() {
+  state.selection.clear();
+  lastClickedId = null;
+  syncSelectionUI();
+}
+
+/**
+ * Sync selection visuals (batch bar + card borders) without a full DOM rebuild.
+ * Call this after any selection change that doesn't already trigger render().
+ */
+function syncSelectionUI() {
+  const n = state.selection.size;
+  const bar = document.getElementById('batch-bar');
+  bar.hidden = n === 0;
+  if (n > 0)
+    document.getElementById('batch-count').textContent =
+      `${n} page${n > 1 ? 's' : ''} selected`;
+  document.querySelectorAll('.page-card[data-id]').forEach(c =>
+    c.classList.toggle('selected', state.selection.has(c.dataset.id)));
 }
 
 // ── Mutations ─────────────────────────────────────────────────────────────────
 
 function deletePage(id) {
-  const idx = state.items.findIndex(i => i.id === id);
-  state.items.splice(idx, 1);
-  // Remove splits that now have no pages on one side
+  state.selection.delete(id);
+  state.items.splice(state.items.findIndex(i => i.id === id), 1);
   cleanOrphanSplits();
   render();
 }
 
+function deleteSelected() {
+  const ids = new Set(state.selection);
+  state.items = state.items.filter(i => i.type !== 'page' || !ids.has(i.id));
+  state.selection.clear();
+  lastClickedId = null;
+  cleanOrphanSplits();
+  render();
+}
+
+/** Insert a copy of the page directly after it in the list. */
+function duplicatePage(id) {
+  const idx = state.items.findIndex(i => i.id === id);
+  const orig = state.items[idx];
+  state.items.splice(idx + 1, 0, { ...orig, id: uid(), label: orig.label + ' (copy)' });
+  render();
+  syncSelectionUI();
+}
+
 /**
- * Insert a split marker directly after the item at itemIdx.
- * No-op if next item is already a split or there are no pages after.
+ * Insert a split marker after the item at itemIdx.
+ * No-op if the next item is already a split or no pages follow.
  */
 function addSplitAfter(itemIdx) {
   const after = state.items[itemIdx + 1];
   if (after && after.type === 'split') return;
-  const hasPageAfter = state.items.slice(itemIdx + 1).some(i => i.type === 'page');
-  if (!hasPageAfter) return;
+  if (!state.items.slice(itemIdx + 1).some(i => i.type === 'page')) return;
   state.items.splice(itemIdx + 1, 0, { type: 'split', id: uid() });
   render();
 }
 
 function removeSplit(id) {
-  const idx = state.items.findIndex(i => i.id === id);
-  state.items.splice(idx, 1);
+  state.items.splice(state.items.findIndex(i => i.id === id), 1);
   render();
 }
 
-/** Remove any split that has no pages before it or after it. */
+/** Remove any split that has no pages on either side. */
 function cleanOrphanSplits() {
   for (let i = state.items.length - 1; i >= 0; i--) {
     if (state.items[i].type !== 'split') continue;
@@ -441,19 +533,57 @@ function cleanOrphanSplits() {
   }
 }
 
+// ── Drag & drop ───────────────────────────────────────────────────────────────
+
+/**
+ * IDs being dragged in their current order.
+ * If the dragged card is part of the selection, all selected pages move together.
+ * Otherwise just the single card moves (and selection is untouched).
+ */
+let draggedIds = [];
+
+/**
+ * Move dragged pages before or after targetId.
+ * After insertion, orphan splits are cleaned up.
+ */
+function performDrop(targetId, side) {
+  if (!draggedIds.length || draggedIds.includes(targetId)) return;
+
+  // Extract in current order, then remove
+  const dragged = draggedIds.map(id => state.items.find(i => i.id === id)).filter(Boolean);
+  state.items = state.items.filter(i => !draggedIds.includes(i.id));
+
+  const toIdx = state.items.findIndex(i => i.id === targetId);
+  state.items.splice(side === 'after' ? toIdx + 1 : toIdx, 0, ...dragged);
+
+  cleanOrphanSplits();
+  draggedIds = [];
+  render();
+  syncSelectionUI();
+}
+
+/** Remove drop-indicator classes from all cards. */
+function clearDropStyles() {
+  document.querySelectorAll('.drop-before, .drop-after')
+    .forEach(el => el.classList.remove('drop-before', 'drop-after'));
+}
+
 // ── Render ────────────────────────────────────────────────────────────────────
 
 function render() {
-  const canvas  = document.getElementById('canvas');
+  const canvas   = document.getElementById('canvas');
   const hasPages = state.items.some(i => i.type === 'page');
 
-  document.getElementById('drop-zone').style.display  = hasPages ? 'none' : '';
+  document.getElementById('drop-zone').style.display = hasPages ? 'none' : '';
   document.getElementById('btnExport').disabled = !hasPages;
 
-  // Count how many splits exist for labels (File 1 / File 2 / …)
-  let splitsSeen = 0;
-  const totalSplits = state.items.filter(i => i.type === 'split').length;
+  // Hide batch bar when no pages exist (selection is implicitly empty)
+  if (!hasPages) {
+    state.selection.clear();
+    document.getElementById('batch-bar').hidden = true;
+  }
 
+  let splitsSeen = 0;
   canvas.innerHTML = '';
 
   state.items.forEach((item, idx) => {
@@ -461,11 +591,11 @@ function render() {
       canvas.appendChild(makePageCard(item, idx));
     } else {
       splitsSeen++;
-      canvas.appendChild(makeSplitEl(item, splitsSeen, totalSplits));
+      canvas.appendChild(makeSplitEl(item, splitsSeen));
     }
   });
 
-  // Invisible end-drop target so pages can be dropped after the last card
+  // Invisible end zone — lets users drop pages after the last card
   const endDrop = document.createElement('div');
   endDrop.id = 'canvas-end-drop';
   endDrop.addEventListener('dragover', e => { e.preventDefault(); endDrop.classList.add('over'); });
@@ -473,14 +603,19 @@ function render() {
   endDrop.addEventListener('drop', e => {
     e.preventDefault();
     endDrop.classList.remove('over');
-    if (!draggedId) return;
-    const fromIdx = state.items.findIndex(i => i.id === draggedId);
-    const [item] = state.items.splice(fromIdx, 1);
-    state.items.push(item);
-    draggedId = null;
+    if (!draggedIds.length) return;
+    const dragged = draggedIds.map(id => state.items.find(i => i.id === id)).filter(Boolean);
+    state.items = state.items.filter(i => !draggedIds.includes(i.id));
+    state.items.push(...dragged);
+    cleanOrphanSplits();
+    draggedIds = [];
     render();
+    syncSelectionUI();
   });
   canvas.appendChild(endDrop);
+
+  // Restore selection badges after DOM rebuild
+  syncSelectionUI();
 }
 
 function makePageCard(item, itemIdx) {
@@ -488,70 +623,101 @@ function makePageCard(item, itemIdx) {
   card.className = 'page-card';
   card.draggable = true;
   card.dataset.id = item.id;
+  if (state.selection.has(item.id)) card.classList.add('selected');
 
   const img = document.createElement('img');
   img.src = item.thumb;
   img.alt = item.label;
   card.appendChild(img);
 
+  // Selection badge (✓), only visible when .selected
+  const badge = document.createElement('div');
+  badge.className = 'sel-badge';
+  badge.textContent = '✓';
+  card.appendChild(badge);
+
   const num = document.createElement('div');
   num.className = 'page-num';
   num.textContent = item.label;
   card.appendChild(num);
 
-  // Hover action buttons
+  // ── Hover action overlay ──────────────────────
   const actions = document.createElement('div');
   actions.className = 'card-actions';
+
+  // Row 1: Delete | Duplicate
+  const row = document.createElement('div');
+  row.className = 'card-row';
 
   const delBtn = document.createElement('button');
   delBtn.className = 'btn-delete';
   delBtn.textContent = '✕ Delete';
   delBtn.onclick = e => { e.stopPropagation(); deletePage(item.id); };
-  actions.appendChild(delBtn);
+  row.appendChild(delBtn);
 
+  const dupBtn = document.createElement('button');
+  dupBtn.className = 'btn-dup';
+  dupBtn.title = 'Insert a copy directly after this page';
+  dupBtn.textContent = '⊕ Dup';
+  dupBtn.onclick = e => { e.stopPropagation(); duplicatePage(item.id); };
+  row.appendChild(dupBtn);
+
+  // Row 2: Split after (full width)
   const splitBtn = document.createElement('button');
   splitBtn.className = 'btn-split';
   splitBtn.title = 'Start a new output file after this page';
   splitBtn.textContent = '÷ Split after';
   splitBtn.onclick = e => { e.stopPropagation(); addSplitAfter(itemIdx); };
-  actions.appendChild(splitBtn);
 
+  actions.append(row, splitBtn);
   card.appendChild(actions);
 
-  // ── Drag events ──────────────────────────────
-  card.addEventListener('dragstart', e => {
-    draggedId = item.id;
-    e.dataTransfer.effectAllowed = 'move';
-    // Defer so the card is visible in the ghost image before dimming
-    requestAnimationFrame(() => card.classList.add('dragging'));
+  // ── Click to select ───────────────────────────
+  card.addEventListener('click', e => {
+    if (e.target.closest('button')) return; // buttons handle their own clicks
+    toggleSelect(item.id, e.shiftKey);
   });
+
+  // ── Drag events ───────────────────────────────
+  card.addEventListener('dragstart', e => {
+    // Batch drag: if this card is in the selection, drag all selected pages
+    draggedIds = (state.selection.has(item.id) && state.selection.size > 1)
+      ? state.items.filter(i => i.type === 'page' && state.selection.has(i.id)).map(i => i.id)
+      : [item.id];
+    e.dataTransfer.effectAllowed = 'move';
+    // Defer class add so the browser captures the undimmed ghost image first
+    requestAnimationFrame(() =>
+      draggedIds.forEach(id => {
+        const el = document.querySelector(`.page-card[data-id="${id}"]`);
+        if (el) el.classList.add('dragging');
+      }));
+  });
+
   card.addEventListener('dragend', () => {
-    card.classList.remove('dragging');
+    document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
     clearDropStyles();
-    draggedId = null;
+    draggedIds = [];
   });
 
   card.addEventListener('dragover', e => {
-    if (!draggedId || draggedId === item.id) return;
+    if (!draggedIds.length || draggedIds.includes(item.id)) return;
     e.preventDefault();
     clearDropStyles();
     const { left, width } = card.getBoundingClientRect();
-    const side = e.clientX < left + width / 2 ? 'before' : 'after';
-    card.classList.add(side === 'before' ? 'drop-before' : 'drop-after');
+    card.classList.add(e.clientX < left + width / 2 ? 'drop-before' : 'drop-after');
   });
   card.addEventListener('dragleave', clearDropStyles);
   card.addEventListener('drop', e => {
     e.preventDefault();
     clearDropStyles();
     const { left, width } = card.getBoundingClientRect();
-    const side = e.clientX < left + width / 2 ? 'before' : 'after';
-    performDrop(item.id, side);
+    performDrop(item.id, e.clientX < left + width / 2 ? 'before' : 'after');
   });
 
   return card;
 }
 
-function makeSplitEl(item, splitNum, totalSplits) {
+function makeSplitEl(item, splitNum) {
   const el = document.createElement('div');
   el.className = 'split-item';
 
@@ -560,7 +726,6 @@ function makeSplitEl(item, splitNum, totalSplits) {
 
   const label = document.createElement('span');
   label.className = 'split-label';
-  // Label shows which output files are on either side
   label.textContent = `↓  File ${splitNum} / File ${splitNum + 1}`;
 
   const removeBtn = document.createElement('button');
@@ -585,16 +750,38 @@ function setProgress(msg) {
 
 // ── Event wiring ──────────────────────────────────────────────────────────────
 
-document.getElementById('btnUpload').onclick = () =>
-  document.getElementById('fileInput').click();
-
-document.getElementById('btnExport').onclick = exportPDFs;
+document.getElementById('btnUpload').onclick  = () => document.getElementById('fileInput').click();
+document.getElementById('btnExport').onclick  = exportPDFs;
+document.getElementById('btnDeleteSel').onclick = deleteSelected;
+document.getElementById('btnClearSel').onclick  = clearSelection;
 
 document.getElementById('fileInput').onchange = e => {
   const files = [...e.target.files];
   e.target.value = '';
   if (files.length) addFiles(files);
 };
+
+// Click on empty canvas area → deselect all
+document.getElementById('canvas').addEventListener('click', e => {
+  if (e.target === e.currentTarget) clearSelection();
+});
+
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  const tag = document.activeElement.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+  if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+    e.preventDefault();
+    state.items.filter(i => i.type === 'page').forEach(i => state.selection.add(i.id));
+    syncSelectionUI();
+  }
+  if (e.key === 'Escape') clearSelection();
+  if ((e.key === 'Delete' || e.key === 'Backspace') && state.selection.size > 0) {
+    e.preventDefault();
+    deleteSelected();
+  }
+});
 
 // Drop-zone (shown before any pages are loaded)
 const dropZone = document.getElementById('drop-zone');
