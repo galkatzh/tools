@@ -2,9 +2,8 @@
 
 let map, userMarker, shelterMarkers = [], shelterData = null;
 let panelEl, listEl, locateBtn, loadingEl;
-let travelMode = 'foot'; // 'foot' | 'driving'
-let lastPos = null;      // last known { lat, lng } to re-locate on request
-let lastCandidates = null; // cached candidates with both routing durations
+let lastPos = null;       // last known { lat, lng }
+let refreshTimer = null;  // 30-second auto-refresh interval
 
 /* ── Bootstrap ─────────────────────────────────────────── */
 
@@ -18,7 +17,6 @@ document.addEventListener('DOMContentLoaded', () => {
   loadShelters();
   locateBtn.addEventListener('click', requestLocation);
   setupPanelDrag();
-  setupTravelToggle();
   registerSW();
   requestLocation();
 });
@@ -48,20 +46,6 @@ async function loadShelters() {
   }
 }
 
-/* ── Travel mode toggle ────────────────────────────────── */
-
-function setupTravelToggle() {
-  document.getElementById('travel-toggle').addEventListener('click', (e) => {
-    const btn = e.target.closest('.travel-btn');
-    if (!btn || btn.dataset.mode === travelMode) return;
-    travelMode = btn.dataset.mode;
-    document.querySelectorAll('.travel-btn').forEach(
-      b => b.classList.toggle('active', b.dataset.mode === travelMode)
-    );
-    if (lastCandidates && lastPos) resortAndRender();
-  });
-}
-
 /* ── Geolocation ───────────────────────────────────────── */
 
 function requestLocation() {
@@ -76,7 +60,8 @@ function requestLocation() {
     (pos) => {
       const { latitude: lat, longitude: lng } = pos.coords;
       setUserMarker(lat, lng);
-      showClosestShelters(lat, lng);
+      showClosestShelters(lat, lng, false);
+      startAutoRefresh();
     },
     (err) => {
       loadingEl.classList.add('hidden');
@@ -105,6 +90,26 @@ function requestLocation() {
   loadingEl.classList.remove('hidden');
 }
 
+/**
+ * Start (or restart) a 30-second interval that silently refreshes shelter
+ * distances based on the latest position. Updates markers and list in-place
+ * when the panel is open; otherwise just updates lastPos for next open.
+ */
+function startAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude: lat, longitude: lng } = pos.coords;
+        setUserMarker(lat, lng);
+        showClosestShelters(lat, lng, true);
+      },
+      (err) => console.error('Auto-refresh geolocation error:', err.code, err.message),
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 15000 }
+    );
+  }, 30000);
+}
+
 /* ── Map markers ───────────────────────────────────────── */
 
 function setUserMarker(lat, lng) {
@@ -123,96 +128,39 @@ function clearShelterMarkers() {
   shelterMarkers = [];
 }
 
-/* ── OSRM routing ──────────────────────────────────────── */
-
-/**
- * Query OSRM table service for one profile. Returns an array of durations
- * (seconds) parallel to `candidates`, or null on failure.
- *
- * OSRM table API: coordinates are lng,lat (longitude first).
- * sources=0 means only compute rows for the first coordinate (the user).
- * durations[0][0] = 0 (user→user), durations[0][i+1] = user→candidates[i].
- */
-async function fetchOsrmDurations(userLat, userLng, candidates, profile) {
-  try {
-    const coords = [[userLng, userLat], ...candidates.map(s => [s.lng, s.lat])]
-      .map(([lng, lat]) => `${lng},${lat}`)
-      .join(';');
-    const url = `https://router.project-osrm.org/table/v1/${profile}/${coords}?sources=0&annotations=duration`;
-
-    const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    if (data.code !== 'Ok') throw new Error(`OSRM code: ${data.code}`);
-
-    // Slice off index 0 (user→user = 0) to align with candidates array.
-    return data.durations[0].slice(1);
-  } catch (err) {
-    console.error(`OSRM ${profile} failed, falling back to haversine:`, err);
-    return null;
-  }
-}
-
 /* ── Core logic: find & display closest shelters ───────── */
 
-async function showClosestShelters(userLat, userLng) {
+/**
+ * Sort shelters by straight-line distance from user and render the top 5.
+ * @param {boolean} silent - if true, skip loading overlay and panel open/close
+ */
+function showClosestShelters(userLat, userLng, silent) {
   if (!shelterData) {
-    alert('נתוני מקלטים עדיין נטענים, נסה שוב');
+    if (!silent) alert('נתוני מקלטים עדיין נטענים, נסה שוב');
     return;
   }
 
   lastPos = { lat: userLat, lng: userLng };
-  loadingEl.classList.remove('hidden');
 
-  // Calculate haversine distances and take the 20 closest as routing candidates.
-  const withDist = shelterData.map(([lat, lng, type]) => ({
-    lat, lng, type,
-    dist: haversine(userLat, userLng, lat, lng),
-  }));
-  withDist.sort((a, b) => a.dist - b.dist);
-  const candidates = withDist.slice(0, 20);
+  const closest = shelterData
+    .map(([lat, lng, type]) => ({ lat, lng, type, dist: haversine(userLat, userLng, lat, lng) }))
+    .sort((a, b) => a.dist - b.dist)
+    .slice(0, 5);
 
-  // Fetch durations for current travel mode only.
-  // If the user toggles later, the other profile is fetched then and cached.
-  await fetchAndCacheDurations(userLat, userLng, candidates, travelMode);
+  if (!silent) {
+    loadingEl.classList.add('hidden');
+    panelEl.classList.remove('collapsed');
+    panelEl.classList.add('open');
+    locateBtn.style.display = 'none';
+  }
 
-  lastCandidates = candidates;
-  loadingEl.classList.add('hidden');
-  panelEl.classList.remove('collapsed');
-  panelEl.classList.add('open');
-  locateBtn.style.display = 'none';
-
-  resortAndRender();
-}
-
-/**
- * Fetch OSRM durations for `profile` and store them on each candidate as
- * `footDuration` or `drivingDuration`. No-ops if already cached.
- */
-async function fetchAndCacheDurations(userLat, userLng, candidates, profile) {
-  const key = profile === 'foot' ? 'footDuration' : 'drivingDuration';
-  if (candidates[0][key] !== undefined) return; // already cached
-  const durations = await fetchOsrmDurations(userLat, userLng, candidates, profile);
-  candidates.forEach((s, i) => { s[key] = durations ? durations[i] : null; });
-}
-
-/** Sort cached candidates by current travel mode and re-render. */
-async function resortAndRender() {
-  // Fetch the newly selected profile's durations if not yet cached.
-  await fetchAndCacheDurations(lastPos.lat, lastPos.lng, lastCandidates, travelMode);
-
-  const durationKey = travelMode === 'foot' ? 'footDuration' : 'drivingDuration';
-  const sorted = [...lastCandidates].sort(
-    (a, b) => (a[durationKey] ?? Infinity) - (b[durationKey] ?? Infinity)
-  );
-  const closest = sorted.slice(0, 5).map(s => ({
-    ...s, routeDuration: s[durationKey],
-  }));
+  // On silent refresh, only update visuals if the panel is already open.
+  if (silent && panelEl.classList.contains('collapsed')) return;
 
   clearShelterMarkers();
   renderShelterMarkers(closest);
-  renderShelterList(closest, lastPos.lat, lastPos.lng);
-  fitMapBounds(closest, lastPos.lat, lastPos.lng);
+  renderShelterList(closest, userLat, userLng);
+  if (!silent) fitMapBounds(closest, userLat, userLng);
 }
 
 function renderShelterMarkers(shelters) {
@@ -226,11 +174,7 @@ function renderShelterMarkers(shelters) {
       }),
     }).addTo(map);
 
-    marker.bindPopup(
-      `<b>מקלט ${i + 1}</b><br>${s.type || 'מקלט'}` +
-      `<br>${s.routeDuration != null ? formatDuration(s.routeDuration) : formatDist(s.dist)}`
-    );
-
+    marker.bindPopup(`<b>מקלט ${i + 1}</b><br>${s.type || 'מקלט'}<br>${formatDist(s.dist)}`);
     marker.on('click', () => highlightCard(i));
     shelterMarkers.push(marker);
   });
@@ -243,7 +187,7 @@ function renderShelterList(shelters, userLat, userLng) {
       <div class="shelter-info">
         ${s.type ? `<div class="shelter-type">${s.type}</div>` : ''}
         <div class="shelter-distances">
-          <span>${s.routeDuration != null ? formatDuration(s.routeDuration) : formatDist(s.dist)}</span>
+          <span>${formatDist(s.dist)}</span>
         </div>
         <div class="nav-links">
           <a class="nav-link waze" href="${wazeUrl(s.lat, s.lng)}" target="_blank" onclick="event.stopPropagation()">
@@ -342,12 +286,6 @@ function haversine(lat1, lng1, lat2, lng2) {
 /** Format meters as human-readable distance. */
 function formatDist(m) {
   return m < 1000 ? `${Math.round(m)} מ'` : `${(m / 1000).toFixed(1)} ק"מ`;
-}
-
-/** Format OSRM duration (seconds) as human-readable travel time. */
-function formatDuration(sec) {
-  const min = Math.round(sec / 60);
-  return min < 1 ? `< 1 דק'` : `${min} דק'`;
 }
 
 /** Waze deep link to navigate to coordinates. */
