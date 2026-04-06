@@ -2,7 +2,7 @@
 
 let map, userMarker, shelterMarkers = [], shelterData = null;
 let panelEl, listEl, locateBtn, loadingEl;
-let travelMode = 'foot'; // 'foot' | 'driving'
+let travelMode = 'foot'; // 'foot' | 'driving' | 'distance'
 let lastPos = null;      // last known { lat, lng } to re-locate on request
 let lastCandidates = null; // cached candidates with both routing durations
 
@@ -174,7 +174,10 @@ async function showClosestShelters(userLat, userLng) {
 
   // Fetch durations for current travel mode only.
   // If the user toggles later, the other profile is fetched then and cached.
-  await fetchAndCacheDurations(userLat, userLng, candidates, travelMode);
+  // 'distance' mode uses haversine only — no routing needed.
+  if (travelMode !== 'distance') {
+    await fetchAndCacheDurations(userLat, userLng, candidates, travelMode);
+  }
 
   lastCandidates = candidates;
   loadingEl.classList.add('hidden');
@@ -198,16 +201,20 @@ async function fetchAndCacheDurations(userLat, userLng, candidates, profile) {
 
 /** Sort cached candidates by current travel mode and re-render. */
 async function resortAndRender() {
-  // Fetch the newly selected profile's durations if not yet cached.
-  await fetchAndCacheDurations(lastPos.lat, lastPos.lng, lastCandidates, travelMode);
-
-  const durationKey = travelMode === 'foot' ? 'footDuration' : 'drivingDuration';
-  const sorted = [...lastCandidates].sort(
-    (a, b) => (a[durationKey] ?? Infinity) - (b[durationKey] ?? Infinity)
-  );
-  const closest = sorted.slice(0, 5).map(s => ({
-    ...s, routeDuration: s[durationKey],
-  }));
+  let closest;
+  if (travelMode === 'distance') {
+    // Sort by straight-line haversine distance; no routing needed.
+    const sorted = [...lastCandidates].sort((a, b) => a.dist - b.dist);
+    closest = sorted.slice(0, 5).map(s => ({ ...s, routeDuration: null }));
+  } else {
+    // Fetch the newly selected profile's durations if not yet cached.
+    await fetchAndCacheDurations(lastPos.lat, lastPos.lng, lastCandidates, travelMode);
+    const durationKey = travelMode === 'foot' ? 'footDuration' : 'drivingDuration';
+    const sorted = [...lastCandidates].sort(
+      (a, b) => (a[durationKey] ?? Infinity) - (b[durationKey] ?? Infinity)
+    );
+    closest = sorted.slice(0, 5).map(s => ({ ...s, routeDuration: s[durationKey] }));
+  }
 
   clearShelterMarkers();
   renderShelterMarkers(closest);
