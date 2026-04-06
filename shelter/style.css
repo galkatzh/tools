@@ -78,30 +78,6 @@ body {
   flex-shrink: 0;
 }
 
-.travel-toggle {
-  display: flex;
-  gap: 8px;
-  padding: 0 16px 12px;
-  flex-shrink: 0;
-}
-
-.travel-btn {
-  flex: 1;
-  padding: 8px;
-  border: 1px solid #000;
-  border-radius: 8px;
-  background: #fff;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-
-.travel-btn.active {
-  background: #000;
-  color: #fff;
-}
-
 .shelter-list {
   overflow-y: auto;
   padding: 0 16px 24px;
