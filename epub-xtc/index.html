@@ -77,6 +77,14 @@
           <input id="dither-strength" type="range" min="0" max="100" value="100" />
         </div>
         <div class="setting-group">
+          <label for="orientation">Orientation</label>
+          <select id="orientation">
+            <option value="portrait">Portrait</option>
+            <option value="landscape-cw">Landscape (↻ CW)</option>
+            <option value="landscape-ccw">Landscape (↺ CCW)</option>
+          </select>
+        </div>
+        <div class="setting-group">
           <label for="read-dir">Reading direction</label>
           <select id="read-dir">
             <option value="1">Right → Left</option>
@@ -144,6 +152,7 @@ function getSettings() {
     dithering:        $('dithering').value,
     ditherStrength:   +$('dither-strength').value / 100,
     readDir:     +$('read-dir').value,
+    orientation: $('orientation').value,
   };
 }
 
@@ -288,6 +297,31 @@ function renderPage(lines, settings) {
   for (const line of lines) ctx.fillText(line.text, textX, line.y);
 
   return canvas;
+}
+
+// ─── Rotation ────────────────────────────────────────────────────────────────
+
+/**
+ * Rotate an OffscreenCanvas 90° clockwise.
+ * Used to pre-rotate landscape pages so the e-paper firmware
+ * (which reads pixels in portrait order) renders them correctly.
+ */
+function rotateCanvas90CW(canvas) {
+  const rotated = new OffscreenCanvas(canvas.height, canvas.width);
+  const ctx = rotated.getContext('2d');
+  ctx.translate(canvas.height, 0);
+  ctx.rotate(Math.PI / 2);
+  ctx.drawImage(canvas, 0, 0);
+  return rotated;
+}
+
+function rotateCanvas90CCW(canvas) {
+  const rotated = new OffscreenCanvas(canvas.height, canvas.width);
+  const ctx = rotated.getContext('2d');
+  ctx.translate(0, canvas.width);
+  ctx.rotate(-Math.PI / 2);
+  ctx.drawImage(canvas, 0, 0);
+  return rotated;
 }
 
 // ─── XTG encoding ────────────────────────────────────────────────────────────
@@ -563,13 +597,24 @@ async function convert(file) {
       $('read-dir').value = String(settings.readDir);
     }
 
-    const pages = await paginateText(paragraphs, settings, pct => setProgress(5 + pct));
+    // In landscape mode, swap W/H so text fills the wider rotated canvas.
+    // Each rendered page is then rotated 90° before XTG encoding so the
+    // e-paper firmware (portrait pixel order) displays it correctly when rotated.
+    const isLandscape = settings.orientation !== 'portrait';
+    const layoutSettings = isLandscape
+      ? { ...settings, pageW: settings.pageH, pageH: settings.pageW }
+      : settings;
+
+    const pages = await paginateText(paragraphs, layoutSettings, pct => setProgress(5 + pct));
     setProgress(55);
     setStatus(`Rendering ${pages.length} pages…`);
 
     const xtgPages = [];
     for (let i = 0; i < pages.length; i++) {
-      xtgPages.push(encodeXTG(renderPage(pages[i], settings), settings.dithering, settings.ditherStrength));
+      let canvas = renderPage(pages[i], layoutSettings);
+      if (settings.orientation === 'landscape-cw')  canvas = rotateCanvas90CW(canvas);
+      if (settings.orientation === 'landscape-ccw') canvas = rotateCanvas90CCW(canvas);
+      xtgPages.push(encodeXTG(canvas, settings.dithering, settings.ditherStrength));
       if (i % 5 === 0) setProgress(55 + (i / pages.length) * 38);
     }
 
