@@ -48,6 +48,10 @@
           <input id="dither-strength" type="range" min="0" max="100" value="100" />
         </div>
         <div class="setting-group">
+          <label for="threshold">Threshold: <span id="threshold-val">128</span></label>
+          <input id="threshold" type="range" min="0" max="255" value="128" />
+        </div>
+        <div class="setting-group">
           <label for="orientation">Landscape rotation</label>
           <select id="orientation">
             <option value="cw">Rotate right (↻ CW)</option>
@@ -69,6 +73,16 @@
         <p>Drop <code>.pdf</code> here or click to select</p>
         <input id="file-input" type="file" accept=".pdf" />
       </section>
+
+      <div class="action-bar" id="page-controls" hidden>
+        <span id="pdf-info" class="pdf-info"></span>
+        <div class="action-bar-right">
+          <label for="preview-page-num">Page</label>
+          <input id="preview-page-num" type="number" value="1" min="1" max="1" class="page-input" />
+          <button class="secondary-btn" id="preview-btn">Preview</button>
+          <button class="export-btn" id="export-btn">Export all</button>
+        </div>
+      </div>
 
       <div class="progress-wrap" id="progress-wrap" hidden>
         <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
@@ -128,6 +142,7 @@ function getSettings() {
     k:              +$('overlap-k').value,
     dithering:      $('dithering').value,
     ditherStrength: +$('dither-strength').value / 100,
+    threshold:      +$('threshold').value,
     orientation:    $('orientation').value,
   };
 }
@@ -223,7 +238,7 @@ function sliceCanvas(srcCanvas, sliceH, n) {
  * dithering: 'none' | 'floyd-steinberg' | 'atkinson' | 'ordered'
  * ditherStrength: 0–1, blends dither effect with plain threshold
  */
-function encodeXTG(canvas, dithering = 'none', ditherStrength = 1) {
+function encodeXTG(canvas, dithering = 'none', ditherStrength = 1, threshold = 128) {
   const w = canvas.width, h = canvas.height;
   const { data } = canvas.getContext('2d').getImageData(0, 0, w, h);
 
@@ -242,15 +257,17 @@ function encodeXTG(canvas, dithering = 'none', ditherStrength = 1) {
       const idx = y * w + x;
 
       if (dithering === 'ordered') {
-        // Bayer ordered: threshold interpolated between 128 (flat) and Bayer value (full pattern)
+        // Bayer ordered: center the pattern around `threshold` (not always 128).
+        // At ditherStrength=0 every pixel uses `threshold`; at 1 the full Bayer
+        // pattern is applied shifted so its midpoint aligns with `threshold`.
         const bv = BAYER4[(y % 4) * 4 + (x % 4)];
-        const threshold = 128 * (1 - ditherStrength) + bv * ditherStrength;
-        bits[idx] = gray[idx] >= threshold ? 1 : 0;
+        const t = threshold + (bv - 128) * ditherStrength;
+        bits[idx] = gray[idx] >= t ? 1 : 0;
         continue;
       }
 
       const old = gray[idx];
-      const q   = old >= 128 ? 255 : 0;
+      const q   = old >= threshold ? 255 : 0;
       bits[idx] = q === 255 ? 1 : 0;
       if (dithering === 'none') continue;
 
@@ -453,79 +470,135 @@ function showPreview(xtgPages, orientation) {
   section.hidden = false;
 }
 
-// ─── Conversion orchestrator ─────────────────────────────────────────────────
+// ─── Shared pipeline helpers ──────────────────────────────────────────────────
 
-async function convert(file) {
-  const s = getSettings();
+let pdfDoc      = null; // persists after load so preview/export can reuse it
+let pdfFileName = '';
+
+/**
+ * Render one PDF page to an OffscreenCanvas scaled so the page width equals
+ * the device height (the landscape display width after 90° rotation).
+ */
+async function renderPDFPage(pageNum, s) {
+  const page   = await pdfDoc.getPage(pageNum);
+  const defVp  = page.getViewport({ scale: 1 });
+  const scale  = s.deviceH / defVp.width;
+  const vp     = page.getViewport({ scale });
+  const canvas = new OffscreenCanvas(Math.round(vp.width), Math.round(vp.height));
+  const ctx    = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  page.cleanup();
+  return canvas;
+}
+
+/**
+ * Slice, rotate, and encode one rendered page canvas into XTG pages.
+ * Blank (all-white) slices are discarded.
+ */
+function processPage(pageCanvas, s) {
+  const sliceH = s.deviceW;
+  const nBase  = Math.max(1, Math.ceil(pageCanvas.height / sliceH));
+  const n      = nBase + s.k;
+  const xtgs   = [];
+  for (const slice of sliceCanvas(pageCanvas, sliceH, n)) {
+    if (isBlank(slice)) continue;
+    const rotated = s.orientation === 'cw' ? rotateCW(slice) : rotateCCW(slice);
+    xtgs.push(encodeXTG(rotated, s.dithering, s.ditherStrength, s.threshold));
+  }
+  return xtgs;
+}
+
+// ─── Load PDF ─────────────────────────────────────────────────────────────────
+
+async function loadPDF(file) {
+  pdfFileName = file.name;
   $('download-btn').hidden = true;
-  $('preview').hidden = true;
+  $('preview').hidden      = true;
+  $('page-controls').hidden = true;
   showProgress();
   setProgress(0);
   setStatus('Loading PDF…');
 
   try {
-    const ab  = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: ab }).promise;
-    const totalPages = pdf.numPages;
-    setProgress(5);
+    pdfDoc = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+    const n = pdfDoc.numPages;
 
+    $('preview-page-num').max   = n;
+    $('preview-page-num').value = 1;
+    $('pdf-info').textContent   = `${n} page${n !== 1 ? 's' : ''}`;
+    $('page-controls').hidden   = false;
+
+    setProgress(100);
+    setStatus(`Loaded — ${n} page${n !== 1 ? 's' : ''}. Preview a page, then export when ready.`);
+
+    await previewPage(1);
+  } catch (err) {
+    console.error('Failed to load PDF:', err);
+    setStatus(`Error: ${err.message}`);
+  }
+}
+
+// ─── Preview a single page ────────────────────────────────────────────────────
+
+async function previewPage(pageNum) {
+  if (!pdfDoc) return;
+  const s = getSettings();
+  $('download-btn').hidden = true;
+  showProgress();
+  setProgress(0);
+  setStatus(`Previewing page ${pageNum}…`);
+
+  try {
+    const canvas   = await renderPDFPage(pageNum, s);
+    setProgress(70);
+    const xtgPages = processPage(canvas, s);
+    setProgress(100);
+    setStatus(`Page ${pageNum} — ${xtgPages.length} slice${xtgPages.length !== 1 ? 's' : ''}. Adjust settings and re-preview, or export all.`);
+    showPreview(xtgPages, s.orientation);
+  } catch (err) {
+    console.error('Preview failed:', err);
+    setStatus(`Error: ${err.message}`);
+  }
+}
+
+// ─── Export all pages ─────────────────────────────────────────────────────────
+
+async function exportAll() {
+  if (!pdfDoc) return;
+  const s          = getSettings();
+  const totalPages = pdfDoc.numPages;
+  $('download-btn').hidden = true;
+  $('preview').hidden      = true;
+  showProgress();
+  setProgress(0);
+
+  try {
     const xtgPages = [];
-
-    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-      setStatus(`Processing page ${pageNum} / ${totalPages}…`);
-      const page = await pdf.getPage(pageNum);
-      const defVp = page.getViewport({ scale: 1 });
-
-      // Scale the PDF page so its width maps to the device's height.
-      // In landscape mode the device is rotated 90°, so the page width
-      // should span the device height (portrait), which becomes the
-      // display width in landscape.
-      const scale    = s.deviceH / defVp.width;
-      const viewport = page.getViewport({ scale });
-      const rendW    = Math.round(viewport.width);
-      const rendH    = Math.round(viewport.height);
-
-      // Render to OffscreenCanvas
-      const pageCanvas = new OffscreenCanvas(rendW, rendH);
-      const ctx = pageCanvas.getContext('2d');
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, rendW, rendH);
-      await page.render({ canvasContext: ctx, viewport }).promise;
-      page.cleanup();
-
-      // Each slice is deviceW tall so it fills the landscape display height.
-      // nBase = minimum slices to cover the full page height; n = nBase + k.
-      const sliceH = s.deviceW;
-      const nBase  = Math.max(1, Math.ceil(rendH / sliceH));
-      const n      = nBase + s.k;
-
-      const slices = sliceCanvas(pageCanvas, sliceH, n);
-      for (const slice of slices) {
-        if (isBlank(slice)) continue; // skip fully-white slices
-        const rotated = s.orientation === 'cw' ? rotateCW(slice) : rotateCCW(slice);
-        xtgPages.push(encodeXTG(rotated, s.dithering, s.ditherStrength));
-      }
-
-      setProgress(5 + 85 * (pageNum / totalPages));
+    for (let p = 1; p <= totalPages; p++) {
+      setStatus(`Processing page ${p} / ${totalPages}…`);
+      const canvas = await renderPDFPage(p, s);
+      xtgPages.push(...processPage(canvas, s));
+      setProgress(5 + 85 * (p / totalPages));
     }
 
     setProgress(92);
     setStatus('Assembling XTC container…');
-
     const xtc = assembleXTC(
       xtgPages,
-      { title: file.name.replace(/\.pdf$/i, ''), author: '', language: 'en' },
+      { title: pdfFileName.replace(/\.pdf$/i, ''), author: '', language: 'en' },
       2 // Top→Bottom reading direction
     );
 
     setProgress(100);
-    const pagesLabel = `${totalPages} PDF page${totalPages !== 1 ? 's' : ''}`;
-    setStatus(`Done — ${xtgPages.length} slices from ${pagesLabel} · ${(xtc.length / 1024).toFixed(0)} KB`);
+    const pl = `${totalPages} PDF page${totalPages !== 1 ? 's' : ''}`;
+    setStatus(`Done — ${xtgPages.length} slices from ${pl} · ${(xtc.length / 1024).toFixed(0)} KB`);
 
     showPreview(xtgPages, s.orientation);
 
     const url  = URL.createObjectURL(new Blob([xtc], { type: 'application/octet-stream' }));
-    const base = file.name.replace(/\.pdf$/i, '');
+    const base = pdfFileName.replace(/\.pdf$/i, '');
     const btn  = $('download-btn');
     btn.textContent = `Download ${base}.xtc`;
     btn.hidden = false;
@@ -533,7 +606,7 @@ async function convert(file) {
       Object.assign(document.createElement('a'), { href: url, download: base + '.xtc' }).click();
 
   } catch (err) {
-    console.error('Conversion failed:', err);
+    console.error('Export failed:', err);
     setStatus(`Error: ${err.message}`);
   }
 }
@@ -556,15 +629,20 @@ dropzone.addEventListener('drop', e => {
   e.preventDefault();
   dropzone.classList.remove('hover');
   const f = e.dataTransfer.files[0];
-  if (f?.name.toLowerCase().endsWith('.pdf')) convert(f);
+  if (f?.name.toLowerCase().endsWith('.pdf')) loadPDF(f);
   else setStatus('Please drop a .pdf file.');
 });
 fileInput.addEventListener('change', () => {
   if (!fileInput.files[0]) return;
   const f = fileInput.files[0];
   fileInput.value = ''; // allow re-selecting the same file
-  convert(f);
+  loadPDF(f);
 });
+
+$('preview-btn').addEventListener('click', () =>
+  previewPage(+$('preview-page-num').value)
+);
+$('export-btn').addEventListener('click', exportAll);
 
 // Show/hide custom device dimension inputs
 $('device').addEventListener('change', () => {
@@ -584,6 +662,11 @@ function updateDitherUI() {
 $('dithering').addEventListener('change', updateDitherUI);
 $('dither-strength').addEventListener('input', updateDitherUI);
 updateDitherUI();
+
+// Threshold label
+$('threshold').addEventListener('input', () => {
+  $('threshold-val').textContent = $('threshold').value;
+});
     </script>
   </body>
 </html>

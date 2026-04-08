@@ -61,6 +61,53 @@ input[type="range"] { width: 100%; accent-color: #4a9eff; cursor: pointer; }
 .dropzone code { color: #4a9eff; }
 #file-input { display: none; }
 
+/* Action bar (shown after PDF loads) */
+.action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 16px;
+  background: #1a1a1a;
+  border-radius: 8px;
+  border: 1px solid #2a2a2a;
+}
+.action-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.action-bar label { font-size: 0.82rem; color: #999; white-space: nowrap; }
+.pdf-info { font-size: 0.85rem; color: #666; }
+.page-input {
+  width: 58px !important;
+  text-align: center;
+  padding: 5px 6px;
+}
+.secondary-btn {
+  background: #2a2a2a;
+  border: 1px solid #444;
+  color: #ccc;
+  padding: 7px 14px;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.secondary-btn:hover { background: #333; }
+.export-btn {
+  background: #4a9eff;
+  color: #fff;
+  border: none;
+  padding: 7px 16px;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.export-btn:hover { background: #3a8eef; }
+
 /* Progress */
 .progress-wrap { display: flex; flex-direction: column; gap: 8px; }
 .progress-bar {
