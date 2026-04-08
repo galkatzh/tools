@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF → XTC Converter</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header>
+        <h1>PDF → XTC</h1>
+        <p>Convert PDF pages to XTC format for Xteink e-paper readers.</p>
+      </header>
+
+      <section class="settings" aria-label="Conversion settings">
+        <div class="setting-group">
+          <label for="device">Device</label>
+          <select id="device">
+            <option value="x4">Xteink X4 (480×800)</option>
+            <option value="x3">Xteink X3 (480×640)</option>
+            <option value="custom">Custom…</option>
+          </select>
+        </div>
+        <div class="setting-group" id="custom-w-group" hidden>
+          <label for="custom-w">Device width (px)</label>
+          <input id="custom-w" type="number" value="480" min="100" max="4000" />
+        </div>
+        <div class="setting-group" id="custom-h-group" hidden>
+          <label for="custom-h">Device height (px)</label>
+          <input id="custom-h" type="number" value="800" min="100" max="4000" />
+        </div>
+        <div class="setting-group">
+          <label for="overlap-k" title="Extra slices per PDF page added on top of the minimum needed. k=0 means no overlap; k=1 adds one overlapping slice per page.">Extra slices k</label>
+          <input id="overlap-k" type="number" value="1" min="0" max="20" />
+        </div>
+        <div class="setting-group">
+          <label for="dithering">Dithering</label>
+          <select id="dithering">
+            <option value="none">None</option>
+            <option value="floyd-steinberg" selected>Floyd-Steinberg</option>
+            <option value="atkinson">Atkinson</option>
+            <option value="ordered">Ordered (Bayer 4×4)</option>
+          </select>
+        </div>
+        <div class="setting-group">
+          <label for="dither-strength">Dither strength: <span id="dither-strength-val">100%</span></label>
+          <input id="dither-strength" type="range" min="0" max="100" value="100" />
+        </div>
+        <div class="setting-group">
+          <label for="orientation">Landscape rotation</label>
+          <select id="orientation">
+            <option value="cw">Rotate right (↻ CW)</option>
+            <option value="ccw">Rotate left (↺ CCW)</option>
+          </select>
+        </div>
+      </section>
+
+      <section
+        class="dropzone"
+        id="dropzone"
+        role="button"
+        tabindex="0"
+        aria-label="Drop PDF file here or click to select"
+      >
+        <svg width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 16V4m0 0-4 4m4-4 4 4M3 16v2a2 2 0 002 2h14a2 2 0 002-2v-2"/>
+        </svg>
+        <p>Drop <code>.pdf</code> here or click to select</p>
+        <input id="file-input" type="file" accept=".pdf" />
+      </section>
+
+      <div class="progress-wrap" id="progress-wrap" hidden>
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+        <p class="status" id="status" aria-live="polite"></p>
+      </div>
+
+      <button class="download-btn" id="download-btn" hidden>Download .xtc</button>
+
+      <div class="preview" id="preview" hidden>
+        <div class="preview-nav">
+          <button id="prev-page" disabled>◀</button>
+          <span id="page-label">Page 1 / 1</span>
+          <button id="next-page" disabled>▶</button>
+        </div>
+        <div class="preview-main">
+          <canvas id="preview-canvas"></canvas>
+        </div>
+        <div class="preview-strip" id="preview-strip"></div>
+      </div>
+    </main>
+
+    <script type="module">
+import * as pdfjsLib from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs';
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs';
+
+// ─── Device presets ───────────────────────────────────────────────────────────
+
+const DEVICES = {
+  x4: { w: 480, h: 800 },
+  x3: { w: 480, h: 640 },
+};
+
+// ─── Bayer 4×4 matrix for ordered dithering (values 0–255) ───────────────────
+
+const BAYER4 = new Uint8Array([
+    0, 136,  34, 170,
+  204,  68, 238, 102,
+   51, 187,  17, 153,
+  255, 119, 221,  85,
+]);
+
+// ─── UI helpers ──────────────────────────────────────────────────────────────
+
+const $ = id => document.getElementById(id);
+const setStatus   = msg => $('status').textContent = msg;
+const setProgress = pct => $('progress-fill').style.width = pct + '%';
+const showProgress = ()  => $('progress-wrap').hidden = false;
+
+function getSettings() {
+  const device = $('device').value;
+  const dw = device === 'custom' ? +$('custom-w').value : DEVICES[device].w;
+  const dh = device === 'custom' ? +$('custom-h').value : DEVICES[device].h;
+  return {
+    deviceW:        dw,
+    deviceH:        dh,
+    k:              +$('overlap-k').value,
+    dithering:      $('dithering').value,
+    ditherStrength: +$('dither-strength').value / 100,
+    orientation:    $('orientation').value,
+  };
+}
+
+// ─── Rotation helpers ────────────────────────────────────────────────────────
+
+/** Rotate an OffscreenCanvas 90° clockwise. */
+function rotateCW(canvas) {
+  const out = new OffscreenCanvas(canvas.height, canvas.width);
+  const ctx = out.getContext('2d');
+  ctx.translate(canvas.height, 0);
+  ctx.rotate(Math.PI / 2);
+  ctx.drawImage(canvas, 0, 0);
+  return out;
+}
+
+/** Rotate an OffscreenCanvas 90° counter-clockwise. */
+function rotateCCW(canvas) {
+  const out = new OffscreenCanvas(canvas.height, canvas.width);
+  const ctx = out.getContext('2d');
+  ctx.translate(0, canvas.width);
+  ctx.rotate(-Math.PI / 2);
+  ctx.drawImage(canvas, 0, 0);
+  return out;
+}
+
+/** Rotate an HTMLCanvasElement 90° CW (used to un-rotate CCW-stored XTG in preview). */
+function rotateCWHtml(src) {
+  const dst = document.createElement('canvas');
+  dst.width = src.height; dst.height = src.width;
+  const ctx = dst.getContext('2d');
+  ctx.translate(src.height, 0);
+  ctx.rotate(Math.PI / 2);
+  ctx.drawImage(src, 0, 0);
+  return dst;
+}
+
+/** Rotate an HTMLCanvasElement 90° CCW (used to un-rotate CW-stored XTG in preview). */
+function rotateCCWHtml(src) {
+  const dst = document.createElement('canvas');
+  dst.width = src.height; dst.height = src.width;
+  const ctx = dst.getContext('2d');
+  ctx.translate(0, src.width);
+  ctx.rotate(-Math.PI / 2);
+  ctx.drawImage(src, 0, 0);
+  return dst;
+}
+
+// ─── Slice extraction ────────────────────────────────────────────────────────
+
+/**
+ * Extract n horizontal slices from srcCanvas, each sliceH pixels tall and
+ * srcCanvas.width pixels wide. Slices are evenly distributed so the first
+ * slice starts at y=0 and the last ends at y=srcCanvas.height (padded with
+ * white if srcCanvas.height < sliceH).
+ */
+function sliceCanvas(srcCanvas, sliceH, n) {
+  const { width: w, height: h } = srcCanvas;
+  return Array.from({ length: n }, (_, i) => {
+    // When only 1 slice or page fits entirely within a slice, start at 0
+    const yStart = (n === 1 || h <= sliceH)
+      ? 0
+      : Math.round(i * (h - sliceH) / (n - 1));
+
+    const out = new OffscreenCanvas(w, sliceH);
+    const ctx = out.getContext('2d');
+    ctx.fillStyle = '#fff'; // white padding for pages shorter than sliceH
+    ctx.fillRect(0, 0, w, sliceH);
+    ctx.drawImage(srcCanvas, 0, -yStart);
+    return out;
+  });
+}
+
+// ─── XTG encoding ────────────────────────────────────────────────────────────
+
+/**
+ * Convert an OffscreenCanvas to a 1-bit monochrome XTG image (22-byte header
+ * + row-major bitmap, 1=white, 0=black, MSB = leftmost pixel).
+ *
+ * dithering: 'none' | 'floyd-steinberg' | 'atkinson' | 'ordered'
+ * ditherStrength: 0–1, blends dither effect with plain threshold
+ */
+function encodeXTG(canvas, dithering = 'none', ditherStrength = 1) {
+  const w = canvas.width, h = canvas.height;
+  const { data } = canvas.getContext('2d').getImageData(0, 0, w, h);
+
+  // Grayscale luminance into a mutable float array for error diffusion
+  const gray = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++)
+    gray[i] = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
+
+  const addErr = (x, y, e) => {
+    if (x >= 0 && x < w && y >= 0 && y < h) gray[y * w + x] += e;
+  };
+
+  const bits = new Uint8Array(w * h); // 1=white, 0=black
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+
+      if (dithering === 'ordered') {
+        // Bayer ordered: threshold interpolated between 128 (flat) and Bayer value (full pattern)
+        const bv = BAYER4[(y % 4) * 4 + (x % 4)];
+        const threshold = 128 * (1 - ditherStrength) + bv * ditherStrength;
+        bits[idx] = gray[idx] >= threshold ? 1 : 0;
+        continue;
+      }
+
+      const old = gray[idx];
+      const q   = old >= 128 ? 255 : 0;
+      bits[idx] = q === 255 ? 1 : 0;
+      if (dithering === 'none') continue;
+
+      const err = (old - q) * ditherStrength;
+      if (dithering === 'floyd-steinberg') {
+        addErr(x + 1, y,     err * 7 / 16);
+        addErr(x - 1, y + 1, err * 3 / 16);
+        addErr(x,     y + 1, err * 5 / 16);
+        addErr(x + 1, y + 1, err * 1 / 16);
+      } else if (dithering === 'atkinson') {
+        // Distributes 6/8 of error — lighter, crisper look preferred on e-paper
+        const e = err / 8;
+        addErr(x + 1, y,     e); addErr(x + 2, y,     e);
+        addErr(x - 1, y + 1, e); addErr(x,     y + 1, e); addErr(x + 1, y + 1, e);
+        addErr(x,     y + 2, e);
+      }
+    }
+  }
+
+  const rowBytes = Math.ceil(w / 8);
+  const dataSize = rowBytes * h;
+  const buf  = new ArrayBuffer(22 + dataSize);
+  const view = new DataView(buf);
+
+  view.setUint32(0x00, 0x00475458, true); // "XTG\0"
+  view.setUint16(0x04, w, true);
+  view.setUint16(0x06, h, true);
+  view.setUint8 (0x08, 0); // colorMode = monochrome
+  view.setUint8 (0x09, 0); // compression = none
+  view.setUint32(0x0A, dataSize, true);
+  // 0x0E–0x15: optional MD5, leave as zero
+
+  const bmp = new Uint8Array(buf, 22);
+  for (let row = 0; row < h; row++) {
+    for (let col = 0; col < rowBytes; col++) {
+      let byte = 0;
+      for (let bit = 0; bit < 8; bit++) {
+        const px = col * 8 + bit;
+        if (px < w && bits[row * w + px]) byte |= 1 << (7 - bit);
+      }
+      bmp[row * rowBytes + col] = byte;
+    }
+  }
+  return new Uint8Array(buf);
+}
+
+// ─── XTC container assembly ──────────────────────────────────────────────────
+
+/**
+ * Pack XTG pages into an XTC container.
+ * readDir: 0=L→R, 1=R→L, 2=Top→Bottom
+ *
+ * Layout: [56-byte header][256-byte metadata][pageCount×16 index][XTG data…]
+ */
+function assembleXTC(xtgPages, meta, readDir) {
+  const pageCount = xtgPages.length;
+  const metaOff   = 56;
+  const indexOff  = metaOff + 256;
+  const dataOff   = indexOff + pageCount * 16;
+
+  const pageOffsets = [];
+  let cursor = dataOff;
+  for (const p of xtgPages) { pageOffsets.push(cursor); cursor += p.length; }
+
+  const buf   = new ArrayBuffer(cursor);
+  const view  = new DataView(buf);
+  const bytes = new Uint8Array(buf);
+  const enc   = new TextEncoder();
+
+  /** Write a uint64 as two little-endian uint32s (values stay within 32-bit for typical files). */
+  const u64 = (offset, value) => {
+    view.setUint32(offset,     value >>> 0, true);
+    view.setUint32(offset + 4, Math.floor(value / 0x100000000) >>> 0, true);
+  };
+
+  // ── Header (56 bytes) ──
+  view.setUint32(0x00, 0x00435458, true); // "XTC\0"
+  view.setUint16(0x04, 0x0100, true);     // version 1.0
+  view.setUint16(0x06, pageCount, true);
+  view.setUint8 (0x08, readDir);
+  view.setUint8 (0x09, 1); // hasMetadata
+  view.setUint8 (0x0A, 0); // hasThumbnails
+  view.setUint8 (0x0B, 0); // hasChapters
+  view.setUint32(0x0C, 1, true); // currentPage = 1 (1-based)
+  u64(0x10, metaOff);
+  u64(0x18, indexOff);
+  u64(0x20, dataOff);
+  u64(0x28, 0); // thumbOffset — none
+  u64(0x30, 0); // chapterOffset — none
+
+  // ── Metadata (256 bytes) ──
+  const writeStr = (str, offset, maxLen) =>
+    bytes.set(enc.encode(str).slice(0, maxLen - 1), offset);
+  writeStr(meta.title,  metaOff + 0x00, 128);
+  writeStr(meta.author, metaOff + 0x80, 64);
+  writeStr(meta.language || 'en', metaOff + 0xE0, 16);
+  view.setUint32(metaOff + 0xF0, (Date.now() / 1000) | 0, true); // Unix timestamp
+  view.setUint16(metaOff + 0xF4, 0xFFFF, true); // coverPage = none
+  view.setUint16(metaOff + 0xF6, 0, true);       // chapterCount = 0
+
+  // ── Page index table (16 bytes per page) ──
+  for (let i = 0; i < pageCount; i++) {
+    const base = indexOff + i * 16;
+    const pv   = new DataView(xtgPages[i].buffer, xtgPages[i].byteOffset);
+    u64(base, pageOffsets[i]);
+    view.setUint32(base + 0x08, xtgPages[i].length, true);
+    view.setUint16(base + 0x0C, pv.getUint16(0x04, true), true); // width from XTG header
+    view.setUint16(base + 0x0E, pv.getUint16(0x06, true), true); // height from XTG header
+  }
+
+  // ── Page data ──
+  let off = dataOff;
+  for (const p of xtgPages) { bytes.set(p, off); off += p.length; }
+
+  return new Uint8Array(buf);
+}
+
+// ─── Preview ─────────────────────────────────────────────────────────────────
+
+/**
+ * Decode a stored XTG page back to an HTMLCanvasElement and un-rotate it so
+ * the preview shows the content in landscape orientation (as the user will
+ * see it on the device). orientation is the rotation that was applied during
+ * encoding ('cw' or 'ccw'), so we apply the inverse here.
+ */
+function xtgToPreviewCanvas(xtg, orientation) {
+  const view = new DataView(xtg.buffer, xtg.byteOffset);
+  const w = view.getUint16(0x04, true);
+  const h = view.getUint16(0x06, true);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(w, h);
+  const px  = img.data;
+
+  const rowBytes = Math.ceil(w / 8);
+  const bmp = xtg.subarray(22);
+
+  for (let row = 0; row < h; row++) {
+    for (let col = 0; col < rowBytes; col++) {
+      const byte = bmp[row * rowBytes + col];
+      for (let bit = 0; bit < 8; bit++) {
+        const x = col * 8 + bit;
+        if (x >= w) continue;
+        const v = (byte >> (7 - bit)) & 1 ? 255 : 0; // 1=white, 0=black
+        const i = (row * w + x) * 4;
+        px[i] = px[i + 1] = px[i + 2] = v;
+        px[i + 3] = 255;
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  // Invert the storage rotation so preview shows the landscape view
+  return orientation === 'cw' ? rotateCCWHtml(canvas) : rotateCWHtml(canvas);
+}
+
+function showPreview(xtgPages, orientation) {
+  const section    = $('preview');
+  const mainCanvas = $('preview-canvas');
+  const strip      = $('preview-strip');
+  const label      = $('page-label');
+  const prevBtn    = $('prev-page');
+  const nextBtn    = $('next-page');
+
+  const canvases = xtgPages.map(xtg => xtgToPreviewCanvas(xtg, orientation));
+  let current = 0;
+
+  strip.innerHTML = '';
+  canvases.forEach((c, i) => {
+    const thumbW = 120;
+    const thumbH = Math.round(c.height * (thumbW / c.width));
+    const wrapper = document.createElement('div');
+    wrapper.className = 'thumb' + (i === 0 ? ' active' : '');
+    const tc = document.createElement('canvas');
+    tc.width = thumbW; tc.height = thumbH;
+    tc.getContext('2d').drawImage(c, 0, 0, thumbW, thumbH);
+    wrapper.appendChild(tc);
+    wrapper.addEventListener('click', () => goTo(i));
+    strip.appendChild(wrapper);
+  });
+
+  function goTo(i) {
+    current = i;
+    const c = canvases[i];
+    mainCanvas.width  = c.width;
+    mainCanvas.height = c.height;
+    mainCanvas.getContext('2d').drawImage(c, 0, 0);
+    label.textContent = `Slice ${i + 1} / ${canvases.length}`;
+    prevBtn.disabled  = i === 0;
+    nextBtn.disabled  = i === canvases.length - 1;
+    strip.querySelectorAll('.thumb').forEach((el, j) => el.classList.toggle('active', j === i));
+    strip.children[i]?.scrollIntoView({ inline: 'nearest', behavior: 'smooth' });
+  }
+
+  prevBtn.onclick = () => goTo(current - 1);
+  nextBtn.onclick = () => goTo(current + 1);
+  goTo(0);
+  section.hidden = false;
+}
+
+// ─── Conversion orchestrator ─────────────────────────────────────────────────
+
+async function convert(file) {
+  const s = getSettings();
+  $('download-btn').hidden = true;
+  $('preview').hidden = true;
+  showProgress();
+  setProgress(0);
+  setStatus('Loading PDF…');
+
+  try {
+    const ab  = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: ab }).promise;
+    const totalPages = pdf.numPages;
+    setProgress(5);
+
+    const xtgPages = [];
+
+    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+      setStatus(`Processing page ${pageNum} / ${totalPages}…`);
+      const page = await pdf.getPage(pageNum);
+      const defVp = page.getViewport({ scale: 1 });
+
+      // Scale the PDF page so its width maps to the device's height.
+      // In landscape mode the device is rotated 90°, so the page width
+      // should span the device height (portrait), which becomes the
+      // display width in landscape.
+      const scale    = s.deviceH / defVp.width;
+      const viewport = page.getViewport({ scale });
+      const rendW    = Math.round(viewport.width);
+      const rendH    = Math.round(viewport.height);
+
+      // Render to OffscreenCanvas
+      const pageCanvas = new OffscreenCanvas(rendW, rendH);
+      const ctx = pageCanvas.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, rendW, rendH);
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      page.cleanup();
+
+      // Each slice is deviceW tall so it fills the landscape display height.
+      // nBase = minimum slices to cover the full page height; n = nBase + k.
+      const sliceH = s.deviceW;
+      const nBase  = Math.max(1, Math.ceil(rendH / sliceH));
+      const n      = nBase + s.k;
+
+      const slices = sliceCanvas(pageCanvas, sliceH, n);
+      for (const slice of slices) {
+        const rotated = s.orientation === 'cw' ? rotateCW(slice) : rotateCCW(slice);
+        xtgPages.push(encodeXTG(rotated, s.dithering, s.ditherStrength));
+      }
+
+      setProgress(5 + 85 * (pageNum / totalPages));
+    }
+
+    setProgress(92);
+    setStatus('Assembling XTC container…');
+
+    const xtc = assembleXTC(
+      xtgPages,
+      { title: file.name.replace(/\.pdf$/i, ''), author: '', language: 'en' },
+      2 // Top→Bottom reading direction
+    );
+
+    setProgress(100);
+    const pagesLabel = `${totalPages} PDF page${totalPages !== 1 ? 's' : ''}`;
+    setStatus(`Done — ${xtgPages.length} slices from ${pagesLabel} · ${(xtc.length / 1024).toFixed(0)} KB`);
+
+    showPreview(xtgPages, s.orientation);
+
+    const url  = URL.createObjectURL(new Blob([xtc], { type: 'application/octet-stream' }));
+    const base = file.name.replace(/\.pdf$/i, '');
+    const btn  = $('download-btn');
+    btn.textContent = `Download ${base}.xtc`;
+    btn.hidden = false;
+    btn.onclick = () =>
+      Object.assign(document.createElement('a'), { href: url, download: base + '.xtc' }).click();
+
+  } catch (err) {
+    console.error('Conversion failed:', err);
+    setStatus(`Error: ${err.message}`);
+  }
+}
+
+// ─── UI wiring ───────────────────────────────────────────────────────────────
+
+const dropzone  = $('dropzone');
+const fileInput = $('file-input');
+
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') fileInput.click();
+});
+dropzone.addEventListener('dragover', e => {
+  e.preventDefault();
+  dropzone.classList.add('hover');
+});
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('hover'));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropzone.classList.remove('hover');
+  const f = e.dataTransfer.files[0];
+  if (f?.name.toLowerCase().endsWith('.pdf')) convert(f);
+  else setStatus('Please drop a .pdf file.');
+});
+fileInput.addEventListener('change', () => {
+  if (!fileInput.files[0]) return;
+  const f = fileInput.files[0];
+  fileInput.value = ''; // allow re-selecting the same file
+  convert(f);
+});
+
+// Show/hide custom device dimension inputs
+$('device').addEventListener('change', () => {
+  const custom = $('device').value === 'custom';
+  $('custom-w-group').hidden = !custom;
+  $('custom-h-group').hidden = !custom;
+});
+
+// Dither strength label and dim the control when dithering is off
+const ditherGroup = $('dither-strength').closest('.setting-group');
+function updateDitherUI() {
+  const off = $('dithering').value === 'none';
+  ditherGroup.style.opacity       = off ? '0.3' : '1';
+  ditherGroup.style.pointerEvents = off ? 'none' : '';
+  $('dither-strength-val').textContent = $('dither-strength').value + '%';
+}
+$('dithering').addEventListener('change', updateDitherUI);
+$('dither-strength').addEventListener('input', updateDitherUI);
+updateDitherUI();
+    </script>
+  </body>
+</html>
