@@ -1,12 +1,13 @@
 /**
  * Karaoke App — upload a song, split stems, transcribe lyrics, sing along.
  *
- * Pipeline: Upload → Decode (44.1 kHz stereo) → Stem Split (vocal + instrumental)
+ * Pipeline: Upload → Decode (44.1 kHz stereo)
+ *         → Stem Split (Spleeter 2-stems ONNX: vocal + instrumental)
  *         → Resample vocals (16 kHz mono) → Transcribe (word timestamps)
  *         → Play instrumental + synced lyrics display
  *
- * Reuses workers from sibling apps:
- *   ../audio-splitter/splitter-worker.js  — SCNet ONNX stem separation
+ * Workers:
+ *   ./spleeter-worker.js                  — Spleeter ONNX stem separation
  *   ../local-transcribe/transcribe-worker.js — Whisper ASR via Transformers.js
  */
 
@@ -14,7 +15,7 @@ import { SAMPLE_RATE, decodeAudio } from '../audio-splitter/audio-processor.js';
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
-const MODEL_URL = 'https://huggingface.co/bgkb/scnet_onnx/resolve/main/scnet.onnx';
+const MODEL_URL = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/source-separation-models/sherpa-onnx-spleeter-2stems-fp16.tar.bz2';
 const WHISPER_MODEL = {
   repo: 'onnx-community/whisper-base',
   apiType: 'pipeline',
@@ -22,8 +23,8 @@ const WHISPER_MODEL = {
   device: 'webgpu',
 };
 
-const CHUNK_SECONDS = 11;
-const CHUNK_SAMPLES = CHUNK_SECONDS * SAMPLE_RATE;
+/** 512 STFT frames (Spleeter block size) × hop 1024 + fft 4096 ≈ 12s */
+const CHUNK_SAMPLES = 511 * 1024 + 4096; // 527360
 const OVERLAP_SAMPLES = 1 * SAMPLE_RATE;
 const WHISPER_CHUNK_SECONDS = 30;
 const WHISPER_SAMPLE_RATE = 16000;
@@ -172,12 +173,12 @@ async function setCachedModel(url, data) {
   }
 }
 
-// ── Splitter worker pool (mirrors audio-splitter/app.js ChunkWorker) ───────
+// ── Splitter worker pool (Spleeter 2-stems) ──────────────────────────────
 
 class ChunkWorker {
-  constructor(bytes) {
+  constructor(vocalsBytes, accompBytes) {
     this._pending = new Map();
-    this.worker = new Worker(new URL('../audio-splitter/splitter-worker.js', import.meta.url), { type: 'module' });
+    this.worker = new Worker(new URL('./spleeter-worker.js', import.meta.url), { type: 'module' });
     this.worker.onmessage = ({ data }) => {
       if (data.type === 'ready') {
         this._pending.get('init')?.resolve();
@@ -197,9 +198,11 @@ class ChunkWorker {
       this._pending.clear();
     };
     this.ready = new Promise((resolve, reject) => this._pending.set('init', { resolve, reject }));
-    const copy = new ArrayBuffer(bytes.byteLength);
-    new Uint8Array(copy).set(bytes);
-    this.worker.postMessage({ type: 'init', modelBytes: copy }, [copy]);
+    const vCopy = new ArrayBuffer(vocalsBytes.byteLength);
+    new Uint8Array(vCopy).set(vocalsBytes);
+    const aCopy = new ArrayBuffer(accompBytes.byteLength);
+    new Uint8Array(aCopy).set(accompBytes);
+    this.worker.postMessage({ type: 'init', vocalsBytes: vCopy, accompBytes: aCopy }, [vCopy, aCopy]);
   }
 
   process(left, right, originalLen, chunkIdx) {
@@ -217,9 +220,42 @@ class ChunkWorker {
 
 // ── Stem separation ────────────────────────────────────────────────────────
 
+/** Extract files from a tar archive. Returns Map<filename, Uint8Array>. */
+function parseTar(tar) {
+  const files = new Map();
+  const decoder = new TextDecoder();
+  let offset = 0;
+  while (offset + 512 <= tar.length) {
+    const header = tar.subarray(offset, offset + 512);
+    if (header.every(b => b === 0)) break;
+
+    let nameEnd = 0;
+    while (nameEnd < 100 && header[nameEnd] !== 0) nameEnd++;
+    const name = decoder.decode(header.subarray(0, nameEnd));
+
+    let sizeStr = '';
+    for (let i = 124; i < 136; i++) {
+      if (header[i] === 0 || header[i] === 0x20) break;
+      sizeStr += String.fromCharCode(header[i]);
+    }
+    const size = parseInt(sizeStr, 8) || 0;
+
+    offset += 512;
+    if (size > 0 && name) files.set(name, tar.slice(offset, offset + size));
+    offset += Math.ceil(size / 512) * 512;
+  }
+  return files;
+}
+
+/**
+ * Download the Spleeter tar.bz2 archive, decompress, and extract the two
+ * ONNX model files (vocals + accompaniment). Results are cached in IndexedDB.
+ */
 async function loadSplitterModel() {
-  let modelBytes = await getCachedModel(MODEL_URL);
-  if (!modelBytes) {
+  let vocalsBytes = await getCachedModel(MODEL_URL + ':vocals');
+  let accompBytes = await getCachedModel(MODEL_URL + ':accompaniment');
+
+  if (!vocalsBytes || !accompBytes) {
     showProgress('Downloading stem-split model...', 0);
     const resp = await fetch(MODEL_URL);
     if (!resp.ok) throw new Error(`Model download failed: ${resp.status}`);
@@ -239,12 +275,30 @@ async function loadSplitterModel() {
         );
       }
     }
-    modelBytes = new Uint8Array(received);
+    const compressed = new Uint8Array(received);
     let off = 0;
-    for (const c of chunks) { modelBytes.set(c, off); off += c.length; }
-    await setCachedModel(MODEL_URL, modelBytes);
+    for (const c of chunks) { compressed.set(c, off); off += c.length; }
+
+    showProgress('Decompressing model (may take a moment)...', 0);
+    await tick();
+    const { default: seekBzip } = await import('https://esm.sh/seek-bzip@2.0.0');
+    const tarBytes = new Uint8Array(seekBzip.decode(compressed));
+
+    showProgress('Extracting model files...', 0.5);
+    await tick();
+    const files = parseTar(tarBytes);
+    for (const [name, data] of files) {
+      if (name.endsWith('vocals.fp16.onnx')) vocalsBytes = data;
+      else if (name.endsWith('accompaniment.fp16.onnx')) accompBytes = data;
+    }
+    if (!vocalsBytes || !accompBytes) {
+      throw new Error('Model archive missing expected .onnx files');
+    }
+
+    await setCachedModel(MODEL_URL + ':vocals', vocalsBytes);
+    await setCachedModel(MODEL_URL + ':accompaniment', accompBytes);
   }
-  return modelBytes;
+  return { vocalsBytes, accompBytes };
 }
 
 function padToChunkSize(signal) {
@@ -255,15 +309,15 @@ function padToChunkSize(signal) {
 }
 
 /**
- * Split stereo audio into vocals + instrumental using SCNet workers.
+ * Split stereo audio into vocals + instrumental using Spleeter workers.
  * Returns Float32Arrays for each channel of each stem.
  */
 async function splitStems(left, right) {
-  const modelBytes = await loadSplitterModel();
+  const { vocalsBytes, accompBytes } = await loadSplitterModel();
 
   const numWorkers = parseInt(el.splitWorkers.value, 10) || 2;
   showProgress(`Initializing ${numWorkers} stem-split workers...`, 0);
-  const workers = Array.from({ length: numWorkers }, () => new ChunkWorker(modelBytes));
+  const workers = Array.from({ length: numWorkers }, () => new ChunkWorker(vocalsBytes, accompBytes));
   await Promise.all(workers.map(w => w.ready));
 
   const totalSamples = left.length;
