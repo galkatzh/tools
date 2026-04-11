@@ -15,7 +15,8 @@ import { SAMPLE_RATE, decodeAudio } from '../audio-splitter/audio-processor.js';
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
-const MODEL_URL = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/source-separation-models/sherpa-onnx-spleeter-2stems-fp16.tar.bz2';
+const MODEL_VOCALS_URL = 'https://huggingface.co/bgkb/spleeteronnx/resolve/main/vocals.fp16.onnx';
+const MODEL_ACCOMP_URL = 'https://huggingface.co/bgkb/spleeteronnx/resolve/main/accompaniment.fp16.onnx';
 const WHISPER_MODEL = {
   repo: 'onnx-community/whisper-base',
   apiType: 'pipeline',
@@ -220,84 +221,41 @@ class ChunkWorker {
 
 // ── Stem separation ────────────────────────────────────────────────────────
 
-/** Extract files from a tar archive. Returns Map<filename, Uint8Array>. */
-function parseTar(tar) {
-  const files = new Map();
-  const decoder = new TextDecoder();
-  let offset = 0;
-  while (offset + 512 <= tar.length) {
-    const header = tar.subarray(offset, offset + 512);
-    if (header.every(b => b === 0)) break;
+/** Download a single model file with streaming progress, caching in IndexedDB. */
+async function fetchModel(url, label) {
+  let bytes = await getCachedModel(url);
+  if (bytes) return bytes;
 
-    let nameEnd = 0;
-    while (nameEnd < 100 && header[nameEnd] !== 0) nameEnd++;
-    const name = decoder.decode(header.subarray(0, nameEnd));
-
-    let sizeStr = '';
-    for (let i = 124; i < 136; i++) {
-      if (header[i] === 0 || header[i] === 0x20) break;
-      sizeStr += String.fromCharCode(header[i]);
+  showProgress(`Downloading ${label}...`, 0);
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Model download failed: ${resp.status}`);
+  const total = parseInt(resp.headers.get('content-length') || '0', 10);
+  const reader = resp.body.getReader();
+  const chunks = [];
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    if (total > 0) {
+      showProgress(
+        `Downloading ${label}... ${(received / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB`,
+        received / total,
+      );
     }
-    const size = parseInt(sizeStr, 8) || 0;
-
-    offset += 512;
-    if (size > 0 && name) files.set(name, tar.slice(offset, offset + size));
-    offset += Math.ceil(size / 512) * 512;
   }
-  return files;
+  bytes = new Uint8Array(received);
+  let off = 0;
+  for (const c of chunks) { bytes.set(c, off); off += c.length; }
+  await setCachedModel(url, bytes);
+  return bytes;
 }
 
-/**
- * Download the Spleeter tar.bz2 archive, decompress, and extract the two
- * ONNX model files (vocals + accompaniment). Results are cached in IndexedDB.
- */
+/** Load both Spleeter ONNX models, using IndexedDB cache when available. */
 async function loadSplitterModel() {
-  let vocalsBytes = await getCachedModel(MODEL_URL + ':vocals');
-  let accompBytes = await getCachedModel(MODEL_URL + ':accompaniment');
-
-  if (!vocalsBytes || !accompBytes) {
-    showProgress('Downloading stem-split model...', 0);
-    const resp = await fetch(MODEL_URL);
-    if (!resp.ok) throw new Error(`Model download failed: ${resp.status}`);
-    const total = parseInt(resp.headers.get('content-length') || '0', 10);
-    const reader = resp.body.getReader();
-    const chunks = [];
-    let received = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      received += value.length;
-      if (total > 0) {
-        showProgress(
-          `Downloading stem-split model... ${(received / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB`,
-          received / total,
-        );
-      }
-    }
-    const compressed = new Uint8Array(received);
-    let off = 0;
-    for (const c of chunks) { compressed.set(c, off); off += c.length; }
-
-    showProgress('Decompressing model (may take a moment)...', 0);
-    await tick();
-    const { default: seekBzip } = await import('https://esm.sh/seek-bzip@2.0.0');
-    const tarBytes = new Uint8Array(seekBzip.decode(compressed));
-
-    showProgress('Extracting model files...', 0.5);
-    await tick();
-    const files = parseTar(tarBytes);
-    for (const [name, data] of files) {
-      if (name.endsWith('vocals.fp16.onnx')) vocalsBytes = data;
-      else if (name.endsWith('accompaniment.fp16.onnx')) accompBytes = data;
-    }
-    if (!vocalsBytes || !accompBytes) {
-      throw new Error('Model archive missing expected .onnx files');
-    }
-
-    await setCachedModel(MODEL_URL + ':vocals', vocalsBytes);
-    await setCachedModel(MODEL_URL + ':accompaniment', accompBytes);
-  }
+  const vocalsBytes = await fetchModel(MODEL_VOCALS_URL, 'vocals model');
+  const accompBytes = await fetchModel(MODEL_ACCOMP_URL, 'accompaniment model');
   return { vocalsBytes, accompBytes };
 }
 
