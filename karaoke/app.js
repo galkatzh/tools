@@ -221,12 +221,15 @@ class ChunkWorker {
 
 // ── Stem separation ────────────────────────────────────────────────────────
 
-/** Download a single model file with streaming progress, caching in IndexedDB. */
-async function fetchModel(url, label) {
+/**
+ * Download a model file with streaming progress, caching in IndexedDB.
+ * @param {number} baseOffset - bytes already downloaded in prior files
+ * @param {number} grandTotal - combined size of all files being downloaded
+ */
+async function fetchModel(url, baseOffset, grandTotal) {
   let bytes = await getCachedModel(url);
   if (bytes) return bytes;
 
-  showProgress(`Downloading ${label}...`, 0);
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`Model download failed: ${resp.status}`);
   const total = parseInt(resp.headers.get('content-length') || '0', 10);
@@ -238,12 +241,11 @@ async function fetchModel(url, label) {
     if (done) break;
     chunks.push(value);
     received += value.length;
-    if (total > 0) {
-      showProgress(
-        `Downloading ${label}... ${(received / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB`,
-        received / total,
-      );
-    }
+    const globalReceived = baseOffset + received;
+    showProgress(
+      `Downloading stem-split model... ${(globalReceived / 1e6).toFixed(1)} / ${(grandTotal / 1e6).toFixed(1)} MB`,
+      grandTotal > 0 ? globalReceived / grandTotal : 0,
+    );
   }
   bytes = new Uint8Array(received);
   let off = 0;
@@ -254,8 +256,25 @@ async function fetchModel(url, label) {
 
 /** Load both Spleeter ONNX models, using IndexedDB cache when available. */
 async function loadSplitterModel() {
-  const vocalsBytes = await fetchModel(MODEL_VOCALS_URL, 'vocals model');
-  const accompBytes = await fetchModel(MODEL_ACCOMP_URL, 'accompaniment model');
+  // Probe sizes for a unified progress bar (HEAD requests are cheap)
+  let vocalsSize = 0, accompSize = 0;
+  const cachedV = await getCachedModel(MODEL_VOCALS_URL);
+  const cachedA = await getCachedModel(MODEL_ACCOMP_URL);
+  if (cachedV && cachedA) return { vocalsBytes: cachedV, accompBytes: cachedA };
+
+  showProgress('Downloading stem-split model...', 0);
+  if (!cachedV) {
+    const h = await fetch(MODEL_VOCALS_URL, { method: 'HEAD' });
+    vocalsSize = parseInt(h.headers.get('content-length') || '0', 10);
+  }
+  if (!cachedA) {
+    const h = await fetch(MODEL_ACCOMP_URL, { method: 'HEAD' });
+    accompSize = parseInt(h.headers.get('content-length') || '0', 10);
+  }
+  const grandTotal = vocalsSize + accompSize;
+
+  const vocalsBytes = cachedV || await fetchModel(MODEL_VOCALS_URL, 0, grandTotal);
+  const accompBytes = cachedA || await fetchModel(MODEL_ACCOMP_URL, vocalsSize, grandTotal);
   return { vocalsBytes, accompBytes };
 }
 
