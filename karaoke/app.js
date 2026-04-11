@@ -360,8 +360,11 @@ async function resampleToMono16k(left, right) {
  * Wrapper for a transcribe worker — handles init, ready, and one-chunk-at-a-time
  * processing via a queue so each worker stays busy.
  */
+let firstTranscribeWorker = null;
+
 class TranscribeWorker {
   constructor() {
+    if (!firstTranscribeWorker) firstTranscribeWorker = this;
     this.worker = new Worker(
       new URL('../local-transcribe/transcribe-worker.js', import.meta.url),
       { type: 'module' },
@@ -382,7 +385,7 @@ class TranscribeWorker {
 
   _onMessage(data) {
     if (data.type === 'load-progress') {
-      // Only report model-loading progress from the first worker
+      if (this !== firstTranscribeWorker) return;
       const pct = data.progress != null ? data.progress : 0;
       showProgress(`Loading transcription model... ${Math.round(pct)}%`, pct / 100);
     } else if (data.type === 'ready') {
