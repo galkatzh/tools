@@ -195,6 +195,26 @@ h1 {
   margin-top: 0.5rem;
 }
 
+.progress-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.timer-display {
+  font-size: 0.8rem;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.processing-time {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin-top: 0.35rem;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── Karaoke player ────────────────────────────────────────────── */
 
 #player {

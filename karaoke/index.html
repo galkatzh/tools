@@ -34,6 +34,10 @@
           <input type="number" id="transcribe-workers" min="1" max="8" value="2">
         </div>
         <div class="setting-row">
+          <label for="show-timer">Show timer</label>
+          <input type="checkbox" id="show-timer">
+        </div>
+        <div class="setting-row">
           <label for="language">Language</label>
           <select id="language">
             <option value="">Auto-detect</option>
@@ -87,8 +91,13 @@
       <div class="progress-track">
         <div id="progress-bar" class="progress-fill"></div>
       </div>
-      <p id="progress-text" class="progress-label"></p>
+      <div class="progress-footer">
+        <p id="progress-text" class="progress-label"></p>
+        <p id="timer-display" class="timer-display hidden"></p>
+      </div>
     </section>
+
+    <p id="processing-time" class="processing-time hidden"></p>
 
     <!-- Karaoke player -->
     <section id="player" class="hidden">

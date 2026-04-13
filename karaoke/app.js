@@ -68,10 +68,13 @@ const el = {
   settings: $('#settings'),
   splitWorkers: $('#split-workers'),
   transcribeWorkers: $('#transcribe-workers'),
+  showTimer: $('#show-timer'),
   language: $('#language'),
   fontSize: $('#font-size'),
   fontSizeVal: $('#font-size-val'),
   highlightColor: $('#highlight-color'),
+  timerDisplay: $('#timer-display'),
+  processingTime: $('#processing-time'),
 };
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -132,6 +135,39 @@ function fmt(s) {
 }
 
 function tick() { return new Promise((r) => setTimeout(r, 0)); }
+
+// ── Processing timer ───────────────────────────────────────────────────────
+
+let timerInterval = null;
+let timerStart = 0;
+
+/** Start elapsed-time counter if the "Show timer" setting is on. */
+function startTimer() {
+  if (!el.showTimer.checked) return;
+  timerStart = Date.now();
+  el.processingTime.classList.add('hidden');
+  el.timerDisplay.textContent = '0:00';
+  el.timerDisplay.classList.remove('hidden');
+  timerInterval = setInterval(() => {
+    el.timerDisplay.textContent = fmt((Date.now() - timerStart) / 1000);
+  }, 1000);
+}
+
+/**
+ * Stop the timer and optionally show the final elapsed time below the drop zone.
+ * @param {boolean} show - whether to display the "Done in X" result
+ */
+function stopTimer(show = true) {
+  if (!timerInterval) return;
+  clearInterval(timerInterval);
+  timerInterval = null;
+  el.timerDisplay.classList.add('hidden');
+  if (show) {
+    const elapsed = fmt((Date.now() - timerStart) / 1000);
+    el.processingTime.textContent = `Processed in ${elapsed}`;
+    el.processingTime.classList.remove('hidden');
+  }
+}
 
 // ── IndexedDB model cache (same pattern as audio-splitter) ─────────────────
 
@@ -1087,12 +1123,14 @@ async function handleFile(file) {
   }
 
   el.fileName.textContent = file.name;
+  el.processingTime.classList.add('hidden');
   songBaseName = file.name.replace(/\.[^.]+$/, '');
   el.player.classList.add('hidden');
   playing = false;
   pausedAt = 0;
   cancelAnimationFrame(animFrameId);
 
+  startTimer();
   try {
     // 1. Decode
     showProgress('Decoding audio...', 0);
@@ -1135,9 +1173,11 @@ async function handleFile(file) {
     el.timeTotal.textContent = fmt(instrumentalBuffer.duration);
     el.seek.value = 0;
     el.timeCurrent.textContent = '0:00';
+    stopTimer(true);
 
   } catch (err) {
     console.error('Karaoke pipeline failed:', err);
+    stopTimer(false);
     showError(`Error: ${err.message}`);
   }
 }
