@@ -182,6 +182,85 @@ input[type="range"] { width: 100%; accent-color: #4a9eff; cursor: pointer; }
 .thumb.active { border-color: #4a9eff; opacity: 1; }
 .thumb canvas { display: block; }
 
+/* Crop editor ---------------------------------------------------------------*/
+.crop-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.crop-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: #888;
+}
+.crop-nav button {
+  background: #2a2a2a;
+  border: 1px solid #444;
+  color: #ccc;
+  padding: 4px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.crop-nav button:disabled { opacity: 0.3; cursor: default; }
+.crop-nav button:not(:disabled):hover { background: #333; }
+.crop-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+#crop-canvas-wrap {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+  line-height: 0;
+  cursor: crosshair;
+  max-width: 100%;
+}
+#crop-canvas { display: block; max-width: 100%; }
+
+#crop-box {
+  position: absolute;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  cursor: move;
+  touch-action: none;
+}
+#crop-box::after {
+  content: '';
+  position: absolute;
+  inset: -1.5px;
+  border: 1.5px dashed rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+}
+.handle {
+  position: absolute;
+  width: 9px; height: 9px;
+  background: #fff;
+  border: 1px solid #555;
+  border-radius: 2px;
+  z-index: 1;
+}
+.handle.nw { top: -5px;  left: -5px;             cursor: nw-resize; }
+.handle.n  { top: -5px;  left: calc(50% - 4px);  cursor: n-resize;  }
+.handle.ne { top: -5px;  right: -5px;             cursor: ne-resize; }
+.handle.w  { top: calc(50% - 4px); left: -5px;   cursor: w-resize;  }
+.handle.e  { top: calc(50% - 4px); right: -5px;  cursor: e-resize;  }
+.handle.sw { bottom: -5px; left: -5px;            cursor: sw-resize; }
+.handle.s  { bottom: -5px; left: calc(50% - 4px);cursor: s-resize;  }
+.handle.se { bottom: -5px; right: -5px;           cursor: se-resize; }
+
+.crop-info-bar {
+  margin-top: 8px;
+  font-size: 0.82rem;
+  color: #666;
+  padding: 6px 10px;
+  background: #1a1a1a;
+  border-radius: 6px;
+}
+
 /* Download */
 .download-btn {
   align-self: flex-start;

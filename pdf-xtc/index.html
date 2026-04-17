@@ -78,6 +78,38 @@
         <input id="file-input" type="file" accept=".pdf" />
       </section>
 
+      <!-- Crop editor: shown after PDF loads, before conversion pipeline -->
+      <section id="crop-editor" hidden>
+        <div class="crop-toolbar">
+          <div class="crop-nav">
+            <button id="crop-prev" disabled>◀</button>
+            <span id="crop-page-label">Page 1 / 1</span>
+            <button id="crop-next" disabled>▶</button>
+          </div>
+          <div class="crop-actions">
+            <button class="secondary-btn" id="crop-reset">Reset</button>
+            <button class="secondary-btn" id="crop-skip">No crop</button>
+            <button class="export-btn" id="crop-apply">Apply crop ▶</button>
+          </div>
+        </div>
+        <div id="crop-canvas-wrap">
+          <canvas id="crop-canvas"></canvas>
+          <div id="crop-box">
+            <div class="handle nw" data-h="nw"></div>
+            <div class="handle n"  data-h="n" ></div>
+            <div class="handle ne" data-h="ne"></div>
+            <div class="handle w"  data-h="w" ></div>
+            <div class="handle e"  data-h="e" ></div>
+            <div class="handle sw" data-h="sw"></div>
+            <div class="handle s"  data-h="s" ></div>
+            <div class="handle se" data-h="se"></div>
+          </div>
+        </div>
+        <div class="crop-info-bar">
+          <span id="crop-dims">Drag to set the crop area applied to all pages before conversion.</span>
+        </div>
+      </section>
+
       <div class="action-bar" id="page-controls" hidden>
         <span id="pdf-info" class="pdf-info"></span>
         <div class="action-bar-right">
@@ -479,22 +511,161 @@ function showPreview(xtgPages, orientation) {
 let pdfDoc      = null; // persists after load so preview/export can reuse it
 let pdfFileName = '';
 
+// ─── Crop state ───────────────────────────────────────────────────────────────
+
+let cropPdf  = null; // { x, y, w, h } in PDF user-space points; null = no crop
+let cropVp   = null; // PDF.js viewport used in the crop editor
+let cropPage = 1;    // page currently displayed in the crop editor
+let cropDrag = null; // active drag state
+const CROP_MIN_PX = 16;
+
+/** Convert canvas-pixel rect to PDF user-space using cropVp. */
+function cropCanvasToPdf({ x, y, w, h }) {
+  const [px1, py1] = cropVp.convertToPdfPoint(x,     y + h); // canvas BL → PDF LL
+  const [px2, py2] = cropVp.convertToPdfPoint(x + w, y    ); // canvas TR → PDF UR
+  return { x: Math.min(px1,px2), y: Math.min(py1,py2), w: Math.abs(px2-px1), h: Math.abs(py2-py1) };
+}
+
+/** Convert PDF user-space rect to canvas-pixel rect using cropVp. */
+function cropPdfToCanvas({ x, y, w, h }) {
+  const [cx1, cy1] = cropVp.convertToViewportPoint(x,     y + h); // PDF UL → canvas TL
+  const [cx2, cy2] = cropVp.convertToViewportPoint(x + w, y    ); // PDF LR → canvas BR
+  return { x: Math.min(cx1,cx2), y: Math.min(cy1,cy2), w: Math.abs(cx2-cx1), h: Math.abs(cy2-cy1) };
+}
+
+/** Render one page into the crop editor canvas and update the overlay. */
+async function renderCropPage(n) {
+  const page   = await pdfDoc.getPage(n);
+  const baseVp = page.getViewport({ scale: 1 });
+  const maxW   = Math.min(640, $('crop-canvas-wrap').parentElement.clientWidth || 640);
+  cropVp = page.getViewport({ scale: maxW / baseVp.width });
+  const c = $('crop-canvas');
+  c.width = Math.floor(cropVp.width);
+  c.height = Math.floor(cropVp.height);
+  c.style.width  = c.width  + 'px';
+  c.style.height = c.height + 'px';
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, c.width, c.height);
+  await page.render({ canvasContext: ctx, viewport: cropVp }).promise;
+  page.cleanup();
+  if (!cropPdf) setDefaultCropBox();
+  updateCropBoxEl();
+  $('crop-page-label').textContent = `Page ${n} / ${pdfDoc.numPages}`;
+  $('crop-prev').disabled = n <= 1;
+  $('crop-next').disabled = n >= pdfDoc.numPages;
+}
+
+function setDefaultCropBox() {
+  const c = $('crop-canvas');
+  const inset = 0.05;
+  cropPdf = cropCanvasToPdf({
+    x: c.width * inset, y: c.height * inset,
+    w: c.width * (1 - 2 * inset), h: c.height * (1 - 2 * inset),
+  });
+}
+
+function updateCropBoxEl() {
+  if (!cropPdf || !cropVp) return;
+  const { x, y, w, h } = cropPdfToCanvas(cropPdf);
+  const el = $('crop-box');
+  el.style.left   = x + 'px';
+  el.style.top    = y + 'px';
+  el.style.width  = w + 'px';
+  el.style.height = h + 'px';
+  const mmW = (cropPdf.w / 72 * 25.4).toFixed(0);
+  const mmH = (cropPdf.h / 72 * 25.4).toFixed(0);
+  $('crop-dims').textContent =
+    `Crop: ${Math.round(cropPdf.w)} × ${Math.round(cropPdf.h)} pt  (${mmW} × ${mmH} mm)`;
+}
+
+function getCropPos(e) {
+  const rect = $('crop-canvas-wrap').getBoundingClientRect();
+  const src  = e.touches?.[0] ?? e;
+  return { x: src.clientX - rect.left, y: src.clientY - rect.top };
+}
+
+function beginCropDrag(e, type, handle = null) {
+  e.preventDefault();
+  const pos = getCropPos(e);
+  const cc  = cropPdfToCanvas(cropPdf);
+  cropDrag = { type, handle, start: pos, crop0: { ...cc } };
+}
+
+function onCropMove(e) {
+  if (!cropDrag) return;
+  e.preventDefault();
+  const pos  = getCropPos(e);
+  const c    = $('crop-canvas');
+  const maxW = c.width, maxH = c.height;
+  let cc;
+
+  if (cropDrag.type === 'create') {
+    const x = Math.max(0, Math.min(pos.x, maxW));
+    const y = Math.max(0, Math.min(pos.y, maxH));
+    const s = cropDrag.start;
+    cc = { x: Math.min(s.x, x), y: Math.min(s.y, y), w: Math.abs(x - s.x), h: Math.abs(y - s.y) };
+    const el = $('crop-box');
+    el.style.left   = cc.x + 'px'; el.style.top    = cc.y + 'px';
+    el.style.width  = cc.w + 'px'; el.style.height = cc.h + 'px';
+    if (cc.w >= CROP_MIN_PX && cc.h >= CROP_MIN_PX) cropPdf = cropCanvasToPdf(cc);
+    return;
+  }
+
+  const { crop0 } = cropDrag;
+  if (cropDrag.type === 'move') {
+    cc = {
+      x: Math.max(0, Math.min(crop0.x + (pos.x - cropDrag.start.x), maxW - crop0.w)),
+      y: Math.max(0, Math.min(crop0.y + (pos.y - cropDrag.start.y), maxH - crop0.h)),
+      w: crop0.w, h: crop0.h,
+    };
+  } else {
+    let { x, y, w, h } = crop0;
+    const dx = pos.x - cropDrag.start.x, dy = pos.y - cropDrag.start.y;
+    const dir = cropDrag.handle;
+    if (dir.includes('e')) w = Math.max(CROP_MIN_PX, Math.min(w + dx, maxW - x));
+    if (dir.includes('s')) h = Math.max(CROP_MIN_PX, Math.min(h + dy, maxH - y));
+    if (dir.includes('w')) { const nx = Math.max(0, Math.min(x + dx, x + w - CROP_MIN_PX)); w = x + w - nx; x = nx; }
+    if (dir.includes('n')) { const ny = Math.max(0, Math.min(y + dy, y + h - CROP_MIN_PX)); h = y + h - ny; y = ny; }
+    cc = { x, y, w, h };
+  }
+  if (cc.w >= CROP_MIN_PX && cc.h >= CROP_MIN_PX) { cropPdf = cropCanvasToPdf(cc); updateCropBoxEl(); }
+}
+
 /**
- * Render one PDF page to an OffscreenCanvas scaled so the page width equals
- * the device height (the landscape display width after 90° rotation).
+ * Render one PDF page to an OffscreenCanvas scaled so the (cropped) page width
+ * equals the device height (the landscape display width after 90° rotation).
+ * If a crop region is set, only that region is returned.
  */
 async function renderPDFPage(pageNum, s) {
-  const page   = await pdfDoc.getPage(pageNum);
-  const defVp  = page.getViewport({ scale: 1 });
-  const scale  = s.deviceH / defVp.width;
-  const vp     = page.getViewport({ scale });
+  const page  = await pdfDoc.getPage(pageNum);
+  const defVp = page.getViewport({ scale: 1 });
+  // Scale so the reference width (crop width or full page width) maps to deviceH
+  const refW  = cropPdf ? cropPdf.w : defVp.width;
+  const scale = s.deviceH / refW;
+  const vp    = page.getViewport({ scale });
   const canvas = new OffscreenCanvas(Math.round(vp.width), Math.round(vp.height));
   const ctx    = canvas.getContext('2d');
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   await page.render({ canvasContext: ctx, viewport: vp }).promise;
   page.cleanup();
-  return canvas;
+
+  if (!cropPdf) return canvas;
+
+  // Extract the cropped sub-region from the rendered canvas
+  const [cx1, cy1] = vp.convertToViewportPoint(cropPdf.x,              cropPdf.y + cropPdf.h);
+  const [cx2, cy2] = vp.convertToViewportPoint(cropPdf.x + cropPdf.w,  cropPdf.y            );
+  const rx = Math.round(Math.min(cx1, cx2));
+  const ry = Math.round(Math.min(cy1, cy2));
+  const rw = Math.round(Math.abs(cx2 - cx1));
+  const rh = Math.round(Math.abs(cy2 - cy1));
+  const out = new OffscreenCanvas(rw, rh);
+  const octx = out.getContext('2d');
+  octx.fillStyle = '#fff';
+  octx.fillRect(0, 0, rw, rh);
+  octx.drawImage(canvas, -rx, -ry);
+  return out;
 }
 
 /**
@@ -518,9 +689,11 @@ function processPage(pageCanvas, s) {
 
 async function loadPDF(file) {
   pdfFileName = file.name;
-  $('download-btn').hidden = true;
-  $('preview').hidden      = true;
+  cropPdf = null;
+  $('download-btn').hidden  = true;
+  $('preview').hidden       = true;
   $('page-controls').hidden = true;
+  $('crop-editor').hidden   = true;
   showProgress();
   setProgress(0);
   setStatus('Loading PDF…');
@@ -530,20 +703,30 @@ async function loadPDF(file) {
     const n = pdfDoc.numPages;
 
     $('preview-page-num').max   = n;
-    // Use the "Auto-preview page" setting, clamped to valid range
     const autoPage = Math.min(Math.max(1, +$('auto-preview-page').value || 1), n);
     $('preview-page-num').value = autoPage;
     $('pdf-info').textContent   = `${n} page${n !== 1 ? 's' : ''}`;
-    $('page-controls').hidden   = false;
 
     setProgress(100);
-    setStatus(`Loaded — ${n} page${n !== 1 ? 's' : ''}. Preview a page, then export when ready.`);
+    setStatus(`Loaded — ${n} page${n !== 1 ? 's' : ''}. Set crop area or skip.`);
+    $('progress-wrap').hidden = true;
 
-    await previewPage(autoPage);
+    cropPage = 1;
+    $('crop-editor').hidden = false;
+    await renderCropPage(1);
   } catch (err) {
     console.error('Failed to load PDF:', err);
     setStatus(`Error: ${err.message}`);
   }
+}
+
+/** Called when user clicks Apply or No-crop — closes crop editor and starts preview. */
+function finishCrop() {
+  $('crop-editor').hidden   = true;
+  $('page-controls').hidden = false;
+  showProgress();
+  setProgress(0);
+  previewPage(+$('preview-page-num').value);
 }
 
 // ─── Preview a single page ────────────────────────────────────────────────────
@@ -644,6 +827,41 @@ fileInput.addEventListener('change', () => {
   fileInput.value = ''; // allow re-selecting the same file
   loadPDF(f);
 });
+
+// ─── Crop editor wiring ───────────────────────────────────────────────────────
+
+const cropWrap = $('crop-canvas-wrap');
+const cropBox  = $('crop-box');
+
+cropWrap.addEventListener('mousedown', e => {
+  if (e.target === cropBox || cropBox.contains(e.target)) return;
+  e.preventDefault();
+  cropDrag = { type: 'create', start: getCropPos(e), crop0: null };
+});
+cropWrap.addEventListener('touchstart', e => {
+  if (e.target === cropBox || cropBox.contains(e.target)) return;
+  e.preventDefault();
+  cropDrag = { type: 'create', start: getCropPos(e), crop0: null };
+}, { passive: false });
+
+cropBox.addEventListener('mousedown',  e => { if (!e.target.dataset.h) beginCropDrag(e, 'move'); });
+cropBox.addEventListener('touchstart', e => { if (!e.target.dataset.h) beginCropDrag(e, 'move'); }, { passive: false });
+
+cropBox.querySelectorAll('.handle').forEach(h => {
+  h.addEventListener('mousedown',  e => { e.stopPropagation(); beginCropDrag(e, 'resize', h.dataset.h); });
+  h.addEventListener('touchstart', e => { e.stopPropagation(); beginCropDrag(e, 'resize', h.dataset.h); }, { passive: false });
+});
+
+document.addEventListener('mousemove', onCropMove);
+document.addEventListener('touchmove', onCropMove, { passive: false });
+document.addEventListener('mouseup',  () => { if (cropDrag?.type === 'create') updateCropBoxEl(); cropDrag = null; });
+document.addEventListener('touchend', () => { if (cropDrag?.type === 'create') updateCropBoxEl(); cropDrag = null; });
+
+$('crop-prev').addEventListener('click', () => { if (cropPage > 1)               renderCropPage(--cropPage); });
+$('crop-next').addEventListener('click', () => { if (cropPage < pdfDoc.numPages) renderCropPage(++cropPage); });
+$('crop-reset').addEventListener('click', () => { cropPdf = null; setDefaultCropBox(); updateCropBoxEl(); });
+$('crop-skip').addEventListener('click',  () => { cropPdf = null; finishCrop(); });
+$('crop-apply').addEventListener('click', finishCrop);
 
 $('preview-btn').addEventListener('click', () =>
   previewPage(+$('preview-page-num').value)
