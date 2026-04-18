@@ -630,7 +630,10 @@ let cropPdf  = null; // { x, y, w, h } in PDF user-space points; null = no crop
 let cropVp   = null; // PDF.js viewport used in the crop editor
 let cropPage = 1;    // page currently displayed in the crop editor
 let cropDrag = null; // active drag state
+let defaultContentPdf = null; // cached union of content bboxes across sampled pages (PDF points)
 const CROP_MIN_PX = 16;
+const DEFAULT_CROP_PAD_PX = 5;  // safety buffer added around the detected content box
+const MARGIN_SAMPLE_COUNT = 10; // number of pages to sample for multi-page margin detection
 
 /** Convert canvas-pixel rect to PDF user-space using cropVp. */
 function cropCanvasToPdf({ x, y, w, h }) {
@@ -694,16 +697,85 @@ function detectContentBounds(canvas) {
   return { x: left, y: top, w: right - left + 1, h: bottom - top + 1 };
 }
 
-/** Default crop = tight box around the non-white content (i.e. strip margins). */
+/**
+ * Sample up to `count` evenly-spaced pages, render each off-screen, and
+ * compute the *union* of per-page content bounding boxes (in PDF user-space
+ * points — device-independent so the result survives any crop-canvas scale).
+ * A union (max extent) guarantees we don't crop content off any sampled page;
+ * callers add a small pixel buffer on top for safety.
+ *
+ * Returns null if every sampled page is entirely blank.
+ */
+async function detectContentBoundsAcrossPages(doc, count = MARGIN_SAMPLE_COUNT) {
+  const n = doc.numPages;
+  const k = Math.min(count, n);
+  const indices = k === 1
+    ? [1]
+    : Array.from({ length: k }, (_, i) => Math.round(1 + i * (n - 1) / (k - 1)));
+  const uniq = [...new Set(indices)];
+
+  let union = null;
+  for (const pageNum of uniq) {
+    const page = await doc.getPage(pageNum);
+    // Scale 1.5 keeps detection accurate for small fonts while staying fast.
+    const vp = page.getViewport({ scale: 1.5 });
+    const c  = new OffscreenCanvas(Math.floor(vp.width), Math.floor(vp.height));
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    page.cleanup();
+
+    const b = detectContentBounds(c);
+    if (!b) continue;
+
+    // Canvas pixels → PDF points (BL and TR corners).
+    const [px1, py1] = vp.convertToPdfPoint(b.x,         b.y + b.h);
+    const [px2, py2] = vp.convertToPdfPoint(b.x + b.w,   b.y      );
+    const rect = {
+      x: Math.min(px1, px2),
+      y: Math.min(py1, py2),
+      w: Math.abs(px2 - px1),
+      h: Math.abs(py2 - py1),
+    };
+
+    if (!union) union = rect;
+    else {
+      const x1 = Math.min(union.x, rect.x);
+      const y1 = Math.min(union.y, rect.y);
+      const x2 = Math.max(union.x + union.w, rect.x + rect.w);
+      const y2 = Math.max(union.y + union.h, rect.y + rect.h);
+      union = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+    }
+  }
+  return union;
+}
+
+/**
+ * Default crop = union of content bboxes across sampled pages + 5-px buffer.
+ * Uses the cached multi-page result when available; otherwise falls back to
+ * detecting bounds on just the currently rendered page (and still blank-page
+ * fallback to the full canvas so the user can always drag the box).
+ */
 function setDefaultCropBox() {
   const c = $('crop-canvas');
-  const bounds = detectContentBounds(c);
-  if (bounds) {
-    cropPdf = cropCanvasToPdf(bounds);
-  } else {
-    // Page is entirely blank — fall back to the full canvas so the user can still drag.
+  // Prefer the cached multi-page union — `cropVp` lets us map PDF points
+  // back to canvas pixels for the current display.
+  const boundsCv = (defaultContentPdf && cropVp)
+    ? cropPdfToCanvas(defaultContentPdf)
+    : detectContentBounds(c);
+
+  if (!boundsCv) {
     cropPdf = cropCanvasToPdf({ x: 0, y: 0, w: c.width, h: c.height });
+    return;
   }
+
+  const pad = DEFAULT_CROP_PAD_PX;
+  const x = Math.max(0, boundsCv.x - pad);
+  const y = Math.max(0, boundsCv.y - pad);
+  const w = Math.min(c.width  - x, boundsCv.w + 2 * pad);
+  const h = Math.min(c.height - y, boundsCv.h + 2 * pad);
+  cropPdf = cropCanvasToPdf({ x, y, w, h });
 }
 
 function updateCropBoxEl() {
@@ -832,6 +904,7 @@ function processPage(pageCanvas, s) {
 async function loadPDF(file) {
   pdfFileName = file.name;
   cropPdf = null;
+  defaultContentPdf = null;
   $('download-btn').hidden  = true;
   $('preview').hidden       = true;
   $('page-controls').hidden = true;
@@ -848,6 +921,10 @@ async function loadPDF(file) {
     const autoPage = Math.min(Math.max(1, +$('auto-preview-page').value || 1), n);
     $('preview-page-num').value = autoPage;
     $('pdf-info').textContent   = `${n} page${n !== 1 ? 's' : ''}`;
+
+    setProgress(50);
+    setStatus(`Detecting margins across ${Math.min(MARGIN_SAMPLE_COUNT, n)} page${n !== 1 ? 's' : ''}…`);
+    defaultContentPdf = await detectContentBoundsAcrossPages(pdfDoc);
 
     setProgress(100);
     setStatus(`Loaded — ${n} page${n !== 1 ? 's' : ''}. Set crop area or skip.`);
