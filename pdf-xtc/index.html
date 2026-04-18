@@ -31,8 +31,23 @@
           <input id="custom-h" type="number" value="800" min="100" max="4000" />
         </div>
         <div class="setting-group">
+          <label for="split-mode">Split mode</label>
+          <select id="split-mode">
+            <option value="equal" selected>Equal + overlap</option>
+            <option value="auto">Auto (between lines)</option>
+          </select>
+        </div>
+        <div class="setting-group" id="k-group">
           <label for="overlap-k" title="Extra slices per PDF page added on top of the minimum needed. k=0 means no overlap; k=1 adds one overlapping slice per page.">Extra slices k</label>
           <input id="overlap-k" type="number" value="1" min="0" max="20" />
+        </div>
+        <div class="setting-group" id="auto-n-group" hidden>
+          <label for="auto-n" title="Number of slices each PDF page is split into.">Slices per page</label>
+          <input id="auto-n" type="number" value="3" min="1" max="50" />
+        </div>
+        <div class="setting-group" id="auto-x-group" hidden>
+          <label for="auto-x" title="Half-window in source pixels: each split point is shifted by up to ±x rows from its equal-split position to land on a row between text lines.">Search window x (px)</label>
+          <input id="auto-x" type="number" value="20" min="1" max="400" />
         </div>
         <div class="setting-group">
           <label for="dithering">Dithering</label>
@@ -175,7 +190,10 @@ function getSettings() {
   return {
     deviceW:        dw,
     deviceH:        dh,
+    splitMode:      $('split-mode').value,
     k:              +$('overlap-k').value,
+    autoN:          Math.max(1, +$('auto-n').value || 1),
+    autoX:          Math.max(0, +$('auto-x').value || 0),
     dithering:      $('dithering').value,
     ditherStrength: +$('dither-strength').value / 100,
     threshold:      +$('threshold').value,
@@ -261,6 +279,101 @@ function sliceCanvas(srcCanvas, sliceH, n) {
     ctx.fillStyle = '#fff'; // white padding for pages shorter than sliceH
     ctx.fillRect(0, 0, w, sliceH);
     ctx.drawImage(srcCanvas, 0, -yStart);
+    return out;
+  });
+}
+
+/**
+ * Flag each row of srcCanvas as all-white (luminance ≥ 250 for every pixel).
+ * Same luminance threshold as isBlank/detectContentBounds for consistency.
+ */
+function computeWhiteRows(srcCanvas) {
+  const w = srcCanvas.width, h = srcCanvas.height;
+  const { data } = srcCanvas.getContext('2d').getImageData(0, 0, w, h);
+  const white = new Uint8Array(h);
+  for (let y = 0; y < h; y++) {
+    let allWhite = 1;
+    const base = y * w * 4;
+    for (let x = 0; x < w; x++) {
+      const i = base + x * 4;
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (lum < 250) { allWhite = 0; break; }
+    }
+    white[y] = allWhite;
+  }
+  return white;
+}
+
+/**
+ * Inside a 2x+1 window centered on `ideal`, pick a row that is (a) all-white
+ * and (b) sits as near the center of a run of consecutive all-white rows as
+ * possible — i.e. the count of consecutive white rows immediately above and
+ * below that row (measured *within the window*) differ by ≤ 1.
+ *
+ * Returns `ideal` unchanged if no balanced white row exists in the window, so
+ * auto-split always produces n slices even on pages without clean gaps.
+ */
+function findBalancedWhiteRow(whiteRows, ideal, x) {
+  const h = whiteRows.length;
+  const yLo = Math.max(0, ideal - x);
+  const yHi = Math.min(h - 1, ideal + x);
+
+  let bestY = -1, bestDiff = Infinity, bestDist = Infinity;
+  for (let y = yLo; y <= yHi; y++) {
+    if (!whiteRows[y]) continue;
+    let above = 0;
+    for (let k = y - 1; k >= yLo && whiteRows[k]; k--) above++;
+    let below = 0;
+    for (let k = y + 1; k <= yHi && whiteRows[k]; k++) below++;
+    const diff = Math.abs(above - below);
+    if (diff > 1) continue;
+    const dist = Math.abs(y - ideal);
+    if (diff < bestDiff || (diff === bestDiff && dist < bestDist)) {
+      bestDiff = diff; bestDist = dist; bestY = y;
+    }
+  }
+  return bestY >= 0 ? bestY : ideal;
+}
+
+/**
+ * Split srcCanvas into exactly n slices at split points near equal-size
+ * positions but nudged onto an inter-line white row within ±x source pixels.
+ *
+ * Each produced slice canvas is sliceH pixels tall (top-aligned, white-
+ * padded if the source segment is shorter; clipped if longer). Variable
+ * segment heights are expected — pick n so the average H/n is close to sliceH.
+ */
+function autoSliceCanvas(srcCanvas, n, x, sliceH) {
+  const { width: w, height: h } = srcCanvas;
+  if (n <= 1) return sliceCanvas(srcCanvas, sliceH, 1);
+
+  const whiteRows = computeWhiteRows(srcCanvas);
+  const splits = [];
+  for (let i = 1; i < n; i++) {
+    const ideal = Math.round(i * h / n);
+    splits.push(findBalancedWhiteRow(whiteRows, ideal, x));
+  }
+  // Enforce monotonicity in case two search windows picked overlapping rows.
+  for (let i = 1; i < splits.length; i++) {
+    if (splits[i] <= splits[i - 1]) splits[i] = splits[i - 1] + 1;
+  }
+
+  const boundaries = [0, ...splits, h];
+  return Array.from({ length: n }, (_, i) => {
+    const yStart = boundaries[i];
+    const segH   = boundaries[i + 1] - yStart;
+    const copyH  = Math.min(segH, sliceH);
+    const out    = new OffscreenCanvas(w, sliceH);
+    const ctx    = out.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, w, sliceH);
+    ctx.drawImage(srcCanvas, 0, yStart, w, copyH, 0, 0, w, copyH);
+    if (segH > sliceH) {
+      console.warn(
+        `Auto-split slice ${i + 1}/${n} is ${segH}px tall but sliceH is ${sliceH}px — ` +
+        `clipping ${segH - sliceH}px. Increase "Slices per page" to avoid loss.`
+      );
+    }
     return out;
   });
 }
@@ -556,13 +669,41 @@ async function renderCropPage(n) {
   $('crop-next').disabled = n >= pdfDoc.numPages;
 }
 
+/**
+ * Find the tightest bounding box containing every non-near-white pixel.
+ * Luminance threshold matches isBlank (≥250 = considered white). Returns null
+ * if the page is entirely blank.
+ */
+function detectContentBounds(canvas) {
+  const w = canvas.width, h = canvas.height;
+  const { data } = canvas.getContext('2d').getImageData(0, 0, w, h);
+  let top = h, bottom = -1, left = w, right = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (lum < 250) {
+        if (y < top)    top = y;
+        if (y > bottom) bottom = y;
+        if (x < left)   left = x;
+        if (x > right)  right = x;
+      }
+    }
+  }
+  if (bottom < 0) return null;
+  return { x: left, y: top, w: right - left + 1, h: bottom - top + 1 };
+}
+
+/** Default crop = tight box around the non-white content (i.e. strip margins). */
 function setDefaultCropBox() {
   const c = $('crop-canvas');
-  const inset = 0.05;
-  cropPdf = cropCanvasToPdf({
-    x: c.width * inset, y: c.height * inset,
-    w: c.width * (1 - 2 * inset), h: c.height * (1 - 2 * inset),
-  });
+  const bounds = detectContentBounds(c);
+  if (bounds) {
+    cropPdf = cropCanvasToPdf(bounds);
+  } else {
+    // Page is entirely blank — fall back to the full canvas so the user can still drag.
+    cropPdf = cropCanvasToPdf({ x: 0, y: 0, w: c.width, h: c.height });
+  }
 }
 
 function updateCropBoxEl() {
@@ -674,10 +815,11 @@ async function renderPDFPage(pageNum, s) {
  */
 function processPage(pageCanvas, s) {
   const sliceH = s.deviceW;
-  const nBase  = Math.max(1, Math.ceil(pageCanvas.height / sliceH));
-  const n      = nBase + s.k;
-  const xtgs   = [];
-  for (const slice of sliceCanvas(pageCanvas, sliceH, n)) {
+  const slices = s.splitMode === 'auto'
+    ? autoSliceCanvas(pageCanvas, s.autoN, s.autoX, sliceH)
+    : sliceCanvas(pageCanvas, sliceH, Math.max(1, Math.ceil(pageCanvas.height / sliceH)) + s.k);
+  const xtgs = [];
+  for (const slice of slices) {
     if (isBlank(slice)) continue;
     const rotated = s.orientation === 'cw' ? rotateCW(slice) : rotateCCW(slice);
     xtgs.push(encodeXTG(rotated, s.dithering, s.ditherStrength, s.threshold));
@@ -874,6 +1016,16 @@ $('device').addEventListener('change', () => {
   $('custom-w-group').hidden = !custom;
   $('custom-h-group').hidden = !custom;
 });
+
+// Show k-group for equal mode, auto-n/auto-x for auto mode
+function updateSplitModeUI() {
+  const auto = $('split-mode').value === 'auto';
+  $('k-group').hidden      = auto;
+  $('auto-n-group').hidden = !auto;
+  $('auto-x-group').hidden = !auto;
+}
+$('split-mode').addEventListener('change', updateSplitModeUI);
+updateSplitModeUI();
 
 // Dither strength label and dim the control when dithering is off
 const ditherGroup = $('dither-strength').closest('.setting-group');
