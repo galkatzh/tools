@@ -31,8 +31,23 @@
           <input id="custom-h" type="number" value="800" min="100" max="4000" />
         </div>
         <div class="setting-group">
+          <label for="split-mode">Split mode</label>
+          <select id="split-mode">
+            <option value="equal" selected>Equal + overlap</option>
+            <option value="auto">Auto (between lines)</option>
+          </select>
+        </div>
+        <div class="setting-group" id="k-group">
           <label for="overlap-k" title="Extra slices per PDF page added on top of the minimum needed. k=0 means no overlap; k=1 adds one overlapping slice per page.">Extra slices k</label>
           <input id="overlap-k" type="number" value="1" min="0" max="20" />
+        </div>
+        <div class="setting-group" id="auto-n-group" hidden>
+          <label for="auto-n" title="Number of slices each PDF page is split into.">Slices per page</label>
+          <input id="auto-n" type="number" value="3" min="1" max="50" />
+        </div>
+        <div class="setting-group" id="auto-x-group" hidden>
+          <label for="auto-x" title="Half-window in source pixels: each split point is shifted by up to ±x rows from its equal-split position to land on a row between text lines.">Search window x (px)</label>
+          <input id="auto-x" type="number" value="20" min="1" max="400" />
         </div>
         <div class="setting-group">
           <label for="dithering">Dithering</label>
@@ -175,7 +190,10 @@ function getSettings() {
   return {
     deviceW:        dw,
     deviceH:        dh,
+    splitMode:      $('split-mode').value,
     k:              +$('overlap-k').value,
+    autoN:          Math.max(1, +$('auto-n').value || 1),
+    autoX:          Math.max(0, +$('auto-x').value || 0),
     dithering:      $('dithering').value,
     ditherStrength: +$('dither-strength').value / 100,
     threshold:      +$('threshold').value,
@@ -261,6 +279,128 @@ function sliceCanvas(srcCanvas, sliceH, n) {
     ctx.fillStyle = '#fff'; // white padding for pages shorter than sliceH
     ctx.fillRect(0, 0, w, sliceH);
     ctx.drawImage(srcCanvas, 0, -yStart);
+    return out;
+  });
+}
+
+/**
+ * Flag each row of srcCanvas as all-white (luminance ≥ 250 for every pixel).
+ * Same luminance threshold as isBlank/detectContentBounds for consistency.
+ */
+function computeWhiteRows(srcCanvas) {
+  const w = srcCanvas.width, h = srcCanvas.height;
+  const { data } = srcCanvas.getContext('2d').getImageData(0, 0, w, h);
+  const white = new Uint8Array(h);
+  for (let y = 0; y < h; y++) {
+    let allWhite = 1;
+    const base = y * w * 4;
+    for (let x = 0; x < w; x++) {
+      const i = base + x * 4;
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (lum < 250) { allWhite = 0; break; }
+    }
+    white[y] = allWhite;
+  }
+  return white;
+}
+
+/**
+ * Pick a split row that (a) lies in [prev+1, prev+sliceH] — guaranteeing the
+ * segment `[prev, split)` fits on one device page — and (b) is as close as
+ * possible to `ideal` while also landing on a balanced all-white row (equal
+ * ±1 consecutive white rows above and below, measured within the clamped
+ * window). Falls back to the clamped `ideal` when no balanced white row
+ * exists; that may cut through text but is unavoidable given the constraint.
+ *
+ * Returns { split, clamped } — clamped=true if we had to give up the white-
+ * row guarantee, so callers can surface a warning.
+ */
+function pickConstrainedSplit(whiteRows, ideal, x, prev, sliceH) {
+  const H  = whiteRows.length;
+  const lo = Math.max(prev + 1, ideal - x);
+  const hi = Math.min(H - 1, prev + sliceH, ideal + x);
+  if (lo > hi) {
+    // Window is empty (e.g. ideal is well past the sliceH horizon). Clamp
+    // to the furthest legal row so the segment still fits.
+    return { split: Math.min(H - 1, prev + sliceH), clamped: true };
+  }
+
+  let bestY = -1, bestDiff = Infinity, bestDist = Infinity;
+  for (let y = lo; y <= hi; y++) {
+    if (!whiteRows[y]) continue;
+    let above = 0;
+    for (let k = y - 1; k >= lo && whiteRows[k]; k--) above++;
+    let below = 0;
+    for (let k = y + 1; k <= hi && whiteRows[k]; k++) below++;
+    const diff = Math.abs(above - below);
+    if (diff > 1) continue;
+    const dist = Math.abs(y - ideal);
+    if (diff < bestDiff || (diff === bestDiff && dist < bestDist)) {
+      bestDiff = diff; bestDist = dist; bestY = y;
+    }
+  }
+  if (bestY >= 0) return { split: bestY, clamped: false };
+  return { split: Math.max(lo, Math.min(hi, ideal)), clamped: true };
+}
+
+/**
+ * Split srcCanvas into slices at split points chosen near equal-size
+ * positions and nudged onto an inter-line white row within ±x source pixels.
+ *
+ * Each segment is guaranteed to be ≤ sliceH tall: the search for each split
+ * is biased so that `split - prev ≤ sliceH`. If the user-requested n would
+ * force any segment above sliceH (i.e. the page is too tall for n slices of
+ * the device height), additional slices are appended beyond n until the
+ * whole page is covered. A console.warn names the page when any split had to
+ * fall through the white-row guarantee because no gap fit the constraint.
+ */
+function autoSliceCanvas(srcCanvas, n, x, sliceH) {
+  const { width: w, height: h } = srcCanvas;
+  if (h === 0) return [];
+
+  const whiteRows = computeWhiteRows(srcCanvas);
+  const splits = [];
+  let prev = 0;
+  let clampedCount = 0;
+
+  // Plan n-1 splits at equal-size ideals, each clamped to ≤ sliceH from prev.
+  for (let i = 1; i < n; i++) {
+    const ideal = Math.round(i * h / n);
+    const { split, clamped } = pickConstrainedSplit(whiteRows, ideal, x, prev, sliceH);
+    if (split <= prev) break; // page shorter than expected; stop early
+    splits.push(split);
+    if (clamped) clampedCount++;
+    prev = split;
+  }
+
+  // Extra slices for leftover content. Each is ~sliceH tall, still nudged
+  // onto a balanced white row when available.
+  while (h - prev > sliceH) {
+    const ideal = prev + sliceH;
+    const { split, clamped } = pickConstrainedSplit(whiteRows, ideal, x, prev, sliceH);
+    if (split <= prev) break; // safety: never infinite-loop
+    splits.push(split);
+    if (clamped) clampedCount++;
+    prev = split;
+  }
+
+  if (clampedCount) {
+    console.warn(
+      `Auto-split: ${clampedCount} split point${clampedCount === 1 ? '' : 's'} could not ` +
+      `find a balanced white row within the sliceH constraint and may cut through text. ` +
+      `Increase search window x or slices per page.`
+    );
+  }
+
+  const boundaries = [0, ...splits, h];
+  return Array.from({ length: boundaries.length - 1 }, (_, i) => {
+    const yStart = boundaries[i];
+    const segH   = boundaries[i + 1] - yStart;
+    const out    = new OffscreenCanvas(w, sliceH);
+    const ctx    = out.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, w, sliceH);
+    ctx.drawImage(srcCanvas, 0, yStart, w, segH, 0, 0, w, segH);
     return out;
   });
 }
@@ -517,7 +657,10 @@ let cropPdf  = null; // { x, y, w, h } in PDF user-space points; null = no crop
 let cropVp   = null; // PDF.js viewport used in the crop editor
 let cropPage = 1;    // page currently displayed in the crop editor
 let cropDrag = null; // active drag state
+let defaultContentPdf = null; // cached union of content bboxes across sampled pages (PDF points)
 const CROP_MIN_PX = 16;
+const DEFAULT_CROP_PAD_PX = 5;  // safety buffer added around the detected content box
+const MARGIN_SAMPLE_COUNT = 10; // number of pages to sample for multi-page margin detection
 
 /** Convert canvas-pixel rect to PDF user-space using cropVp. */
 function cropCanvasToPdf({ x, y, w, h }) {
@@ -556,13 +699,110 @@ async function renderCropPage(n) {
   $('crop-next').disabled = n >= pdfDoc.numPages;
 }
 
+/**
+ * Find the tightest bounding box containing every non-near-white pixel.
+ * Luminance threshold matches isBlank (≥250 = considered white). Returns null
+ * if the page is entirely blank.
+ */
+function detectContentBounds(canvas) {
+  const w = canvas.width, h = canvas.height;
+  const { data } = canvas.getContext('2d').getImageData(0, 0, w, h);
+  let top = h, bottom = -1, left = w, right = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (lum < 250) {
+        if (y < top)    top = y;
+        if (y > bottom) bottom = y;
+        if (x < left)   left = x;
+        if (x > right)  right = x;
+      }
+    }
+  }
+  if (bottom < 0) return null;
+  return { x: left, y: top, w: right - left + 1, h: bottom - top + 1 };
+}
+
+/**
+ * Sample up to `count` evenly-spaced pages, render each off-screen, and
+ * compute the *union* of per-page content bounding boxes (in PDF user-space
+ * points — device-independent so the result survives any crop-canvas scale).
+ * A union (max extent) guarantees we don't crop content off any sampled page;
+ * callers add a small pixel buffer on top for safety.
+ *
+ * Returns null if every sampled page is entirely blank.
+ */
+async function detectContentBoundsAcrossPages(doc, count = MARGIN_SAMPLE_COUNT) {
+  const n = doc.numPages;
+  const k = Math.min(count, n);
+  const indices = k === 1
+    ? [1]
+    : Array.from({ length: k }, (_, i) => Math.round(1 + i * (n - 1) / (k - 1)));
+  const uniq = [...new Set(indices)];
+
+  let union = null;
+  for (const pageNum of uniq) {
+    const page = await doc.getPage(pageNum);
+    // Scale 1.5 keeps detection accurate for small fonts while staying fast.
+    const vp = page.getViewport({ scale: 1.5 });
+    const c  = new OffscreenCanvas(Math.floor(vp.width), Math.floor(vp.height));
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    page.cleanup();
+
+    const b = detectContentBounds(c);
+    if (!b) continue;
+
+    // Canvas pixels → PDF points (BL and TR corners).
+    const [px1, py1] = vp.convertToPdfPoint(b.x,         b.y + b.h);
+    const [px2, py2] = vp.convertToPdfPoint(b.x + b.w,   b.y      );
+    const rect = {
+      x: Math.min(px1, px2),
+      y: Math.min(py1, py2),
+      w: Math.abs(px2 - px1),
+      h: Math.abs(py2 - py1),
+    };
+
+    if (!union) union = rect;
+    else {
+      const x1 = Math.min(union.x, rect.x);
+      const y1 = Math.min(union.y, rect.y);
+      const x2 = Math.max(union.x + union.w, rect.x + rect.w);
+      const y2 = Math.max(union.y + union.h, rect.y + rect.h);
+      union = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+    }
+  }
+  return union;
+}
+
+/**
+ * Default crop = union of content bboxes across sampled pages + 5-px buffer.
+ * Uses the cached multi-page result when available; otherwise falls back to
+ * detecting bounds on just the currently rendered page (and still blank-page
+ * fallback to the full canvas so the user can always drag the box).
+ */
 function setDefaultCropBox() {
   const c = $('crop-canvas');
-  const inset = 0.05;
-  cropPdf = cropCanvasToPdf({
-    x: c.width * inset, y: c.height * inset,
-    w: c.width * (1 - 2 * inset), h: c.height * (1 - 2 * inset),
-  });
+  // Prefer the cached multi-page union — `cropVp` lets us map PDF points
+  // back to canvas pixels for the current display.
+  const boundsCv = (defaultContentPdf && cropVp)
+    ? cropPdfToCanvas(defaultContentPdf)
+    : detectContentBounds(c);
+
+  if (!boundsCv) {
+    cropPdf = cropCanvasToPdf({ x: 0, y: 0, w: c.width, h: c.height });
+    return;
+  }
+
+  const pad = DEFAULT_CROP_PAD_PX;
+  const x = Math.max(0, boundsCv.x - pad);
+  const y = Math.max(0, boundsCv.y - pad);
+  const w = Math.min(c.width  - x, boundsCv.w + 2 * pad);
+  const h = Math.min(c.height - y, boundsCv.h + 2 * pad);
+  cropPdf = cropCanvasToPdf({ x, y, w, h });
 }
 
 function updateCropBoxEl() {
@@ -674,10 +914,11 @@ async function renderPDFPage(pageNum, s) {
  */
 function processPage(pageCanvas, s) {
   const sliceH = s.deviceW;
-  const nBase  = Math.max(1, Math.ceil(pageCanvas.height / sliceH));
-  const n      = nBase + s.k;
-  const xtgs   = [];
-  for (const slice of sliceCanvas(pageCanvas, sliceH, n)) {
+  const slices = s.splitMode === 'auto'
+    ? autoSliceCanvas(pageCanvas, s.autoN, s.autoX, sliceH)
+    : sliceCanvas(pageCanvas, sliceH, Math.max(1, Math.ceil(pageCanvas.height / sliceH)) + s.k);
+  const xtgs = [];
+  for (const slice of slices) {
     if (isBlank(slice)) continue;
     const rotated = s.orientation === 'cw' ? rotateCW(slice) : rotateCCW(slice);
     xtgs.push(encodeXTG(rotated, s.dithering, s.ditherStrength, s.threshold));
@@ -690,6 +931,7 @@ function processPage(pageCanvas, s) {
 async function loadPDF(file) {
   pdfFileName = file.name;
   cropPdf = null;
+  defaultContentPdf = null;
   $('download-btn').hidden  = true;
   $('preview').hidden       = true;
   $('page-controls').hidden = true;
@@ -706,6 +948,10 @@ async function loadPDF(file) {
     const autoPage = Math.min(Math.max(1, +$('auto-preview-page').value || 1), n);
     $('preview-page-num').value = autoPage;
     $('pdf-info').textContent   = `${n} page${n !== 1 ? 's' : ''}`;
+
+    setProgress(50);
+    setStatus(`Detecting margins across ${Math.min(MARGIN_SAMPLE_COUNT, n)} page${n !== 1 ? 's' : ''}…`);
+    defaultContentPdf = await detectContentBoundsAcrossPages(pdfDoc);
 
     setProgress(100);
     setStatus(`Loaded — ${n} page${n !== 1 ? 's' : ''}. Set crop area or skip.`);
@@ -874,6 +1120,16 @@ $('device').addEventListener('change', () => {
   $('custom-w-group').hidden = !custom;
   $('custom-h-group').hidden = !custom;
 });
+
+// Show k-group for equal mode, auto-n/auto-x for auto mode
+function updateSplitModeUI() {
+  const auto = $('split-mode').value === 'auto';
+  $('k-group').hidden      = auto;
+  $('auto-n-group').hidden = !auto;
+  $('auto-x-group').hidden = !auto;
+}
+$('split-mode').addEventListener('change', updateSplitModeUI);
+updateSplitModeUI();
 
 // Dither strength label and dim the control when dithering is off
 const ditherGroup = $('dither-strength').closest('.setting-group');
