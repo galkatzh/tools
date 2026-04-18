@@ -305,26 +305,33 @@ function computeWhiteRows(srcCanvas) {
 }
 
 /**
- * Inside a 2x+1 window centered on `ideal`, pick a row that is (a) all-white
- * and (b) sits as near the center of a run of consecutive all-white rows as
- * possible — i.e. the count of consecutive white rows immediately above and
- * below that row (measured *within the window*) differ by ≤ 1.
+ * Pick a split row that (a) lies in [prev+1, prev+sliceH] — guaranteeing the
+ * segment `[prev, split)` fits on one device page — and (b) is as close as
+ * possible to `ideal` while also landing on a balanced all-white row (equal
+ * ±1 consecutive white rows above and below, measured within the clamped
+ * window). Falls back to the clamped `ideal` when no balanced white row
+ * exists; that may cut through text but is unavoidable given the constraint.
  *
- * Returns `ideal` unchanged if no balanced white row exists in the window, so
- * auto-split always produces n slices even on pages without clean gaps.
+ * Returns { split, clamped } — clamped=true if we had to give up the white-
+ * row guarantee, so callers can surface a warning.
  */
-function findBalancedWhiteRow(whiteRows, ideal, x) {
-  const h = whiteRows.length;
-  const yLo = Math.max(0, ideal - x);
-  const yHi = Math.min(h - 1, ideal + x);
+function pickConstrainedSplit(whiteRows, ideal, x, prev, sliceH) {
+  const H  = whiteRows.length;
+  const lo = Math.max(prev + 1, ideal - x);
+  const hi = Math.min(H - 1, prev + sliceH, ideal + x);
+  if (lo > hi) {
+    // Window is empty (e.g. ideal is well past the sliceH horizon). Clamp
+    // to the furthest legal row so the segment still fits.
+    return { split: Math.min(H - 1, prev + sliceH), clamped: true };
+  }
 
   let bestY = -1, bestDiff = Infinity, bestDist = Infinity;
-  for (let y = yLo; y <= yHi; y++) {
+  for (let y = lo; y <= hi; y++) {
     if (!whiteRows[y]) continue;
     let above = 0;
-    for (let k = y - 1; k >= yLo && whiteRows[k]; k--) above++;
+    for (let k = y - 1; k >= lo && whiteRows[k]; k--) above++;
     let below = 0;
-    for (let k = y + 1; k <= yHi && whiteRows[k]; k++) below++;
+    for (let k = y + 1; k <= hi && whiteRows[k]; k++) below++;
     const diff = Math.abs(above - below);
     if (diff > 1) continue;
     const dist = Math.abs(y - ideal);
@@ -332,48 +339,68 @@ function findBalancedWhiteRow(whiteRows, ideal, x) {
       bestDiff = diff; bestDist = dist; bestY = y;
     }
   }
-  return bestY >= 0 ? bestY : ideal;
+  if (bestY >= 0) return { split: bestY, clamped: false };
+  return { split: Math.max(lo, Math.min(hi, ideal)), clamped: true };
 }
 
 /**
- * Split srcCanvas into exactly n slices at split points near equal-size
- * positions but nudged onto an inter-line white row within ±x source pixels.
+ * Split srcCanvas into slices at split points chosen near equal-size
+ * positions and nudged onto an inter-line white row within ±x source pixels.
  *
- * Each produced slice canvas is sliceH pixels tall (top-aligned, white-
- * padded if the source segment is shorter; clipped if longer). Variable
- * segment heights are expected — pick n so the average H/n is close to sliceH.
+ * Each segment is guaranteed to be ≤ sliceH tall: the search for each split
+ * is biased so that `split - prev ≤ sliceH`. If the user-requested n would
+ * force any segment above sliceH (i.e. the page is too tall for n slices of
+ * the device height), additional slices are appended beyond n until the
+ * whole page is covered. A console.warn names the page when any split had to
+ * fall through the white-row guarantee because no gap fit the constraint.
  */
 function autoSliceCanvas(srcCanvas, n, x, sliceH) {
   const { width: w, height: h } = srcCanvas;
-  if (n <= 1) return sliceCanvas(srcCanvas, sliceH, 1);
+  if (h === 0) return [];
 
   const whiteRows = computeWhiteRows(srcCanvas);
   const splits = [];
+  let prev = 0;
+  let clampedCount = 0;
+
+  // Plan n-1 splits at equal-size ideals, each clamped to ≤ sliceH from prev.
   for (let i = 1; i < n; i++) {
     const ideal = Math.round(i * h / n);
-    splits.push(findBalancedWhiteRow(whiteRows, ideal, x));
+    const { split, clamped } = pickConstrainedSplit(whiteRows, ideal, x, prev, sliceH);
+    if (split <= prev) break; // page shorter than expected; stop early
+    splits.push(split);
+    if (clamped) clampedCount++;
+    prev = split;
   }
-  // Enforce monotonicity in case two search windows picked overlapping rows.
-  for (let i = 1; i < splits.length; i++) {
-    if (splits[i] <= splits[i - 1]) splits[i] = splits[i - 1] + 1;
+
+  // Extra slices for leftover content. Each is ~sliceH tall, still nudged
+  // onto a balanced white row when available.
+  while (h - prev > sliceH) {
+    const ideal = prev + sliceH;
+    const { split, clamped } = pickConstrainedSplit(whiteRows, ideal, x, prev, sliceH);
+    if (split <= prev) break; // safety: never infinite-loop
+    splits.push(split);
+    if (clamped) clampedCount++;
+    prev = split;
+  }
+
+  if (clampedCount) {
+    console.warn(
+      `Auto-split: ${clampedCount} split point${clampedCount === 1 ? '' : 's'} could not ` +
+      `find a balanced white row within the sliceH constraint and may cut through text. ` +
+      `Increase search window x or slices per page.`
+    );
   }
 
   const boundaries = [0, ...splits, h];
-  return Array.from({ length: n }, (_, i) => {
+  return Array.from({ length: boundaries.length - 1 }, (_, i) => {
     const yStart = boundaries[i];
     const segH   = boundaries[i + 1] - yStart;
-    const copyH  = Math.min(segH, sliceH);
     const out    = new OffscreenCanvas(w, sliceH);
     const ctx    = out.getContext('2d');
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, w, sliceH);
-    ctx.drawImage(srcCanvas, 0, yStart, w, copyH, 0, 0, w, copyH);
-    if (segH > sliceH) {
-      console.warn(
-        `Auto-split slice ${i + 1}/${n} is ${segH}px tall but sliceH is ${sliceH}px — ` +
-        `clipping ${segH - sliceH}px. Increase "Slices per page" to avoid loss.`
-      );
-    }
+    ctx.drawImage(srcCanvas, 0, yStart, w, segH, 0, 0, w, segH);
     return out;
   });
 }
