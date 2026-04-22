@@ -160,6 +160,11 @@ body {
   margin-left: 12px;
 }
 
+.shelter-eta {
+  color: #666;
+  font-size: 13px;
+}
+
 .nav-links {
   display: flex;
   gap: 8px;

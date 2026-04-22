@@ -250,6 +250,7 @@ function renderShelterList(shelters, userLat, userLng) {
         ${s.type ? `<div class="shelter-type">${s.type}</div>` : ''}
         <div class="shelter-distances">
           <span>${formatDist(s.dist)}</span>
+          <span class="shelter-eta">${formatEta(s.dist)}</span>
         </div>
         <div class="nav-links">
           <a class="nav-link waze" href="${wazeUrl(s.lat, s.lng)}" target="_blank" onclick="event.stopPropagation()">
@@ -348,6 +349,12 @@ function haversine(lat1, lng1, lat2, lng2) {
 /** Format meters as human-readable distance. */
 function formatDist(m) {
   return m < 1000 ? `${Math.round(m)} מ'` : `${(m / 1000).toFixed(1)} ק"מ`;
+}
+
+/** Walking ETA at 5 km/h (1.39 m/s). Shows seconds under 2 min, minutes above. */
+function formatEta(m) {
+  const sec = Math.round(m / 1.39);
+  return sec < 120 ? `~${sec} שנ' הליכה` : `~${Math.round(sec / 60)} דק' הליכה`;
 }
 
 /** Waze deep link to navigate to coordinates. */
