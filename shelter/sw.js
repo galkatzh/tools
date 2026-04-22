@@ -1,4 +1,4 @@
-const CACHE_NAME = 'shelter-v14';
+const CACHE_NAME = 'shelter-v16';
 
 const STATIC_ASSETS = [
   '/shelter/',
@@ -41,15 +41,29 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
 
-  // Network-first for tile servers (maps change often, and too many to cache)
+  // Network-first for map tiles (too many to cache, change often)
   if (e.request.url.includes('basemaps.cartocdn.com')) {
+    e.respondWith(fetch(e.request).catch(() => caches.match(e.request)));
+    return;
+  }
+
+  // CDN assets: cache-first, but fetch-and-store on cache miss so they're
+  // available offline after the first successful load even if install caching failed.
+  if (e.request.url.includes('unpkg.com')) {
     e.respondWith(
-      fetch(e.request).catch(() => caches.match(e.request))
+      caches.match(e.request).then(cached => {
+        if (cached) return cached;
+        return fetch(e.request).then(res => {
+          const clone = res.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
+          return res;
+        });
+      })
     );
     return;
   }
 
-  // Cache-first for everything else
+  // Cache-first for all own assets
   e.respondWith(
     caches.match(e.request).then(cached => cached || fetch(e.request))
   );

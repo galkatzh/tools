@@ -1,9 +1,10 @@
 /** Shelter Finder – finds the 5 closest bomb shelters and shows navigation options. */
 
-let map, userMarker, shelterMarkers = [], shelterData = null;
-let panelEl, listEl, locateBtn, loadingEl;
+let map, userMarker, selectedMarker, shelterMarkers = [], shelterData = null;
+let panelEl, listEl, locateBtn, returnBtn, loadingEl;
 let lastPos = null;       // last known { lat, lng }
 let refreshTimer = null;  // 30-second auto-refresh interval
+let pinnedLocation = null; // { lat, lng } when user tapped a map location
 
 /* ── Bootstrap ─────────────────────────────────────────── */
 
@@ -11,11 +12,13 @@ document.addEventListener('DOMContentLoaded', () => {
   panelEl   = document.getElementById('panel');
   listEl    = document.getElementById('shelter-list');
   locateBtn = document.getElementById('locate-btn');
+  returnBtn = document.getElementById('return-btn');
   loadingEl = document.getElementById('loading');
 
   initMap();
   loadShelters();
   locateBtn.addEventListener('click', requestLocation);
+  returnBtn.addEventListener('click', returnToMyLocation);
   setupPanelDrag();
   registerSW();
   requestLocation();
@@ -32,6 +35,7 @@ function initMap() {
     attribution: '&copy; OSM &amp; CARTO',
     maxZoom: 19,
   }).addTo(map);
+  map.on('click', onMapClick);
 }
 
 /** Fetch the pre-processed shelter array: [[lat, lng, type], ...] */
@@ -49,6 +53,7 @@ async function loadShelters() {
 /* ── Geolocation ───────────────────────────────────────── */
 
 function requestLocation() {
+  clearPinnedMode();
   if (!navigator.geolocation) {
     alert('הדפדפן לא תומך באיתור מיקום');
     return;
@@ -110,6 +115,62 @@ function startAutoRefresh() {
   }, 30000);
 }
 
+function stopAutoRefresh() {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+}
+
+/* ── Pinned location ────────────────────────────────────── */
+
+/** Called when the user taps anywhere on the map background. */
+function onMapClick(e) {
+  selectLocation(e.latlng.lat, e.latlng.lng);
+}
+
+/**
+ * Enter pinned-location mode: freeze auto-refresh and show shelters near
+ * the tapped point instead of the user's actual GPS position.
+ */
+function selectLocation(lat, lng) {
+  pinnedLocation = { lat, lng };
+  stopAutoRefresh();
+  setSelectedMarker(lat, lng);
+  showClosestShelters(lat, lng, false);
+  returnBtn.classList.remove('hidden');
+}
+
+function setSelectedMarker(lat, lng) {
+  if (selectedMarker) {
+    selectedMarker.setLatLng([lat, lng]);
+  } else {
+    selectedMarker = L.marker([lat, lng], {
+      icon: L.divIcon({ className: 'selected-marker', iconSize: [22, 22], iconAnchor: [11, 11] }),
+      zIndexOffset: 999,
+    }).addTo(map).bindPopup('מיקום נבחר');
+  }
+}
+
+/** Remove pinned-location state and marker, hide the return button. */
+function clearPinnedMode() {
+  pinnedLocation = null;
+  if (selectedMarker) {
+    map.removeLayer(selectedMarker);
+    selectedMarker = null;
+  }
+  if (returnBtn) returnBtn.classList.add('hidden');
+}
+
+/** Resume GPS tracking: clear pin, collapse panel, re-request location. */
+function returnToMyLocation() {
+  clearPinnedMode();
+  panelEl.classList.remove('open');
+  panelEl.classList.add('collapsed');
+  locateBtn.style.display = '';
+  requestLocation();
+}
+
 /* ── Map markers ───────────────────────────────────────── */
 
 function setUserMarker(lat, lng) {
@@ -119,7 +180,8 @@ function setUserMarker(lat, lng) {
     userMarker = L.marker([lat, lng], {
       icon: L.divIcon({ className: 'user-marker', iconSize: [18, 18], iconAnchor: [9, 9] }),
       zIndexOffset: 1000,
-    }).addTo(map).bindPopup('המיקום שלך');
+    }).addTo(map).bindPopup('המיקום שלך')
+      .on('click', (e) => e.originalEvent.stopPropagation());
   }
 }
 
@@ -175,7 +237,7 @@ function renderShelterMarkers(shelters) {
     }).addTo(map);
 
     marker.bindPopup(`<b>מקלט ${i + 1}</b><br>${s.type || 'מקלט'}<br>${formatDist(s.dist)}`);
-    marker.on('click', () => highlightCard(i));
+    marker.on('click', (e) => { e.originalEvent.stopPropagation(); highlightCard(i); });
     shelterMarkers.push(marker);
   });
 }
@@ -188,6 +250,7 @@ function renderShelterList(shelters, userLat, userLng) {
         ${s.type ? `<div class="shelter-type">${s.type}</div>` : ''}
         <div class="shelter-distances">
           <span>${formatDist(s.dist)}</span>
+          <span class="shelter-eta">${formatEta(s.dist)}</span>
         </div>
         <div class="nav-links">
           <a class="nav-link waze" href="${wazeUrl(s.lat, s.lng)}" target="_blank" onclick="event.stopPropagation()">
@@ -286,6 +349,12 @@ function haversine(lat1, lng1, lat2, lng2) {
 /** Format meters as human-readable distance. */
 function formatDist(m) {
   return m < 1000 ? `${Math.round(m)} מ'` : `${(m / 1000).toFixed(1)} ק"מ`;
+}
+
+/** Walking ETA at 5 km/h (1.39 m/s). Shows seconds under 2 min, minutes above. */
+function formatEta(m) {
+  const sec = Math.round(m / 1.39);
+  return sec < 120 ? `~${sec} שנ' הליכה` : `~${Math.round(sec / 60)} דק' הליכה`;
 }
 
 /** Waze deep link to navigate to coordinates. */
