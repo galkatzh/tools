@@ -39,9 +39,11 @@
       transition: opacity .15s;
     }
     .toolbar button:hover { opacity: 0.85; }
-    #btn-load-new { background: #313244; color: #cdd6f4; }
-    #btn-download { background: #cba6f7; color: #1e1e2e; display: none; }
-    #btn-flatten  { background: #a6e3a1; color: #1e1e2e; display: none; }
+    #btn-load-new  { background: #313244; color: #cdd6f4; }
+    #btn-add-text  { background: #89b4fa; color: #1e1e2e; display: none; }
+    #btn-add-text.active { background: #74c7ec; outline: 2px solid #cdd6f4; }
+    #btn-download  { background: #cba6f7; color: #1e1e2e; display: none; }
+    #btn-flatten   { background: #a6e3a1; color: #1e1e2e; display: none; }
 
     /* ── Drop zone ───────────────────────────── */
     #drop-zone {
@@ -177,10 +179,85 @@
     #preview-panel::-webkit-scrollbar-track { background: transparent; }
     #preview-panel::-webkit-scrollbar-thumb { background: #45475a; border-radius: 4px; }
 
-    #preview-panel canvas {
-      max-width: 100%;
+    .page-wrapper {
+      position: relative;
       border-radius: 4px;
       box-shadow: 0 4px 20px rgba(0,0,0,.5);
+      overflow: visible; /* allow annotations to overflow the page edge */
+    }
+    .page-wrapper canvas { display: block; max-width: 100%; border-radius: 4px; }
+
+    /* text-mode: show text cursor over the page */
+    #preview-panel.text-mode .page-wrapper { cursor: text; }
+    #preview-panel.text-mode .text-annotation { cursor: default; }
+
+    /* ── Text annotations ───────────────────── */
+    .text-annotation {
+      position: absolute;
+      z-index: 10;
+      min-width: 80px;
+      background: rgba(255, 255, 220, 0.92);
+      border: 1px solid #aaa;
+      border-radius: 4px;
+      box-shadow: 0 2px 10px rgba(0,0,0,.3);
+    }
+    .annot-header {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 4px;
+      background: #45475a;
+      border-radius: 4px 4px 0 0;
+      user-select: none;
+    }
+    .annot-grip {
+      cursor: grab;
+      color: #cdd6f4;
+      font-size: 1rem;
+      line-height: 1;
+      padding: 0 2px;
+    }
+    .annot-size {
+      font-size: 0.72rem;
+      padding: 1px 2px;
+      border: none;
+      border-radius: 3px;
+      background: #313244;
+      color: #cdd6f4;
+      cursor: pointer;
+    }
+    .annot-color {
+      width: 22px;
+      height: 20px;
+      padding: 0;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      background: none;
+    }
+    .annot-delete {
+      margin-left: auto;
+      background: none;
+      border: none;
+      color: #f38ba8;
+      font-size: 1rem;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0 2px;
+    }
+    .annot-delete:hover { color: #fff; }
+    .annot-textarea {
+      display: block;
+      width: 100%;
+      min-width: 80px;
+      padding: 4px 6px;
+      border: none;
+      background: transparent;
+      resize: none;
+      font-family: Helvetica, Arial, sans-serif;
+      line-height: 1.2;
+      outline: none;
+      overflow: hidden;
     }
 
     #preview-loading {
@@ -213,6 +290,7 @@
   <div class="toolbar">
     <h1>PDF Form Filler</h1>
     <button id="btn-load-new">Open PDF</button>
+    <button id="btn-add-text">Add Text</button>
     <button id="btn-flatten">Flatten &amp; Download</button>
     <button id="btn-download">Download Filled PDF</button>
   </div>
