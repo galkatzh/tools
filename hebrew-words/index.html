@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="he">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,39 +10,14 @@
 <body>
   <main id="app">
     <header>
-      <h1>Hebrew Word Generator</h1>
-      <p class="subtitle">מחולל מילים עבריות</p>
+      <h1>מחולל מילים</h1>
     </header>
 
-    <div class="filters">
-      <label for="category-select">Category:</label>
-      <select id="category-select">
-        <option value="all">All</option>
-        <option value="nature">Nature</option>
-        <option value="people">People &amp; Family</option>
-        <option value="body">Body</option>
-        <option value="animals">Animals</option>
-        <option value="places">Places</option>
-        <option value="abstract">Abstract</option>
-        <option value="objects">Objects</option>
-        <option value="time">Time</option>
-      </select>
-    </div>
-
-    <div id="card" class="card" aria-live="polite">
-      <span class="category-tag" id="word-category"></span>
+    <div id="card" class="card" role="button" tabindex="0" aria-label="לחץ למילה חדשה">
       <div class="hebrew" id="word-hebrew" lang="he" dir="rtl"></div>
-      <div class="transliteration" id="word-translit"></div>
-      <div class="meaning" id="word-meaning"></div>
-      <div class="pos" id="word-pos"></div>
     </div>
 
-    <div class="actions">
-      <button id="generate-btn" class="primary">New Word</button>
-      <button id="copy-btn" title="Copy Hebrew word">Copy</button>
-    </div>
-
-    <div id="history" class="history" aria-label="Recent words"></div>
+    <div id="history" class="history" aria-label="מילים אחרונות"></div>
   </main>
 </body>
 </html>
