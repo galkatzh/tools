@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kara-Benchmark</title>
+  <meta name="description" content="Profile karaoke pipeline components — audio splitter and ASR — in the browser.">
+  <meta name="theme-color" content="#1a1a2e">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <h1>Kara-Benchmark</h1>
+    <p class="subtitle">Profile audio-splitter and ASR ONNX models on a real audio file. All in-browser.</p>
+
+    <form id="config-form">
+      <fieldset>
+        <legend>Audio splitter</legend>
+        <label>
+          Vocals model URL
+          <input type="url" id="vocals-url" placeholder="https://.../vocals.onnx"
+            value="https://huggingface.co/bgkb/spleeteronnx/resolve/main/vocals.fp16.onnx" required>
+        </label>
+        <label>
+          Accompaniment model URL
+          <input type="url" id="accomp-url" placeholder="https://.../accompaniment.onnx"
+            value="https://huggingface.co/bgkb/spleeteronnx/resolve/main/accompaniment.fp16.onnx" required>
+        </label>
+        <label class="inline">
+          <input type="checkbox" id="splitter-profile" checked>
+          Enable ORT op-level profiling (JSON dump)
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>ASR</legend>
+        <div class="radio-row">
+          <label><input type="radio" name="asr-mode" value="pipeline" checked> HF Transformers.js pipeline</label>
+          <label><input type="radio" name="asr-mode" value="onnx"> Direct ONNX file</label>
+          <label><input type="radio" name="asr-mode" value="off"> Skip ASR</label>
+        </div>
+
+        <div id="pipeline-config" class="mode-panel">
+          <label>
+            HuggingFace repo
+            <input type="text" id="asr-repo" placeholder="onnx-community/whisper-base"
+              value="onnx-community/whisper-base">
+          </label>
+          <div class="row">
+            <label>
+              dtype
+              <select id="asr-dtype">
+                <option value="fp32" selected>fp32</option>
+                <option value="fp16">fp16</option>
+                <option value="q8">q8</option>
+                <option value="q4">q4</option>
+              </select>
+            </label>
+            <label>
+              device
+              <select id="asr-device">
+                <option value="webgpu" selected>webgpu</option>
+                <option value="wasm">wasm</option>
+              </select>
+            </label>
+            <label>
+              language
+              <input type="text" id="asr-language" placeholder="auto" size="6">
+            </label>
+          </div>
+        </div>
+
+        <div id="onnx-config" class="mode-panel hidden">
+          <label>
+            ONNX model URL
+            <input type="url" id="asr-onnx-url" placeholder="https://.../encoder.onnx">
+          </label>
+          <label>
+            Input shapes (JSON: <code>{"input_name": [shape]}</code>; use real numbers, no dynamic dims)
+            <textarea id="asr-onnx-shapes" rows="3"
+              placeholder='{"input_features": [1, 80, 3000]}'></textarea>
+          </label>
+          <label class="inline">
+            Iterations
+            <input type="number" id="asr-onnx-iters" min="1" max="200" value="10">
+          </label>
+          <label class="inline">
+            <input type="checkbox" id="asr-profile" checked>
+            Enable ORT op-level profiling
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Audio input</legend>
+        <input type="file" id="audio-file" accept="audio/*,video/mp4,video/webm">
+      </fieldset>
+
+      <button type="submit" id="run-btn">Run benchmark</button>
+    </form>
+
+    <section id="status" class="hidden">
+      <div class="status-text" id="status-text"></div>
+      <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
+    </section>
+
+    <section id="report" class="hidden">
+      <h2>Report</h2>
+      <div id="report-summary"></div>
+      <div id="report-tables"></div>
+      <div class="report-actions">
+        <button type="button" id="copy-report">Copy report (text)</button>
+        <button type="button" id="download-json">Download report (JSON)</button>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
