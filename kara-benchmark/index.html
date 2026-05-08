@@ -16,16 +16,36 @@
     <form id="config-form">
       <fieldset>
         <legend>Audio splitter</legend>
-        <label>
-          Vocals model URL
-          <input type="url" id="vocals-url" placeholder="https://.../vocals.onnx"
-            value="https://huggingface.co/bgkb/spleeteronnx/resolve/main/vocals.fp16.onnx" required>
-        </label>
-        <label>
-          Accompaniment model URL
-          <input type="url" id="accomp-url" placeholder="https://.../accompaniment.onnx"
-            value="https://huggingface.co/bgkb/spleeteronnx/resolve/main/accompaniment.fp16.onnx" required>
-        </label>
+        <div class="radio-row">
+          <label><input type="radio" name="splitter-format" value="spleeter" checked>
+            Spleeter (2 ONNX files, magnitude-mask)</label>
+          <label><input type="radio" name="splitter-format" value="scnet">
+            SCNet (single ONNX, complex spectrogram)</label>
+          <label><input type="radio" name="splitter-format" value="off">
+            Skip splitter</label>
+        </div>
+
+        <div id="spleeter-config" class="mode-panel">
+          <label>
+            Vocals model URL
+            <input type="url" id="vocals-url" placeholder="https://.../vocals.onnx"
+              value="https://huggingface.co/bgkb/spleeteronnx/resolve/main/vocals.fp16.onnx">
+          </label>
+          <label>
+            Accompaniment model URL
+            <input type="url" id="accomp-url" placeholder="https://.../accompaniment.onnx"
+              value="https://huggingface.co/bgkb/spleeteronnx/resolve/main/accompaniment.fp16.onnx">
+          </label>
+        </div>
+
+        <div id="scnet-config" class="mode-panel hidden">
+          <label>
+            SCNet model URL
+            <input type="url" id="scnet-url" placeholder="https://.../scnet.onnx"
+              value="https://huggingface.co/bgkb/scnet_onnx/resolve/main/scnet_fp16.onnx">
+          </label>
+        </div>
+
         <label class="inline">
           <input type="checkbox" id="splitter-profile" checked>
           Collect ORT op-level profile (auto-downloads JSON if extractable)

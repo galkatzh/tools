@@ -19,7 +19,8 @@
 
 import { SAMPLE_RATE, decodeAudio } from '../audio-splitter/audio-processor.js';
 
-const CHUNK_SAMPLES = 511 * 1024 + 4096;  // matches karaoke spleeter chunk
+const SPLEETER_CHUNK_SAMPLES = 511 * 1024 + 4096;            // matches karaoke spleeter chunk (~12s)
+const SCNET_CHUNK_SAMPLES = 11 * SAMPLE_RATE;                 // matches audio-splitter SCNet chunk (~11s)
 const WHISPER_CHUNK_S = 30;
 const WHISPER_RATE = 16000;
 
@@ -28,6 +29,9 @@ const el = {
   form: $('#config-form'),
   vocalsUrl: $('#vocals-url'),
   accompUrl: $('#accomp-url'),
+  scnetUrl: $('#scnet-url'),
+  spleeterPanel: $('#spleeter-config'),
+  scnetPanel: $('#scnet-config'),
   splitterProfile: $('#splitter-profile'),
   asrRepo: $('#asr-repo'),
   asrDtype: $('#asr-dtype'),
@@ -52,10 +56,13 @@ const el = {
   downloadTrace: $('#download-trace'),
 };
 
-// ── ASR mode toggle ────────────────────────────────────────────────────────
+// ── Mode toggles ───────────────────────────────────────────────────────────
 
 function asrMode() {
   return document.querySelector('input[name="asr-mode"]:checked').value;
+}
+function splitterFormat() {
+  return document.querySelector('input[name="splitter-format"]:checked').value;
 }
 
 document.querySelectorAll('input[name="asr-mode"]').forEach((r) => {
@@ -63,6 +70,14 @@ document.querySelectorAll('input[name="asr-mode"]').forEach((r) => {
     const m = asrMode();
     el.pipelinePanel.classList.toggle('hidden', m !== 'pipeline');
     el.onnxPanel.classList.toggle('hidden', m !== 'onnx');
+  });
+});
+
+document.querySelectorAll('input[name="splitter-format"]').forEach((r) => {
+  r.addEventListener('change', () => {
+    const f = splitterFormat();
+    el.spleeterPanel.classList.toggle('hidden', f !== 'spleeter');
+    el.scnetPanel.classList.toggle('hidden', f !== 'scnet');
   });
 });
 
@@ -106,17 +121,18 @@ async function fetchModelBytes(url, label) {
   return bytes;
 }
 
-// ── Splitter benchmark ─────────────────────────────────────────────────────
+// ── Splitter benchmarks ────────────────────────────────────────────────────
 
-function buildSplitterChunks(left, right) {
+/** Slice stereo audio into fixed-size chunks zero-padded to chunkSamples. */
+function buildSplitterChunks(left, right, chunkSamples) {
   const total = left.length;
-  const nChunks = Math.max(1, Math.floor(total / CHUNK_SAMPLES));
+  const nChunks = Math.max(1, Math.floor(total / chunkSamples));
   const chunks = [];
   for (let i = 0; i < nChunks; i++) {
-    const start = i * CHUNK_SAMPLES;
-    const end = Math.min(start + CHUNK_SAMPLES, total);
-    const l = new Float32Array(CHUNK_SAMPLES);
-    const r = new Float32Array(CHUNK_SAMPLES);
+    const start = i * chunkSamples;
+    const end = Math.min(start + chunkSamples, total);
+    const l = new Float32Array(chunkSamples);
+    const r = new Float32Array(chunkSamples);
     l.set(left.subarray(start, end));
     r.set(right.subarray(start, end));
     chunks.push({ l, r, originalLen: end - start });
@@ -124,24 +140,9 @@ function buildSplitterChunks(left, right) {
   return chunks;
 }
 
-async function runSplitterBenchmark(left, right) {
-  const vocalsBytes = await fetchModelBytes(el.vocalsUrl.value, 'vocals model');
-  const accompBytes = await fetchModelBytes(el.accompUrl.value, 'accompaniment model');
-
-  setStatus('Initializing splitter worker...', 0);
-  const worker = new Worker(new URL('./spleeter-bench-worker.js', import.meta.url), { type: 'module' });
-
-  const profile = el.splitterProfile.checked;
-
-  const ready = waitFor(worker, 'ready');
-  // Transfer copies so original ArrayBuffer references stay usable for ASR onnx mode if needed.
-  const vCopy = vocalsBytes.buffer.slice(0);
-  const aCopy = accompBytes.buffer.slice(0);
-  worker.postMessage({ type: 'init', vocalsBytes: vCopy, accompBytes: aCopy, profile }, [vCopy, aCopy]);
-  const initMsg = await ready;
-
-  const chunks = buildSplitterChunks(left, right);
-  const phases = [];   // per-chunk records
+/** Process all chunks against a worker, collecting per-phase timings. */
+async function runChunkedBenchmark(worker, chunks) {
+  const phases = [];
   for (let i = 0; i < chunks.length; i++) {
     const { l, r, originalLen } = chunks[i];
     const result = waitFor(worker, 'result');
@@ -155,6 +156,25 @@ async function runSplitterBenchmark(left, right) {
     phases.push(msg.phases);
     setStatus(`Splitter: chunk ${i + 1}/${chunks.length}`, (i + 1) / chunks.length);
   }
+  return phases;
+}
+
+async function runSpleeterBenchmark(left, right) {
+  const vocalsBytes = await fetchModelBytes(el.vocalsUrl.value, 'vocals model');
+  const accompBytes = await fetchModelBytes(el.accompUrl.value, 'accompaniment model');
+
+  setStatus('Initializing Spleeter worker...', 0);
+  const worker = new Worker(new URL('./spleeter-bench-worker.js', import.meta.url), { type: 'module' });
+  const profile = el.splitterProfile.checked;
+
+  const ready = waitFor(worker, 'ready');
+  const vCopy = vocalsBytes.buffer.slice(0);
+  const aCopy = accompBytes.buffer.slice(0);
+  worker.postMessage({ type: 'init', vocalsBytes: vCopy, accompBytes: aCopy, profile }, [vCopy, aCopy]);
+  const initMsg = await ready;
+
+  const chunks = buildSplitterChunks(left, right, SPLEETER_CHUNK_SAMPLES);
+  const phases = await runChunkedBenchmark(worker, chunks);
 
   let ortProfile = null;
   if (profile) {
@@ -167,12 +187,58 @@ async function runSplitterBenchmark(left, right) {
   worker.terminate();
 
   return {
-    modelLoad: initMsg.timings,
+    format: 'spleeter',
+    phaseOrder: ['stft', 'magnitude', 'vocalsRun', 'accompRun', 'wiener', 'applyMask', 'istft'],
+    modelLoad: [
+      { label: 'Model load (vocals)', ms: initMsg.timings.vocalsLoadMs },
+      { label: 'Model load (accomp)', ms: initMsg.timings.accompLoadMs },
+    ],
     phases,
     nChunks: chunks.length,
-    chunkDurationS: CHUNK_SAMPLES / SAMPLE_RATE,
+    chunkDurationS: SPLEETER_CHUNK_SAMPLES / SAMPLE_RATE,
     audioDurationS: left.length / SAMPLE_RATE,
     ortProfile,
+  };
+}
+
+async function runScnetBenchmark(left, right) {
+  const modelBytes = await fetchModelBytes(el.scnetUrl.value, 'SCNet model');
+
+  setStatus('Initializing SCNet worker...', 0);
+  const worker = new Worker(new URL('./scnet-bench-worker.js', import.meta.url), { type: 'module' });
+  const profile = el.splitterProfile.checked;
+
+  const ready = waitFor(worker, 'ready');
+  const mCopy = modelBytes.buffer.slice(0);
+  worker.postMessage({ type: 'init', modelBytes: mCopy, profile }, [mCopy]);
+  const initMsg = await ready;
+
+  const chunks = buildSplitterChunks(left, right, SCNET_CHUNK_SAMPLES);
+  const phases = await runChunkedBenchmark(worker, chunks);
+
+  let ortProfile = null;
+  if (profile) {
+    const p = waitFor(worker, 'profile');
+    worker.postMessage({ type: 'endProfiling' });
+    const pmsg = await p;
+    // Fit the existing renderer (which expects {vocals, accomp}) by aliasing
+    // SCNet's single profile into the 'vocals' slot.
+    ortProfile = { vocals: { filename: pmsg.filename, json: pmsg.json } };
+  }
+
+  worker.terminate();
+
+  return {
+    format: 'scnet',
+    phaseOrder: ['stft', 'run', 'buildInstr', 'istftVocal', 'istftInstr'],
+    modelLoad: [{ label: 'Model load', ms: initMsg.timings.loadMs }],
+    phases,
+    nChunks: chunks.length,
+    chunkDurationS: SCNET_CHUNK_SAMPLES / SAMPLE_RATE,
+    audioDurationS: left.length / SAMPLE_RATE,
+    ortProfile,
+    inputNames: initMsg.inputNames,
+    outputNames: initMsg.outputNames,
   };
 }
 
@@ -385,10 +451,9 @@ function tableHTML(title, rows, totalMs) {
 
 // ── Chrome trace JSON ──────────────────────────────────────────────────────
 
-const SPLITTER_PHASES = ['stft', 'magnitude', 'vocalsRun', 'accompRun', 'wiener', 'applyMask', 'istft'];
-
 /** Color per phase, used both in timeline bars and trace JSON categories. */
 const PHASE_COLORS = {
+  // Spleeter
   stft: '#6a8df0',
   magnitude: '#4cc2c2',
   vocalsRun: '#e85d75',
@@ -396,11 +461,20 @@ const PHASE_COLORS = {
   wiener: '#9b8df0',
   applyMask: '#5cb85c',
   istft: '#e0c068',
+  // SCNet
+  run: '#e85d75',
+  buildInstr: '#9b8df0',
+  istftVocal: '#e0c068',
+  istftInstr: '#f0a868',
+  // ASR / shared
   modelLoad: '#888',
   resample: '#4cc2c2',
   pipelineCall: '#e85d75',
   sessionRun: '#e85d75',
 };
+
+/** Fallback color so unknown phase names still render a segment. */
+function colorFor(phase) { return PHASE_COLORS[phase] || '#888'; }
 
 /**
  * Build a Chrome tracing JSON from collected timings.
@@ -420,18 +494,13 @@ function buildChromeTrace(data) {
   // ── Splitter ──
   if (data.splitter) {
     let ts = 0;
-    events.push({
-      name: 'modelLoad:vocals', cat: 'splitter,modelLoad', ph: 'X',
-      ts, dur: Math.round(data.splitter.modelLoad.vocalsLoadMs * 1000),
-      pid: 1, tid: tidSplitter,
-    });
-    ts += Math.round(data.splitter.modelLoad.vocalsLoadMs * 1000);
-    events.push({
-      name: 'modelLoad:accomp', cat: 'splitter,modelLoad', ph: 'X',
-      ts, dur: Math.round(data.splitter.modelLoad.accompLoadMs * 1000),
-      pid: 1, tid: tidSplitter,
-    });
-    ts += Math.round(data.splitter.modelLoad.accompLoadMs * 1000);
+    for (const m of data.splitter.modelLoad) {
+      events.push({
+        name: m.label, cat: 'splitter,modelLoad', ph: 'X',
+        ts, dur: Math.round(m.ms * 1000), pid: 1, tid: tidSplitter,
+      });
+      ts += Math.round(m.ms * 1000);
+    }
 
     for (let i = 0; i < data.splitter.phases.length; i++) {
       const phases = data.splitter.phases[i];
@@ -442,8 +511,8 @@ function buildChromeTrace(data) {
         pid: 1, tid: tidSplitter,
       });
       let inner = 0;
-      for (const phase of SPLITTER_PHASES) {
-        const dur = Math.round(phases[phase] * 1000);
+      for (const phase of data.splitter.phaseOrder) {
+        const dur = Math.round((phases[phase] || 0) * 1000);
         events.push({
           name: phase, cat: `splitter,${phase}`, ph: 'X',
           ts: chunkStart + inner, dur,
@@ -504,15 +573,14 @@ function buildChromeTrace(data) {
  * is normalized to the slowest chunk's total time so chunks can be visually
  * compared. Hovering a segment shows phase + ms.
  */
-function renderTimeline(records) {
+function renderTimeline(records, phaseOrder) {
   if (!records.length) return '';
   const maxTotal = Math.max(...records.map((r) => r.total));
   const rows = records.map((r, i) => {
-    const segments = SPLITTER_PHASES.map((phase) => {
+    const segments = phaseOrder.map((phase) => {
       const ms = r[phase] || 0;
       const widthPct = (ms / maxTotal) * 100;
-      const color = PHASE_COLORS[phase];
-      return `<span class="seg" style="width:${widthPct}%;background:${color}"
+      return `<span class="seg" style="width:${widthPct}%;background:${colorFor(phase)}"
         title="${phase}: ${ms.toFixed(1)} ms"></span>`;
     }).join('');
     return `
@@ -522,8 +590,8 @@ function renderTimeline(records) {
         <span class="tl-total">${r.total.toFixed(1)} ms</span>
       </div>`;
   }).join('');
-  const legend = SPLITTER_PHASES.map((p) =>
-    `<span class="legend-item"><span class="legend-swatch" style="background:${PHASE_COLORS[p]}"></span>${p}</span>`,
+  const legend = phaseOrder.map((p) =>
+    `<span class="legend-item"><span class="legend-swatch" style="background:${colorFor(p)}"></span>${p}</span>`,
   ).join('');
   return `
     <h3>Per-chunk timeline</h3>
@@ -599,32 +667,35 @@ function downloadText(content, filename, mime = 'application/json') {
 function renderReport({ splitter, asr, audioDurationS, totalMs }) {
   el.report.classList.remove('hidden');
 
-  // ── Splitter table ──
-  const splitterPhaseOrder = ['stft', 'magnitude', 'vocalsRun', 'accompRun', 'wiener', 'applyMask', 'istft'];
-  const splitRows = aggregatePhases(splitter.phases, splitterPhaseOrder);
-  splitRows.unshift(
-    { phase: 'Model load (vocals)', calls: 1, totalMs: splitter.modelLoad.vocalsLoadMs, meanMs: splitter.modelLoad.vocalsLoadMs },
-    { phase: 'Model load (accomp)', calls: 1, totalMs: splitter.modelLoad.accompLoadMs, meanMs: splitter.modelLoad.accompLoadMs },
-  );
-  const splitterTotal = sum(splitRows.map((r) => r.totalMs));
-  const splitterRTF = splitterTotal / 1000 / audioDurationS;
-
   let html = '';
-  html += tableHTML(
-    `Audio splitter (${splitter.nChunks} chunks × ${splitter.chunkDurationS.toFixed(1)}s)`,
-    splitRows,
-    splitterTotal,
-  );
-  html += `<p class="rtf">Realtime factor: <strong>${splitterRTF.toFixed(3)}×</strong>
-    (${splitterRTF < 1 ? 'faster' : 'slower'} than realtime)</p>`;
 
-  // Per-chunk timeline visualization
-  html += renderTimeline(splitter.phases);
+  // ── Splitter table ──
+  if (splitter) {
+    const splitRows = aggregatePhases(splitter.phases, splitter.phaseOrder);
+    for (const m of [...splitter.modelLoad].reverse()) {
+      splitRows.unshift({ phase: m.label, calls: 1, totalMs: m.ms, meanMs: m.ms });
+    }
+    const splitterTotal = sum(splitRows.map((r) => r.totalMs));
+    const splitterRTF = splitterTotal / 1000 / audioDurationS;
 
-  // ORT op-profile tables (per model)
-  if (splitter.ortProfile) {
-    html += renderOrtOpProfile(splitter.ortProfile.vocals?.json, 'vocals');
-    html += renderOrtOpProfile(splitter.ortProfile.accomp?.json, 'accompaniment');
+    html += tableHTML(
+      `Audio splitter — ${splitter.format} (${splitter.nChunks} chunks × ${splitter.chunkDurationS.toFixed(1)}s)`,
+      splitRows,
+      splitterTotal,
+    );
+    html += `<p class="rtf">Realtime factor: <strong>${splitterRTF.toFixed(3)}×</strong>
+      (${splitterRTF < 1 ? 'faster' : 'slower'} than realtime)</p>`;
+
+    html += renderTimeline(splitter.phases, splitter.phaseOrder);
+
+    if (splitter.ortProfile) {
+      if (splitter.format === 'spleeter') {
+        html += renderOrtOpProfile(splitter.ortProfile.vocals?.json, 'vocals');
+        html += renderOrtOpProfile(splitter.ortProfile.accomp?.json, 'accompaniment');
+      } else {
+        html += renderOrtOpProfile(splitter.ortProfile.vocals?.json, splitter.format);
+      }
+    }
   }
 
   // ── ASR table ──
@@ -671,14 +742,15 @@ function buildTextReport(data) {
   lines.push(`Audio duration: ${audioDurationS.toFixed(1)}s`);
   lines.push(`Wall time: ${(totalMs / 1000).toFixed(2)}s`);
   lines.push('');
-  lines.push('-- Audio splitter --');
-  lines.push(`Vocals model load: ${fmtMs(splitter.modelLoad.vocalsLoadMs)} ms`);
-  lines.push(`Accomp model load: ${fmtMs(splitter.modelLoad.accompLoadMs)} ms`);
-  for (const phase of ['stft', 'magnitude', 'vocalsRun', 'accompRun', 'wiener', 'applyMask', 'istft']) {
-    const vals = splitter.phases.map((p) => p[phase]);
-    lines.push(`${phase.padEnd(14)} total=${fmtMs(sum(vals))} mean=${fmtMs(mean(vals))} (${vals.length} chunks)`);
+  if (splitter) {
+    lines.push(`-- Audio splitter (${splitter.format}) --`);
+    for (const m of splitter.modelLoad) lines.push(`${m.label}: ${fmtMs(m.ms)} ms`);
+    for (const phase of splitter.phaseOrder) {
+      const vals = splitter.phases.map((p) => p[phase]).filter((v) => v != null);
+      lines.push(`${phase.padEnd(14)} total=${fmtMs(sum(vals))} mean=${fmtMs(mean(vals))} (${vals.length} chunks)`);
+    }
+    lines.push('');
   }
-  lines.push('');
   if (asr) {
     lines.push(`-- ASR (${asr.mode}) --`);
     if (asr.mode === 'pipeline') {
@@ -712,12 +784,17 @@ async function run() {
     const { left, right } = await decodeAudio(await file.arrayBuffer());
     const audioDurationS = left.length / SAMPLE_RATE;
 
-    const splitter = await runSplitterBenchmark(left, right);
+    let splitter = null;
+    const sf = splitterFormat();
+    if (sf === 'spleeter') splitter = await runSpleeterBenchmark(left, right);
+    else if (sf === 'scnet') splitter = await runScnetBenchmark(left, right);
 
     let asr = null;
     const m = asrMode();
     if (m === 'pipeline') asr = await runAsrPipelineBenchmark(left, right);
     else if (m === 'onnx') asr = await runAsrOnnxBenchmark();
+
+    if (!splitter && !asr) throw new Error('Nothing to benchmark — pick at least one of splitter or ASR.');
 
     const totalMs = performance.now() - tStart;
     data = { splitter, asr, audioDurationS, totalMs };
@@ -725,11 +802,11 @@ async function run() {
     renderReport(data);
 
     // Auto-download any ORT op-profile JSON we managed to extract.
-    if (splitter.ortProfile?.vocals?.json) {
-      downloadText(splitter.ortProfile.vocals.json, 'splitter-vocals-ort-profile.json');
+    if (splitter?.ortProfile?.vocals?.json) {
+      downloadText(splitter.ortProfile.vocals.json, `splitter-${splitter.format}-vocals-ort-profile.json`);
     }
-    if (splitter.ortProfile?.accomp?.json) {
-      downloadText(splitter.ortProfile.accomp.json, 'splitter-accomp-ort-profile.json');
+    if (splitter?.ortProfile?.accomp?.json) {
+      downloadText(splitter.ortProfile.accomp.json, `splitter-${splitter.format}-accomp-ort-profile.json`);
     }
     if (asr?.ortProfile?.json) {
       downloadText(asr.ortProfile.json, 'asr-ort-profile.json');
