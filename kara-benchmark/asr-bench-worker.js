@@ -33,6 +33,32 @@ let transcriber = null;     // pipeline instance
 let onnxSession = null;     // raw ONNX session
 let ortLib = null;          // imported ort module (cached)
 
+/**
+ * Best-effort read of a file from ORT-web's emscripten virtual filesystem.
+ * (See spleeter-bench-worker.js for context — same probe sequence.)
+ */
+function readWasmFile(filename) {
+  const candidates = [
+    () => self.OrtWasmModule,
+    () => ortLib?.env?.wasm?.binding,
+    () => ortLib?.env?.wasm?._OrtCreateSession?.module,
+    () => self.Module,
+  ];
+  for (const get of candidates) {
+    try {
+      const mod = get();
+      if (mod && typeof mod.FS?.readFile === 'function') {
+        const bytes = mod.FS.readFile(filename, { encoding: 'utf8' });
+        if (bytes) return typeof bytes === 'string' ? bytes : new TextDecoder().decode(bytes);
+      }
+    } catch (e) {
+      // try next candidate
+    }
+  }
+  console.warn('[asr-bench-worker] could not read profile from WASM FS:', filename);
+  return null;
+}
+
 self.onmessage = async ({ data: msg }) => {
   try {
     if (msg.type === 'init') {
@@ -112,7 +138,8 @@ self.onmessage = async ({ data: msg }) => {
 
     if (msg.type === 'endProfiling') {
       const filename = onnxSession ? await onnxSession.endProfiling() : null;
-      self.postMessage({ type: 'profile', filename });
+      const json = filename ? readWasmFile(filename) : null;
+      self.postMessage({ type: 'profile', filename, json });
       return;
     }
   } catch (err) {

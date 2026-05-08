@@ -30,6 +30,34 @@ for (let i = 0; i < N_FFT; i++) HANN[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / 
 let vocalsSession = null;
 let accompSession = null;
 
+/**
+ * Best-effort read of a file from ORT-web's emscripten virtual filesystem.
+ * ORT writes the profile JSON via `FS.writeFile(filename, data)` but doesn't
+ * publicly expose the FS handle. We probe a few known internal paths and
+ * fall back to null on failure (the user can still get our own trace JSON).
+ */
+function readWasmFile(filename) {
+  const candidates = [
+    () => self.OrtWasmModule,
+    () => ort?.env?.wasm?.binding,
+    () => ort?.env?.wasm?._OrtCreateSession?.module,
+    () => self.Module,
+  ];
+  for (const get of candidates) {
+    try {
+      const mod = get();
+      if (mod && typeof mod.FS?.readFile === 'function') {
+        const bytes = mod.FS.readFile(filename, { encoding: 'utf8' });
+        if (bytes) return typeof bytes === 'string' ? bytes : new TextDecoder().decode(bytes);
+      }
+    } catch (e) {
+      // try next candidate
+    }
+  }
+  console.warn('[spleeter-bench-worker] could not read profile from WASM FS:', filename);
+  return null;
+}
+
 /** Same STFT (center=false, no normalization) as karaoke's spleeter-worker. */
 function stftChannel(signal) {
   const nFrames = Math.floor((signal.length - N_FFT) / HOP_LENGTH) + 1;
@@ -209,13 +237,16 @@ self.onmessage = async ({ data }) => {
     }
 
     if (data.type === 'endProfiling') {
-      // ORT-web writes profile data into a virtual file; endProfiling()
-      // returns the filename. The actual JSON isn't trivially readable
-      // back from the WASM FS, but the call ensures profiling data was
-      // collected and the filename surfaced in console (visible in DevTools).
-      const vocalsProfile = vocalsSession ? await vocalsSession.endProfiling() : null;
-      const accompProfile = accompSession ? await accompSession.endProfiling() : null;
-      self.postMessage({ type: 'profile', vocalsProfile, accompProfile });
+      const vocalsName = vocalsSession ? await vocalsSession.endProfiling() : null;
+      const accompName = accompSession ? await accompSession.endProfiling() : null;
+      // Best-effort FS readback (filename is in the WASM virtual filesystem).
+      const vocals = vocalsName ? readWasmFile(vocalsName) : null;
+      const accomp = accompName ? readWasmFile(accompName) : null;
+      self.postMessage({
+        type: 'profile',
+        vocals: { filename: vocalsName, json: vocals },
+        accomp: { filename: accompName, json: accomp },
+      });
       return;
     }
   } catch (err) {

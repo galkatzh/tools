@@ -28,7 +28,7 @@
         </label>
         <label class="inline">
           <input type="checkbox" id="splitter-profile" checked>
-          Enable ORT op-level profiling (JSON dump)
+          Collect ORT op-level profile (auto-downloads JSON if extractable)
         </label>
       </fieldset>
 
@@ -86,7 +86,7 @@
           </label>
           <label class="inline">
             <input type="checkbox" id="asr-profile" checked>
-            Enable ORT op-level profiling
+            Collect ORT op-level profile (auto-downloads JSON if extractable)
           </label>
         </div>
       </fieldset>
@@ -111,7 +111,12 @@
       <div class="report-actions">
         <button type="button" id="copy-report">Copy report (text)</button>
         <button type="button" id="download-json">Download report (JSON)</button>
+        <button type="button" id="download-trace">Download Chrome trace (Perfetto)</button>
       </div>
+      <p class="hint">
+        Drop the trace JSON into <a href="https://ui.perfetto.dev" target="_blank" rel="noreferrer">ui.perfetto.dev</a>
+        or <code>chrome://tracing</code> for a flame-graph view of every phase.
+      </p>
     </section>
   </main>
 

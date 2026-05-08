@@ -49,6 +49,7 @@ const el = {
   reportTables: $('#report-tables'),
   copyReport: $('#copy-report'),
   downloadJson: $('#download-json'),
+  downloadTrace: $('#download-trace'),
 };
 
 // ── ASR mode toggle ────────────────────────────────────────────────────────
@@ -155,12 +156,12 @@ async function runSplitterBenchmark(left, right) {
     setStatus(`Splitter: chunk ${i + 1}/${chunks.length}`, (i + 1) / chunks.length);
   }
 
-  let profileFile = null;
+  let ortProfile = null;
   if (profile) {
     const p = waitFor(worker, 'profile');
     worker.postMessage({ type: 'endProfiling' });
     const pmsg = await p;
-    profileFile = { vocals: pmsg.vocalsProfile, accomp: pmsg.accompProfile };
+    ortProfile = { vocals: pmsg.vocals, accomp: pmsg.accomp };
   }
 
   worker.terminate();
@@ -171,7 +172,7 @@ async function runSplitterBenchmark(left, right) {
     nChunks: chunks.length,
     chunkDurationS: CHUNK_SAMPLES / SAMPLE_RATE,
     audioDurationS: left.length / SAMPLE_RATE,
-    profileFile,
+    ortProfile,
   };
 }
 
@@ -303,11 +304,12 @@ async function runAsrOnnxBenchmark() {
     setStatus(`ASR ONNX: iter ${i + 1}/${iters}`, (i + 1) / iters);
   }
 
-  let profileFile = null;
+  let ortProfile = null;
   if (profile) {
     const p = waitFor(worker, 'profile');
     worker.postMessage({ type: 'endProfiling' });
-    profileFile = (await p).filename;
+    const pmsg = await p;
+    ortProfile = { filename: pmsg.filename, json: pmsg.json };
   }
 
   worker.terminate();
@@ -317,7 +319,7 @@ async function runAsrOnnxBenchmark() {
     calls,
     iters,
     inputBytesPerCall: totalIn,
-    profileFile,
+    ortProfile,
   };
 }
 
@@ -381,6 +383,219 @@ function tableHTML(title, rows, totalMs) {
     </table>`;
 }
 
+// ── Chrome trace JSON ──────────────────────────────────────────────────────
+
+const SPLITTER_PHASES = ['stft', 'magnitude', 'vocalsRun', 'accompRun', 'wiener', 'applyMask', 'istft'];
+
+/** Color per phase, used both in timeline bars and trace JSON categories. */
+const PHASE_COLORS = {
+  stft: '#6a8df0',
+  magnitude: '#4cc2c2',
+  vocalsRun: '#e85d75',
+  accompRun: '#f0a868',
+  wiener: '#9b8df0',
+  applyMask: '#5cb85c',
+  istft: '#e0c068',
+  modelLoad: '#888',
+  resample: '#4cc2c2',
+  pipelineCall: '#e85d75',
+  sessionRun: '#e85d75',
+};
+
+/**
+ * Build a Chrome tracing JSON from collected timings.
+ * Importable into Perfetto (https://ui.perfetto.dev) or chrome://tracing.
+ * Each chunk's phases are placed end-to-end on a single thread per stage.
+ */
+function buildChromeTrace(data) {
+  const events = [];
+  const tidSplitter = 1;
+  const tidAsr = 2;
+
+  // Process metadata
+  events.push({ name: 'process_name', ph: 'M', pid: 1, tid: 0, args: { name: 'kara-benchmark' } });
+  events.push({ name: 'thread_name', ph: 'M', pid: 1, tid: tidSplitter, args: { name: 'splitter' } });
+  events.push({ name: 'thread_name', ph: 'M', pid: 1, tid: tidAsr, args: { name: 'asr' } });
+
+  // ── Splitter ──
+  if (data.splitter) {
+    let ts = 0;
+    events.push({
+      name: 'modelLoad:vocals', cat: 'splitter,modelLoad', ph: 'X',
+      ts, dur: Math.round(data.splitter.modelLoad.vocalsLoadMs * 1000),
+      pid: 1, tid: tidSplitter,
+    });
+    ts += Math.round(data.splitter.modelLoad.vocalsLoadMs * 1000);
+    events.push({
+      name: 'modelLoad:accomp', cat: 'splitter,modelLoad', ph: 'X',
+      ts, dur: Math.round(data.splitter.modelLoad.accompLoadMs * 1000),
+      pid: 1, tid: tidSplitter,
+    });
+    ts += Math.round(data.splitter.modelLoad.accompLoadMs * 1000);
+
+    for (let i = 0; i < data.splitter.phases.length; i++) {
+      const phases = data.splitter.phases[i];
+      const chunkStart = ts;
+      events.push({
+        name: `chunk ${i}`, cat: 'splitter,chunk', ph: 'X',
+        ts: chunkStart, dur: Math.round(phases.total * 1000),
+        pid: 1, tid: tidSplitter,
+      });
+      let inner = 0;
+      for (const phase of SPLITTER_PHASES) {
+        const dur = Math.round(phases[phase] * 1000);
+        events.push({
+          name: phase, cat: `splitter,${phase}`, ph: 'X',
+          ts: chunkStart + inner, dur,
+          pid: 1, tid: tidSplitter + 100 + i,  // sub-thread per chunk
+          args: { chunk: i },
+        });
+        inner += dur;
+      }
+      events.push({
+        name: 'thread_name', ph: 'M', pid: 1, tid: tidSplitter + 100 + i,
+        args: { name: `chunk ${i}` },
+      });
+      ts += Math.round(phases.total * 1000);
+    }
+  }
+
+  // ── ASR ──
+  if (data.asr) {
+    let ts = 0;
+    events.push({
+      name: 'modelLoad', cat: 'asr,modelLoad', ph: 'X',
+      ts, dur: Math.round(data.asr.modelLoadMs * 1000),
+      pid: 1, tid: tidAsr,
+    });
+    ts += Math.round(data.asr.modelLoadMs * 1000);
+    if (data.asr.mode === 'pipeline') {
+      events.push({
+        name: 'resample', cat: 'asr,resample', ph: 'X',
+        ts, dur: Math.round(data.asr.resampleMs * 1000),
+        pid: 1, tid: tidAsr,
+      });
+      ts += Math.round(data.asr.resampleMs * 1000);
+      for (let i = 0; i < data.asr.calls.length; i++) {
+        const dur = Math.round(data.asr.calls[i].durationMs * 1000);
+        events.push({
+          name: `pipeline ${i}`, cat: 'asr,pipelineCall', ph: 'X',
+          ts, dur, pid: 1, tid: tidAsr,
+        });
+        ts += dur;
+      }
+    } else {
+      for (let i = 0; i < data.asr.calls.length; i++) {
+        const dur = Math.round(data.asr.calls[i].durationMs * 1000);
+        events.push({
+          name: `session.run ${i}`, cat: 'asr,sessionRun', ph: 'X',
+          ts, dur, pid: 1, tid: tidAsr,
+        });
+        ts += dur;
+      }
+    }
+  }
+
+  return { traceEvents: events, displayTimeUnit: 'ms' };
+}
+
+/**
+ * Render a per-chunk timeline as horizontal stacked bars. Each bar's width
+ * is normalized to the slowest chunk's total time so chunks can be visually
+ * compared. Hovering a segment shows phase + ms.
+ */
+function renderTimeline(records) {
+  if (!records.length) return '';
+  const maxTotal = Math.max(...records.map((r) => r.total));
+  const rows = records.map((r, i) => {
+    const segments = SPLITTER_PHASES.map((phase) => {
+      const ms = r[phase] || 0;
+      const widthPct = (ms / maxTotal) * 100;
+      const color = PHASE_COLORS[phase];
+      return `<span class="seg" style="width:${widthPct}%;background:${color}"
+        title="${phase}: ${ms.toFixed(1)} ms"></span>`;
+    }).join('');
+    return `
+      <div class="tl-row">
+        <span class="tl-label">#${i}</span>
+        <span class="tl-bar">${segments}</span>
+        <span class="tl-total">${r.total.toFixed(1)} ms</span>
+      </div>`;
+  }).join('');
+  const legend = SPLITTER_PHASES.map((p) =>
+    `<span class="legend-item"><span class="legend-swatch" style="background:${PHASE_COLORS[p]}"></span>${p}</span>`,
+  ).join('');
+  return `
+    <h3>Per-chunk timeline</h3>
+    <div class="legend">${legend}</div>
+    <div class="timeline">${rows}</div>`;
+}
+
+/**
+ * Aggregate a parsed ORT op-profile JSON into a per-op-type breakdown.
+ * The ORT profile format is an array of {cat, name, dur (µs), args:{op_name}, ...}
+ * events. We keep only kernel events and group by op type.
+ */
+function renderOrtOpProfile(jsonText, label) {
+  if (!jsonText) {
+    return `<p class="hint"><strong>${label}</strong>: ORT op profile not readable from this build.
+      The JSON was written to the WASM virtual FS but couldn't be extracted.
+      Tip: enable Chrome DevTools → Performance recorder while running for a flame graph.</p>`;
+  }
+  let events;
+  try {
+    const parsed = JSON.parse(jsonText);
+    events = Array.isArray(parsed) ? parsed : (parsed.traceEvents || []);
+  } catch (e) {
+    console.error('Could not parse ORT profile JSON:', e);
+    return `<p class="hint"><strong>${label}</strong>: profile JSON unparseable (${e.message}).</p>`;
+  }
+
+  // Group by op type from event args.
+  const byOp = new Map();
+  for (const ev of events) {
+    if (ev.cat !== 'Node' && ev.cat !== 'Op') continue;
+    if (!ev.dur) continue;
+    const op = ev.args?.op_name || ev.args?.opType || ev.name || 'unknown';
+    const cur = byOp.get(op) || { op, count: 0, totalUs: 0 };
+    cur.count++;
+    cur.totalUs += ev.dur;
+    byOp.set(op, cur);
+  }
+  if (!byOp.size) {
+    return `<p class="hint"><strong>${label}</strong>: profile loaded but no op events recognized
+      (event count=${events.length}). Download the JSON for raw inspection.</p>`;
+  }
+  const rows = [...byOp.values()].sort((a, b) => b.totalUs - a.totalUs);
+  const total = rows.reduce((s, r) => s + r.totalUs, 0);
+  const top = rows.slice(0, 15);
+  const body = top.map((r) => `
+    <tr>
+      <td>${r.op}</td>
+      <td class="num">${r.count}</td>
+      <td class="num">${(r.totalUs / 1000).toFixed(1)}</td>
+      <td class="num">${(r.totalUs / r.count / 1000).toFixed(2)}</td>
+      <td class="num">${pct(r.totalUs, total)}</td>
+    </tr>`).join('');
+  return `
+    <h3>ORT op profile — ${label}${rows.length > top.length ? ` (top ${top.length}/${rows.length})` : ''}</h3>
+    <table class="report-table">
+      <thead><tr><th>Op</th><th>Calls</th><th>Total ms</th><th>Mean ms</th><th>%</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>`;
+}
+
+/** Trigger a download of arbitrary text content. */
+function downloadText(content, filename, mime = 'application/json') {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function renderReport({ splitter, asr, audioDurationS, totalMs }) {
   el.report.classList.remove('hidden');
 
@@ -402,10 +617,14 @@ function renderReport({ splitter, asr, audioDurationS, totalMs }) {
   );
   html += `<p class="rtf">Realtime factor: <strong>${splitterRTF.toFixed(3)}×</strong>
     (${splitterRTF < 1 ? 'faster' : 'slower'} than realtime)</p>`;
-  if (splitter.profileFile) {
-    html += `<p class="hint">ORT op profile written: vocals=<code>${splitter.profileFile.vocals}</code>,
-      accomp=<code>${splitter.profileFile.accomp}</code> — see DevTools console for the JSON path
-      and use ORT-web's filesystem APIs to read it.</p>`;
+
+  // Per-chunk timeline visualization
+  html += renderTimeline(splitter.phases);
+
+  // ORT op-profile tables (per model)
+  if (splitter.ortProfile) {
+    html += renderOrtOpProfile(splitter.ortProfile.vocals?.json, 'vocals');
+    html += renderOrtOpProfile(splitter.ortProfile.accomp?.json, 'accompaniment');
   }
 
   // ── ASR table ──
@@ -432,8 +651,8 @@ function renderReport({ splitter, asr, audioDurationS, totalMs }) {
       const minD = Math.min(...callDurs);
       const maxD = Math.max(...callDurs);
       html += `<p class="rtf">session.run min/mean/max: <strong>${fmtMs(minD)} / ${fmtMs(mean(callDurs))} / ${fmtMs(maxD)}</strong> ms</p>`;
-      if (asr.profileFile) {
-        html += `<p class="hint">ORT op profile written: <code>${asr.profileFile}</code></p>`;
+      if (asr.ortProfile) {
+        html += renderOrtOpProfile(asr.ortProfile.json, 'asr-onnx');
       }
     }
   }
@@ -504,6 +723,17 @@ async function run() {
     data = { splitter, asr, audioDurationS, totalMs };
     setStatus('Done.', 1);
     renderReport(data);
+
+    // Auto-download any ORT op-profile JSON we managed to extract.
+    if (splitter.ortProfile?.vocals?.json) {
+      downloadText(splitter.ortProfile.vocals.json, 'splitter-vocals-ort-profile.json');
+    }
+    if (splitter.ortProfile?.accomp?.json) {
+      downloadText(splitter.ortProfile.accomp.json, 'splitter-accomp-ort-profile.json');
+    }
+    if (asr?.ortProfile?.json) {
+      downloadText(asr.ortProfile.json, 'asr-ort-profile.json');
+    }
   } catch (err) {
     console.error('Benchmark failed:', err);
     fail(err.message);
@@ -522,11 +752,11 @@ async function run() {
     }
   };
   el.downloadJson.onclick = () => {
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = 'kara-benchmark-report.json'; a.click();
-    URL.revokeObjectURL(url);
+    downloadText(JSON.stringify(data, null, 2), 'kara-benchmark-report.json');
+  };
+  el.downloadTrace.onclick = () => {
+    const trace = buildChromeTrace(data);
+    downloadText(JSON.stringify(trace), 'kara-benchmark-trace.json');
   };
 }
 
