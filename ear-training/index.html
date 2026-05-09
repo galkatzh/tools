@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#1a1a2e">
+  <title>Ear Training</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.svg">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/tone@14/build/Tone.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <h1>Ear Training</h1>
+    </header>
+
+    <nav id="tabs">
+      <button class="tab-btn tab-active" data-route="melody">Melody</button>
+      <button class="tab-btn" data-route="chords">Chords</button>
+      <button class="tab-btn" data-route="stats">Stats</button>
+      <button class="tab-btn" data-route="settings">Settings</button>
+    </nav>
+
+    <main id="view"></main>
+  </div>
+
+  <script src="theory.js"></script>
+  <script src="audio.js"></script>
+  <script src="stats.js"></script>
+  <script src="melody-quiz.js"></script>
+  <script src="chord-quiz.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
