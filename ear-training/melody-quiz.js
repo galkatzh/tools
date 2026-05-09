@@ -12,7 +12,8 @@
 
   /** Reset/build a fresh round based on current settings. */
   function newRound(settings) {
-    A.randomizePatch();
+    if (settings.randomizePatch) A.randomizePatch();
+    else if (!A.hasSynth()) A.applyPatch(A.defaultPatch());
     var tonic = T.randomTonic();
     var length = settings.melodyLength;
     var scale = settings.melodyScale; // 'major' | 'minor' | 'chromatic'
@@ -100,9 +101,9 @@
     replayBtn.addEventListener('click', function () {
       if (state.cadenceOn) {
         A.playCadence(state.tonic, state.scale);
-        setTimeout(function () { A.playMelody(state.melody); }, 2200);
+        setTimeout(function () { replayWithHighlight(rootEl); }, 2200);
       } else {
-        A.playMelody(state.melody);
+        replayWithHighlight(rootEl);
       }
     });
     var tonicBtn = el('button', 'btn-ghost', '🎵 Play tonic');
@@ -263,6 +264,41 @@
           answers: state.answers
         }
       });
+    }
+  }
+
+  /**
+   * Play the melody and visually highlight each note on the active input UI
+   * (keyboard or degree buttons) at its audio onset. Used for the replay
+   * button so the user can match what they hear to where it lands on the
+   * keyboard or scale-degree, after a wrong guess.
+   */
+  function replayWithHighlight(rootEl) {
+    A.playMelody(state.melody, undefined, undefined, undefined, function (midi) {
+      highlightNote(rootEl, midi);
+    });
+  }
+
+  /**
+   * Add a transient highlight class to the matching keyboard key (in keyboard
+   * mode) or degree button (in degree mode). Class auto-removes so successive
+   * notes don't pile up.
+   */
+  function highlightNote(rootEl, midi) {
+    var HOLD_MS = 350;
+    if (state.inputMode === 'keyboard') {
+      var btn = rootEl.querySelector('button[data-midi="' + midi + '"]');
+      if (btn) {
+        btn.classList.add('mq-key-playing');
+        setTimeout(function () { btn.classList.remove('mq-key-playing'); }, HOLD_MS);
+      }
+    } else {
+      var semis = ((midi - state.tonic) % 12 + 12) % 12;
+      var degBtn = rootEl.querySelector('.mq-degree-btn[data-semis="' + semis + '"]');
+      if (degBtn) {
+        degBtn.classList.add('mq-degree-playing');
+        setTimeout(function () { degBtn.classList.remove('mq-degree-playing'); }, HOLD_MS);
+      }
     }
   }
 

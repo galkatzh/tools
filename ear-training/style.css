@@ -203,6 +203,11 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   background: #ffd9b8;
   border-color: var(--accent-2);
 }
+.mq-key-white.mq-key-playing {
+  background: var(--accent);
+  color: var(--bg);
+  box-shadow: 0 0 12px rgba(0, 212, 255, 0.6);
+}
 
 .mq-key-black {
   width: 60%;
@@ -226,6 +231,11 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   background: #6b1f00;
   border-color: var(--accent-2);
 }
+.mq-key-black.mq-key-playing {
+  background: var(--accent);
+  color: var(--bg);
+  box-shadow: 0 0 12px rgba(0, 212, 255, 0.7);
+}
 
 /* Degree buttons */
 .mq-degrees {
@@ -247,6 +257,12 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .mq-degree-btn:hover { border-color: var(--accent); }
 .mq-degree-btn:active { transform: translateY(1px); }
 .mq-degree-out { opacity: 0.4; }
+.mq-degree-btn.mq-degree-playing {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+  box-shadow: 0 0 12px rgba(0, 212, 255, 0.5);
+}
 
 .mq-input { margin-top: 0.4rem; }
 .mq-input-toggle { font-size: 0.8rem; padding: 0.4rem 0.7rem; }

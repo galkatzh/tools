@@ -11,7 +11,8 @@
   var state = null;
 
   function newRound(settings) {
-    A.randomizePatch();
+    if (settings.randomizePatch) A.randomizePatch();
+    else if (!A.hasSynth()) A.applyPatch(A.defaultPatch());
 
     var enabled = settings.enabledChordTypes && settings.enabledChordTypes.length
       ? settings.enabledChordTypes.slice()

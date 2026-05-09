@@ -123,8 +123,23 @@
     });
   }
 
-  /** Play a melody (sequential notes). Returns total duration in seconds. */
-  function playMelody(midis, noteDur, gap, when) {
+  /**
+   * A clean, neutral patch used when random patch generation is disabled.
+   * Triangle wave with mild ADSR — pleasant for both melodies and chords.
+   */
+  function defaultPatch() {
+    return {
+      oscillator: { type: 'triangle' },
+      envelope: { attack: 0.01, decay: 0.15, sustain: 0.55, release: 0.7 },
+      volume: -10
+    };
+  }
+
+  /**
+   * Play a melody (sequential notes). Returns total duration in seconds.
+   * `onNote(midi, index, durationSec)` is invoked at each note's onset.
+   */
+  function playMelody(midis, noteDur, gap, when, onNote) {
     ensureAudio();
     var s = getSynth();
     noteDur = noteDur != null ? noteDur : 0.45;
@@ -132,10 +147,21 @@
     var step = noteDur + gap;
     var t0 = (when != null ? when : Tone.now()) + 0.05;
     midis.forEach(function (m, i) {
+      var onset = t0 + i * step;
       try {
-        s.triggerAttackRelease(midiToFreq(m), noteDur, t0 + i * step);
+        s.triggerAttackRelease(midiToFreq(m), noteDur, onset);
       } catch (err) {
         console.error('playMelody note failed:', err);
+      }
+      if (typeof onNote === 'function') {
+        // Schedule the visual callback in real (wall-clock) time aligned with
+        // the audio onset. setTimeout drift vs Tone scheduling is tolerable
+        // for visual highlight purposes.
+        var delayMs = Math.max(0, (onset - Tone.now()) * 1000);
+        setTimeout(function () {
+          try { onNote(m, i, noteDur); }
+          catch (err) { console.error('playMelody onNote failed:', err); }
+        }, delayMs);
       }
     });
     return midis.length * step;
@@ -170,7 +196,9 @@
     ensureAudio: ensureAudio,
     randomizePatch: randomizePatch,
     applyPatch: applyPatch,
+    defaultPatch: defaultPatch,
     getCurrentPatch: getCurrentPatch,
+    hasSynth: function () { return synth !== null; },
     playNote: playNote,
     playChord: playChord,
     playArpeggio: playArpeggio,

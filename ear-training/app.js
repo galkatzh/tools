@@ -12,6 +12,7 @@
     melodyVariant: 'all',           // 'first' | 'last' | 'all'
     melodyInputMode: 'degrees',     // 'degrees' | 'keyboard'
     cadenceOn: false,
+    randomizePatch: true,
     enabledChordTypes: ['maj', 'min', '7', 'm7', 'dim', 'maj7'],
     arpeggiateChords: false
   };
@@ -183,6 +184,12 @@
   // ───── Settings view ─────
   function renderSettings(rootEl) {
     rootEl.appendChild(h('h2', '', 'Settings'));
+
+    // Sound section (applies to both quizzes)
+    rootEl.appendChild(h('h3', '', 'Sound'));
+    rootEl.appendChild(checkboxField(
+      'Randomize synth patch each round (instrument-agnostic training)',
+      'randomizePatch'));
 
     // Melody section
     rootEl.appendChild(h('h3', '', 'Melody'));
