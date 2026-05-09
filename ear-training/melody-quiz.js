@@ -101,6 +101,16 @@
     replayBtn.addEventListener('click', function () {
       if (state.cadenceOn) {
         A.playCadence(state.tonic, state.scale);
+        setTimeout(function () { A.playMelody(state.melody); }, 2200);
+      } else {
+        A.playMelody(state.melody);
+      }
+    });
+    var solutionBtn = el('button', 'btn-ghost', '💡 Solution');
+    solutionBtn.title = 'Play the melody and highlight each note as it plays';
+    solutionBtn.addEventListener('click', function () {
+      if (state.cadenceOn) {
+        A.playCadence(state.tonic, state.scale);
         setTimeout(function () { replayWithHighlight(rootEl); }, 2200);
       } else {
         replayWithHighlight(rootEl);
@@ -109,6 +119,7 @@
     var tonicBtn = el('button', 'btn-ghost', '🎵 Play tonic');
     tonicBtn.addEventListener('click', function () { A.playNote(state.tonic, 1.0); });
     ctrl.appendChild(replayBtn);
+    ctrl.appendChild(solutionBtn);
     ctrl.appendChild(tonicBtn);
     rootEl.appendChild(ctrl);
 
@@ -267,11 +278,10 @@
     }
   }
 
-  /**
+/**
    * Play the melody and visually highlight each note on the active input UI
-   * (keyboard or degree buttons) at its audio onset. Used for the replay
-   * button so the user can match what they hear to where it lands on the
-   * keyboard or scale-degree, after a wrong guess.
+   * (keyboard or degree buttons) at its audio onset. Used by the Solution
+   * button so the user can see exactly which note lands where.
    */
   function replayWithHighlight(rootEl) {
     A.playMelody(state.melody, undefined, undefined, undefined, function (midi) {
