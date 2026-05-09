@@ -237,13 +237,14 @@
   }
 
   function onDegreePick(rootEl, semitones) {
+    // Audition the picked degree first so it works both during the round
+    // and after it ends (when the user is exploring the solution).
+    A.playNote(state.tonic + semitones, 0.5);
     if (state.done) return;
     var slotIdx = state.variantSlots[state.activeSlotIdx];
     var target = state.melody[slotIdx];
     var targetSemis = ((target - state.tonic) % 12 + 12) % 12;
     var correct = semitones === targetSemis;
-    // Audition the picked degree at a sensible octave.
-    A.playNote(state.tonic + semitones, 0.5);
     state.answers[slotIdx] = {
       correct: correct,
       userSemis: semitones,
