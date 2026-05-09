@@ -123,16 +123,19 @@
     ctrl.appendChild(tonicBtn);
     rootEl.appendChild(ctrl);
 
-    // Input area
+    // Input area: keyboard or degree buttons. Remains visible after the
+    // round is done so the user can use Solution to see highlights and
+    // audition individual notes — followed by the Next button.
     var inputArea = el('div', 'mq-input');
-    if (state.done) {
-      var nextBtn = el('button', 'btn btn-primary', 'Next round →');
-      nextBtn.addEventListener('click', function () { startRound(rootEl); });
-      inputArea.appendChild(nextBtn);
-    } else if (state.inputMode === 'keyboard') {
+    if (state.inputMode === 'keyboard') {
       inputArea.appendChild(renderKeyboard(rootEl));
     } else {
       inputArea.appendChild(renderDegreeButtons(rootEl));
+    }
+    if (state.done) {
+      var nextBtn = el('button', 'btn btn-primary mq-next', 'Next round →');
+      nextBtn.addEventListener('click', function () { startRound(rootEl); });
+      inputArea.appendChild(nextBtn);
     }
     rootEl.appendChild(inputArea);
   }

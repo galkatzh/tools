@@ -266,6 +266,7 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .mq-input { margin-top: 0.4rem; }
 .mq-input-toggle { font-size: 0.8rem; padding: 0.4rem 0.7rem; }
+.mq-next { width: 100%; margin-top: 0.8rem; }
 
 /* ───── Chord quiz ───── */
 .cq-head {
