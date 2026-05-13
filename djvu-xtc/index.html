@@ -1,0 +1,1156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DjVu → XTC Converter</title>
+    <link rel="stylesheet" href="style.css" />
+    <!-- djvu.js (v0.5.4) — vendored from
+         https://github.com/RussCoder/djvujs releases. Exposes the global
+         `DjVu` with `DjVu.Document`. There is no published CDN bundle. -->
+    <script src="djvu.js"></script>
+  </head>
+  <body>
+    <main class="app">
+      <header>
+        <h1>DjVu → XTC</h1>
+        <p>Convert DjVu pages to XTC format for Xteink e-paper readers.</p>
+      </header>
+
+      <section class="settings" aria-label="Conversion settings">
+        <div class="setting-group">
+          <label for="device">Device</label>
+          <select id="device">
+            <option value="x4">Xteink X4 (480×800)</option>
+            <option value="x3">Xteink X3 (480×640)</option>
+            <option value="custom">Custom…</option>
+          </select>
+        </div>
+        <div class="setting-group" id="custom-w-group" hidden>
+          <label for="custom-w">Device width (px)</label>
+          <input id="custom-w" type="number" value="480" min="100" max="4000" />
+        </div>
+        <div class="setting-group" id="custom-h-group" hidden>
+          <label for="custom-h">Device height (px)</label>
+          <input id="custom-h" type="number" value="800" min="100" max="4000" />
+        </div>
+        <div class="setting-group">
+          <label for="split-mode">Split mode</label>
+          <select id="split-mode">
+            <option value="equal" selected>Equal + overlap</option>
+            <option value="auto">Auto (between lines)</option>
+          </select>
+        </div>
+        <div class="setting-group" id="k-group">
+          <label for="overlap-k" title="Extra slices per DjVu page added on top of the minimum needed. k=0 means no overlap; k=1 adds one overlapping slice per page.">Extra slices k</label>
+          <input id="overlap-k" type="number" value="1" min="0" max="20" />
+        </div>
+        <div class="setting-group" id="auto-n-group" hidden>
+          <label for="auto-n" title="Number of slices each DjVu page is split into.">Slices per page</label>
+          <input id="auto-n" type="number" value="3" min="1" max="50" />
+        </div>
+        <div class="setting-group" id="auto-x-group" hidden>
+          <label for="auto-x" title="Half-window in source pixels: each split point is shifted by up to ±x rows from its equal-split position to land on a row between text lines.">Search window x (px)</label>
+          <input id="auto-x" type="number" value="20" min="1" max="400" />
+        </div>
+        <div class="setting-group">
+          <label for="dithering">Dithering</label>
+          <select id="dithering">
+            <option value="none">None</option>
+            <option value="floyd-steinberg" selected>Floyd-Steinberg</option>
+            <option value="atkinson">Atkinson</option>
+            <option value="ordered">Ordered (Bayer 4×4)</option>
+          </select>
+        </div>
+        <div class="setting-group">
+          <label for="dither-strength">Dither strength: <span id="dither-strength-val">100%</span></label>
+          <input id="dither-strength" type="range" min="0" max="100" value="100" />
+        </div>
+        <div class="setting-group">
+          <label for="threshold">Threshold: <span id="threshold-val">128</span></label>
+          <input id="threshold" type="range" min="0" max="255" value="128" />
+        </div>
+        <div class="setting-group">
+          <label for="auto-preview-page">Auto-preview page</label>
+          <input id="auto-preview-page" type="number" value="1" min="1" />
+        </div>
+        <div class="setting-group">
+          <label for="orientation">Landscape rotation</label>
+          <select id="orientation">
+            <option value="cw">Rotate right (↻ CW)</option>
+            <option value="ccw">Rotate left (↺ CCW)</option>
+          </select>
+        </div>
+      </section>
+
+      <section
+        class="dropzone"
+        id="dropzone"
+        role="button"
+        tabindex="0"
+        aria-label="Drop DjVu file here or click to select"
+      >
+        <svg width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 16V4m0 0-4 4m4-4 4 4M3 16v2a2 2 0 002 2h14a2 2 0 002-2v-2"/>
+        </svg>
+        <p>Drop <code>.djvu</code> here or click to select</p>
+        <input id="file-input" type="file" accept=".djvu,.djv" />
+      </section>
+
+      <!-- Crop editor: shown after DjVu loads, before conversion pipeline -->
+      <section id="crop-editor" hidden>
+        <div class="crop-toolbar">
+          <div class="crop-nav">
+            <button id="crop-prev" disabled>◀</button>
+            <span id="crop-page-label">Page 1 / 1</span>
+            <button id="crop-next" disabled>▶</button>
+          </div>
+          <div class="crop-actions">
+            <button class="secondary-btn" id="crop-reset">Reset</button>
+            <button class="secondary-btn" id="crop-skip">No crop</button>
+            <button class="export-btn" id="crop-apply">Apply crop ▶</button>
+          </div>
+        </div>
+        <div id="crop-canvas-wrap">
+          <canvas id="crop-canvas"></canvas>
+          <div id="crop-box">
+            <div class="handle nw" data-h="nw"></div>
+            <div class="handle n"  data-h="n" ></div>
+            <div class="handle ne" data-h="ne"></div>
+            <div class="handle w"  data-h="w" ></div>
+            <div class="handle e"  data-h="e" ></div>
+            <div class="handle sw" data-h="sw"></div>
+            <div class="handle s"  data-h="s" ></div>
+            <div class="handle se" data-h="se"></div>
+          </div>
+        </div>
+        <div class="crop-info-bar">
+          <span id="crop-dims">Drag to set the crop area applied to all pages before conversion.</span>
+        </div>
+      </section>
+
+      <div class="action-bar" id="page-controls" hidden>
+        <span id="djvu-info" class="pdf-info"></span>
+        <div class="action-bar-right">
+          <label for="preview-page-num">Page</label>
+          <input id="preview-page-num" type="number" value="1" min="1" max="1" class="page-input" />
+          <button class="secondary-btn" id="preview-btn">Preview</button>
+          <button class="export-btn" id="export-btn">Export all</button>
+        </div>
+      </div>
+
+      <div class="progress-wrap" id="progress-wrap" hidden>
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+        <p class="status" id="status" aria-live="polite"></p>
+      </div>
+
+      <button class="download-btn" id="download-btn" hidden>Download .xtc</button>
+
+      <div class="preview" id="preview" hidden>
+        <div class="preview-nav">
+          <button id="prev-page" disabled>◀</button>
+          <span id="page-label">Page 1 / 1</span>
+          <button id="next-page" disabled>▶</button>
+        </div>
+        <div class="preview-main">
+          <canvas id="preview-canvas"></canvas>
+        </div>
+        <div class="preview-strip" id="preview-strip"></div>
+      </div>
+    </main>
+
+    <script>
+// ─── Device presets ───────────────────────────────────────────────────────────
+
+const DEVICES = {
+  x4: { w: 480, h: 800 },
+  x3: { w: 480, h: 640 },
+};
+
+// ─── Bayer 4×4 matrix for ordered dithering (values 0–255) ───────────────────
+
+const BAYER4 = new Uint8Array([
+    0, 136,  34, 170,
+  204,  68, 238, 102,
+   51, 187,  17, 153,
+  255, 119, 221,  85,
+]);
+
+// ─── UI helpers ──────────────────────────────────────────────────────────────
+
+const $ = id => document.getElementById(id);
+const setStatus   = msg => $('status').textContent = msg;
+const setProgress = pct => $('progress-fill').style.width = pct + '%';
+const showProgress = ()  => $('progress-wrap').hidden = false;
+
+function getSettings() {
+  const device = $('device').value;
+  const dw = device === 'custom' ? +$('custom-w').value : DEVICES[device].w;
+  const dh = device === 'custom' ? +$('custom-h').value : DEVICES[device].h;
+  return {
+    deviceW:        dw,
+    deviceH:        dh,
+    splitMode:      $('split-mode').value,
+    k:              +$('overlap-k').value,
+    autoN:          Math.max(1, +$('auto-n').value || 1),
+    autoX:          Math.max(0, +$('auto-x').value || 0),
+    dithering:      $('dithering').value,
+    ditherStrength: +$('dither-strength').value / 100,
+    threshold:      +$('threshold').value,
+    orientation:    $('orientation').value,
+  };
+}
+
+// ─── Rotation helpers ────────────────────────────────────────────────────────
+
+/** Rotate an OffscreenCanvas 90° clockwise. */
+function rotateCW(canvas) {
+  const out = new OffscreenCanvas(canvas.height, canvas.width);
+  const ctx = out.getContext('2d');
+  ctx.translate(canvas.height, 0);
+  ctx.rotate(Math.PI / 2);
+  ctx.drawImage(canvas, 0, 0);
+  return out;
+}
+
+/** Rotate an OffscreenCanvas 90° counter-clockwise. */
+function rotateCCW(canvas) {
+  const out = new OffscreenCanvas(canvas.height, canvas.width);
+  const ctx = out.getContext('2d');
+  ctx.translate(0, canvas.width);
+  ctx.rotate(-Math.PI / 2);
+  ctx.drawImage(canvas, 0, 0);
+  return out;
+}
+
+/** Rotate an HTMLCanvasElement 90° CW (used to un-rotate CCW-stored XTG in preview). */
+function rotateCWHtml(src) {
+  const dst = document.createElement('canvas');
+  dst.width = src.height; dst.height = src.width;
+  const ctx = dst.getContext('2d');
+  ctx.translate(src.height, 0);
+  ctx.rotate(Math.PI / 2);
+  ctx.drawImage(src, 0, 0);
+  return dst;
+}
+
+/** Rotate an HTMLCanvasElement 90° CCW (used to un-rotate CW-stored XTG in preview). */
+function rotateCCWHtml(src) {
+  const dst = document.createElement('canvas');
+  dst.width = src.height; dst.height = src.width;
+  const ctx = dst.getContext('2d');
+  ctx.translate(0, src.width);
+  ctx.rotate(-Math.PI / 2);
+  ctx.drawImage(src, 0, 0);
+  return dst;
+}
+
+// ─── Slice extraction ────────────────────────────────────────────────────────
+
+/**
+ * Return true if every pixel in the canvas is near-white (luminance ≥ 250).
+ * Used to skip blank padding slices that fall entirely outside the page content.
+ */
+function isBlank(canvas) {
+  const { data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+  for (let i = 0; i < data.length; i += 4) {
+    const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    if (lum < 250) return false;
+  }
+  return true;
+}
+
+/**
+ * Extract n horizontal slices from srcCanvas, each sliceH pixels tall and
+ * srcCanvas.width pixels wide. Slices are evenly distributed so the first
+ * slice starts at y=0 and the last ends at y=srcCanvas.height (padded with
+ * white if srcCanvas.height < sliceH).
+ */
+function sliceCanvas(srcCanvas, sliceH, n) {
+  const { width: w, height: h } = srcCanvas;
+  return Array.from({ length: n }, (_, i) => {
+    // When only 1 slice or page fits entirely within a slice, start at 0
+    const yStart = (n === 1 || h <= sliceH)
+      ? 0
+      : Math.round(i * (h - sliceH) / (n - 1));
+
+    const out = new OffscreenCanvas(w, sliceH);
+    const ctx = out.getContext('2d');
+    ctx.fillStyle = '#fff'; // white padding for pages shorter than sliceH
+    ctx.fillRect(0, 0, w, sliceH);
+    ctx.drawImage(srcCanvas, 0, -yStart);
+    return out;
+  });
+}
+
+/**
+ * Flag each row of srcCanvas as all-white (luminance ≥ 250 for every pixel).
+ * Same luminance threshold as isBlank/detectContentBounds for consistency.
+ */
+function computeWhiteRows(srcCanvas) {
+  const w = srcCanvas.width, h = srcCanvas.height;
+  const { data } = srcCanvas.getContext('2d').getImageData(0, 0, w, h);
+  const white = new Uint8Array(h);
+  for (let y = 0; y < h; y++) {
+    let allWhite = 1;
+    const base = y * w * 4;
+    for (let x = 0; x < w; x++) {
+      const i = base + x * 4;
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (lum < 250) { allWhite = 0; break; }
+    }
+    white[y] = allWhite;
+  }
+  return white;
+}
+
+/**
+ * Pick a split row that (a) lies in [prev+1, prev+sliceH] — guaranteeing the
+ * segment `[prev, split)` fits on one device page — and (b) is as close as
+ * possible to `ideal` while also landing on a balanced all-white row (equal
+ * ±1 consecutive white rows above and below, measured within the clamped
+ * window). Falls back to the clamped `ideal` when no balanced white row
+ * exists; that may cut through text but is unavoidable given the constraint.
+ *
+ * Returns { split, clamped } — clamped=true if we had to give up the white-
+ * row guarantee, so callers can surface a warning.
+ */
+function pickConstrainedSplit(whiteRows, ideal, x, prev, sliceH) {
+  const H  = whiteRows.length;
+  const lo = Math.max(prev + 1, ideal - x);
+  const hi = Math.min(H - 1, prev + sliceH, ideal + x);
+  if (lo > hi) {
+    // Window is empty (e.g. ideal is well past the sliceH horizon). Clamp
+    // to the furthest legal row so the segment still fits.
+    return { split: Math.min(H - 1, prev + sliceH), clamped: true };
+  }
+
+  let bestY = -1, bestDiff = Infinity, bestDist = Infinity;
+  for (let y = lo; y <= hi; y++) {
+    if (!whiteRows[y]) continue;
+    let above = 0;
+    for (let k = y - 1; k >= lo && whiteRows[k]; k--) above++;
+    let below = 0;
+    for (let k = y + 1; k <= hi && whiteRows[k]; k++) below++;
+    const diff = Math.abs(above - below);
+    if (diff > 1) continue;
+    const dist = Math.abs(y - ideal);
+    if (diff < bestDiff || (diff === bestDiff && dist < bestDist)) {
+      bestDiff = diff; bestDist = dist; bestY = y;
+    }
+  }
+  if (bestY >= 0) return { split: bestY, clamped: false };
+  return { split: Math.max(lo, Math.min(hi, ideal)), clamped: true };
+}
+
+/**
+ * Split srcCanvas into slices at split points chosen near equal-size
+ * positions and nudged onto an inter-line white row within ±x source pixels.
+ *
+ * Each segment is guaranteed to be ≤ sliceH tall: the search for each split
+ * is biased so that `split - prev ≤ sliceH`. If the user-requested n would
+ * force any segment above sliceH (i.e. the page is too tall for n slices of
+ * the device height), additional slices are appended beyond n until the
+ * whole page is covered. A console.warn names the page when any split had to
+ * fall through the white-row guarantee because no gap fit the constraint.
+ */
+function autoSliceCanvas(srcCanvas, n, x, sliceH) {
+  const { width: w, height: h } = srcCanvas;
+  if (h === 0) return [];
+
+  const whiteRows = computeWhiteRows(srcCanvas);
+  const splits = [];
+  let prev = 0;
+  let clampedCount = 0;
+
+  // Plan n-1 splits at equal-size ideals, each clamped to ≤ sliceH from prev.
+  for (let i = 1; i < n; i++) {
+    const ideal = Math.round(i * h / n);
+    const { split, clamped } = pickConstrainedSplit(whiteRows, ideal, x, prev, sliceH);
+    if (split <= prev) break; // page shorter than expected; stop early
+    splits.push(split);
+    if (clamped) clampedCount++;
+    prev = split;
+  }
+
+  // Extra slices for leftover content. Each is ~sliceH tall, still nudged
+  // onto a balanced white row when available.
+  while (h - prev > sliceH) {
+    const ideal = prev + sliceH;
+    const { split, clamped } = pickConstrainedSplit(whiteRows, ideal, x, prev, sliceH);
+    if (split <= prev) break; // safety: never infinite-loop
+    splits.push(split);
+    if (clamped) clampedCount++;
+    prev = split;
+  }
+
+  if (clampedCount) {
+    console.warn(
+      `Auto-split: ${clampedCount} split point${clampedCount === 1 ? '' : 's'} could not ` +
+      `find a balanced white row within the sliceH constraint and may cut through text. ` +
+      `Increase search window x or slices per page.`
+    );
+  }
+
+  const boundaries = [0, ...splits, h];
+  return Array.from({ length: boundaries.length - 1 }, (_, i) => {
+    const yStart = boundaries[i];
+    const segH   = boundaries[i + 1] - yStart;
+    const out    = new OffscreenCanvas(w, sliceH);
+    const ctx    = out.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, w, sliceH);
+    ctx.drawImage(srcCanvas, 0, yStart, w, segH, 0, 0, w, segH);
+    return out;
+  });
+}
+
+// ─── XTG encoding ────────────────────────────────────────────────────────────
+
+/**
+ * Convert an OffscreenCanvas to a 1-bit monochrome XTG image (22-byte header
+ * + row-major bitmap, 1=white, 0=black, MSB = leftmost pixel).
+ *
+ * dithering: 'none' | 'floyd-steinberg' | 'atkinson' | 'ordered'
+ * ditherStrength: 0–1, blends dither effect with plain threshold
+ */
+function encodeXTG(canvas, dithering = 'none', ditherStrength = 1, threshold = 128) {
+  const w = canvas.width, h = canvas.height;
+  const { data } = canvas.getContext('2d').getImageData(0, 0, w, h);
+
+  // Grayscale luminance into a mutable float array for error diffusion
+  const gray = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++)
+    gray[i] = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
+
+  const addErr = (x, y, e) => {
+    if (x >= 0 && x < w && y >= 0 && y < h) gray[y * w + x] += e;
+  };
+
+  const bits = new Uint8Array(w * h); // 1=white, 0=black
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+
+      if (dithering === 'ordered') {
+        // Bayer ordered: center the pattern around `threshold` (not always 128).
+        // At ditherStrength=0 every pixel uses `threshold`; at 1 the full Bayer
+        // pattern is applied shifted so its midpoint aligns with `threshold`.
+        const bv = BAYER4[(y % 4) * 4 + (x % 4)];
+        const t = threshold + (bv - 128) * ditherStrength;
+        bits[idx] = gray[idx] >= t ? 1 : 0;
+        continue;
+      }
+
+      const old = gray[idx];
+      const q   = old >= threshold ? 255 : 0;
+      bits[idx] = q === 255 ? 1 : 0;
+      if (dithering === 'none') continue;
+
+      const err = (old - q) * ditherStrength;
+      if (dithering === 'floyd-steinberg') {
+        addErr(x + 1, y,     err * 7 / 16);
+        addErr(x - 1, y + 1, err * 3 / 16);
+        addErr(x,     y + 1, err * 5 / 16);
+        addErr(x + 1, y + 1, err * 1 / 16);
+      } else if (dithering === 'atkinson') {
+        // Distributes 6/8 of error — lighter, crisper look preferred on e-paper
+        const e = err / 8;
+        addErr(x + 1, y,     e); addErr(x + 2, y,     e);
+        addErr(x - 1, y + 1, e); addErr(x,     y + 1, e); addErr(x + 1, y + 1, e);
+        addErr(x,     y + 2, e);
+      }
+    }
+  }
+
+  const rowBytes = Math.ceil(w / 8);
+  const dataSize = rowBytes * h;
+  const buf  = new ArrayBuffer(22 + dataSize);
+  const view = new DataView(buf);
+
+  view.setUint32(0x00, 0x00475458, true); // "XTG\0"
+  view.setUint16(0x04, w, true);
+  view.setUint16(0x06, h, true);
+  view.setUint8 (0x08, 0); // colorMode = monochrome
+  view.setUint8 (0x09, 0); // compression = none
+  view.setUint32(0x0A, dataSize, true);
+  // 0x0E–0x15: optional MD5, leave as zero
+
+  const bmp = new Uint8Array(buf, 22);
+  for (let row = 0; row < h; row++) {
+    for (let col = 0; col < rowBytes; col++) {
+      let byte = 0;
+      for (let bit = 0; bit < 8; bit++) {
+        const px = col * 8 + bit;
+        if (px < w && bits[row * w + px]) byte |= 1 << (7 - bit);
+      }
+      bmp[row * rowBytes + col] = byte;
+    }
+  }
+  return new Uint8Array(buf);
+}
+
+// ─── XTC container assembly ──────────────────────────────────────────────────
+
+/**
+ * Pack XTG pages into an XTC container.
+ * readDir: 0=L→R, 1=R→L, 2=Top→Bottom
+ *
+ * Layout: [56-byte header][256-byte metadata][pageCount×16 index][XTG data…]
+ */
+function assembleXTC(xtgPages, meta, readDir) {
+  const pageCount = xtgPages.length;
+  const metaOff   = 56;
+  const indexOff  = metaOff + 256;
+  const dataOff   = indexOff + pageCount * 16;
+
+  const pageOffsets = [];
+  let cursor = dataOff;
+  for (const p of xtgPages) { pageOffsets.push(cursor); cursor += p.length; }
+
+  const buf   = new ArrayBuffer(cursor);
+  const view  = new DataView(buf);
+  const bytes = new Uint8Array(buf);
+  const enc   = new TextEncoder();
+
+  /** Write a uint64 as two little-endian uint32s (values stay within 32-bit for typical files). */
+  const u64 = (offset, value) => {
+    view.setUint32(offset,     value >>> 0, true);
+    view.setUint32(offset + 4, Math.floor(value / 0x100000000) >>> 0, true);
+  };
+
+  // ── Header (56 bytes) ──
+  view.setUint32(0x00, 0x00435458, true); // "XTC\0"
+  view.setUint16(0x04, 0x0100, true);     // version 1.0
+  view.setUint16(0x06, pageCount, true);
+  view.setUint8 (0x08, readDir);
+  view.setUint8 (0x09, 1); // hasMetadata
+  view.setUint8 (0x0A, 0); // hasThumbnails
+  view.setUint8 (0x0B, 0); // hasChapters
+  view.setUint32(0x0C, 1, true); // currentPage = 1 (1-based)
+  u64(0x10, metaOff);
+  u64(0x18, indexOff);
+  u64(0x20, dataOff);
+  u64(0x28, 0); // thumbOffset — none
+  u64(0x30, 0); // chapterOffset — none
+
+  // ── Metadata (256 bytes) ──
+  const writeStr = (str, offset, maxLen) =>
+    bytes.set(enc.encode(str).slice(0, maxLen - 1), offset);
+  writeStr(meta.title,  metaOff + 0x00, 128);
+  writeStr(meta.author, metaOff + 0x80, 64);
+  writeStr(meta.language || 'en', metaOff + 0xE0, 16);
+  view.setUint32(metaOff + 0xF0, (Date.now() / 1000) | 0, true); // Unix timestamp
+  view.setUint16(metaOff + 0xF4, 0xFFFF, true); // coverPage = none
+  view.setUint16(metaOff + 0xF6, 0, true);       // chapterCount = 0
+
+  // ── Page index table (16 bytes per page) ──
+  for (let i = 0; i < pageCount; i++) {
+    const base = indexOff + i * 16;
+    const pv   = new DataView(xtgPages[i].buffer, xtgPages[i].byteOffset);
+    u64(base, pageOffsets[i]);
+    view.setUint32(base + 0x08, xtgPages[i].length, true);
+    view.setUint16(base + 0x0C, pv.getUint16(0x04, true), true); // width from XTG header
+    view.setUint16(base + 0x0E, pv.getUint16(0x06, true), true); // height from XTG header
+  }
+
+  // ── Page data ──
+  let off = dataOff;
+  for (const p of xtgPages) { bytes.set(p, off); off += p.length; }
+
+  return new Uint8Array(buf);
+}
+
+// ─── Preview ─────────────────────────────────────────────────────────────────
+
+/**
+ * Decode a stored XTG page back to an HTMLCanvasElement and un-rotate it so
+ * the preview shows the content in landscape orientation (as the user will
+ * see it on the device). orientation is the rotation that was applied during
+ * encoding ('cw' or 'ccw'), so we apply the inverse here.
+ */
+function xtgToPreviewCanvas(xtg, orientation) {
+  const view = new DataView(xtg.buffer, xtg.byteOffset);
+  const w = view.getUint16(0x04, true);
+  const h = view.getUint16(0x06, true);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(w, h);
+  const px  = img.data;
+
+  const rowBytes = Math.ceil(w / 8);
+  const bmp = xtg.subarray(22);
+
+  for (let row = 0; row < h; row++) {
+    for (let col = 0; col < rowBytes; col++) {
+      const byte = bmp[row * rowBytes + col];
+      for (let bit = 0; bit < 8; bit++) {
+        const x = col * 8 + bit;
+        if (x >= w) continue;
+        const v = (byte >> (7 - bit)) & 1 ? 255 : 0; // 1=white, 0=black
+        const i = (row * w + x) * 4;
+        px[i] = px[i + 1] = px[i + 2] = v;
+        px[i + 3] = 255;
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  // Invert the storage rotation so preview shows the landscape view
+  return orientation === 'cw' ? rotateCCWHtml(canvas) : rotateCWHtml(canvas);
+}
+
+function showPreview(xtgPages, orientation) {
+  const section    = $('preview');
+  const mainCanvas = $('preview-canvas');
+  const strip      = $('preview-strip');
+  const label      = $('page-label');
+  const prevBtn    = $('prev-page');
+  const nextBtn    = $('next-page');
+
+  const canvases = xtgPages.map(xtg => xtgToPreviewCanvas(xtg, orientation));
+  let current = 0;
+
+  strip.innerHTML = '';
+  canvases.forEach((c, i) => {
+    const thumbW = 120;
+    const thumbH = Math.round(c.height * (thumbW / c.width));
+    const wrapper = document.createElement('div');
+    wrapper.className = 'thumb' + (i === 0 ? ' active' : '');
+    const tc = document.createElement('canvas');
+    tc.width = thumbW; tc.height = thumbH;
+    tc.getContext('2d').drawImage(c, 0, 0, thumbW, thumbH);
+    wrapper.appendChild(tc);
+    wrapper.addEventListener('click', () => goTo(i));
+    strip.appendChild(wrapper);
+  });
+
+  function goTo(i) {
+    current = i;
+    const c = canvases[i];
+    mainCanvas.width  = c.width;
+    mainCanvas.height = c.height;
+    mainCanvas.getContext('2d').drawImage(c, 0, 0);
+    label.textContent = `Slice ${i + 1} / ${canvases.length}`;
+    prevBtn.disabled  = i === 0;
+    nextBtn.disabled  = i === canvases.length - 1;
+    strip.querySelectorAll('.thumb').forEach((el, j) => el.classList.toggle('active', j === i));
+    strip.children[i]?.scrollIntoView({ inline: 'nearest', behavior: 'smooth' });
+  }
+
+  prevBtn.onclick = () => goTo(current - 1);
+  nextBtn.onclick = () => goTo(current + 1);
+  goTo(0);
+  section.hidden = false;
+}
+
+// ─── DjVu rendering helpers ──────────────────────────────────────────────────
+
+let djvuDoc      = null; // persists after load so preview/export can reuse it
+let djvuFileName = '';
+let pageCount    = 0;
+
+/**
+ * Render a DjVu page to an OffscreenCanvas at its native pixel size. DjVu
+ * pages decode to a fixed-resolution bitmap (DPI baked into the file), so we
+ * use that as the reference resolution and scale during the slice step.
+ */
+async function renderDjVuPageNative(pageNum) {
+  const page = await djvuDoc.getPage(pageNum);
+  const imgData = page.getImageData();
+  const c = new OffscreenCanvas(imgData.width, imgData.height);
+  c.getContext('2d').putImageData(imgData, 0, 0);
+  return c;
+}
+
+// ─── Crop state ───────────────────────────────────────────────────────────────
+
+// Crop stored as fractions of each page's dimensions (0–1) — device-independent
+// across DjVu pages of varying native pixel sizes.
+let cropFrac = null;     // { x, y, w, h } in [0,1]; null = no crop
+let cropPage = 1;        // page currently displayed in the crop editor
+let cropDrag = null;     // active drag state
+let cropNativeW = 0;     // native pixel dims of the page rendered in the crop editor
+let cropNativeH = 0;
+let defaultContentFrac = null; // cached fractional union of content bboxes from sampled pages
+const CROP_MIN_PX = 16;
+const DEFAULT_CROP_PAD_PX = 5;  // safety buffer added around the detected content box
+const MARGIN_SAMPLE_COUNT = 10; // number of pages to sample for multi-page margin detection
+
+/** Convert canvas-pixel rect to fractional coords using the rendered crop canvas. */
+function cropCanvasToFrac({ x, y, w, h }) {
+  const c = $('crop-canvas');
+  return { x: x / c.width, y: y / c.height, w: w / c.width, h: h / c.height };
+}
+
+/** Convert fractional rect to canvas-pixel coords using the rendered crop canvas. */
+function cropFracToCanvas({ x, y, w, h }) {
+  const c = $('crop-canvas');
+  return { x: x * c.width, y: y * c.height, w: w * c.width, h: h * c.height };
+}
+
+/** Render one page into the crop editor canvas and update the overlay. */
+async function renderCropPage(n) {
+  const page = await djvuDoc.getPage(n);
+  const imgData = page.getImageData();
+  cropNativeW = imgData.width;
+  cropNativeH = imgData.height;
+
+  // Fit the rendered page into the available width (≤ 640 px).
+  const maxW  = Math.min(640, $('crop-canvas-wrap').parentElement.clientWidth || 640);
+  const scale = Math.min(1, maxW / cropNativeW);
+
+  const c = $('crop-canvas');
+  c.width  = Math.max(1, Math.floor(cropNativeW * scale));
+  c.height = Math.max(1, Math.floor(cropNativeH * scale));
+  c.style.width  = c.width  + 'px';
+  c.style.height = c.height + 'px';
+
+  // Put native image on a temp canvas, then draw scaled into the visible one.
+  const tmp = new OffscreenCanvas(cropNativeW, cropNativeH);
+  tmp.getContext('2d').putImageData(imgData, 0, 0);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(tmp, 0, 0, c.width, c.height);
+
+  if (!cropFrac) setDefaultCropBox();
+  updateCropBoxEl();
+  $('crop-page-label').textContent = `Page ${n} / ${pageCount}`;
+  $('crop-prev').disabled = n <= 1;
+  $('crop-next').disabled = n >= pageCount;
+}
+
+/**
+ * Find the tightest bounding box containing every non-near-white pixel.
+ * Luminance threshold matches isBlank (≥250 = considered white). Returns null
+ * if the page is entirely blank. Accepts any canvas with getContext('2d').
+ */
+function detectContentBounds(canvas) {
+  const w = canvas.width, h = canvas.height;
+  const { data } = canvas.getContext('2d').getImageData(0, 0, w, h);
+  let top = h, bottom = -1, left = w, right = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (lum < 250) {
+        if (y < top)    top = y;
+        if (y > bottom) bottom = y;
+        if (x < left)   left = x;
+        if (x > right)  right = x;
+      }
+    }
+  }
+  if (bottom < 0) return null;
+  return { x: left, y: top, w: right - left + 1, h: bottom - top + 1 };
+}
+
+/**
+ * Sample up to `count` evenly-spaced pages, render each at native resolution,
+ * and return the *union* of per-page content bounding boxes in fractional
+ * coordinates (0–1). Fractions absorb any differences in native page size,
+ * so the same crop box maps correctly to every page. Returns null if every
+ * sampled page is blank.
+ */
+async function detectContentBoundsAcrossPages(doc, count = MARGIN_SAMPLE_COUNT) {
+  const n = doc.getPagesQuantity();
+  const k = Math.min(count, n);
+  const indices = k === 1
+    ? [1]
+    : Array.from({ length: k }, (_, i) => Math.round(1 + i * (n - 1) / (k - 1)));
+  const uniq = [...new Set(indices)];
+
+  let union = null;
+  for (const pageNum of uniq) {
+    const page = await doc.getPage(pageNum);
+    const imgData = page.getImageData();
+    const c = new OffscreenCanvas(imgData.width, imgData.height);
+    c.getContext('2d').putImageData(imgData, 0, 0);
+
+    const b = detectContentBounds(c);
+    if (!b) continue;
+
+    const rect = {
+      x: b.x / c.width,
+      y: b.y / c.height,
+      w: b.w / c.width,
+      h: b.h / c.height,
+    };
+
+    if (!union) union = rect;
+    else {
+      const x1 = Math.min(union.x, rect.x);
+      const y1 = Math.min(union.y, rect.y);
+      const x2 = Math.max(union.x + union.w, rect.x + rect.w);
+      const y2 = Math.max(union.y + union.h, rect.y + rect.h);
+      union = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+    }
+  }
+  return union;
+}
+
+/**
+ * Default crop = union of content bboxes across sampled pages + safety buffer.
+ * Falls back to detecting bounds on just the rendered crop canvas, and finally
+ * to the full canvas if the page is blank — so the user can always drag a box.
+ */
+function setDefaultCropBox() {
+  const c = $('crop-canvas');
+  const boundsCv = defaultContentFrac
+    ? cropFracToCanvas(defaultContentFrac)
+    : detectContentBounds(c);
+
+  if (!boundsCv) {
+    cropFrac = { x: 0, y: 0, w: 1, h: 1 };
+    return;
+  }
+
+  const pad = DEFAULT_CROP_PAD_PX;
+  const x = Math.max(0, boundsCv.x - pad);
+  const y = Math.max(0, boundsCv.y - pad);
+  const w = Math.min(c.width  - x, boundsCv.w + 2 * pad);
+  const h = Math.min(c.height - y, boundsCv.h + 2 * pad);
+  cropFrac = cropCanvasToFrac({ x, y, w, h });
+}
+
+function updateCropBoxEl() {
+  if (!cropFrac) return;
+  const { x, y, w, h } = cropFracToCanvas(cropFrac);
+  const el = $('crop-box');
+  el.style.left   = x + 'px';
+  el.style.top    = y + 'px';
+  el.style.width  = w + 'px';
+  el.style.height = h + 'px';
+  // Report crop in *native* page pixels (the DjVu file's own resolution).
+  const npx = Math.round(cropFrac.w * cropNativeW);
+  const npy = Math.round(cropFrac.h * cropNativeH);
+  $('crop-dims').textContent = `Crop: ${npx} × ${npy} px (page native)`;
+}
+
+function getCropPos(e) {
+  const rect = $('crop-canvas-wrap').getBoundingClientRect();
+  const src  = e.touches?.[0] ?? e;
+  return { x: src.clientX - rect.left, y: src.clientY - rect.top };
+}
+
+function beginCropDrag(e, type, handle = null) {
+  e.preventDefault();
+  const pos = getCropPos(e);
+  const cc  = cropFracToCanvas(cropFrac);
+  cropDrag = { type, handle, start: pos, crop0: { ...cc } };
+}
+
+function onCropMove(e) {
+  if (!cropDrag) return;
+  e.preventDefault();
+  const pos  = getCropPos(e);
+  const c    = $('crop-canvas');
+  const maxW = c.width, maxH = c.height;
+  let cc;
+
+  if (cropDrag.type === 'create') {
+    const x = Math.max(0, Math.min(pos.x, maxW));
+    const y = Math.max(0, Math.min(pos.y, maxH));
+    const s = cropDrag.start;
+    cc = { x: Math.min(s.x, x), y: Math.min(s.y, y), w: Math.abs(x - s.x), h: Math.abs(y - s.y) };
+    const el = $('crop-box');
+    el.style.left   = cc.x + 'px'; el.style.top    = cc.y + 'px';
+    el.style.width  = cc.w + 'px'; el.style.height = cc.h + 'px';
+    if (cc.w >= CROP_MIN_PX && cc.h >= CROP_MIN_PX) cropFrac = cropCanvasToFrac(cc);
+    return;
+  }
+
+  const { crop0 } = cropDrag;
+  if (cropDrag.type === 'move') {
+    cc = {
+      x: Math.max(0, Math.min(crop0.x + (pos.x - cropDrag.start.x), maxW - crop0.w)),
+      y: Math.max(0, Math.min(crop0.y + (pos.y - cropDrag.start.y), maxH - crop0.h)),
+      w: crop0.w, h: crop0.h,
+    };
+  } else {
+    let { x, y, w, h } = crop0;
+    const dx = pos.x - cropDrag.start.x, dy = pos.y - cropDrag.start.y;
+    const dir = cropDrag.handle;
+    if (dir.includes('e')) w = Math.max(CROP_MIN_PX, Math.min(w + dx, maxW - x));
+    if (dir.includes('s')) h = Math.max(CROP_MIN_PX, Math.min(h + dy, maxH - y));
+    if (dir.includes('w')) { const nx = Math.max(0, Math.min(x + dx, x + w - CROP_MIN_PX)); w = x + w - nx; x = nx; }
+    if (dir.includes('n')) { const ny = Math.max(0, Math.min(y + dy, y + h - CROP_MIN_PX)); h = y + h - ny; y = ny; }
+    cc = { x, y, w, h };
+  }
+  if (cc.w >= CROP_MIN_PX && cc.h >= CROP_MIN_PX) { cropFrac = cropCanvasToFrac(cc); updateCropBoxEl(); }
+}
+
+/**
+ * Render one DjVu page, apply the fractional crop (if any), and scale the
+ * cropped region so its width equals deviceH — the landscape display width
+ * after the 90° rotation that happens during slicing.
+ */
+async function renderDjVuPage(pageNum, s) {
+  const native = await renderDjVuPageNative(pageNum);
+  const nw = native.width, nh = native.height;
+
+  const cx = cropFrac ? cropFrac.x * nw : 0;
+  const cy = cropFrac ? cropFrac.y * nh : 0;
+  const cw = cropFrac ? cropFrac.w * nw : nw;
+  const ch = cropFrac ? cropFrac.h * nh : nh;
+
+  if (cw <= 0 || ch <= 0) throw new Error('Crop area is empty');
+
+  const outW = s.deviceH;
+  const outH = Math.max(1, Math.round(ch * (s.deviceH / cw)));
+  const out  = new OffscreenCanvas(outW, outH);
+  const ctx  = out.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, outW, outH);
+  // drawImage handles both crop (source-rect) and scale (dest-rect) in one step.
+  ctx.drawImage(native, cx, cy, cw, ch, 0, 0, outW, outH);
+  return out;
+}
+
+/**
+ * Slice, rotate, and encode one rendered page canvas into XTG pages.
+ * Blank (all-white) slices are discarded.
+ */
+function processPage(pageCanvas, s) {
+  const sliceH = s.deviceW;
+  const slices = s.splitMode === 'auto'
+    ? autoSliceCanvas(pageCanvas, s.autoN, s.autoX, sliceH)
+    : sliceCanvas(pageCanvas, sliceH, Math.max(1, Math.ceil(pageCanvas.height / sliceH)) + s.k);
+  const xtgs = [];
+  for (const slice of slices) {
+    if (isBlank(slice)) continue;
+    const rotated = s.orientation === 'cw' ? rotateCW(slice) : rotateCCW(slice);
+    xtgs.push(encodeXTG(rotated, s.dithering, s.ditherStrength, s.threshold));
+  }
+  return xtgs;
+}
+
+// ─── Load DjVu ────────────────────────────────────────────────────────────────
+
+async function loadDjVu(file) {
+  djvuFileName = file.name;
+  cropFrac = null;
+  defaultContentFrac = null;
+  $('download-btn').hidden  = true;
+  $('preview').hidden       = true;
+  $('page-controls').hidden = true;
+  $('crop-editor').hidden   = true;
+  showProgress();
+  setProgress(0);
+  setStatus('Loading DjVu…');
+
+  try {
+    const buf = await file.arrayBuffer();
+    djvuDoc = new DjVu.Document(buf);
+    const n = djvuDoc.getPagesQuantity();
+    pageCount = n;
+
+    $('preview-page-num').max   = n;
+    const autoPage = Math.min(Math.max(1, +$('auto-preview-page').value || 1), n);
+    $('preview-page-num').value = autoPage;
+    $('djvu-info').textContent  = `${n} page${n !== 1 ? 's' : ''}`;
+
+    setProgress(50);
+    setStatus(`Detecting margins across ${Math.min(MARGIN_SAMPLE_COUNT, n)} page${n !== 1 ? 's' : ''}…`);
+    defaultContentFrac = await detectContentBoundsAcrossPages(djvuDoc);
+
+    setProgress(100);
+    setStatus(`Loaded — ${n} page${n !== 1 ? 's' : ''}. Set crop area or skip.`);
+    $('progress-wrap').hidden = true;
+
+    cropPage = 1;
+    $('crop-editor').hidden = false;
+    await renderCropPage(1);
+  } catch (err) {
+    console.error('Failed to load DjVu:', err);
+    setStatus(`Error: ${err.message}`);
+  }
+}
+
+/** Called when user clicks Apply or No-crop — closes crop editor and starts preview. */
+function finishCrop() {
+  $('crop-editor').hidden   = true;
+  $('page-controls').hidden = false;
+  showProgress();
+  setProgress(0);
+  previewPage(+$('preview-page-num').value);
+}
+
+// ─── Preview a single page ────────────────────────────────────────────────────
+
+async function previewPage(pageNum) {
+  if (!djvuDoc) return;
+  const s = getSettings();
+  $('download-btn').hidden = true;
+  showProgress();
+  setProgress(0);
+  setStatus(`Previewing page ${pageNum}…`);
+
+  try {
+    const canvas   = await renderDjVuPage(pageNum, s);
+    setProgress(70);
+    const xtgPages = processPage(canvas, s);
+    setProgress(100);
+    setStatus(`Page ${pageNum} — ${xtgPages.length} slice${xtgPages.length !== 1 ? 's' : ''}. Adjust settings and re-preview, or export all.`);
+    showPreview(xtgPages, s.orientation);
+  } catch (err) {
+    console.error('Preview failed:', err);
+    setStatus(`Error: ${err.message}`);
+  }
+}
+
+// ─── Export all pages ─────────────────────────────────────────────────────────
+
+async function exportAll() {
+  if (!djvuDoc) return;
+  const s          = getSettings();
+  const totalPages = djvuDoc.getPagesQuantity();
+  $('download-btn').hidden = true;
+  $('preview').hidden      = true;
+  showProgress();
+  setProgress(0);
+
+  try {
+    const xtgPages = [];
+    for (let p = 1; p <= totalPages; p++) {
+      setStatus(`Processing page ${p} / ${totalPages}…`);
+      const canvas = await renderDjVuPage(p, s);
+      xtgPages.push(...processPage(canvas, s));
+      setProgress(5 + 85 * (p / totalPages));
+    }
+
+    setProgress(92);
+    setStatus('Assembling XTC container…');
+    const xtc = assembleXTC(
+      xtgPages,
+      { title: djvuFileName.replace(/\.djvu?$/i, ''), author: '', language: 'en' },
+      2 // Top→Bottom reading direction
+    );
+
+    setProgress(100);
+    const pl = `${totalPages} DjVu page${totalPages !== 1 ? 's' : ''}`;
+    setStatus(`Done — ${xtgPages.length} slices from ${pl} · ${(xtc.length / 1024).toFixed(0)} KB`);
+
+    showPreview(xtgPages, s.orientation);
+
+    const url  = URL.createObjectURL(new Blob([xtc], { type: 'application/octet-stream' }));
+    const base = djvuFileName.replace(/\.djvu?$/i, '');
+    const btn  = $('download-btn');
+    btn.textContent = `Download ${base}.xtc`;
+    btn.hidden = false;
+    btn.onclick = () =>
+      Object.assign(document.createElement('a'), { href: url, download: base + '.xtc' }).click();
+
+  } catch (err) {
+    console.error('Export failed:', err);
+    setStatus(`Error: ${err.message}`);
+  }
+}
+
+// ─── UI wiring ───────────────────────────────────────────────────────────────
+
+const dropzone  = $('dropzone');
+const fileInput = $('file-input');
+
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') fileInput.click();
+});
+dropzone.addEventListener('dragover', e => {
+  e.preventDefault();
+  dropzone.classList.add('hover');
+});
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('hover'));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropzone.classList.remove('hover');
+  const f = e.dataTransfer.files[0];
+  if (f && /\.(djvu|djv)$/i.test(f.name)) loadDjVu(f);
+  else setStatus('Please drop a .djvu or .djv file.');
+});
+fileInput.addEventListener('change', () => {
+  if (!fileInput.files[0]) return;
+  const f = fileInput.files[0];
+  fileInput.value = ''; // allow re-selecting the same file
+  loadDjVu(f);
+});
+
+// ─── Crop editor wiring ───────────────────────────────────────────────────────
+
+const cropWrap = $('crop-canvas-wrap');
+const cropBox  = $('crop-box');
+
+cropWrap.addEventListener('mousedown', e => {
+  if (e.target === cropBox || cropBox.contains(e.target)) return;
+  e.preventDefault();
+  cropDrag = { type: 'create', start: getCropPos(e), crop0: null };
+});
+cropWrap.addEventListener('touchstart', e => {
+  if (e.target === cropBox || cropBox.contains(e.target)) return;
+  e.preventDefault();
+  cropDrag = { type: 'create', start: getCropPos(e), crop0: null };
+}, { passive: false });
+
+cropBox.addEventListener('mousedown',  e => { if (!e.target.dataset.h) beginCropDrag(e, 'move'); });
+cropBox.addEventListener('touchstart', e => { if (!e.target.dataset.h) beginCropDrag(e, 'move'); }, { passive: false });
+
+cropBox.querySelectorAll('.handle').forEach(h => {
+  h.addEventListener('mousedown',  e => { e.stopPropagation(); beginCropDrag(e, 'resize', h.dataset.h); });
+  h.addEventListener('touchstart', e => { e.stopPropagation(); beginCropDrag(e, 'resize', h.dataset.h); }, { passive: false });
+});
+
+document.addEventListener('mousemove', onCropMove);
+document.addEventListener('touchmove', onCropMove, { passive: false });
+document.addEventListener('mouseup',  () => { if (cropDrag?.type === 'create') updateCropBoxEl(); cropDrag = null; });
+document.addEventListener('touchend', () => { if (cropDrag?.type === 'create') updateCropBoxEl(); cropDrag = null; });
+
+$('crop-prev').addEventListener('click', () => { if (cropPage > 1)          renderCropPage(--cropPage); });
+$('crop-next').addEventListener('click', () => { if (cropPage < pageCount)  renderCropPage(++cropPage); });
+$('crop-reset').addEventListener('click', () => { cropFrac = null; setDefaultCropBox(); updateCropBoxEl(); });
+$('crop-skip').addEventListener('click',  () => { cropFrac = null; finishCrop(); });
+$('crop-apply').addEventListener('click', finishCrop);
+
+$('preview-btn').addEventListener('click', () =>
+  previewPage(+$('preview-page-num').value)
+);
+$('export-btn').addEventListener('click', exportAll);
+
+// Show/hide custom device dimension inputs
+$('device').addEventListener('change', () => {
+  const custom = $('device').value === 'custom';
+  $('custom-w-group').hidden = !custom;
+  $('custom-h-group').hidden = !custom;
+});
+
+// Show k-group for equal mode, auto-n/auto-x for auto mode
+function updateSplitModeUI() {
+  const auto = $('split-mode').value === 'auto';
+  $('k-group').hidden      = auto;
+  $('auto-n-group').hidden = !auto;
+  $('auto-x-group').hidden = !auto;
+}
+$('split-mode').addEventListener('change', updateSplitModeUI);
+updateSplitModeUI();
+
+// Dither strength label and dim the control when dithering is off
+const ditherGroup = $('dither-strength').closest('.setting-group');
+function updateDitherUI() {
+  const off = $('dithering').value === 'none';
+  ditherGroup.style.opacity       = off ? '0.3' : '1';
+  ditherGroup.style.pointerEvents = off ? 'none' : '';
+  $('dither-strength-val').textContent = $('dither-strength').value + '%';
+}
+$('dithering').addEventListener('change', updateDitherUI);
+$('dither-strength').addEventListener('input', updateDitherUI);
+updateDitherUI();
+
+// Threshold label
+$('threshold').addEventListener('input', () => {
+  $('threshold-val').textContent = $('threshold').value;
+});
+    </script>
+  </body>
+</html>
