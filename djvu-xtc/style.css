@@ -1,0 +1,276 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
+
+body {
+  font-family: system-ui, sans-serif;
+  background: #111;
+  color: #ddd;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  padding: 40px 16px 80px;
+}
+
+.app {
+  width: 100%;
+  max-width: 680px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+header h1 { font-size: 1.6rem; color: #fff; margin-bottom: 4px; }
+header p  { color: #888; font-size: 0.9rem; }
+
+/* Settings grid */
+.settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+}
+.setting-group { display: flex; flex-direction: column; gap: 4px; }
+label { font-size: 0.78rem; color: #999; }
+input[type="number"],
+select {
+  background: #1e1e1e;
+  border: 1px solid #333;
+  color: #ddd;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  width: 100%;
+}
+input[type="number"]:focus,
+select:focus { outline: 2px solid #4a9eff; border-color: transparent; }
+input[type="range"] { width: 100%; accent-color: #4a9eff; cursor: pointer; }
+
+/* Drop zone */
+.dropzone {
+  border: 2px dashed #3a3a3a;
+  border-radius: 12px;
+  padding: 40px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  color: #666;
+  user-select: none;
+}
+.dropzone:hover,
+.dropzone.hover { border-color: #666; background: #1a1a1a; color: #999; }
+.dropzone p { margin-top: 10px; font-size: 0.95rem; }
+.dropzone code { color: #4a9eff; }
+#file-input { display: none; }
+
+/* Action bar (shown after PDF loads) */
+.action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 16px;
+  background: #1a1a1a;
+  border-radius: 8px;
+  border: 1px solid #2a2a2a;
+}
+.action-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.action-bar label { font-size: 0.82rem; color: #999; white-space: nowrap; }
+.pdf-info { font-size: 0.85rem; color: #666; }
+.page-input {
+  width: 58px !important;
+  text-align: center;
+  padding: 5px 6px;
+}
+.secondary-btn {
+  background: #2a2a2a;
+  border: 1px solid #444;
+  color: #ccc;
+  padding: 7px 14px;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.secondary-btn:hover { background: #333; }
+.export-btn {
+  background: #4a9eff;
+  color: #fff;
+  border: none;
+  padding: 7px 16px;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.export-btn:hover { background: #3a8eef; }
+
+/* Progress */
+.progress-wrap { display: flex; flex-direction: column; gap: 8px; }
+.progress-bar {
+  height: 3px;
+  background: #2a2a2a;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: #4a9eff;
+  width: 0%;
+  transition: width 0.25s ease;
+}
+.status { font-size: 0.85rem; color: #888; min-height: 1.2em; }
+
+/* Preview */
+.preview { display: flex; flex-direction: column; gap: 12px; }
+
+.preview-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.85rem;
+  color: #888;
+}
+.preview-nav button {
+  background: #2a2a2a;
+  border: 1px solid #444;
+  color: #ccc;
+  padding: 4px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.preview-nav button:disabled { opacity: 0.3; cursor: default; }
+.preview-nav button:not(:disabled):hover { background: #333; }
+
+.preview-main {
+  background: #fff;
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+}
+#preview-canvas {
+  display: block;
+  max-width: 100%;
+  image-rendering: pixelated;
+}
+
+.preview-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.preview-strip::-webkit-scrollbar { height: 4px; }
+.preview-strip::-webkit-scrollbar-track { background: #1a1a1a; }
+.preview-strip::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
+
+.thumb {
+  flex-shrink: 0;
+  cursor: pointer;
+  border: 2px solid transparent;
+  border-radius: 2px;
+  overflow: hidden;
+  opacity: 0.6;
+  transition: opacity 0.15s, border-color 0.15s;
+}
+.thumb:hover { opacity: 0.9; }
+.thumb.active { border-color: #4a9eff; opacity: 1; }
+.thumb canvas { display: block; }
+
+/* Crop editor ---------------------------------------------------------------*/
+.crop-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.crop-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: #888;
+}
+.crop-nav button {
+  background: #2a2a2a;
+  border: 1px solid #444;
+  color: #ccc;
+  padding: 4px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.crop-nav button:disabled { opacity: 0.3; cursor: default; }
+.crop-nav button:not(:disabled):hover { background: #333; }
+.crop-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+#crop-canvas-wrap {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+  line-height: 0;
+  cursor: crosshair;
+  max-width: 100%;
+}
+#crop-canvas { display: block; max-width: 100%; }
+
+#crop-box {
+  position: absolute;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  cursor: move;
+  touch-action: none;
+}
+#crop-box::after {
+  content: '';
+  position: absolute;
+  inset: -1.5px;
+  border: 1.5px dashed rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+}
+.handle {
+  position: absolute;
+  width: 9px; height: 9px;
+  background: #fff;
+  border: 1px solid #555;
+  border-radius: 2px;
+  z-index: 1;
+}
+.handle.nw { top: -5px;  left: -5px;             cursor: nw-resize; }
+.handle.n  { top: -5px;  left: calc(50% - 4px);  cursor: n-resize;  }
+.handle.ne { top: -5px;  right: -5px;             cursor: ne-resize; }
+.handle.w  { top: calc(50% - 4px); left: -5px;   cursor: w-resize;  }
+.handle.e  { top: calc(50% - 4px); right: -5px;  cursor: e-resize;  }
+.handle.sw { bottom: -5px; left: -5px;            cursor: sw-resize; }
+.handle.s  { bottom: -5px; left: calc(50% - 4px);cursor: s-resize;  }
+.handle.se { bottom: -5px; right: -5px;           cursor: se-resize; }
+
+.crop-info-bar {
+  margin-top: 8px;
+  font-size: 0.82rem;
+  color: #666;
+  padding: 6px 10px;
+  background: #1a1a1a;
+  border-radius: 6px;
+}
+
+/* Download */
+.download-btn {
+  align-self: flex-start;
+  background: #4a9eff;
+  color: #fff;
+  border: none;
+  padding: 11px 28px;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.download-btn:hover { background: #3a8eef; }
