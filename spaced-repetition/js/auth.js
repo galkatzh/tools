@@ -1,7 +1,7 @@
 // GitHub OAuth (authorization-code flow). The code-for-token exchange runs
 // through a user-deployed proxy (see oauth-worker.js) that holds the secret.
 
-import { getConfig } from './config.js';
+import { OAUTH_CLIENT_ID, OAUTH_PROXY_URL } from './config.js';
 
 const TOKEN_KEY = 'srs_token';
 const STATE_KEY = 'srs_oauth_state';
@@ -20,12 +20,11 @@ export function logout() {
 
 /** Redirect to GitHub to begin the OAuth flow. */
 export function login() {
-  const cfg = getConfig();
   const state = crypto.randomUUID();
   sessionStorage.setItem(STATE_KEY, state);
 
   const url = new URL('https://github.com/login/oauth/authorize');
-  url.searchParams.set('client_id', cfg.oauthClientId);
+  url.searchParams.set('client_id', OAUTH_CLIENT_ID);
   url.searchParams.set('scope', 'gist');
   url.searchParams.set('state', state);
   url.searchParams.set('redirect_uri', location.origin + location.pathname);
@@ -59,7 +58,7 @@ export async function handleCallback() {
   }
 
   try {
-    const res = await fetch(getConfig().oauthProxyUrl, {
+    const res = await fetch(OAUTH_PROXY_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code }),

@@ -2,9 +2,12 @@
 
 const KEY = 'srs_config';
 
+// OAuth credentials for this deployment. The client ID is public; the matching
+// client secret lives only in the proxy Worker (see oauth-worker.js).
+export const OAUTH_CLIENT_ID = 'Ov23liQhj0nBuv8Qm6sO';
+export const OAUTH_PROXY_URL = 'https://icy-night-1c31.galkatz.workers.dev/';
+
 const DEFAULTS = {
-  oauthClientId: '',
-  oauthProxyUrl: '',
   gistPrefix: 'srs:',
   delim: {
     inline: '::',
@@ -47,9 +50,4 @@ export function saveConfig(patch) {
   };
   localStorage.setItem(KEY, JSON.stringify(config));
   return config;
-}
-
-/** True once OAuth credentials are set — required before login is possible. */
-export function isConfigured() {
-  return Boolean(config.oauthClientId && config.oauthProxyUrl);
 }

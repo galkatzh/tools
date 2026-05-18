@@ -45,16 +45,7 @@
     <!-- Settings -->
     <section id="view-settings" class="view hidden">
       <h2>Settings</h2>
-      <p class="hint">GitHub OAuth needs a token-exchange proxy. Deploy
-         <code>oauth-worker.js</code> (see its header for instructions), register a
-         GitHub OAuth App, then enter the client ID and proxy URL below.</p>
 
-      <label>OAuth client ID
-        <input id="cfg-client-id" type="text" placeholder="Iv1.0123456789abcdef" autocomplete="off">
-      </label>
-      <label>OAuth proxy URL
-        <input id="cfg-proxy-url" type="url" placeholder="https://srs-oauth.you.workers.dev" autocomplete="off">
-      </label>
       <label>Deck gist prefix
         <input id="cfg-prefix" type="text" placeholder="srs:">
       </label>
@@ -83,6 +74,24 @@
       </div>
       <p id="decks-status" class="hint" aria-live="polite"></p>
       <div id="deck-list" class="deck-list"></div>
+    </section>
+
+    <!-- Deck editor -->
+    <section id="view-edit" class="view hidden">
+      <div class="row spread">
+        <button id="edit-cancel" type="button">← Decks</button>
+        <span id="edit-deck-name" class="study-deck-name"></span>
+      </div>
+      <label id="edit-file-row" class="hidden">File
+        <select id="edit-file"></select>
+      </label>
+      <textarea id="edit-content" class="editor" spellcheck="false"
+        aria-label="Deck content"></textarea>
+      <p class="hint">Scheduling data is hidden while editing. Cards you leave
+         unchanged keep their progress; edited or new cards start fresh.</p>
+      <div class="row">
+        <button id="edit-save" type="button" class="primary">Save</button>
+      </div>
     </section>
 
     <!-- Study -->
