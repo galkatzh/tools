@@ -1,0 +1,184 @@
+:root {
+  color-scheme: light dark;
+  --accent: #3b82f6;
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+  background: Canvas;
+  color: CanvasText;
+  line-height: 1.5;
+}
+
+.hidden { display: none !important; }
+
+/* ── Header ─────────────────────────────────────────────────────── */
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 15%, transparent);
+}
+
+.app-header h1 { font-size: 1.1rem; margin: 0; }
+
+.header-actions { display: flex; gap: 0.5rem; }
+
+#btn-settings { font-size: 1.2rem; line-height: 1; }
+
+.app {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+/* ── Generic controls ───────────────────────────────────────────── */
+
+button {
+  font: inherit;
+  padding: 0.55rem 1rem;
+  border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, CanvasText 6%, Canvas);
+  color: CanvasText;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { background: color-mix(in srgb, CanvasText 12%, Canvas); }
+button:disabled { opacity: 0.45; cursor: default; }
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+button.primary:hover:not(:disabled) { filter: brightness(1.1); }
+button.wide { display: block; width: 100%; }
+
+label {
+  display: block;
+  margin: 0.75rem 0;
+  font-size: 0.9rem;
+}
+
+input {
+  font: inherit;
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.5rem;
+  border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+  border-radius: var(--radius);
+  background: Canvas;
+  color: CanvasText;
+}
+
+.row { display: flex; gap: 0.5rem; align-items: center; }
+.row.spread { justify-content: space-between; }
+
+.hint { font-size: 0.85rem; opacity: 0.75; }
+.hint code { font-size: 0.9em; }
+
+h2 { font-size: 1.2rem; }
+
+/* ── Settings delimiters ────────────────────────────────────────── */
+
+.delims summary { cursor: pointer; margin: 0.5rem 0; }
+.delims label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+.delims input { width: 6rem; margin-top: 0; }
+
+/* ── Deck list ──────────────────────────────────────────────────── */
+
+.deck-list { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.deck-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  text-align: left;
+  padding: 0.9rem 1rem;
+}
+
+.deck-name { font-weight: 600; font-size: 1.05rem; }
+.deck-meta { font-size: 0.85rem; opacity: 0.75; }
+.deck-meta strong { color: var(--accent); }
+
+/* ── Study ──────────────────────────────────────────────────────── */
+
+.study-deck-name { font-weight: 600; }
+
+.study-card-wrap {
+  margin: 1rem 0;
+  padding: 1.25rem;
+  min-height: 8rem;
+  border: 1px solid color-mix(in srgb, CanvasText 15%, transparent);
+  border-radius: var(--radius);
+}
+
+.study-card-wrap.revealed {
+  border-color: var(--accent);
+}
+
+.study-done { text-align: center; font-size: 1.1rem; opacity: 0.8; }
+
+.markdown-body img,
+.markdown-body audio { max-width: 100%; }
+
+.markdown-body :first-child { margin-top: 0; }
+.markdown-body :last-child { margin-bottom: 0; }
+
+.cloze {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+  border-radius: 4px;
+  padding: 0 0.2em;
+}
+
+/* ── Rating buttons ─────────────────────────────────────────────── */
+
+.ratings {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.5rem;
+}
+
+.rate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.6rem 0.3rem;
+}
+
+.rate-interval { font-size: 0.75rem; opacity: 0.8; }
+
+.rate.again { border-color: #ef4444; }
+.rate.hard  { border-color: #f59e0b; }
+.rate.good  { border-color: #22c55e; }
+.rate.easy  { border-color: #3b82f6; }
+
+/* ── Toast ──────────────────────────────────────────────────────── */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 1.25rem;
+  transform: translateX(-50%);
+  max-width: 90vw;
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius);
+  background: CanvasText;
+  color: Canvas;
+  font-size: 0.9rem;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.25);
+}

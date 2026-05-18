@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f5f5f7">
+  <title>Spaced Repetition</title>
+  <link rel="icon" href="favicon.svg">
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="style.css">
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']],
+      },
+      options: {
+        skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+      },
+      startup: { typeset: false },
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" defer></script>
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <h1>Spaced Repetition</h1>
+    <div class="header-actions">
+      <button id="btn-settings" type="button" title="Settings" aria-label="Settings">⚙</button>
+      <button id="btn-logout" type="button" class="hidden">Sign out</button>
+    </div>
+  </header>
+
+  <main class="app">
+    <!-- Login -->
+    <section id="view-login" class="view hidden">
+      <p>Sign in with GitHub to load your flashcard decks. Each gist whose
+         description starts with your prefix becomes a deck.</p>
+      <button id="btn-login" type="button" class="primary">Sign in with GitHub</button>
+    </section>
+
+    <!-- Settings -->
+    <section id="view-settings" class="view hidden">
+      <h2>Settings</h2>
+      <p class="hint">GitHub OAuth needs a token-exchange proxy. Deploy
+         <code>oauth-worker.js</code> (see its header for instructions), register a
+         GitHub OAuth App, then enter the client ID and proxy URL below.</p>
+
+      <label>OAuth client ID
+        <input id="cfg-client-id" type="text" placeholder="Iv1.0123456789abcdef" autocomplete="off">
+      </label>
+      <label>OAuth proxy URL
+        <input id="cfg-proxy-url" type="url" placeholder="https://srs-oauth.you.workers.dev" autocomplete="off">
+      </label>
+      <label>Deck gist prefix
+        <input id="cfg-prefix" type="text" placeholder="srs:">
+      </label>
+
+      <details class="delims">
+        <summary>Card delimiters</summary>
+        <label>Single-line<input id="cfg-d-inline" type="text"></label>
+        <label>Single-line reversed<input id="cfg-d-inline-rev" type="text"></label>
+        <label>Multiline<input id="cfg-d-multiline" type="text"></label>
+        <label>Multiline reversed<input id="cfg-d-multiline-rev" type="text"></label>
+        <label>Cloze open<input id="cfg-d-cloze-open" type="text"></label>
+        <label>Cloze close<input id="cfg-d-cloze-close" type="text"></label>
+      </details>
+
+      <div class="row">
+        <button id="cfg-save" type="button" class="primary">Save</button>
+        <button id="cfg-cancel" type="button">Cancel</button>
+      </div>
+    </section>
+
+    <!-- Deck list -->
+    <section id="view-decks" class="view hidden">
+      <div class="row spread">
+        <h2>Decks</h2>
+        <button id="decks-refresh" type="button">Refresh</button>
+      </div>
+      <p id="decks-status" class="hint" aria-live="polite"></p>
+      <div id="deck-list" class="deck-list"></div>
+    </section>
+
+    <!-- Study -->
+    <section id="view-study" class="view hidden">
+      <div class="row spread">
+        <button id="study-back" type="button">← Decks</button>
+        <span id="study-deck-name" class="study-deck-name"></span>
+        <span id="study-progress" class="hint"></span>
+      </div>
+      <div id="study-card-wrap" class="study-card-wrap">
+        <article id="study-card" class="markdown-body"></article>
+      </div>
+      <button id="study-show" type="button" class="primary wide">Show answer</button>
+      <div id="study-ratings" class="ratings hidden">
+        <button id="rate-again" type="button" class="rate again">
+          Again<span class="rate-interval"></span></button>
+        <button id="rate-hard" type="button" class="rate hard">
+          Hard<span class="rate-interval"></span></button>
+        <button id="rate-good" type="button" class="rate good">
+          Good<span class="rate-interval"></span></button>
+        <button id="rate-easy" type="button" class="rate easy">
+          Easy<span class="rate-interval"></span></button>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden" aria-live="polite"></div>
+</body>
+</html>

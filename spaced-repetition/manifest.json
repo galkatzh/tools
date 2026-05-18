@@ -1,0 +1,13 @@
+{
+  "name": "Spaced Repetition",
+  "short_name": "SRS",
+  "description": "Markdown flashcards from GitHub Gists, scheduled with FSRS",
+  "start_url": "/spaced-repetition/",
+  "scope": "/spaced-repetition/",
+  "display": "standalone",
+  "background_color": "#f5f5f7",
+  "theme_color": "#f5f5f7",
+  "icons": [
+    { "src": "favicon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any maskable" }
+  ]
+}
