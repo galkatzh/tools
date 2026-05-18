@@ -8,7 +8,7 @@ This is a repository of vanilla javascript apps, which are deployed as is with g
   - Using pyodide, WASM, etc. when necessary.
 - Make the code concise and elegant.
 - Document methods, but also difficult and confusing parts of the code.
-- Never swallow errors silently. Every catch block must log to console at minimum. Prefer failing visibly over failing gracefully and silent.
+- Always fail loudly, never silently. Every error must be visible — at minimum logged to the browser console, and surfaced in the UI when a user-facing action failed. Every `catch` block must log (`console.error`); never leave one empty or comment-only. Don't mask a real failure with a misleading message (e.g. labelling a live network error as "offline") or by silently falling back to stale/cached data. Prefer failing visibly over failing gracefully and silent. Register global `error` and `unhandledrejection` handlers (in both the page and any service worker) so nothing that escapes a `try/catch` goes unreported.
 - Bump the `CACHE_NAME` version in every PWA's `sw.js` with each commit that modifies that app's files. This ensures users get fresh assets instead of stale cached ones.
 
 # iOS Audio on Silent

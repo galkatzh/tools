@@ -39,6 +39,22 @@ function toast(msg) {
   if (msg) setTimeout(() => el.classList.add('hidden'), 4000);
 }
 
+/**
+ * Last-resort error reporting: catch anything that escapes a try/catch — an
+ * unawaited promise rejection, an event-handler throw — so it always lands
+ * loudly in the console (and the UI) instead of failing silently.
+ */
+function installGlobalErrorReporting() {
+  window.addEventListener('error', (e) => {
+    console.error('Uncaught error:', e.error || e.message, e);
+    toast(`Error: ${e.message}`);
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    console.error('Unhandled promise rejection:', e.reason);
+    toast(`Error: ${e.reason?.message || e.reason}`);
+  });
+}
+
 // ── Settings ────────────────────────────────────────────────────────
 
 function fillSettings() {
@@ -402,6 +418,7 @@ function wireEvents() {
 }
 
 async function init() {
+  installGlobalErrorReporting();
   registerSW();
   wireEvents();
 
