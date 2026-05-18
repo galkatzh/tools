@@ -1,4 +1,4 @@
-const CACHE_NAME = 'spaced-repetition-v4';
+const CACHE_NAME = 'spaced-repetition-v6';
 
 // Local app shell — must be cached for the app to start offline.
 const SHELL = [
@@ -21,6 +21,14 @@ const SHELL = [
 
 // Requests to these hosts carry auth/data and must never be cached.
 const NO_CACHE_HOSTS = ['api.github.com', 'github.com'];
+
+// Fail loudly: surface anything that escapes a try/catch in the worker.
+self.addEventListener('error', (e) => {
+  console.error('Service worker uncaught error:', e.error || e.message, e);
+});
+self.addEventListener('unhandledrejection', (e) => {
+  console.error('Service worker unhandled promise rejection:', e.reason);
+});
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE_NAME).then((c) => c.addAll(SHELL)));
@@ -48,7 +56,10 @@ self.addEventListener('fetch', (e) => {
         .then((res) => {
           if (res.ok) {
             const copy = res.clone();
-            caches.open(CACHE_NAME).then((c) => c.put(e.request, copy));
+            caches
+              .open(CACHE_NAME)
+              .then((c) => c.put(e.request, copy))
+              .catch((err) => console.error('Runtime cache write failed:', err));
           }
           return res;
         })
