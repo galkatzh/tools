@@ -1,6 +1,6 @@
 // Spaced Repetition — controller: routing, deck loading, study sessions.
 
-import { getConfig, saveConfig, isConfigured } from './js/config.js';
+import { getConfig, saveConfig } from './js/config.js';
 import { login, logout, isLoggedIn, handleCallback } from './js/auth.js';
 import { listDecks, getGist, getFileContent } from './js/github.js';
 import { parseFile } from './js/parser.js';
@@ -24,7 +24,7 @@ function showView(name) {
 
 function route() {
   if (!isLoggedIn()) {
-    showView(isConfigured() ? 'login' : 'settings');
+    showView('login');
     return;
   }
   showView('decks');
@@ -42,8 +42,6 @@ function toast(msg) {
 
 function fillSettings() {
   const c = getConfig();
-  $('#cfg-client-id').value = c.oauthClientId;
-  $('#cfg-proxy-url').value = c.oauthProxyUrl;
   $('#cfg-prefix').value = c.gistPrefix;
   $('#cfg-d-inline').value = c.delim.inline;
   $('#cfg-d-inline-rev').value = c.delim.inlineReversed;
@@ -55,8 +53,6 @@ function fillSettings() {
 
 function saveSettings() {
   saveConfig({
-    oauthClientId: $('#cfg-client-id').value.trim(),
-    oauthProxyUrl: $('#cfg-proxy-url').value.trim(),
     gistPrefix: $('#cfg-prefix').value.trim() || 'srs:',
     delim: {
       inline: $('#cfg-d-inline').value || '::',
