@@ -1,4 +1,4 @@
-const CACHE_NAME = 'spaced-repetition-v6';
+const CACHE_NAME = 'spaced-repetition-v7';
 
 // Local app shell — must be cached for the app to start offline.
 const SHELL = [

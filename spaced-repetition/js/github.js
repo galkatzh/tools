@@ -23,14 +23,16 @@ async function api(path, options = {}) {
   return res;
 }
 
-/** List every gist whose description starts with the given prefix. */
+/** List every gist that contains a file whose name starts with the prefix. */
 export async function listDecks(prefix) {
   const decks = [];
   for (let page = 1; ; page++) {
     const gists = await (await api(`/gists?per_page=100&page=${page}`)).json();
     if (!gists.length) break;
     for (const g of gists) {
-      if ((g.description || '').startsWith(prefix)) decks.push(g);
+      if (Object.keys(g.files || {}).some((name) => name.startsWith(prefix))) {
+        decks.push(g);
+      }
     }
     if (gists.length < 100) break;
   }
