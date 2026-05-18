@@ -5,20 +5,34 @@
  * in a static site. This Cloudflare Worker holds the secret and performs the
  * code-for-token exchange on behalf of the browser.
  *
- * ── Deployment ──────────────────────────────────────────────────────────
+ * ── Reusable across apps ─────────────────────────────────────────────────
+ * This worker is generic — it does not care which app calls it. GitHub OAuth
+ * Apps match the redirect_uri by PREFIX, so registering the callback at your
+ * domain root lets every app under it reuse the SAME OAuth App and this SAME
+ * worker. Set this up once; future apps need no new infrastructure.
+ *   - Scope is chosen per request by each app's authorize URL, so one OAuth
+ *     App covers apps that need different scopes (gist, repo, user, ...).
+ *   - localStorage is per-origin: each app must use a distinct token key.
+ *
+ * ── Deployment (do this once for the whole domain) ───────────────────────
  * 1. Register a GitHub OAuth App (https://github.com/settings/developers):
- *      - Homepage URL:          your app URL, e.g. https://tools.example.com/spaced-repetition/
- *      - Authorization callback: the SAME app URL (must match exactly)
+ *      - Homepage URL:           your domain root, e.g. https://tools.example.com/
+ *      - Authorization callback: the SAME domain root — every app at a
+ *        subpath (/spaced-repetition/, /future-app/, ...) is then valid.
  *    Note the Client ID and generate a Client Secret.
  *
- * 2. Edit ALLOWED_ORIGIN below to your GitHub Pages origin (scheme + host only).
+ * 2. Edit ALLOWED_ORIGIN below to your GitHub Pages origin (scheme + host).
+ *    For apps on multiple domains, make it an allow-list instead.
  *
- * 3. Deploy with Wrangler:
- *      wrangler deploy oauth-worker.js --name srs-oauth
+ * 3. Deploy. Either paste this file into the Cloudflare dashboard
+ *    (Workers & Pages -> Create -> Worker), or use Wrangler:
+ *      wrangler deploy oauth-worker.js --name oauth-proxy
+ *    Then set two secrets (dashboard: Settings -> Variables and Secrets,
+ *    or CLI):
  *      wrangler secret put GITHUB_CLIENT_ID       # paste the Client ID
  *      wrangler secret put GITHUB_CLIENT_SECRET   # paste the Client Secret
  *
- * 4. In the app's Settings, enter the Client ID and the deployed Worker URL.
+ * 4. In each app's Settings, enter the Client ID and the deployed Worker URL.
  * ────────────────────────────────────────────────────────────────────────
  */
 
