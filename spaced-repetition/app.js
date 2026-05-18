@@ -103,23 +103,47 @@ async function loadDecks() {
   const status = $('#decks-status');
   status.textContent = 'Loading decks…';
   $('#deck-list').innerHTML = '';
+
+  // Phase 1: find the deck gists. Only a failure here means we can't reach
+  // GitHub at all, so this is the only case that warrants the cache fallback.
+  let gists;
   try {
-    const gists = await listDecks(getConfig().gistPrefix);
-    decks = [];
-    for (const summary of gists) {
-      const gist = await getGist(summary.id);
-      await cacheDeck(gist);
-      decks.push(await buildDeck(gist));
-    }
-    status.textContent = decks.length ? '' : 'No decks found. Create a gist whose description starts with your prefix.';
+    gists = await listDecks(getConfig().gistPrefix);
   } catch (e) {
-    console.error('Failed to load decks online; falling back to cache:', e);
+    console.error('Failed to list decks from GitHub:', e);
     const cached = await getCachedDecks();
     decks = [];
     for (const gist of cached) decks.push(await buildDeck(gist));
     status.textContent = decks.length
-      ? 'Offline — showing cached decks.'
+      ? `Showing cached decks — could not reach GitHub: ${e.message}`
       : `Could not load decks: ${e.message}`;
+    renderDeckList();
+    return;
+  }
+
+  // Phase 2: fetch each found gist. A single failure must not discard the
+  // decks that did load — collect failures and report them visibly.
+  decks = [];
+  const failed = [];
+  for (const summary of gists) {
+    try {
+      const gist = await getGist(summary.id);
+      await cacheDeck(gist);
+      decks.push(await buildDeck(gist));
+    } catch (e) {
+      console.error(`Failed to load deck gist ${summary.id}:`, e);
+      failed.push(summary);
+    }
+  }
+
+  if (!gists.length) {
+    status.textContent =
+      'No decks found. Create a gist whose description starts with your prefix.';
+  } else if (failed.length) {
+    status.textContent =
+      `Loaded ${decks.length} of ${gists.length} deck(s); ${failed.length} failed — see console.`;
+  } else {
+    status.textContent = '';
   }
   renderDeckList();
 }
