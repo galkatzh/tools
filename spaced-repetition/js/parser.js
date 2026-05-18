@@ -102,3 +102,29 @@ export function serializeBlock(block) {
   const comments = block.cards.map((c) => serializeSR(c.sr));
   return block.cleanText + '\n' + comments.join('\n');
 }
+
+/**
+ * Re-attach SR metadata to deck text edited without it (see the editor UI).
+ * Any block whose clean text is unchanged from `originalContent` keeps its
+ * original SR comments; new or modified blocks are left bare, so they pick up
+ * fresh scheduling state on their first review.
+ */
+export function reattachSR(editedText, originalContent) {
+  // Map each original block's clean text to its raw form (SR comments intact).
+  const originalBlocks = new Map();
+  for (const seg of segment(originalContent)) {
+    const { clean } = stripSR(seg.raw);
+    if (clean) originalBlocks.set(clean, seg.raw);
+  }
+  // Splice matching blocks back in, latest first so earlier ranges stay valid.
+  const segments = segment(editedText);
+  let out = editedText;
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const seg = segments[i];
+    const orig = originalBlocks.get(stripSR(seg.raw).clean);
+    if (orig && orig !== seg.raw) {
+      out = out.slice(0, seg.range[0]) + orig + out.slice(seg.range[1]);
+    }
+  }
+  return out;
+}

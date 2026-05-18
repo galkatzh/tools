@@ -21,6 +21,16 @@ export function stripSR(text) {
   return { clean: clean.replace(/[ \t]+$/gm, '').replace(/\s+$/, ''), payloads };
 }
 
+/**
+ * Strip SR metadata for display in the deck editor: drop whole lines that hold
+ * only SR comments, plus any inline (legacy) ones, leaving no blank-line gaps.
+ */
+export function stripSRLines(text) {
+  return text
+    .replace(/^[ \t]*(?:<!--\s*SR:.*?-->[ \t]*)+\r?\n/gm, '')
+    .replace(/[ \t]*<!--\s*SR:.*?-->/g, '');
+}
+
 /** Parse one SR comment payload into our compact scheduling object, or null. */
 export function parsePayload(payload) {
   payload = payload.trim();

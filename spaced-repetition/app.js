@@ -2,8 +2,9 @@
 
 import { getConfig, saveConfig } from './js/config.js';
 import { login, logout, isLoggedIn, handleCallback } from './js/auth.js';
-import { listDecks, getGist, getFileContent } from './js/github.js';
-import { parseFile } from './js/parser.js';
+import { listDecks, getGist, getFileContent, updateGistFile } from './js/github.js';
+import { parseFile, reattachSR } from './js/parser.js';
+import { stripSRLines } from './js/srcomment.js';
 import { isDue, rate, preview } from './js/scheduler.js';
 import { renderCardSide, typeset } from './js/render.js';
 import { cacheDeck, getCachedDecks } from './js/store.js';
@@ -128,16 +129,130 @@ function renderDeckList() {
   list.innerHTML = '';
   for (const deck of decks) {
     const due = deck.cards.filter((c) => isDue(c.sr)).length;
-    const el = document.createElement('button');
-    el.className = 'deck-card';
-    el.innerHTML = `
-      <span class="deck-name"></span>
-      <span class="deck-meta"><strong>${due}</strong> due · ${deck.cards.length} cards</span>`;
-    el.querySelector('.deck-name').textContent = deck.name;
-    el.disabled = due === 0;
-    el.addEventListener('click', () => startStudy(deck));
-    list.appendChild(el);
+    const card = document.createElement('div');
+    card.className = 'deck-card';
+    card.innerHTML = `
+      <div class="deck-info">
+        <span class="deck-name"></span>
+        <span class="deck-meta"><strong>${due}</strong> due · ${deck.cards.length} cards</span>
+      </div>
+      <div class="deck-actions">
+        <button class="deck-study primary" type="button">Study</button>
+        <button class="deck-edit" type="button">Edit</button>
+      </div>`;
+    card.querySelector('.deck-name').textContent = deck.name;
+    const studyBtn = card.querySelector('.deck-study');
+    studyBtn.disabled = due === 0;
+    studyBtn.addEventListener('click', () => startStudy(deck));
+    card.querySelector('.deck-edit').addEventListener('click', () => openEditor(deck));
+    list.appendChild(card);
   }
+}
+
+// ── Deck editor ─────────────────────────────────────────────────────
+
+const MD_RE = /\.md$/i;
+
+// Active edit session: { gistId, files:{ name:{original,draft} }, current }.
+let editor = null;
+
+/** Load a deck's gist files into the editor (SR metadata hidden) and show it. */
+async function openEditor(deck) {
+  toast('Loading deck for editing…');
+  let gist;
+  try {
+    gist = await getGist(deck.id);
+  } catch (e) {
+    console.error('Failed to load deck for editing:', e);
+    toast(`Could not open editor: ${e.message}`);
+    return;
+  }
+
+  const files = {};
+  for (const [name, file] of Object.entries(gist.files)) {
+    if (!MD_RE.test(name)) continue;
+    try {
+      const original = await getFileContent(file);
+      files[name] = { original, draft: stripSRLines(original) };
+    } catch (e) {
+      console.error(`Failed to read gist file "${name}":`, e);
+      toast(`Could not read "${name}".`);
+      return;
+    }
+  }
+  // A deck gist with no markdown file yet — let the user author the first one.
+  if (!Object.keys(files).length) files['deck.md'] = { original: '', draft: '' };
+
+  const names = Object.keys(files);
+  editor = { gistId: deck.id, files, current: names[0] };
+
+  $('#edit-deck-name').textContent = deck.name;
+  const sel = $('#edit-file');
+  sel.innerHTML = '';
+  for (const name of names) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  }
+  sel.value = editor.current;
+  $('#edit-file-row').classList.toggle('hidden', names.length < 2);
+  $('#edit-content').value = files[editor.current].draft;
+  toast('');
+  showView('edit');
+}
+
+/** Persist the textarea into the current file's draft. */
+function syncDraft() {
+  if (editor) editor.files[editor.current].draft = $('#edit-content').value;
+}
+
+function switchEditorFile(name) {
+  syncDraft();
+  editor.current = name;
+  $('#edit-content').value = editor.files[name].draft;
+}
+
+/** True when any file's draft differs from what was loaded. */
+function editorDirty() {
+  syncDraft();
+  return Object.values(editor.files).some(
+    (f) => f.draft !== stripSRLines(f.original)
+  );
+}
+
+async function saveEditor() {
+  syncDraft();
+  const btn = $('#edit-save');
+  btn.disabled = true;
+  let saved = 0;
+  try {
+    for (const [name, f] of Object.entries(editor.files)) {
+      if (f.draft === stripSRLines(f.original)) continue; // untouched
+      const content = reattachSR(f.draft, f.original);
+      await updateGistFile(editor.gistId, name, content);
+      f.original = content;
+      saved++;
+    }
+    if (saved) {
+      toast(`Saved ${saved} file(s).`);
+      editor = null;
+      route(); // reloads the (now updated) deck list
+    } else {
+      toast('No changes to save.');
+    }
+  } catch (e) {
+    console.error('Failed to save deck:', e);
+    toast(`Save failed: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function cancelEditor() {
+  if (editorDirty() && !confirm('Discard unsaved changes?')) return;
+  editor = null;
+  route();
 }
 
 // ── Study session ───────────────────────────────────────────────────
@@ -245,6 +360,9 @@ function wireEvents() {
   $('#cfg-cancel').addEventListener('click', route);
   $('#btn-login').addEventListener('click', login);
   $('#decks-refresh').addEventListener('click', loadDecks);
+  $('#edit-cancel').addEventListener('click', cancelEditor);
+  $('#edit-save').addEventListener('click', saveEditor);
+  $('#edit-file').addEventListener('change', (e) => switchEditorFile(e.target.value));
   $('#study-show').addEventListener('click', revealAnswer);
   $('#study-back').addEventListener('click', () => {
     session = null;
