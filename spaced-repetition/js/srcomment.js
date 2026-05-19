@@ -1,8 +1,8 @@
 // Read/write the scheduling metadata comment appended to each card.
 //
 // Format (one comment per generated card, positionally anchored):
-//   <!--SR:fsrs;1;d=2026-06-01;s=12.34;D=5.67;r=4;l=1;st=2;lr=2026-05-18-->
-//     d  due date (YYYY-MM-DD)        s  stability         D  difficulty
+//   <!--SR:fsrs;1;d=2026-06-01T08:00:00.000Z;s=12.34;D=5.67;r=4;l=1;st=2;lr=...-->
+//     d  due (ISO 8601 timestamp)     s  stability         D  difficulty
 //     r  reps     l  lapses           st state (0..3)      lr last review
 //
 // Legacy Obsidian SM-2 comments (<!--SR:!due,interval,ease-->) are parsed

@@ -46,10 +46,27 @@ export function renderCardSide(card, side) {
   return renderMarkdown(side === 'front' ? card.front : card.back);
 }
 
-/** Typeset any LaTeX inside a DOM node via MathJax. */
+/**
+ * Build a hidden node holding the configured LaTeX macro preamble, so its
+ * \newcommand definitions are in scope when the card's math is typeset.
+ * Returns null when no preamble is configured.
+ */
+function macroPreludeNode() {
+  const preamble = (getConfig().mathPreamble || '').trim();
+  if (!preamble) return null;
+  const span = document.createElement('span');
+  span.style.display = 'none';
+  span.textContent = `\\(${preamble}\\)`;
+  return span;
+}
+
+/** Typeset any LaTeX inside a DOM node via MathJax, applying the macro preamble. */
 export async function typeset(node) {
   if (!window.MathJax?.typesetPromise) return;
+  const prelude = macroPreludeNode();
+  if (prelude) node.insertBefore(prelude, node.firstChild);
   try {
+    MathJax.texReset();
     await MathJax.typesetPromise([node]);
   } catch (e) {
     console.error('MathJax typesetting failed:', e);

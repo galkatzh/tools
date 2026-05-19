@@ -60,6 +60,7 @@ function installGlobalErrorReporting() {
 function fillSettings() {
   const c = getConfig();
   $('#cfg-prefix').value = c.gistPrefix;
+  $('#cfg-math-preamble').value = c.mathPreamble;
   $('#cfg-d-inline').value = c.delim.inline;
   $('#cfg-d-inline-rev').value = c.delim.inlineReversed;
   $('#cfg-d-multiline').value = c.delim.multiline;
@@ -71,6 +72,7 @@ function fillSettings() {
 function saveSettings() {
   saveConfig({
     gistPrefix: $('#cfg-prefix').value.trim() || 'srs:',
+    mathPreamble: $('#cfg-math-preamble').value,
     delim: {
       inline: $('#cfg-d-inline').value || '::',
       inlineReversed: $('#cfg-d-inline-rev').value || ':::',
@@ -88,12 +90,18 @@ function saveSettings() {
 
 let decks = [];
 
-/** Assemble a deck (id, name, cards) from a full gist object. */
+/**
+ * Assemble a deck (id, name, cards) from a full gist object. A deck's content
+ * lives in markdown files whose name starts with the prefix; the deck name is
+ * taken from that file name (prefix and `.md` extension stripped).
+ */
 async function buildDeck(gist) {
   const prefix = getConfig().gistPrefix;
   const cards = [];
+  let name = '';
   for (const [fileName, file] of Object.entries(gist.files)) {
-    if (!fileName.toLowerCase().endsWith('.md')) continue;
+    if (!fileName.startsWith(prefix) || !fileName.toLowerCase().endsWith('.md')) continue;
+    if (!name) name = fileName.slice(prefix.length).replace(/\.md$/i, '').trim();
     let content;
     try {
       content = await getFileContent(file);
@@ -111,8 +119,7 @@ async function buildDeck(gist) {
       });
     }
   }
-  const name = (gist.description || '').slice(prefix.length).trim() || '(untitled deck)';
-  return { id: gist.id, name, cards };
+  return { id: gist.id, name: name || '(untitled deck)', cards };
 }
 
 async function loadDecks() {
@@ -154,7 +161,7 @@ async function loadDecks() {
 
   if (!gists.length) {
     status.textContent =
-      'No decks found. Create a gist whose description starts with your prefix.';
+      'No decks found. Create a gist with a markdown file whose name starts with your prefix.';
   } else if (failed.length) {
     status.textContent =
       `Loaded ${decks.length} of ${gists.length} deck(s); ${failed.length} failed — see console.`;
@@ -208,9 +215,10 @@ async function openEditor(deck) {
     return;
   }
 
+  const prefix = getConfig().gistPrefix;
   const files = {};
   for (const [name, file] of Object.entries(gist.files)) {
-    if (!MD_RE.test(name)) continue;
+    if (!name.startsWith(prefix) || !MD_RE.test(name)) continue;
     try {
       const original = await getFileContent(file);
       files[name] = { original, draft: stripSRLines(original) };
@@ -221,7 +229,9 @@ async function openEditor(deck) {
     }
   }
   // A deck gist with no markdown file yet — let the user author the first one.
-  if (!Object.keys(files).length) files['deck.md'] = { original: '', draft: '' };
+  if (!Object.keys(files).length) {
+    files[`${prefix}${deck.name}.md`] = { original: '', draft: '' };
+  }
 
   const names = Object.keys(files);
   editor = { gistId: deck.id, files, current: names[0] };

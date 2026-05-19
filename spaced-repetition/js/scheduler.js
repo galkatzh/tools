@@ -16,8 +16,6 @@ const RATINGS = {
   easy: Rating.Easy,
 };
 
-const isoDate = (d) => new Date(d).toISOString().slice(0, 10);
-
 /** Convert our compact SR object (or null) into a ts-fsrs Card. */
 function toFsrsCard(sr) {
   // Start from an empty card so every field ts-fsrs expects is present.
@@ -39,16 +37,21 @@ function toFsrsCard(sr) {
   };
 }
 
-/** Convert a ts-fsrs Card back into our compact SR object. */
+/**
+ * Convert a ts-fsrs Card back into our compact SR object. Dates are stored as
+ * full ISO 8601 timestamps (not just YYYY-MM-DD): truncating to a date pulls
+ * sub-day intervals — e.g. a card rated "again" for 10 minutes — back to
+ * midnight, making the card look due again the instant it was reviewed.
+ */
 function fromFsrsCard(c) {
   return {
-    due: isoDate(c.due),
+    due: new Date(c.due).toISOString(),
     stability: c.stability,
     difficulty: c.difficulty,
     reps: c.reps,
     lapses: c.lapses,
     state: c.state,
-    last_review: isoDate(c.last_review || new Date()),
+    last_review: new Date(c.last_review || Date.now()).toISOString(),
   };
 }
 

@@ -13,6 +13,7 @@
       tex: {
         inlineMath: [['$', '$'], ['\\(', '\\)']],
         displayMath: [['$$', '$$'], ['\\[', '\\]']],
+        packages: {'[+]': ['newcommand']},
       },
       options: {
         skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
@@ -37,8 +38,8 @@
   <main class="app">
     <!-- Login -->
     <section id="view-login" class="view hidden">
-      <p>Sign in with GitHub to load your flashcard decks. Each gist whose
-         description starts with your prefix becomes a deck.</p>
+      <p>Sign in with GitHub to load your flashcard decks. Each gist with a
+         markdown file whose name starts with your prefix becomes a deck.</p>
       <button id="btn-login" type="button" class="primary">Sign in with GitHub</button>
     </section>
 
@@ -46,9 +47,17 @@
     <section id="view-settings" class="view hidden">
       <h2>Settings</h2>
 
-      <label>Deck gist prefix
+      <label>Deck file prefix
         <input id="cfg-prefix" type="text" placeholder="srs:">
       </label>
+
+      <details class="delims">
+        <summary>Math preamble (LaTeX macros)</summary>
+        <p class="hint">Optional. <code>\newcommand</code> definitions made
+           available to every card's math.</p>
+        <textarea id="cfg-math-preamble" class="editor" spellcheck="false"
+          aria-label="Math preamble"></textarea>
+      </details>
 
       <details class="delims">
         <summary>Card delimiters</summary>
