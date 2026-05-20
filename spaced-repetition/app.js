@@ -309,14 +309,33 @@ function cancelEditor() {
 
 function startStudy(deck) {
   const queue = deck.cards.filter((c) => isDue(c.sr));
-  session = { deck, queue, reviewed: 0 };
+  session = { deck, queue, reviewed: 0, startedAt: Date.now(), timerId: null };
+  // Tick the timer once a second so the "elapsed" portion of the progress
+  // line stays live even while the user lingers on a single card.
+  session.timerId = setInterval(updateProgress, 1000);
   $('#study-deck-name').textContent = deck.name;
   showView('study');
   nextCard();
 }
 
+function stopStudy() {
+  if (session?.timerId) clearInterval(session.timerId);
+  session = null;
+}
+
+/** Format a millisecond duration as `Mm Ss` (or `Hh Mm Ss` past an hour). */
+function formatElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return h ? `${h}h ${m}m ${sec}s` : `${m}m ${sec}s`;
+}
+
 function updateProgress() {
-  $('#study-progress').textContent = `${session.reviewed} reviewed · ${session.queue.length} left`;
+  const elapsed = formatElapsed(Date.now() - session.startedAt);
+  $('#study-progress').textContent =
+    `${session.reviewed} reviewed · ${session.queue.length} left · ${elapsed}`;
 }
 
 async function showSide(card, side) {
@@ -373,8 +392,12 @@ async function rateCard(ratingKey) {
 }
 
 async function finishStudy() {
+  const elapsed = formatElapsed(Date.now() - session.startedAt);
+  const reviewed = session.reviewed;
+  if (session.timerId) clearInterval(session.timerId);
+  session.timerId = null;
   $('#study-card').innerHTML =
-    `<p class="study-done">All done — ${session.reviewed} review(s) this session.</p>`;
+    `<p class="study-done">All done — ${reviewed} review(s) in ${elapsed}.</p>`;
   $('#study-show').classList.add('hidden');
   $('#study-ratings').classList.add('hidden');
   $('#study-card-wrap').classList.add('revealed');
@@ -415,7 +438,7 @@ function wireEvents() {
   $('#edit-file').addEventListener('change', (e) => switchEditorFile(e.target.value));
   $('#study-show').addEventListener('click', revealAnswer);
   $('#study-back').addEventListener('click', () => {
-    session = null;
+    stopStudy();
     route();
   });
   for (const key of ['again', 'hard', 'good', 'easy']) {
