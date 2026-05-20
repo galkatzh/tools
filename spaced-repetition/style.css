@@ -81,6 +81,13 @@ input {
 .row { display: flex; gap: 0.5rem; align-items: center; }
 .row.spread { justify-content: space-between; }
 
+label.row-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+label.row-inline input { width: auto; margin-top: 0; }
+
 .hint { font-size: 0.85rem; opacity: 0.75; }
 .hint code { font-size: 0.9em; }
 

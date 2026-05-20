@@ -9,6 +9,7 @@ import { isDue, rate, preview } from './js/scheduler.js';
 import { renderCardSide, typeset } from './js/render.js';
 import { cacheDeck, getCachedDecks } from './js/store.js';
 import { recordReview, flush } from './js/sync.js';
+import * as notifier from './js/notifier.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -60,6 +61,7 @@ function installGlobalErrorReporting() {
 function fillSettings() {
   const c = getConfig();
   $('#cfg-prefix').value = c.gistPrefix;
+  $('#cfg-notify').checked = !!c.notify;
   $('#cfg-math-preamble').value = c.mathPreamble;
   $('#cfg-d-inline').value = c.delim.inline;
   $('#cfg-d-inline-rev').value = c.delim.inlineReversed;
@@ -69,9 +71,22 @@ function fillSettings() {
   $('#cfg-d-cloze-close').value = c.delim.clozeClose;
 }
 
-function saveSettings() {
+async function saveSettings() {
+  // Requesting notification permission must happen on the user-gesture click,
+  // so resolve it before persisting the toggle.
+  let notify = $('#cfg-notify').checked;
+  let warned = false;
+  if (notify) {
+    const granted = await notifier.requestPermission();
+    if (!granted) {
+      notify = false;
+      warned = true;
+      toast('Notifications blocked by the browser — re-enable them in site settings.');
+    }
+  }
   saveConfig({
     gistPrefix: $('#cfg-prefix').value.trim() || 'srs:',
+    notify,
     mathPreamble: $('#cfg-math-preamble').value,
     delim: {
       inline: $('#cfg-d-inline').value || '::',
@@ -82,7 +97,7 @@ function saveSettings() {
       clozeClose: $('#cfg-d-cloze-close').value || '==',
     },
   });
-  toast('Settings saved.');
+  if (!warned) toast('Settings saved.');
   route();
 }
 
@@ -312,6 +327,7 @@ function startStudy(deck) {
   session = { deck, queue, reviewed: 0 };
   $('#study-deck-name').textContent = deck.name;
   showView('study');
+  notifier.startTracking();
   nextCard();
 }
 
@@ -373,6 +389,7 @@ async function rateCard(ratingKey) {
 }
 
 async function finishStudy() {
+  notifier.stopTracking();
   $('#study-card').innerHTML =
     `<p class="study-done">All done — ${session.reviewed} review(s) this session.</p>`;
   $('#study-show').classList.add('hidden');
@@ -415,6 +432,7 @@ function wireEvents() {
   $('#edit-file').addEventListener('change', (e) => switchEditorFile(e.target.value));
   $('#study-show').addEventListener('click', revealAnswer);
   $('#study-back').addEventListener('click', () => {
+    notifier.stopTracking();
     session = null;
     route();
   });
@@ -431,6 +449,7 @@ async function init() {
   installGlobalErrorReporting();
   registerSW();
   wireEvents();
+  notifier.init({ getEnabled: () => !!getConfig().notify });
 
   const callback = await handleCallback();
   if (callback === 'error') toast('Sign-in failed. Check your settings and try again.');

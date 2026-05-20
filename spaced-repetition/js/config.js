@@ -82,6 +82,7 @@ export const DEFAULT_MATH_PREAMBLE = String.raw`\newcommand{\sparentheses}[1]{\l
 const DEFAULTS = {
   gistPrefix: 'srs:',
   mathPreamble: DEFAULT_MATH_PREAMBLE,
+  notify: false,
   delim: {
     inline: '::',
     inlineReversed: ':::',
