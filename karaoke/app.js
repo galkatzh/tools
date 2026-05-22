@@ -8,7 +8,7 @@
  *
  * Workers:
  *   ./spleeter-worker.js                  — Spleeter ONNX stem separation
- *   ../local-transcribe/transcribe-worker.js — Whisper ASR via Transformers.js
+ *   ../local-transcribe/transcribe-worker.js — Whisper (Transformers.js) or Parakeet (ONNX) ASR
  */
 
 import { SAMPLE_RATE, decodeAudio } from '../audio-splitter/audio-processor.js';
@@ -17,17 +17,23 @@ import { SAMPLE_RATE, decodeAudio } from '../audio-splitter/audio-processor.js';
 
 const MODEL_VOCALS_URL = 'https://huggingface.co/bgkb/spleeteronnx/resolve/main/vocals.fp16.onnx';
 const MODEL_ACCOMP_URL = 'https://huggingface.co/bgkb/spleeteronnx/resolve/main/accompaniment.fp16.onnx';
-const WHISPER_MODEL = {
-  repo: 'onnx-community/whisper-base',
-  apiType: 'pipeline',
-  dtype: 'fp32',
-  device: 'webgpu',
+
+/** Base URL for the Parakeet TDT v3 ONNX files (int8 variant). */
+const PARAKEET_BASE = 'https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main';
+
+/**
+ * Selectable transcription models. Whisper runs via Transformers.js;
+ * Parakeet runs as raw ONNX (preprocessor + encoder + TDT decoder) in the worker.
+ */
+const TRANSCRIBE_MODELS = {
+  whisper: { apiType: 'pipeline', repo: 'onnx-community/whisper-base', dtype: 'fp32', device: 'webgpu' },
+  parakeet: { apiType: 'nemo-tdt' },
 };
 
 /** 512 STFT frames (Spleeter block size) × hop 1024 + fft 4096 ≈ 12s */
 const CHUNK_SAMPLES = 511 * 1024 + 4096; // 527360
 const OVERLAP_SAMPLES = 1 * SAMPLE_RATE;
-const WHISPER_CHUNK_SECONDS = 30;
+const TRANSCRIBE_CHUNK_SECONDS = 30;
 const WHISPER_SAMPLE_RATE = 16000;
 
 // ── DOM ────────────────────────────────────────────────────────────────────
@@ -70,6 +76,7 @@ const el = {
   settings: $('#settings'),
   splitWorkers: $('#split-workers'),
   transcribeWorkers: $('#transcribe-workers'),
+  transcribeModel: $('#transcribe-model'),
   showTimer: $('#show-timer'),
   language: $('#language'),
   fontSize: $('#font-size'),
@@ -399,7 +406,8 @@ async function resampleToMono16k(left, right) {
 let firstTranscribeWorker = null;
 
 class TranscribeWorker {
-  constructor() {
+  /** @param {object} initMsg init message  @param {Transferable[]} transfer buffers to transfer */
+  constructor(initMsg, transfer = []) {
     if (!firstTranscribeWorker) firstTranscribeWorker = this;
     this.worker = new Worker(
       new URL('../local-transcribe/transcribe-worker.js', import.meta.url),
@@ -416,7 +424,7 @@ class TranscribeWorker {
       console.error('[TranscribeWorker]', e);
       (this._reject || this._initReject)?.(new Error(e.message));
     };
-    this.worker.postMessage({ type: 'init', model: WHISPER_MODEL });
+    this.worker.postMessage(initMsg, transfer);
   }
 
   _onMessage(data) {
@@ -479,20 +487,81 @@ function splitSegmentToWords(text, segStart, segEnd) {
   return words;
 }
 
+/** Parse a NeMo vocab.txt ("token id" per line) into an id-indexed array. */
+function parseVocab(text) {
+  const vocab = [];
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    const sp = line.lastIndexOf(' ');
+    vocab[parseInt(line.slice(sp + 1), 10)] = line.slice(0, sp).replace(/▁/g, ' ');
+  }
+  return vocab;
+}
+
 /**
- * Transcribe audio using a pool of parallel Whisper workers.
- * Each worker loads its own model copy (browser caches the download).
- * Chunks are distributed via a shared queue, results sorted by time.
+ * Download the Parakeet TDT v3 ONNX files (int8) and build the worker init
+ * message. The encoder is ~650 MB, so files are cached in IndexedDB.
+ */
+async function buildParakeetInit() {
+  const encoder = await fetchModel(`${PARAKEET_BASE}/encoder-model.int8.onnx`, 'Parakeet encoder');
+  const decoder = await fetchModel(`${PARAKEET_BASE}/decoder_joint-model.int8.onnx`, 'Parakeet decoder');
+  const preproc = await fetchModel(`${PARAKEET_BASE}/nemo128.onnx`, 'Parakeet preprocessor');
+  const vocabBytes = await fetchModel(`${PARAKEET_BASE}/vocab.txt`, 'Parakeet vocab');
+  const vocab = parseVocab(new TextDecoder().decode(vocabBytes));
+
+  // Copy each model into a standalone transferable ArrayBuffer — an
+  // IndexedDB-cached Uint8Array may be a view onto a larger buffer.
+  const toBuffer = (u8) => {
+    const buf = new ArrayBuffer(u8.byteLength);
+    new Uint8Array(buf).set(u8);
+    return buf;
+  };
+  const encBuf = toBuffer(encoder);
+  const decBuf = toBuffer(decoder);
+  const preBuf = toBuffer(preproc);
+
+  return {
+    msg: {
+      type: 'init',
+      model: {
+        apiType: 'nemo-tdt',
+        encoder: encBuf,
+        decoder: decBuf,
+        preproc: preBuf,
+        vocab,
+        blankIdx: vocab.indexOf('<blk>'),
+        vocabSize: vocab.length,
+      },
+    },
+    transfer: [encBuf, decBuf, preBuf],
+  };
+}
+
+/**
+ * Transcribe audio using a pool of parallel transcription workers.
+ * Whisper runs a worker per CPU pool slot; Parakeet is a large ONNX model
+ * and runs in a single worker. Chunks are distributed via a shared queue.
  */
 async function transcribeVocals(mono16k) {
-  const numWorkers = parseInt(el.transcribeWorkers.value, 10) || 2;
+  const modelKey = el.transcribeModel.value || 'whisper';
   const language = el.language.value || null;
   showProgress('Loading transcription model...', 0);
 
-  const workers = Array.from({ length: numWorkers }, () => new TranscribeWorker());
+  let workers;
+  if (modelKey === 'parakeet') {
+    const init = await buildParakeetInit();
+    showProgress('Loading transcription model...', 0);
+    workers = [new TranscribeWorker(init.msg, init.transfer)];
+  } else {
+    const numWorkers = parseInt(el.transcribeWorkers.value, 10) || 2;
+    workers = Array.from(
+      { length: numWorkers },
+      () => new TranscribeWorker({ type: 'init', model: TRANSCRIBE_MODELS.whisper }),
+    );
+  }
   await Promise.all(workers.map((w) => w.ready));
 
-  const chunkSize = WHISPER_CHUNK_SECONDS * WHISPER_SAMPLE_RATE;
+  const chunkSize = TRANSCRIBE_CHUNK_SECONDS * WHISPER_SAMPLE_RATE;
   const nChunks = Math.ceil(mono16k.length / chunkSize);
   const results = new Array(nChunks);
   const queue = Array.from({ length: nChunks }, (_, i) => i);
@@ -518,7 +587,7 @@ async function transcribeVocals(mono16k) {
   // Merge results: split segment-level timestamps into word-level
   const allWords = [];
   for (let i = 0; i < nChunks; i++) {
-    const chunkOffset = i * WHISPER_CHUNK_SECONDS;
+    const chunkOffset = i * TRANSCRIBE_CHUNK_SECONDS;
     for (const seg of results[i].result?.chunks || []) {
       const segStart = (seg.timestamp?.[0] ?? 0) + chunkOffset;
       const segEnd = (seg.timestamp?.[1] ?? segStart) + chunkOffset;
