@@ -499,61 +499,66 @@ function parseVocab(text) {
 }
 
 /**
- * Download the Parakeet TDT v3 ONNX files (int8) and build the worker init
- * message. The encoder is ~650 MB, so files are cached in IndexedDB.
+ * Download the Parakeet TDT v3 ONNX files (int8) and parse the vocab.
+ * The encoder is ~650 MB, so files are cached in IndexedDB.
  */
-async function buildParakeetInit() {
+async function loadParakeetModel() {
   const encoder = await fetchModel(`${PARAKEET_BASE}/encoder-model.int8.onnx`, 'Parakeet encoder');
   const decoder = await fetchModel(`${PARAKEET_BASE}/decoder_joint-model.int8.onnx`, 'Parakeet decoder');
   const preproc = await fetchModel(`${PARAKEET_BASE}/nemo128.onnx`, 'Parakeet preprocessor');
   const vocabBytes = await fetchModel(`${PARAKEET_BASE}/vocab.txt`, 'Parakeet vocab');
-  const vocab = parseVocab(new TextDecoder().decode(vocabBytes));
+  return { encoder, decoder, preproc, vocab: parseVocab(new TextDecoder().decode(vocabBytes)) };
+}
 
-  // Copy each model into a standalone transferable ArrayBuffer — an
-  // IndexedDB-cached Uint8Array may be a view onto a larger buffer.
+/** Build a fresh Parakeet init message with its own transferable model buffers. */
+function parakeetInitMessage(model) {
+  // Each worker needs its own copy — an IndexedDB-cached Uint8Array may also
+  // be a view onto a larger buffer, so copy into exact-sized ArrayBuffers.
   const toBuffer = (u8) => {
     const buf = new ArrayBuffer(u8.byteLength);
     new Uint8Array(buf).set(u8);
     return buf;
   };
-  const encBuf = toBuffer(encoder);
-  const decBuf = toBuffer(decoder);
-  const preBuf = toBuffer(preproc);
-
+  const encoder = toBuffer(model.encoder);
+  const decoder = toBuffer(model.decoder);
+  const preproc = toBuffer(model.preproc);
   return {
     msg: {
       type: 'init',
       model: {
         apiType: 'nemo-tdt',
-        encoder: encBuf,
-        decoder: decBuf,
-        preproc: preBuf,
-        vocab,
-        blankIdx: vocab.indexOf('<blk>'),
-        vocabSize: vocab.length,
+        encoder,
+        decoder,
+        preproc,
+        vocab: model.vocab,
+        blankIdx: model.vocab.indexOf('<blk>'),
+        vocabSize: model.vocab.length,
       },
     },
-    transfer: [encBuf, decBuf, preBuf],
+    transfer: [encoder, decoder, preproc],
   };
 }
 
 /**
  * Transcribe audio using a pool of parallel transcription workers.
- * Whisper runs a worker per CPU pool slot; Parakeet is a large ONNX model
- * and runs in a single worker. Chunks are distributed via a shared queue.
+ * Both Whisper and Parakeet honour the "Transcribe workers" setting; each
+ * worker loads its own model copy. Chunks are distributed via a shared queue.
  */
 async function transcribeVocals(mono16k) {
   const modelKey = el.transcribeModel.value || 'whisper';
   const language = el.language.value || null;
+  const numWorkers = parseInt(el.transcribeWorkers.value, 10) || 2;
   showProgress('Loading transcription model...', 0);
 
   let workers;
   if (modelKey === 'parakeet') {
-    const init = await buildParakeetInit();
+    const model = await loadParakeetModel();
     showProgress('Loading transcription model...', 0);
-    workers = [new TranscribeWorker(init.msg, init.transfer)];
+    workers = Array.from({ length: numWorkers }, () => {
+      const { msg, transfer } = parakeetInitMessage(model);
+      return new TranscribeWorker(msg, transfer);
+    });
   } else {
-    const numWorkers = parseInt(el.transcribeWorkers.value, 10) || 2;
     workers = Array.from(
       { length: numWorkers },
       () => new TranscribeWorker({ type: 'init', model: TRANSCRIBE_MODELS.whisper }),
