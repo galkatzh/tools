@@ -119,30 +119,120 @@ function extractVideoId(input) {
 // ─── Player abstraction ─────────────────────────────────────
 // Both implementations expose the same interface so the UI doesn't
 // need to know what's playing under the hood.
+
+// SoundTouchJS audio-worklet — WSOLA time-stretching with pitch preservation.
+// Higher fidelity than the browser's native <audio>.preservesPitch, and
+// works over a much wider tempo range.
+const SOUNDTOUCH_BASE = 'https://cdn.jsdelivr.net/npm/@soundtouchjs/audio-worklet@2.0.3/.dist';
+let SoundTouchNodeClass = null;
+async function loadSoundTouch() {
+  if (SoundTouchNodeClass) return SoundTouchNodeClass;
+  const mod = await import(`${SOUNDTOUCH_BASE}/index.js`);
+  SoundTouchNodeClass = mod.SoundTouchNode;
+  return SoundTouchNodeClass;
+}
+
 class FilePlayer {
-  constructor(file) {
-    this.audio = new Audio();
-    this.audio.src = URL.createObjectURL(file);
-    this.audio.preservesPitch = true;  // slow down without chipmunking
-    this.audio.preload = 'auto';
-    this.audio.addEventListener('error', () =>
-      showError(`Could not load audio: ${this.audio.error?.message || 'unknown error'}`));
-    this.ready = new Promise((res, rej) => {
-      this.audio.addEventListener('loadedmetadata', () => res(), { once: true });
-      this.audio.addEventListener('error', () => rej(new Error('Audio load failed')), { once: true });
-    });
+  constructor(ctx, buffer, file) {
+    this.ctx = ctx;
+    this.buffer = buffer;
     this.file = file;
+    this._rate = 1;
+    this._playing = false;
+    // Playback position is tracked as: anchor + elapsed_ctx_time * rate.
+    // Re-anchor on every seek / rate change so the math stays simple.
+    this._anchor = 0;
+    this._anchorCtxTime = 0;
+    this._source = null;
+    this._st = null;
+    this.ready = this._init();
   }
-  get duration() { return this.audio.duration || 0; }
-  get currentTime() { return this.audio.currentTime; }
-  seek(t) { this.audio.currentTime = clamp(t, 0, this.duration); }
-  play() { return this.audio.play(); }
-  pause() { this.audio.pause(); }
-  isPlaying() { return !this.audio.paused && !this.audio.ended; }
-  setRate(r) { this.audio.playbackRate = r; }
+
+  async _init() {
+    const SoundTouchNode = await loadSoundTouch();
+    await SoundTouchNode.register(this.ctx, `${SOUNDTOUCH_BASE}/soundtouch-processor.js`);
+    this._st = new SoundTouchNode({
+      context: this.ctx,
+      outputChannelCount: this.buffer.numberOfChannels,
+    });
+    this._st.connect(this.ctx.destination);
+  }
+
+  get duration() { return this.buffer.duration; }
+  get currentTime() {
+    if (!this._playing) return clamp(this._anchor, 0, this.duration);
+    const t = this._anchor + (this.ctx.currentTime - this._anchorCtxTime) * this._rate;
+    return clamp(t, 0, this.duration);
+  }
+
+  seek(t) {
+    const wasPlaying = this._playing;
+    this._stopSource();
+    this._anchor = clamp(t, 0, this.duration);
+    if (wasPlaying) this._startSource();
+  }
+
+  async play() {
+    if (this._playing) return;
+    await this.ctx.resume();   // satisfy autoplay policy
+    this._startSource();
+  }
+
+  pause() {
+    if (!this._playing) return;
+    this._anchor = this.currentTime;
+    this._stopSource();
+  }
+
+  isPlaying() { return this._playing; }
+
+  setRate(r) {
+    if (this._playing) {
+      // Re-anchor so currentTime() stays continuous across the rate change.
+      this._anchor = this.currentTime;
+      this._anchorCtxTime = this.ctx.currentTime;
+      if (this._source) this._source.playbackRate.value = r;
+      if (this._st) this._st.playbackRate.value = r;
+    }
+    this._rate = r;
+  }
+
+  _startSource() {
+    if (this._anchor >= this.duration) this._anchor = 0;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.buffer;
+    src.playbackRate.value = this._rate;
+    // SoundTouchNode compensates pitch when its playbackRate matches the source's.
+    this._st.playbackRate.value = this._rate;
+    src.connect(this._st);
+    src.onended = () => {
+      // Only react to a *natural* end — stop()+replace would also fire onended.
+      if (this._source === src) {
+        this._playing = false;
+        this._anchor = this.duration;
+        this._source = null;
+      }
+    };
+    this._source = src;
+    this._anchorCtxTime = this.ctx.currentTime;
+    src.start(0, this._anchor);
+    this._playing = true;
+  }
+
+  _stopSource() {
+    if (this._source) {
+      const s = this._source;
+      this._source = null;   // clear before stop() so onended is a no-op
+      try { s.stop(); } catch (e) { console.error('Source stop failed:', e); }
+      try { s.disconnect(); } catch (e) { console.error('Source disconnect failed:', e); }
+    }
+    this._playing = false;
+  }
+
   destroy() {
-    this.audio.pause();
-    URL.revokeObjectURL(this.audio.src);
+    this._stopSource();
+    if (this._st) { try { this._st.disconnect(); } catch (e) { console.error('ST disconnect failed:', e); } }
+    if (this.ctx && this.ctx.state !== 'closed') this.ctx.close().catch(e => console.error('ctx close failed:', e));
   }
 }
 
@@ -212,19 +302,20 @@ let rafId = null;
 // ─── Source loaders ─────────────────────────────────────────
 async function loadFile(file) {
   await switchToPlayer('file');
-  const p = new FilePlayer(file);
   try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    // Allow playback while the iOS mute switch is on.
+    if (navigator.audioSession) navigator.audioSession.type = 'playback';
+    const buf = await ctx.decodeAudioData(await file.arrayBuffer());
+    const p = new FilePlayer(ctx, buf, file);
     await p.ready;
+    setPlayer(p);
+    waveformData = buf.getChannelData(0);
+    renderWaveform();
   } catch (e) {
-    showError(`Could not load file: ${e.message}`);
-    return;
+    console.error('Could not load file:', e);
+    showError(`Could not load file: ${e.message || e}`);
   }
-  setPlayer(p);
-  // Decode + draw waveform (off the main path — we already have audio playing).
-  drawWaveformFromFile(file).catch(e => {
-    console.error('Waveform decode failed:', e);
-    showError(`Waveform decode failed: ${e.message}`);
-  });
 }
 
 async function loadYouTube(videoId) {
@@ -249,6 +340,14 @@ async function switchToPlayer(newMode) {
   loopStart = null;
   loopEnd = null;
   waveformData = null;
+  // File mode uses SoundTouchJS, which is happy with extreme stretch ratios;
+  // YouTube only supports 0.25–2 (and snaps to a small set of allowed rates).
+  els.speed.min = '0.25';
+  els.speed.max = newMode === 'file' ? '3' : '2';
+  if (parseFloat(els.speed.value) > parseFloat(els.speed.max)) {
+    els.speed.value = els.speed.max;
+    els.speedVal.textContent = `${parseFloat(els.speed.max).toFixed(2)}×`;
+  }
   updateLoopUI();
 }
 
@@ -260,15 +359,6 @@ function setPlayer(p) {
 }
 
 // ─── Waveform drawing ───────────────────────────────────────
-async function drawWaveformFromFile(file) {
-  const buf = await file.arrayBuffer();
-  const ctx = new (window.AudioContext || window.webkitAudioContext)();
-  const decoded = await ctx.decodeAudioData(buf);
-  waveformData = decoded.getChannelData(0);
-  ctx.close();
-  renderWaveform();
-}
-
 function renderWaveform() {
   if (!waveformData) return;
   const canvas = els.waveform;
