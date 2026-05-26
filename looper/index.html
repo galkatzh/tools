@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Looper — slow-down practice player</title>
+  <meta name="description" content="Loop and slow down sections of any audio file or YouTube video for music transcription and practice.">
+  <meta name="theme-color" content="#1a1a2e">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="app">
+    <header>
+      <h1>Looper</h1>
+      <p class="subtitle">Loop a passage and slow it down to transcribe by ear.</p>
+    </header>
+
+    <!-- ─── Source picker ─────────────────────────────────────── -->
+    <section id="source-picker">
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="file" role="tab">Upload audio</button>
+        <button class="tab" data-tab="yt" role="tab">YouTube</button>
+      </div>
+
+      <div class="panel" id="panel-file">
+        <label id="drop-zone" tabindex="0">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <span>Drop a file or click to upload</span>
+          <input type="file" id="file-input" accept="audio/*,video/*" hidden>
+        </label>
+      </div>
+
+      <div class="panel hidden" id="panel-yt">
+        <form id="yt-form">
+          <input type="url" id="yt-url" placeholder="YouTube URL or video ID" required>
+          <button type="submit">Load</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- ─── Player ────────────────────────────────────────────── -->
+    <section id="player" class="hidden">
+      <div id="media" class="media">
+        <canvas id="waveform"></canvas>
+        <div id="yt-embed" class="hidden"></div>
+      </div>
+
+      <!-- Seek bar with loop region + playhead -->
+      <div id="seek-bar" role="slider" aria-label="Seek bar with loop region">
+        <div id="loop-region"></div>
+        <div id="loop-handle-start" class="handle"></div>
+        <div id="loop-handle-end" class="handle"></div>
+        <div id="playhead"></div>
+      </div>
+
+      <div class="time-row">
+        <span id="time-current">0:00</span>
+        <span class="time-spacer"></span>
+        <span id="time-total">0:00</span>
+      </div>
+
+      <div class="controls">
+        <button id="play-btn" class="play" aria-label="Play/pause">
+          <svg id="icon-play" width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+          <svg id="icon-pause" class="hidden" width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+        </button>
+
+        <label class="ctrl">
+          <span>Speed <b id="speed-val">1.00×</b></span>
+          <input type="range" id="speed" min="0.25" max="1.5" step="0.05" value="1">
+        </label>
+
+        <label class="ctrl toggle">
+          <input type="checkbox" id="loop-enabled" checked>
+          <span>Loop</span>
+        </label>
+
+        <div class="loop-buttons">
+          <button id="set-start" title="Set loop start to current position">[ Start</button>
+          <button id="set-end" title="Set loop end to current position">End ]</button>
+          <button id="clear-loop" title="Clear the loop region">Clear</button>
+        </div>
+      </div>
+
+      <p class="hint">Drag on the bar to set a loop, or click to seek. Drag the handles to adjust.</p>
+
+      <div class="actions">
+        <button id="new-source" class="link">Load a different source</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
