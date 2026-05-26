@@ -48,6 +48,9 @@ const els = {
   handleStart: $('loop-handle-start'),
   handleEnd: $('loop-handle-end'),
   playhead: $('playhead'),
+  labelStart: $('loop-label-start'),
+  labelEnd: $('loop-label-end'),
+  hoverLabel: $('hover-label'),
 
   timeCur: $('time-current'),
   timeTotal: $('time-total'),
@@ -357,6 +360,9 @@ function attachHandle(el, which) {
     e.stopPropagation();
     el.setPointerCapture(e.pointerId);
     dragState = { kind: 'handle', which };
+    // Pointer events route to the handle while captured, so the seek-bar's
+    // hover label can't update — hide it so it doesn't show a stale time.
+    els.hoverLabel.classList.add('hidden');
   });
   el.addEventListener('pointermove', e => {
     if (dragState?.kind !== 'handle' || dragState.which !== which || !player) return;
@@ -465,10 +471,22 @@ function updateLoopUI() {
   els.loopRegion.classList.toggle('hidden', !haveBoth);
   els.handleStart.classList.toggle('hidden', loopStart == null || !player?.duration);
   els.handleEnd.classList.toggle('hidden', loopEnd == null || !player?.duration);
+  els.labelStart.classList.toggle('hidden', loopStart == null || !player?.duration);
+  els.labelEnd.classList.toggle('hidden', loopEnd == null || !player?.duration);
   if (!player?.duration) return;
   const d = player.duration;
-  if (loopStart != null) els.handleStart.style.left = `${(loopStart / d) * 100}%`;
-  if (loopEnd != null) els.handleEnd.style.left = `${(loopEnd / d) * 100}%`;
+  if (loopStart != null) {
+    const pct = (loopStart / d) * 100;
+    els.handleStart.style.left = `${pct}%`;
+    els.labelStart.style.left = `${pct}%`;
+    els.labelStart.textContent = formatTimePrecise(loopStart);
+  }
+  if (loopEnd != null) {
+    const pct = (loopEnd / d) * 100;
+    els.handleEnd.style.left = `${pct}%`;
+    els.labelEnd.style.left = `${pct}%`;
+    els.labelEnd.textContent = formatTimePrecise(loopEnd);
+  }
   if (haveBoth) {
     const left = (loopStart / d) * 100;
     const width = ((loopEnd - loopStart) / d) * 100;
@@ -477,6 +495,23 @@ function updateLoopUI() {
   }
 }
 
+// ─── Hover tooltip on the seek bar ──────────────────────────
+// Shows the time corresponding to the cursor position so the user
+// can pick a precise loop point. Uses pointer events so it also
+// tracks the finger during touch drags.
+function updateHoverLabel(clientX) {
+  if (!player?.duration) return;
+  const r = barRect();
+  const pct = clamp((clientX - r.left) / r.width, 0, 1);
+  els.hoverLabel.style.left = `${pct * 100}%`;
+  els.hoverLabel.textContent = formatTimePrecise(pct * player.duration);
+  els.hoverLabel.classList.remove('hidden');
+}
+els.seekBar.addEventListener('pointermove', e => updateHoverLabel(e.clientX));
+els.seekBar.addEventListener('pointerdown', e => updateHoverLabel(e.clientX));
+els.seekBar.addEventListener('pointerleave', () => els.hoverLabel.classList.add('hidden'));
+els.seekBar.addEventListener('pointercancel', () => els.hoverLabel.classList.add('hidden'));
+
 // ─── Helpers ────────────────────────────────────────────────
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 function formatTime(s) {
@@ -484,4 +519,12 @@ function formatTime(s) {
   const m = Math.floor(s / 60);
   const sec = Math.floor(s % 60);
   return `${m}:${sec.toString().padStart(2, '0')}`;
+}
+// One-decimal precision — useful when picking a loop point by ear.
+function formatTimePrecise(s) {
+  if (!isFinite(s) || s < 0) return '0:00.0';
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  const secStr = sec.toFixed(1).padStart(4, '0');  // e.g. "07.3"
+  return `${m}:${secStr}`;
 }
