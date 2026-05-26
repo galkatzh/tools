@@ -142,6 +142,9 @@ h1 { font-size: 1.8rem; font-weight: 700; }
   cursor: pointer;
   user-select: none;
   touch-action: none;
+  /* Room for hover/handle labels above the bar without clipping. */
+  margin-top: 1.7rem;
+  overflow: visible;
 }
 
 #loop-region {
@@ -178,6 +181,32 @@ h1 { font-size: 1.8rem; font-weight: 700; }
   box-shadow: 0 0 6px rgba(255, 255, 255, 0.7);
   pointer-events: none;
   z-index: 3;
+}
+
+/* Loop endpoint labels (always shown when loop is set) and
+   cursor-following hover label (shown only while hovering). */
+.loop-label,
+.hover-label {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 6px;
+  border-radius: 4px;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 4;
+}
+.loop-label {
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+.hover-label {
+  border: 1px solid var(--border);
+  opacity: 0.9;
 }
 
 .time-row {
