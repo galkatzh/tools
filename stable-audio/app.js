@@ -12,7 +12,7 @@ const el = {
   seconds: $('#seconds'), secondsVal: $('#seconds-val'), durationControl: $('#duration-control'),
   steps: $('#steps'), stepsVal: $('#steps-val'),
   seed: $('#seed'), randomSeed: $('#random-seed'),
-  audioInput: $('#audio-input'), audioName: $('#audio-name'), audioClear: $('#audio-clear'),
+  audioInput: $('#audio-input'), audioName: $('#audio-name'), audioClear: $('#audio-clear'), record: $('#record'),
   strengthControl: $('#strength-control'), strength: $('#strength'), strengthVal: $('#strength-val'),
   generate: $('#generate'),
   progress: $('#progress'), progressBar: $('#progress-bar'), progressText: $('#progress-text'),
@@ -114,22 +114,24 @@ async function decodeToStereo44k(arrayBuffer) {
   };
 }
 
-async function handleAudioFile(file) {
-  if (!file) return;
-  el.audioName.textContent = `Decoding ${file.name}…`;
+/** Decode a File or recorded Blob into the variation input and reveal the strength control. */
+async function loadAudioClip(blob, name) {
+  el.audioName.textContent = `Decoding ${name}…`;
   try {
-    const { left, right, duration } = await decodeToStereo44k(await file.arrayBuffer());
-    inputAudio = { left, right, name: file.name, duration };
-    el.audioName.textContent = `${file.name} — ${duration.toFixed(1)}s`;
+    const { left, right, duration } = await decodeToStereo44k(await blob.arrayBuffer());
+    inputAudio = { left, right, name, duration };
+    el.audioName.textContent = `${name} — ${duration.toFixed(1)}s`;
     el.audioClear.classList.remove('hidden');
     el.strengthControl.classList.remove('hidden');
     el.durationControl.classList.add('hidden');   // duration now comes from the clip
   } catch (err) {
     console.error('Failed to decode audio:', err);
-    el.audioName.textContent = `Couldn't decode that file (${err.message})`;
+    el.audioName.textContent = `Couldn't decode that audio (${err.message})`;
     clearAudio();
   }
 }
+
+const handleAudioFile = (file) => { if (file) loadAudioClip(file, file.name); };
 
 function clearAudio() {
   inputAudio = null;
@@ -138,6 +140,49 @@ function clearAudio() {
   el.audioClear.classList.add('hidden');
   el.strengthControl.classList.add('hidden');
   el.durationControl.classList.remove('hidden');
+}
+
+// ── Microphone recording ─────────────────────────────────────────────────────
+
+let mediaRecorder = null;
+let recordChunks = [];
+let recordTimer = null;
+
+/** Toggle microphone recording; on stop, decode the take like an uploaded clip. */
+async function toggleRecord() {
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    console.error('Microphone access failed:', err);
+    el.audioName.textContent = `Couldn't access the microphone (${err.message})`;
+    return;
+  }
+  recordChunks = [];
+  mediaRecorder = new MediaRecorder(stream);
+  mediaRecorder.ondataavailable = (e) => { if (e.data.size) recordChunks.push(e.data); };
+  mediaRecorder.onstop = () => {
+    stream.getTracks().forEach((t) => t.stop());
+    clearInterval(recordTimer);
+    el.record.classList.remove('recording');
+    el.record.textContent = '● Rec';
+    loadAudioClip(new Blob(recordChunks, { type: mediaRecorder.mimeType || 'audio/webm' }), 'recording');
+  };
+  mediaRecorder.start();
+
+  const t0 = Date.now();
+  el.record.classList.add('recording');
+  el.record.textContent = '■ Stop';
+  el.audioClear.classList.add('hidden');
+  recordTimer = setInterval(() => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    el.audioName.textContent = `Recording… ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }, 250);
+  el.audioName.textContent = 'Recording… 0:00';
 }
 
 // ── WAV encoding (stereo float → 16-bit PCM) ─────────────────────────────────
@@ -205,6 +250,7 @@ el.randomSeed.addEventListener('click', () => { el.seed.value = Math.floor(Math.
 el.strength.addEventListener('input', () => { el.strengthVal.textContent = el.strength.value; });
 el.audioInput.addEventListener('change', (e) => handleAudioFile(e.target.files[0]));
 el.audioClear.addEventListener('click', clearAudio);
+el.record.addEventListener('click', toggleRecord);
 
 // Init labels + a random starting seed.
 el.secondsVal.textContent = `${el.seconds.value}s`;
