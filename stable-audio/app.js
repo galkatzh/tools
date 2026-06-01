@@ -9,13 +9,18 @@
 const $ = (s) => document.querySelector(s);
 const el = {
   prompt: $('#prompt'),
-  seconds: $('#seconds'), secondsVal: $('#seconds-val'),
+  seconds: $('#seconds'), secondsVal: $('#seconds-val'), durationControl: $('#duration-control'),
   steps: $('#steps'), stepsVal: $('#steps-val'),
   seed: $('#seed'), randomSeed: $('#random-seed'),
+  audioInput: $('#audio-input'), audioName: $('#audio-name'), audioClear: $('#audio-clear'),
+  strengthControl: $('#strength-control'), strength: $('#strength'), strengthVal: $('#strength-val'),
   generate: $('#generate'),
   progress: $('#progress'), progressBar: $('#progress-bar'), progressText: $('#progress-text'),
   results: $('#results'), player: $('#player'), download: $('#download'),
 };
+
+// Decoded input clip for audio-to-audio variation, or null for plain text-to-audio.
+let inputAudio = null;   // { left: Float32Array, right: Float32Array, name, duration }
 
 // ── Worker ───────────────────────────────────────────────────────────────────
 
@@ -81,6 +86,60 @@ function slug(text) {
   return text.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
 }
 
+// ── Audio input (decode + resample to 44.1 kHz stereo) ───────────────────────
+
+/** Decode an uploaded audio file to stereo Float32 channels at 44.1 kHz. */
+async function decodeToStereo44k(arrayBuffer) {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const ac = new Ctx();
+  let decoded;
+  try {
+    decoded = await ac.decodeAudioData(arrayBuffer);
+  } finally {
+    ac.close();
+  }
+  // Render through an OfflineAudioContext to resample to 44.1 kHz and force stereo
+  // (mono sources are up-mixed to both channels automatically).
+  const length = Math.max(1, Math.ceil(decoded.duration * 44100));
+  const off = new OfflineAudioContext(2, length, 44100);
+  const src = off.createBufferSource();
+  src.buffer = decoded;
+  src.connect(off.destination);
+  src.start();
+  const rendered = await off.startRendering();
+  return {
+    left: rendered.getChannelData(0).slice(),
+    right: rendered.getChannelData(1).slice(),
+    duration: rendered.duration,
+  };
+}
+
+async function handleAudioFile(file) {
+  if (!file) return;
+  el.audioName.textContent = `Decoding ${file.name}…`;
+  try {
+    const { left, right, duration } = await decodeToStereo44k(await file.arrayBuffer());
+    inputAudio = { left, right, name: file.name, duration };
+    el.audioName.textContent = `${file.name} — ${duration.toFixed(1)}s`;
+    el.audioClear.classList.remove('hidden');
+    el.strengthControl.classList.remove('hidden');
+    el.durationControl.classList.add('hidden');   // duration now comes from the clip
+  } catch (err) {
+    console.error('Failed to decode audio:', err);
+    el.audioName.textContent = `Couldn't decode that file (${err.message})`;
+    clearAudio();
+  }
+}
+
+function clearAudio() {
+  inputAudio = null;
+  el.audioInput.value = '';
+  el.audioName.textContent = '';
+  el.audioClear.classList.add('hidden');
+  el.strengthControl.classList.add('hidden');
+  el.durationControl.classList.remove('hidden');
+}
+
 // ── WAV encoding (stereo float → 16-bit PCM) ─────────────────────────────────
 
 function encodeWav(left, right, sampleRate) {
@@ -121,6 +180,9 @@ function onGenerateClick() {
     seconds: parseInt(el.seconds.value, 10),
     steps: parseInt(el.steps.value, 10),
     seed: parseInt(el.seed.value, 10) || 0,
+    strength: parseFloat(el.strength.value),
+    audioLeft: inputAudio ? inputAudio.left : null,
+    audioRight: inputAudio ? inputAudio.right : null,
   };
 
   if (modelLoaded) {
@@ -140,8 +202,12 @@ el.generate.addEventListener('click', onGenerateClick);
 el.seconds.addEventListener('input', () => { el.secondsVal.textContent = `${el.seconds.value}s`; });
 el.steps.addEventListener('input', () => { el.stepsVal.textContent = el.steps.value; });
 el.randomSeed.addEventListener('click', () => { el.seed.value = Math.floor(Math.random() * 1e9); });
+el.strength.addEventListener('input', () => { el.strengthVal.textContent = el.strength.value; });
+el.audioInput.addEventListener('change', (e) => handleAudioFile(e.target.files[0]));
+el.audioClear.addEventListener('click', clearAudio);
 
 // Init labels + a random starting seed.
 el.secondsVal.textContent = `${el.seconds.value}s`;
 el.stepsVal.textContent = el.steps.value;
+el.strengthVal.textContent = el.strength.value;
 el.seed.value = Math.floor(Math.random() * 1e9);

@@ -10,7 +10,11 @@
  * The exact tensor I/O, the LogSNR schedule and the pingpong sampler were reproduced from
  * the upstream stable-audio-tools reference and validated end-to-end against onnxruntime.
  *
- * Messages in:   { type:'load' }   { type:'generate', prompt, seconds, steps, seed }
+ * With an input clip it does audio-to-audio variation instead: a separate ONNX encoder turns
+ * the clip into latents that seed the diffusion (mixed with noise at the chosen strength).
+ *
+ * Messages in:   { type:'load' }
+ *                { type:'generate', prompt, seconds, steps, seed, strength, audioLeft, audioRight }
  * Messages out:  { type:'progress', stage, frac, text }
  *                { type:'loaded' }
  *                { type:'result', left, right, seconds }
@@ -32,8 +36,14 @@ const REPO = 'lsb/stable-audio-3-small-music-onnx';
 const BASE = `https://huggingface.co/${REPO}/resolve/main`;
 const CACHE_NAME = 'stable-audio-onnx-v1';
 
+// Audio encoder (audio → latents) for audio-to-audio variation. Lazily loaded only when
+// the user supplies an input clip. Lives in a separate repo from the text-to-audio bundle.
+const ENCODER_URL = 'https://huggingface.co/bgkb/encoder-onnx/resolve/main/encoder_q4.onnx';
+const ENCODER_BYTES = 35_686_439;
+
 const SAMPLE_RATE = 44100;
-const AUDIO_ALIGN = 8192;      // latent length granularity
+const AUDIO_ALIGN = 8192;      // input/latent length granularity (keeps t_lat even)
+const DOWNSAMPLE = 4096;       // audio samples per latent frame
 const IO_CHANNELS = 256;       // latent channels (decoder upsamples each by 4096 → audio)
 const COND_LEN = 257;          // cross-attention sequence length (256 text + 1 duration)
 const TEXT_MAX = 256;          // text token budget
@@ -141,6 +151,19 @@ async function load() {
   self.postMessage({ type: 'loaded' });
 }
 
+/** Lazily download + initialize the audio encoder (only needed for variation). */
+async function loadEncoder() {
+  if (sessions.encoder) return;
+  let done = 0;
+  const bytes = await fetchCached(ENCODER_URL, (n) => {
+    done += n;
+    self.postMessage({ type: 'progress', stage: 'gen', frac: 0,
+      text: `Downloading audio encoder… ${(done / 1e6).toFixed(0)} / ${(ENCODER_BYTES / 1e6).toFixed(0)} MB` });
+  });
+  self.postMessage({ type: 'progress', stage: 'gen', frac: 0, text: 'Initializing audio encoder…' });
+  sessions.encoder = await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] });
+}
+
 // ── Seeded RNG (reproducible generations) ────────────────────────────────────
 
 /** mulberry32 — small, fast, deterministic PRNG. */
@@ -166,25 +189,55 @@ function fillGaussian(arr, rand) {
 
 // ── Schedule ─────────────────────────────────────────────────────────────────
 
-/** sigmas[0..steps] from the LogSNR schedule; endpoints pinned to exactly 1 and 0. */
-function buildSchedule(steps) {
+/**
+ * sigmas[0..steps] from the LogSNR schedule. Starts at `sigmaMax` (1.0 for text-to-audio,
+ * <1.0 for variation — the lower it is, the closer the result stays to the input clip).
+ * Endpoints are pinned exactly: first = sigmaMax, last = 0.
+ */
+function buildSchedule(steps, sigmaMax = 1.0) {
   const sig = new Float64Array(steps + 1);
   for (let i = 0; i <= steps; i++) {
-    const tau = 1 - i / steps;                                   // linspace(1, 0, steps+1)
+    const tau = sigmaMax * (1 - i / steps);                      // linspace(sigmaMax, 0, steps+1)
     const logsnr = LOGSNR_END - tau * (LOGSNR_END - LOGSNR_START);
     sig[i] = 1 / (1 + Math.exp(logsnr));                         // sigmoid(-logsnr)
   }
-  sig[0] = 1.0;
+  sig[0] = sigmaMax;
   sig[steps] = 0.0;
   return sig;
 }
 
 // ── Generation ───────────────────────────────────────────────────────────────
 
-async function generate({ prompt, seconds, steps, seed }) {
-  const tLat = Math.ceil((seconds + HEADROOM_SEC) * SAMPLE_RATE / AUDIO_ALIGN) * 2;
-  const latLen = IO_CHANNELS * tLat;
+async function generate({ prompt, seconds, steps, seed, strength, audioLeft, audioRight }) {
+  const hasAudio = audioLeft && audioLeft.length > 0;
   const t0 = performance.now();
+
+  // Audio-to-audio variation: the input clip dictates the latent length and duration, and
+  // `strength` (σ) sets how far the result drifts from it. Plain text-to-audio uses the
+  // requested duration, a 6 s latent headroom, and σ = 1 (pure noise start).
+  let tLat, condSeconds, sigmaMax, trimSamples, initLatents = null;
+  if (hasAudio) {
+    await loadEncoder();
+    const nReal = audioLeft.length;
+    const nPad = Math.ceil(nReal / AUDIO_ALIGN) * AUDIO_ALIGN;   // encoder needs 8192-aligned input
+    tLat = nPad / DOWNSAMPLE;
+    condSeconds = nReal / SAMPLE_RATE;
+    sigmaMax = strength;
+    trimSamples = nReal;
+
+    const ein = new Float32Array(2 * nPad);                      // (1, 2, nPad), channel-major, zero-padded
+    ein.set(audioLeft, 0);
+    ein.set(audioRight, nPad);
+    self.postMessage({ type: 'progress', stage: 'gen', frac: 0, text: 'Encoding input audio…' });
+    const { latents } = await sessions.encoder.run({ audio: new ort.Tensor('float32', ein, [1, 2, nPad]) });
+    initLatents = latents.data;
+  } else {
+    tLat = Math.ceil((seconds + HEADROOM_SEC) * SAMPLE_RATE / AUDIO_ALIGN) * 2;
+    condSeconds = seconds;
+    sigmaMax = 1.0;
+    trimSamples = seconds * SAMPLE_RATE;
+  }
+  const latLen = IO_CHANNELS * tLat;
 
   // 1. Tokenize → fixed-length input_ids / attention_mask (right-padded to 256).
   self.postMessage({ type: 'progress', stage: 'gen', frac: 0, text: 'Encoding prompt…' });
@@ -201,7 +254,7 @@ async function generate({ prompt, seconds, steps, seed }) {
 
   // 3. Number conditioner → duration embedding (1, 1, 768).
   const { embedding } = await sessions.number_conditioner.run({
-    seconds: new ort.Tensor('float32', Float32Array.from([seconds]), [1]),
+    seconds: new ort.Tensor('float32', Float32Array.from([condSeconds]), [1]),
   });
 
   // 4. Assemble DiT conditioning. cross = [text tokens; duration token] (1, 257, 768);
@@ -216,13 +269,15 @@ async function generate({ prompt, seconds, steps, seed }) {
   const localT = new ort.Tensor('float32', new Float32Array(COND_LEN * tLat), [1, COND_LEN, tLat]);
   const maskT = new ort.Tensor('bool', new Uint8Array(tLat).fill(1), [1, tLat]);
 
-  // 5. Pingpong sampler. x starts as standard-normal noise; each step denoises then
-  //    re-noises to the next (lower) noise level. The final t_next is 0, so x ends clean.
+  // 5. Pingpong sampler. x starts as noise (text-to-audio) or as the input clip's latents
+  //    mixed with noise at level σ (variation): x = init·(1−σ) + noise·σ. Each step denoises
+  //    then re-noises to the next (lower) level; the final t_next is 0, so x ends clean.
   const rand = mulberry32(seed);
   const x = new Float32Array(latLen);
   fillGaussian(x, rand);
+  if (initLatents) for (let i = 0; i < latLen; i++) x[i] = initLatents[i] * (1 - sigmaMax) + x[i] * sigmaMax;
   const noise = new Float32Array(latLen);
-  const sig = buildSchedule(steps);
+  const sig = buildSchedule(steps, sigmaMax);
 
   for (let s = 0; s < steps; s++) {
     const tc = sig[s], tn = sig[s + 1];
@@ -248,7 +303,7 @@ async function generate({ prompt, seconds, steps, seed }) {
   self.postMessage({ type: 'progress', stage: 'gen', frac: steps / (steps + 1), text: 'Decoding to audio…' });
   const { audio } = await sessions.decoder.run({ latents: new ort.Tensor('float32', x, [1, IO_CHANNELS, tLat]) });
   const chan = audio.dims[2];
-  const wanted = Math.min(seconds * SAMPLE_RATE, chan);
+  const wanted = Math.min(trimSamples, chan);
   const left = new Float32Array(wanted);
   const right = new Float32Array(wanted);
   for (let i = 0; i < wanted; i++) {
