@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stable Audio — Local Music Generation</title>
+  <meta name="description" content="Generate music from a text prompt entirely in your browser with Stable Audio 3 Small.">
+  <meta name="theme-color" content="#1a1a2e">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="app">
+    <h1>Stable Audio</h1>
+    <p class="subtitle">
+      Generate music from a text prompt — or remix your own clip — with
+      <a href="https://huggingface.co/lsb/stable-audio-3-small-music-onnx" target="_blank" rel="noopener">Stable Audio 3 Small</a>.
+      Runs entirely in your browser, nothing leaves your device.
+    </p>
+
+    <label for="prompt">Prompt</label>
+    <textarea id="prompt" rows="3" placeholder="e.g. upbeat lo-fi hip hop with a warm vinyl crackle, mellow piano, 80 bpm">warm lo-fi hip hop beat with mellow piano and vinyl crackle, 80 bpm</textarea>
+
+    <div class="audio-row">
+      <label for="audio-input" class="audio-label">
+        <input type="file" id="audio-input" accept="audio/*" hidden>
+        🎵 Add an audio clip <span class="hint">(optional — remixes it toward your prompt)</span>
+      </label>
+      <button id="record" type="button" class="record-btn" title="Record from microphone">● Rec</button>
+      <button id="audio-clear" type="button" class="hidden" title="Remove clip" aria-label="Remove clip">✕</button>
+    </div>
+    <p id="audio-name" class="audio-name"></p>
+
+    <div class="controls">
+      <div class="control" id="duration-control">
+        <label for="seconds">Duration <span id="seconds-val" class="val">10s</span></label>
+        <input type="range" id="seconds" min="3" max="20" step="1" value="10">
+      </div>
+      <div class="control hidden" id="strength-control">
+        <label for="strength">Variation strength <span id="strength-val" class="val">0.6</span></label>
+        <input type="range" id="strength" min="0.3" max="1.0" step="0.05" value="0.6">
+        <small class="ctrl-hint">lower = closer to your clip · higher = freer</small>
+      </div>
+      <div class="control">
+        <label for="steps">Steps <span id="steps-val" class="val">8</span></label>
+        <input type="range" id="steps" min="4" max="12" step="1" value="8">
+      </div>
+      <div class="control seed-control">
+        <label for="seed">Seed</label>
+        <div class="seed-row">
+          <input type="number" id="seed" min="0" step="1" value="0">
+          <button id="random-seed" type="button" title="Randomize seed" aria-label="Randomize seed">🎲</button>
+        </div>
+      </div>
+    </div>
+
+    <button id="generate">Generate</button>
+
+    <p class="note">First run downloads ~620 MB of model weights (cached afterwards; adding an audio
+      clip pulls a further ~36 MB encoder once). Generation runs on your CPU and takes roughly
+      1–2 minutes for a 10 s clip; ~1 GB of free RAM is recommended.</p>
+
+    <section id="progress" class="hidden">
+      <div class="progress-track"><div id="progress-bar" class="progress-fill"></div></div>
+      <p id="progress-text" class="progress-label"></p>
+    </section>
+
+    <section id="results" class="hidden">
+      <audio id="player" controls></audio>
+      <a id="download" class="download-btn">Download WAV</a>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
