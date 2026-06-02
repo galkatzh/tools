@@ -76,7 +76,7 @@ function onResult({ left, right, seconds }) {
   el.player.dataset.url = url;
   el.player.src = url;
   el.download.href = url;
-  el.download.download = `${slug(el.prompt.value) || 'stable-audio'}_${seconds.toFixed(0)}s.wav`;
+  el.download.download = `${slug(el.prompt.value) || 'stable-audio-small'}_${seconds.toFixed(0)}s.wav`;
   el.results.classList.remove('hidden');
   setBusy(false);
 }

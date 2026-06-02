@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stable Audio SFX — Local Sound-Effect Generation</title>
+  <meta name="description" content="Generate sound effects from a text prompt entirely in your browser with Stable Audio 3 Small SFX.">
+  <meta name="theme-color" content="#1a1a2e">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="app">
+    <h1>Stable Audio SFX</h1>
+    <p class="subtitle">
+      Generate sound effects from text with
+      <a href="https://huggingface.co/stabilityai/stable-audio-3-small-sfx" target="_blank" rel="noopener">Stable Audio 3 Small SFX</a>.
+      Runs entirely in your browser — accelerated by <span id="backend">WASM (CPU)</span> when available.
+    </p>
+
+    <label for="prompt">Prompt</label>
+    <textarea id="prompt" rows="3" placeholder="e.g. futuristic laser blast, sharp energy pulse, arcade style">heavy rain on a tin roof with distant thunder</textarea>
+
+    <div class="controls">
+      <div class="control">
+        <label for="seconds">Duration <span id="seconds-val" class="val">10s</span></label>
+        <input type="range" id="seconds" min="1" max="20" step="1" value="10">
+      </div>
+      <div class="control">
+        <label for="steps">Steps <span id="steps-val" class="val">8</span></label>
+        <input type="range" id="steps" min="4" max="12" step="1" value="8">
+      </div>
+      <div class="control seed-control">
+        <label for="seed">Seed</label>
+        <div class="seed-row">
+          <input type="number" id="seed" min="0" step="1" value="0">
+          <button id="random-seed" type="button" title="Randomize seed" aria-label="Randomize seed">🎲</button>
+        </div>
+      </div>
+    </div>
+
+    <button id="generate">Generate</button>
+
+    <p class="note">First run downloads ~615 MB of model weights (cached afterwards; the text encoder
+      and decoder are shared with the Stable Audio music app, so those are reused if already cached).
+      The diffusion runs on WebGPU where supported, otherwise on the CPU.</p>
+
+    <section id="progress" class="hidden">
+      <div class="progress-track"><div id="progress-bar" class="progress-fill"></div></div>
+      <p id="progress-text" class="progress-label"></p>
+    </section>
+
+    <section id="results" class="hidden">
+      <audio id="player" controls></audio>
+      <a id="download" class="download-btn">Download WAV</a>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
