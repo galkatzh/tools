@@ -96,6 +96,10 @@ function toast(msg) {
   console.error(msg);
 }
 
+// Nothing that escapes a try/catch goes unreported
+window.addEventListener('error', e => toast('שגיאה: ' + e.message));
+window.addEventListener('unhandledrejection', e => toast('שגיאה: ' + (e.reason?.message || e.reason)));
+
 // --- Geolocation tracking ---
 // ?mocklat=..&mocklng=.. simulates a position (used by automated tests)
 const urlParams = new URLSearchParams(location.search);
@@ -321,9 +325,9 @@ async function queryPoint(latlng) {
   try {
     renderResults(await queryLive(x, y));
   } catch (e) {
-    console.warn('live query failed, falling back to local Gush/Helka tiles', e);
+    console.error('live query failed, falling back to local Gush/Helka tiles', e);
     try {
-      renderResults(await queryLocal(x, y), 'מצב לא מקוון: מוצגים נתוני גוש/חלקה מקומיים בלבד');
+      renderResults(await queryLocal(x, y), `השליפה החיה מ-govmap נכשלה (${e.message}) — מוצגים נתוני גוש/חלקה מקומיים בלבד`);
     } catch (e2) {
       console.error('local fallback failed too', e2);
       toast('שגיאה בשליפת מידע: ' + e2.message);
