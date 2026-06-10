@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>גוש וחלקה</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="split">
+    <div id="map-pane">
+      <div id="map"></div>
+      <button id="locate-btn" title="מרכז למיקום שלי">🎯</button>
+      <button id="here-btn" title="מידע על המיקום הנוכחי">📍 איפה אני?</button>
+    </div>
+    <div id="info-pane">
+      <details id="layer-picker">
+        <summary>שכבות מידע</summary>
+        <div id="layer-list"></div>
+      </details>
+      <div id="results"><p class="hint">הקישו על המפה, או על "איפה אני?", לקבלת מידע על מיקום.</p></div>
+    </div>
+  </div>
+  <div id="toast" hidden></div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
