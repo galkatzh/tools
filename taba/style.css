@@ -152,6 +152,22 @@ html, body {
   color: #666;
 }
 
+.mekarkein-btn {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 5px 12px;
+  border-radius: 14px;
+  background: #2e7d32;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.mekarkein-btn:active {
+  background: #1b5e20;
+}
+
 .offline-note {
   padding: 6px 10px;
   margin-bottom: 10px;
