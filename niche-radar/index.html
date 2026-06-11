@@ -11,8 +11,9 @@
     <h1>📡 Niche Radar</h1>
     <p class="tagline">Free market-demand research: live signals from Wikipedia, Hacker News, GitHub, npm &amp; Google autocomplete. No login, no backend.</p>
     <form id="search-form">
-      <input id="q" type="search" placeholder="Enter a niche, keyword or topic… e.g. standing desk, local llm, cold plunge" autocomplete="off" autofocus>
+      <input id="q" type="search" placeholder="A niche to research, or comma-separate to compare… e.g. standing desk, treadmill desk" autocomplete="off" autofocus>
       <button type="submit">Research</button>
+      <button type="button" id="settings-btn" class="secondary" title="CORS proxy settings">⚙</button>
     </form>
     <div id="recent" class="chips"></div>
   </header>
@@ -25,6 +26,14 @@
       <article class="card" id="pulse-gh"><h2>⭐ GitHub — hot new repos (14 days)</h2><div class="body"></div></article>
     </section>
 
+    <!-- Shown for comma-separated queries: side-by-side comparison -->
+    <section id="compare" class="grid" hidden>
+      <article class="card wide" id="cmp-wiki"><h2>🌍 Wikipedia interest</h2><div class="body"></div></article>
+      <article class="card" id="cmp-hn"><h2>🗞️ Hacker News stories</h2><div class="body"></div></article>
+      <article class="card" id="cmp-npm"><h2>📦 npm downloads</h2><div class="body"></div></article>
+      <article class="card" id="cmp-gh"><h2>⭐ GitHub repos</h2><div class="body"></div></article>
+    </section>
+
     <!-- Shown when a query is active -->
     <section id="results" class="grid" hidden>
       <article class="card" id="panel-wiki"><h2>🌍 Wikipedia interest <span class="badge"></span></h2><div class="body"></div></article>
@@ -32,10 +41,42 @@
       <article class="card" id="panel-gh"><h2>⭐ GitHub activity <span class="badge"></span></h2><div class="body"></div></article>
       <article class="card" id="panel-npm"><h2>📦 npm ecosystem <span class="badge"></span></h2><div class="body"></div></article>
       <article class="card wide" id="panel-questions"><h2>❓ Questions &amp; autocomplete demand</h2><div class="body"></div></article>
+      <article class="card" id="panel-reddit-subs"><h2>👥 Reddit communities</h2><div class="body"></div></article>
+      <article class="card" id="panel-reddit-posts"><h2>💬 Reddit voice of customer</h2><div class="body"></div></article>
+      <article class="card" id="panel-news"><h2>📰 News coverage</h2><div class="body"></div></article>
       <article class="card" id="panel-related"><h2>🧭 Related concepts</h2><div class="body"></div></article>
       <article class="card" id="panel-links"><h2>🔗 Go deeper (prefilled tools)</h2><div class="body"></div></article>
     </section>
   </main>
+
+  <dialog id="settings">
+    <h2>⚙ CORS proxy</h2>
+    <p>Reddit and Google News block direct browser requests. Point Niche Radar at your own CORS proxy
+      to enable those panels. The proxy URL is stored only in this browser.</p>
+    <input id="proxy-input" type="url" placeholder="https://your-worker.workers.dev/?url=" spellcheck="false">
+    <p class="note">The target URL is appended URL-encoded (or replaces a <code>{url}</code> placeholder).
+      The easiest proxy is a free <a href="https://workers.cloudflare.com/" target="_blank" rel="noopener">Cloudflare Worker</a>:</p>
+    <pre>export default {
+  async fetch(req) {
+    const url = new URL(req.url).searchParams.get('url');
+    if (!url) return new Response('missing ?url=', { status: 400 });
+    const res = await fetch(url, { headers: { 'User-Agent': 'niche-radar' } });
+    return new Response(res.body, {
+      status: res.status,
+      headers: {
+        'Content-Type': res.headers.get('Content-Type') ?? 'text/plain',
+        'Access-Control-Allow-Origin': '*',
+      },
+    });
+  },
+};</pre>
+    <p class="note">Heads-up: Reddit sometimes blocks cloud-provider IPs — if a Reddit panel fails with a 403, that's
+      Reddit blocking the proxy's IP, not a bug in your setup.</p>
+    <div class="dialog-actions">
+      <button id="proxy-save">Save</button>
+      <button id="proxy-cancel" type="button" class="secondary">Cancel</button>
+    </div>
+  </dialog>
 
   <footer>
     Data: <a href="https://wikimedia.org/api/rest_v1/" target="_blank" rel="noopener">Wikimedia Pageviews</a> ·
@@ -43,7 +84,8 @@
     <a href="https://docs.github.com/rest" target="_blank" rel="noopener">GitHub</a> ·
     <a href="https://github.com/npm/registry" target="_blank" rel="noopener">npm</a> ·
     <a href="https://www.datamuse.com/api/" target="_blank" rel="noopener">Datamuse</a> ·
-    Google suggest. All free, fetched live from your browser.
+    Google suggest · Reddit &amp; Google News (via your <a href="#" class="open-settings">CORS proxy</a>).
+    All free, fetched live from your browser.
   </footer>
 
   <div id="toast" hidden></div>

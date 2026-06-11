@@ -4,8 +4,10 @@
  * Everything is fetched live from free, CORS-enabled public APIs:
  * Wikimedia pageviews, HN Algolia, GitHub search, npm registry,
  * Datamuse, and Google autocomplete (JSONP, since it has no CORS).
- * Reddit blocks browser CORS entirely, so Reddit research is offered
- * as prefilled link-outs instead of live panels.
+ * Reddit and Google News RSS block browser CORS, so those panels work
+ * through a user-supplied CORS proxy (e.g. a free Cloudflare Worker)
+ * configured in ⚙ settings; without one they explain how to set it up.
+ * Comma-separated queries switch to a side-by-side comparison view.
  */
 
 // ---------- global error visibility ----------
@@ -27,20 +29,23 @@ const $ = sel => document.querySelector(sel);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = n => Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
 const enc = encodeURIComponent;
+const PALETTE = ['#58a6ff', '#3fb950', '#d29922', '#f778ba'];
 
-async function fetchJSON(url, retries = 2) {
+async function fetchRes(url, retries = 2) {
   const res = await fetch(url);
   if (res.status === 429 && retries > 0) {
     // Rate-limited (Wikipedia does this on busy IPs) — back off and retry.
     await new Promise(r => setTimeout(r, (3 - retries) * 1500));
-    return fetchJSON(url, retries - 1);
+    return fetchRes(url, retries - 1);
   }
   if (!res.ok) {
-    const detail = await res.json().then(b => b.message).catch(() => '');
+    const detail = await res.text().then(t => JSON.parse(t).message).catch(() => '');
     throw new Error(`${res.status} ${res.statusText} ${detail ? `(${detail}) ` : ''}— ${url}`);
   }
-  return res.json();
+  return res;
 }
+const fetchJSON = async url => (await fetchRes(url)).json();
+const fetchText = async url => (await fetchRes(url)).text();
 
 // JSONP loader for APIs without CORS (Google autocomplete).
 let jsonpId = 0;
@@ -77,36 +82,73 @@ function setBadge(panelId, pct, label) {
   el.textContent = `${arrow} ${pct > 0 ? '+' : ''}${pct}% ${label}`;
 }
 
+// ---------- CORS proxy (for Reddit & Google News) ----------
+
+const PROXY_KEY = 'nicheRadar.proxy';
+const getProxy = () => localStorage.getItem(PROXY_KEY) || '';
+
+/** Wrap a URL with the configured proxy: `{url}` placeholder or prefix style. */
+function proxied(url) {
+  const p = getProxy();
+  if (!p) throw new Error('No CORS proxy configured');
+  return p.includes('{url}') ? p.replace('{url}', enc(url)) : p + enc(url);
+}
+
+const PROXY_HINT = `<div class="muted">Reddit and Google News don't allow direct browser requests.
+  <a href="#" class="open-settings">Configure a CORS proxy</a> (a free Cloudflare Worker works) to enable this panel.</div>`;
+
 // ---------- tiny SVG charts ----------
 
-function lineChart(values, firstLabel, lastLabel) {
-  const W = 300, H = 80, P = 4;
-  const max = Math.max(...values, 1);
-  const pts = values.map((v, i) => [
-    P + (i * (W - 2 * P)) / Math.max(values.length - 1, 1),
-    H - P - (v / max) * (H - 2 * P - 12),
-  ]);
-  const line = pts.map(p => p.map(n => n.toFixed(1)).join(',')).join(' ');
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-    <polygon points="${P},${H - P} ${line} ${W - P},${H - P}" fill="rgba(88,166,255,.15)"/>
-    <polyline points="${line}" fill="none" stroke="#58a6ff" stroke-width="2"/>
+const CHART = { W: 300, H: 80, P: 4 };
+
+function chartFrame(inner, firstLabel, lastLabel) {
+  const { W, H, P } = CHART;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${inner}
     <text x="${P}" y="${H - P + 2}" font-size="9" fill="#8b949e">${esc(firstLabel)}</text>
     <text x="${W - P}" y="${H - P + 2}" font-size="9" fill="#8b949e" text-anchor="end">${esc(lastLabel)}</text>
   </svg>`;
 }
 
+function linePoints(values, max) {
+  const { W, H, P } = CHART;
+  const bottom = H - P - 12; // keep clear of the label strip
+  return values.map((v, i) => [
+    P + (i * (W - 2 * P)) / Math.max(values.length - 1, 1),
+    bottom - (v / max) * (bottom - P),
+  ].map(n => n.toFixed(1)).join(',')).join(' ');
+}
+
+function lineChart(values, firstLabel, lastLabel) {
+  const { W, H, P } = CHART;
+  const bottom = H - P - 12;
+  const pts = linePoints(values, Math.max(...values, 1));
+  return chartFrame(`
+    <polygon points="${P},${bottom} ${pts} ${W - P},${bottom}" fill="rgba(88,166,255,.15)"/>
+    <polyline points="${pts}" fill="none" stroke="#58a6ff" stroke-width="2"/>`, firstLabel, lastLabel);
+}
+
+/** Overlay several series on one shared-scale chart. series: [{values, color}] */
+function multiLineChart(series, firstLabel, lastLabel) {
+  const max = Math.max(1, ...series.flatMap(s => s.values));
+  return chartFrame(series.map(s =>
+    `<polyline points="${linePoints(s.values, max)}" fill="none" stroke="${s.color}" stroke-width="2"/>`
+  ).join(''), firstLabel, lastLabel);
+}
+
 function barChart(values, firstLabel, lastLabel) {
-  const W = 300, H = 80, P = 4, gap = 3;
+  const { W, H, P } = CHART;
+  const gap = 3;
   const max = Math.max(...values, 1);
   const bw = (W - 2 * P) / values.length - gap;
-  const bars = values.map((v, i) => {
+  return chartFrame(values.map((v, i) => {
     const h = (v / max) * (H - 2 * P - 12);
     return `<rect x="${(P + i * (bw + gap)).toFixed(1)}" y="${(H - P - 12 - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="#58a6ff"/>`;
-  }).join('');
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${bars}
-    <text x="${P}" y="${H - P + 2}" font-size="9" fill="#8b949e">${esc(firstLabel)}</text>
-    <text x="${W - P}" y="${H - P + 2}" font-size="9" fill="#8b949e" text-anchor="end">${esc(lastLabel)}</text>
-  </svg>`;
+  }).join(''), firstLabel, lastLabel);
+}
+
+function legendHTML(entries) {
+  return `<div class="legend">${entries.map(e =>
+    `<span><i class="dot" style="background:${e.color}"></i>${esc(e.label)}${e.note ? ` <span class="muted">· ${esc(e.note)}</span>` : ''}</span>`).join('')}</div>`;
 }
 
 // ---------- panel plumbing ----------
@@ -114,11 +156,9 @@ function barChart(values, firstLabel, lastLabel) {
 // Generation counter: a new search invalidates renders from older, slower fetches.
 let gen = 0;
 
-function panelBody(id) { return $(`#${id} .body`); }
-
 /** Run an async renderer for one panel; failures are logged AND shown in the panel. */
 async function runPanel(id, myGen, renderer) {
-  const body = panelBody(id);
+  const body = $(`#${id} .body`);
   body.innerHTML = '<div class="loading">Loading</div>';
   try {
     const html = await renderer();
@@ -135,42 +175,93 @@ function listHTML(items) {
   ).join('')}</ul>`;
 }
 
-// ---------- query panels ----------
+// ---------- shared data fetchers (single + comparison views) ----------
+
+/** Keys ("yyyymm") and API bounds for the last 24 complete months. */
+function monthRange() {
+  const now = new Date();
+  const keys = [];
+  for (let i = 24; i >= 1; i--) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    keys.push(`${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}`);
+  }
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0)); // last day of previous month
+  return { keys, start: `${keys[0]}0100`, end: `${keys.at(-1)}${String(end.getUTCDate()).padStart(2, '0')}00` };
+}
+const monthKeyLabel = k => `${k.slice(4)}/${k.slice(2, 4)}`;
+
+/** Best-matching Wikipedia article title, or undefined. Full-text search ranks by relevance. */
+async function wikiBestTitle(q) {
+  const data = await fetchJSON(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${enc(q)}&srlimit=1&format=json&origin=*`);
+  return data.query.search[0]?.title;
+}
+
+/** Monthly pageviews aligned to monthRange keys (0 for missing months). */
+async function wikiMonthly(title, range) {
+  const data = await fetchJSON(`https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/en.wikipedia/all-access/user/${enc(title.replace(/ /g, '_'))}/monthly/${range.start}/${range.end}`);
+  const byMonth = Object.fromEntries(data.items.map(i => [i.timestamp.slice(0, 6), i.views]));
+  return range.keys.map(k => byMonth[k] ?? 0);
+}
+
+/** Eight 90-day [from, to) unix-second windows ending now. */
+function hnWindows() {
+  const DAY = 86400, now = Math.floor(Date.now() / 1000);
+  return Array.from({ length: 8 }, (_, i) => {
+    const a = now - (8 - i) * 90 * DAY;
+    return [a, a + 90 * DAY];
+  });
+}
+
+function hnCounts(q, windows) {
+  return Promise.all(windows.map(([a, b]) =>
+    fetchJSON(`https://hn.algolia.com/api/v1/search?query=${enc(q)}&tags=story&hitsPerPage=0&numericFilters=created_at_i>=${a},created_at_i<${b}`)
+      .then(r => r.nbHits)));
+}
+
+const ghSearch = params => fetchJSON(`https://api.github.com/search/repositories?${params}`);
+const daysAgo = days => new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
+
+/** Most relevant npm packages: registry search is fuzzy and returns unrelated
+ * packages for non-dev queries, so require every query word in the metadata. */
+async function npmTopPkgs(q) {
+  const found = await fetchJSON(`https://registry.npmjs.org/-/v1/search?text=${enc(q)}&size=20`);
+  const words = q.toLowerCase().split(/\s+/);
+  return found.objects.map(o => o.package).filter(p => {
+    const hay = `${p.name} ${p.description || ''} ${(p.keywords || []).join(' ')}`.toLowerCase();
+    return words.every(w => hay.includes(w));
+  }).slice(0, 5);
+}
+
+/** Trailing 7-day download sums for the last year (oldest incomplete week dropped). */
+async function npmWeekly(name) {
+  const range = await fetchJSON(`https://api.npmjs.org/downloads/range/last-year/${enc(name)}`);
+  const daily = range.downloads.map(x => x.downloads);
+  const weeks = [];
+  for (let end = daily.length; end - 7 >= 0; end -= 7) weeks.unshift(daily.slice(end - 7, end).reduce((s, x) => s + x, 0));
+  return { weeks, first: range.start.slice(0, 7), last: range.end.slice(0, 7) };
+}
+
+// ---------- single-query panels ----------
 
 async function wikiPanel(q) {
-  // Full-text search ranks by relevance (opensearch is prefix-only and picks odd articles).
-  const search = await fetchJSON(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${enc(q)}&srlimit=1&format=json&origin=*`);
-  const title = search.query.search[0]?.title;
+  const title = await wikiBestTitle(q);
   if (!title) { setBadge('panel-wiki', null); return '<div class="muted">No matching Wikipedia article — too niche for an encyclopedia, or try a broader term.</div>'; }
-
-  // Last 24 complete months of pageviews for the best-matching article.
-  const now = new Date();
-  const ym = (d, day) => `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${day}00`;
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 24, 1));
-  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0)); // last day of previous month
-  const data = await fetchJSON(`https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/en.wikipedia/all-access/user/${enc(title.replace(/ /g, '_'))}/monthly/${ym(start, '01')}/${ym(end, String(end.getUTCDate()).padStart(2, '0'))}`);
-  const views = data.items.map(i => i.views);
-  const label = ts => `${ts.slice(4, 6)}/${ts.slice(2, 4)}`;
+  const range = monthRange();
+  const views = await wikiMonthly(title, range);
   setBadge('panel-wiki', pctChange(views, 3), 'last 3 mo');
   return `
     <div>Article: <a href="https://en.wikipedia.org/wiki/${enc(title.replace(/ /g, '_'))}" target="_blank" rel="noopener">${esc(title)}</a>
       — <b>${fmt(views.at(-1) ?? 0)}</b> views last month</div>
-    ${lineChart(views, label(data.items[0].timestamp), label(data.items.at(-1).timestamp))}
+    ${lineChart(views, monthKeyLabel(range.keys[0]), monthKeyLabel(range.keys.at(-1)))}
     <div class="note">Monthly Wikipedia pageviews — an open, rate-limit-free proxy for topic interest (a Google Trends alternative).</div>`;
 }
 
 async function hnPanel(q) {
-  // Story counts in eight 90-day windows + the top stories of the past year.
-  const DAY = 86400, now = Math.floor(Date.now() / 1000);
-  const windows = Array.from({ length: 8 }, (_, i) => {
-    const a = now - (8 - i) * 90 * DAY;
-    return [a, a + 90 * DAY];
-  });
-  const countURL = ([a, b]) =>
-    `https://hn.algolia.com/api/v1/search?query=${enc(q)}&tags=story&hitsPerPage=0&numericFilters=created_at_i>=${a},created_at_i<${b}`;
+  const windows = hnWindows();
+  const now = windows.at(-1)[1];
   const [counts, top] = await Promise.all([
-    Promise.all(windows.map(w => fetchJSON(countURL(w)).then(r => r.nbHits))),
-    fetchJSON(`https://hn.algolia.com/api/v1/search?query=${enc(q)}&tags=story&hitsPerPage=5&numericFilters=created_at_i>=${now - 365 * DAY}`),
+    hnCounts(q, windows),
+    fetchJSON(`https://hn.algolia.com/api/v1/search?query=${enc(q)}&tags=story&hitsPerPage=5&numericFilters=created_at_i>=${now - 365 * 86400}`),
   ]);
   setBadge('panel-hn', pctChange(counts, 2), 'last 6 mo');
   const monthLabel = ts => new Date(ts * 1000).toLocaleDateString('en', { month: 'short', year: '2-digit' });
@@ -186,12 +277,10 @@ async function hnPanel(q) {
 }
 
 async function githubPanel(q) {
-  const d = days => new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
-  const search = params => fetchJSON(`https://api.github.com/search/repositories?${params}`);
   const [topRepos, fresh, prior] = await Promise.all([
-    search(`q=${enc(`${q} in:name,description`)}&sort=stars&order=desc&per_page=5`),
-    search(`q=${enc(`${q} created:>${d(90)}`)}&sort=stars&order=desc&per_page=5`),
-    search(`q=${enc(`${q} created:${d(180)}..${d(90)}`)}&per_page=1`),
+    ghSearch(`q=${enc(`${q} in:name,description`)}&sort=stars&order=desc&per_page=5`),
+    ghSearch(`q=${enc(`${q} created:>${daysAgo(90)}`)}&sort=stars&order=desc&per_page=5`),
+    ghSearch(`q=${enc(`${q} created:${daysAgo(180)}..${daysAgo(90)}`)}&per_page=1`),
   ]);
   const growth = prior.total_count ? Math.round(((fresh.total_count - prior.total_count) / prior.total_count) * 100) : null;
   setBadge('panel-gh', growth, 'new repos');
@@ -204,24 +293,13 @@ async function githubPanel(q) {
 }
 
 async function npmPanel(q) {
-  const found = await fetchJSON(`https://registry.npmjs.org/-/v1/search?text=${enc(q)}&size=20`);
-  // npm search is fuzzy and returns unrelated packages for non-dev queries;
-  // require every query word to actually appear in the package metadata.
-  const words = q.toLowerCase().split(/\s+/);
-  const pkgs = found.objects.map(o => o.package).filter(p => {
-    const hay = `${p.name} ${p.description || ''} ${(p.keywords || []).join(' ')}`.toLowerCase();
-    return words.every(w => hay.includes(w));
-  }).slice(0, 5);
+  const pkgs = await npmTopPkgs(q);
   if (!pkgs.length) { setBadge('panel-npm', null); return '<div class="muted">No npm packages match — probably not a developer-tool niche.</div>'; }
-  const range = await fetchJSON(`https://api.npmjs.org/downloads/range/last-year/${enc(pkgs[0].name)}`);
-  // Bucket daily downloads into trailing 7-day weeks (drop the incomplete oldest one).
-  const daily = range.downloads.map(x => x.downloads);
-  const weeks = [];
-  for (let end = daily.length; end - 7 >= 0; end -= 7) weeks.unshift(daily.slice(end - 7, end).reduce((s, x) => s + x, 0));
+  const { weeks, first, last } = await npmWeekly(pkgs[0].name);
   setBadge('panel-npm', pctChange(weeks, 12), 'last quarter');
   return `
     <div>Weekly downloads of top match <a href="https://www.npmjs.com/package/${enc(pkgs[0].name)}" target="_blank" rel="noopener">${esc(pkgs[0].name)}</a>:</div>
-    ${lineChart(weeks, range.start.slice(0, 7), range.end.slice(0, 7))}
+    ${lineChart(weeks, first, last)}
     ${listHTML(pkgs.map(p => ({ title: p.name, url: `https://www.npmjs.com/package/${p.name}`, meta: p.description?.slice(0, 40) || '' })))}
     <div class="note">Package downloads are a clean adoption signal for developer-facing niches.</div>`;
 }
@@ -253,6 +331,44 @@ async function relatedPanel(q) {
     <div class="note">Click a concept to research it. Semantic neighbours often hide less-crowded sub-niches.</div>`;
 }
 
+async function redditSubsPanel(q) {
+  if (!getProxy()) return PROXY_HINT;
+  const data = await fetchJSON(proxied(`https://www.reddit.com/subreddits/search.json?q=${enc(q)}&limit=8&raw_json=1`));
+  const subs = data.data.children.map(c => c.data).filter(s => !s.over18);
+  if (!subs.length) return '<div class="muted">No matching subreddits.</div>';
+  return listHTML(subs.map(s => ({
+    title: `r/${s.display_name}`,
+    url: `https://www.reddit.com${s.url}`,
+    meta: `${fmt(s.subscribers ?? 0)} members`,
+  }))) + '<div class="note">Community size ≈ addressable audience. Adjacent subreddits hide sub-niches.</div>';
+}
+
+async function redditPostsPanel(q) {
+  if (!getProxy()) return PROXY_HINT;
+  const data = await fetchJSON(proxied(`https://www.reddit.com/search.json?q=${enc(q)}&sort=top&t=year&limit=8&raw_json=1`));
+  const posts = data.data.children.map(c => c.data).filter(p => !p.over_18);
+  if (!posts.length) return '<div class="muted">No Reddit posts in the past year.</div>';
+  return listHTML(posts.map(p => ({
+    title: p.title,
+    url: `https://www.reddit.com${p.permalink}`,
+    meta: `r/${p.subreddit} · ${fmt(p.score)}▲`,
+  }))) + '<div class="note">Top posts of the year — pain points and recommendations in the community\'s own words.</div>';
+}
+
+async function newsPanel(q) {
+  if (!getProxy()) return PROXY_HINT;
+  const xml = await fetchText(proxied(`https://news.google.com/rss/search?q=${enc(q)}&hl=en-US&gl=US&ceid=US:en`));
+  const doc = new DOMParser().parseFromString(xml, 'text/xml');
+  if (doc.querySelector('parsererror')) throw new Error('Could not parse Google News RSS (is the proxy returning the raw response?)');
+  const items = [...doc.querySelectorAll('item')].slice(0, 8).map(it => ({
+    title: it.querySelector('title')?.textContent || '(untitled)',
+    url: it.querySelector('link')?.textContent || '#',
+    meta: new Date(it.querySelector('pubDate')?.textContent || '').toLocaleDateString('en', { month: 'short', day: 'numeric' }),
+  }));
+  if (!items.length) return '<div class="muted">No recent news coverage.</div>';
+  return listHTML(items) + '<div class="note">Press coverage signals mainstream momentum (Google News).</div>';
+}
+
 function linksPanel(q) {
   const e = enc(q);
   const links = [
@@ -274,6 +390,60 @@ function linksPanel(q) {
   ];
   return `<ul class="list">${links.map(([name, url, what]) =>
     `<li><a href="${esc(url)}" target="_blank" rel="noopener">${esc(name)}</a><span class="meta">${esc(what)}</span></li>`).join('')}</ul>`;
+}
+
+// ---------- comparison panels (query = "a, b, c") ----------
+
+async function cmpWikiPanel(terms) {
+  const range = monthRange();
+  const series = await Promise.all(terms.map(async (t, i) => {
+    const title = await wikiBestTitle(t);
+    if (!title) return { label: t, color: PALETTE[i], values: range.keys.map(() => 0), note: 'no article' };
+    const values = await wikiMonthly(title, range);
+    return { label: t, color: PALETTE[i], values, note: `${title} · ${fmt(values.at(-1))}/mo` };
+  }));
+  return legendHTML(series)
+    + multiLineChart(series, monthKeyLabel(range.keys[0]), monthKeyLabel(range.keys.at(-1)))
+    + '<div class="note">Monthly Wikipedia pageviews, shared scale.</div>';
+}
+
+async function cmpHNPanel(terms) {
+  const windows = hnWindows();
+  const series = await Promise.all(terms.map(async (t, i) => {
+    const values = await hnCounts(t, windows);
+    return { label: t, color: PALETTE[i], values, note: `${values.at(-1)} last 90d` };
+  }));
+  const monthLabel = ts => new Date(ts * 1000).toLocaleDateString('en', { month: 'short', year: '2-digit' });
+  return legendHTML(series)
+    + multiLineChart(series, monthLabel(windows[0][0]), monthLabel(windows.at(-1)[1]))
+    + '<div class="note">Hacker News stories per 90-day window.</div>';
+}
+
+async function cmpNpmPanel(terms) {
+  const series = await Promise.all(terms.map(async (t, i) => {
+    const pkgs = await npmTopPkgs(t);
+    if (!pkgs.length) return { label: t, color: PALETTE[i], values: [], note: 'no package' };
+    const { weeks } = await npmWeekly(pkgs[0].name);
+    return { label: t, color: PALETTE[i], values: weeks, note: `${pkgs[0].name} · ${fmt(weeks.at(-1))}/wk` };
+  }));
+  const withData = series.filter(s => s.values.length);
+  if (!withData.length) return '<div class="muted">No npm packages match any term.</div>';
+  return legendHTML(series)
+    + multiLineChart(withData, 'a year ago', 'now')
+    + '<div class="note">Weekly downloads of each term\'s top npm package, shared scale.</div>';
+}
+
+async function cmpGitHubPanel(terms) {
+  const stats = await Promise.all(terms.map(async t => {
+    const [all, fresh] = await Promise.all([
+      ghSearch(`q=${enc(`${t} in:name,description`)}&per_page=1`),
+      ghSearch(`q=${enc(`${t} created:>${daysAgo(90)}`)}&per_page=1`),
+    ]);
+    return { total: all.total_count, fresh: fresh.total_count };
+  }));
+  return `<table class="cmp"><thead><tr><th></th><th>repos</th><th>new (90d)</th></tr></thead><tbody>${terms.map((t, i) =>
+    `<tr><td><i class="dot" style="background:${PALETTE[i]}"></i>${esc(t)}</td><td>${fmt(stats[i].total)}</td><td>${fmt(stats[i].fresh)}</td></tr>`).join('')}</tbody></table>
+    <div class="note">Matching repositories and how many were created in the last 90 days.</div>`;
 }
 
 // ---------- pulse panels (no query) ----------
@@ -302,8 +472,7 @@ async function pulseHN() {
 }
 
 async function pulseGitHub() {
-  const since = new Date(Date.now() - 14 * 864e5).toISOString().slice(0, 10);
-  const data = await fetchJSON(`https://api.github.com/search/repositories?q=${enc(`created:>${since}`)}&sort=stars&order=desc&per_page=10`);
+  const data = await ghSearch(`q=${enc(`created:>${daysAgo(14)}`)}&sort=stars&order=desc&per_page=10`);
   return listHTML(data.items.map(r => ({ title: r.full_name, url: r.html_url, meta: `★ ${fmt(r.stargazers_count)}` })));
 }
 
@@ -323,42 +492,84 @@ function rememberSearch(q) {
   renderRecent();
 }
 
+function showView(name) {
+  for (const id of ['pulse', 'results', 'compare']) $(`#${id}`).hidden = id !== name;
+}
+
 function research(q) {
   q = q.trim();
   $('#q').value = q;
   const myGen = ++gen;
-  if (!q) {
+  const terms = q.split(',').map(s => s.trim()).filter(Boolean).slice(0, 4);
+
+  if (!terms.length) {
     history.replaceState(null, '', location.pathname);
-    $('#results').hidden = true;
-    $('#pulse').hidden = false;
+    showView('pulse');
     runPanel('pulse-wiki', myGen, pulseWiki);
     runPanel('pulse-hn', myGen, pulseHN);
     runPanel('pulse-gh', myGen, pulseGitHub);
     return;
   }
+
   history.replaceState(null, '', `#q=${enc(q)}`);
   rememberSearch(q);
+
+  if (terms.length > 1) {
+    showView('compare');
+    runPanel('cmp-wiki', myGen, () => cmpWikiPanel(terms));
+    runPanel('cmp-hn', myGen, () => cmpHNPanel(terms));
+    runPanel('cmp-npm', myGen, () => cmpNpmPanel(terms));
+    runPanel('cmp-gh', myGen, () => cmpGitHubPanel(terms));
+    return;
+  }
+
+  showView('results');
   document.querySelectorAll('#results .badge').forEach(b => { b.className = 'badge'; b.textContent = ''; });
-  $('#pulse').hidden = true;
-  $('#results').hidden = false;
   runPanel('panel-wiki', myGen, () => wikiPanel(q));
   runPanel('panel-hn', myGen, () => hnPanel(q));
   runPanel('panel-gh', myGen, () => githubPanel(q));
   runPanel('panel-npm', myGen, () => npmPanel(q));
   runPanel('panel-questions', myGen, () => questionsPanel(q));
   runPanel('panel-related', myGen, () => relatedPanel(q));
+  runPanel('panel-reddit-subs', myGen, () => redditSubsPanel(q));
+  runPanel('panel-reddit-posts', myGen, () => redditPostsPanel(q));
+  runPanel('panel-news', myGen, () => newsPanel(q));
   runPanel('panel-links', myGen, async () => linksPanel(q));
 }
+
+// ---------- settings dialog ----------
+
+const settingsDialog = $('#settings');
+
+function openSettings() {
+  $('#proxy-input').value = getProxy();
+  settingsDialog.showModal();
+}
+
+$('#settings-btn').addEventListener('click', openSettings);
+$('#proxy-save').addEventListener('click', () => {
+  const value = $('#proxy-input').value.trim();
+  if (value) localStorage.setItem(PROXY_KEY, value);
+  else localStorage.removeItem(PROXY_KEY);
+  settingsDialog.close();
+  research($('#q').value); // re-run so proxy-gated panels pick up the change
+});
+$('#proxy-cancel').addEventListener('click', () => settingsDialog.close());
+
+// ---------- events ----------
 
 $('#search-form').addEventListener('submit', e => {
   e.preventDefault();
   research($('#q').value);
 });
 
-// Clicking any chip (recent search or related concept) researches it.
+// Clicking any chip (recent search / related concept) researches it;
+// "configure proxy" links open settings.
 document.addEventListener('click', e => {
   const chip = e.target.closest('.chip[data-q]');
   if (chip) research(chip.dataset.q);
+  const open = e.target.closest('.open-settings');
+  if (open) { e.preventDefault(); openSettings(); }
 });
 
 window.addEventListener('hashchange', () => {
