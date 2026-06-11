@@ -3,3 +3,9 @@
 
 /shelter/*
   Permissions-Policy: geolocation=(self)
+
+# Cross-origin isolation unlocks multithreaded WASM (≈4x faster ONNX inference).
+# `credentialless` keeps cross-origin CDN/HF/MediaPipe fetches working.
+/latent-explorer/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: credentialless
