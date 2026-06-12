@@ -607,6 +607,7 @@ function playLoopCrossfade(left, right) {
   g.gain.linearRampToValueAtTime(1, now + 0.12);
   src.connect(g).connect(ctx.destination);
   src.start();
+  $('#stop-play').disabled = false;
   if (loopVoice) {
     const old = loopVoice;
     old.gain.gain.cancelScheduledValues(now);
@@ -639,18 +640,7 @@ async function render() {
     const t0 = performance.now();
     const { left, right } = await decodeLatents(work.latents, work.frames);
     $('#render-status').textContent = `decoded ${(left.length / SR).toFixed(1)}s in ${((performance.now() - t0) / 1000).toFixed(1)}s`;
-    const wave = $('#out-wave');
-    wave.classList.remove('hidden');
-    drawWave(wave, left);
-    const blob = encodeWav(left, right, SR);
-    const url = URL.createObjectURL(blob);
-    const dl = $('#download');
-    if (dl.dataset.url) URL.revokeObjectURL(dl.dataset.url);
-    dl.dataset.url = url;
-    dl.href = url;
-    dl.download = 'latent-explorer.wav';
-    dl.classList.remove('hidden');
-    playOnce(left, right);
+    showResult(left, right, 'latent-explorer');
   } catch (err) {
     console.error('Render failed:', err);
     $('#render-status').textContent = `error: ${err.message}`;
@@ -658,6 +648,33 @@ async function render() {
     rendering = false;
     refreshUI();
   }
+}
+
+/** Show a decoded result: output waveform, WAV download link, playback. */
+function showResult(left, right, name) {
+  const wave = $('#out-wave');
+  wave.classList.remove('hidden');
+  drawWave(wave, left);
+  const blob = encodeWav(left, right, SR);
+  const url = URL.createObjectURL(blob);
+  const dl = $('#download');
+  if (dl.dataset.url) URL.revokeObjectURL(dl.dataset.url);
+  dl.dataset.url = url;
+  dl.href = url;
+  dl.download = `${name}.wav`;
+  dl.classList.remove('hidden');
+  playOnce(left, right);
+}
+
+/** A short window from the middle of the working latents (for previews/sweeps). */
+function centerWindow(work, len = 16) {
+  const frames = Math.min(len, work.frames);
+  const start = Math.max(0, Math.floor((work.frames - frames) / 2));
+  const win = new Float32Array(C * frames);
+  for (let c = 0; c < C; c++) {
+    win.set(work.latents.subarray(c * work.frames + start, c * work.frames + start + frames), c * frames);
+  }
+  return { latents: win, frames };
 }
 
 function encodeWav(left, right, sampleRate) {
@@ -872,6 +889,199 @@ async function handDecodeLoop() {
 
 $('#hand-toggle').addEventListener('click', () => (handState.running ? stopHand() : startHand()));
 
+// ── Systematic exploration: 2D grid over PCA directions ─────────────────────
+// The pad is a quantized 2D controller for two of the PCA sliders (±3σ each
+// axis), so positions are reproducible numbers. Sweeps render every grid step
+// along one axis into a single stitched clip.
+
+const PAD_RANGE = 3;   // σ from center to pad edge
+
+const getPC = (i) => +($(`#pc-${i}`)?.value || 0);
+
+function setPC(i, v) {
+  const slider = $(`#pc-${i}`);
+  if (!slider) return;
+  slider.value = v;
+  $(`#pc-val-${i}`).textContent = (+v).toFixed(1);
+}
+
+for (const sel of ['#axis-x', '#axis-y']) {
+  for (let i = 0; i < 6; i++) {
+    const o = document.createElement('option');
+    o.value = i;
+    o.textContent = `PC${i + 1}`;
+    $(sel).appendChild(o);
+  }
+}
+$('#axis-y').value = '1';
+
+function drawPad() {
+  const canvas = $('#grid-pad');
+  const ctx = canvas.getContext('2d');
+  const { width: w, height: h } = canvas;
+  const step = +$('#grid-step').value;
+  ctx.clearRect(0, 0, w, h);
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = 1;
+  for (let v = -PAD_RANGE; v <= PAD_RANGE + 1e-6; v += step) {
+    const x = (v + PAD_RANGE) / (2 * PAD_RANGE) * w;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, x); ctx.lineTo(w, x); ctx.stroke();
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.beginPath(); ctx.moveTo(w / 2, 0); ctx.lineTo(w / 2, h); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+  // marker at the current slider values for the selected axes
+  const u = getPC(+$('#axis-x').value), v = getPC(+$('#axis-y').value);
+  const mx = (u + PAD_RANGE) / (2 * PAD_RANGE) * w;
+  const my = (-v + PAD_RANGE) / (2 * PAD_RANGE) * h;
+  ctx.fillStyle = '#e94560';
+  ctx.beginPath(); ctx.arc(mx, my, 7, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.stroke();
+}
+
+/** Loop-preview the current grid point; coalesces rapid clicks to the latest. */
+let previewBusy = false, previewQueued = false;
+async function previewPoint() {
+  if (previewBusy) { previewQueued = true; return; }
+  previewBusy = true;
+  try {
+    if (!model) {
+      $('#pad-status').textContent = 'loading model first…';
+      await ensureModel();
+    }
+    do {
+      previewQueued = false;
+      const work = computeWorking();
+      if (!work) break;
+      const win = centerWindow(work);
+      const t0 = performance.now();
+      const { left, right } = await decodeLatents(win.latents, win.frames);
+      playLoopCrossfade(left, right);
+      const xi = +$('#axis-x').value, yi = +$('#axis-y').value;
+      $('#pad-status').textContent =
+        `looping PC${xi + 1} ${fmtSigned(getPC(xi))}σ · PC${yi + 1} ${fmtSigned(getPC(yi))}σ ` +
+        `(${(win.frames * HOP / SR).toFixed(1)}s window, ${((performance.now() - t0) / 1000).toFixed(1)}s decode)`;
+    } while (previewQueued);
+  } catch (err) {
+    console.error('Grid preview failed:', err);
+    $('#pad-status').textContent = `error: ${err.message}`;
+  } finally {
+    previewBusy = false;
+  }
+}
+
+const fmtSigned = (v) => `${v >= 0 ? '+' : ''}${(+v).toFixed(2).replace(/\.?0+$/, '') || '0'}`;
+
+function padPointToSigma(e) {
+  const canvas = $('#grid-pad');
+  const r = canvas.getBoundingClientRect();
+  const step = +$('#grid-step').value;
+  const snap = (v) => Math.max(-PAD_RANGE, Math.min(PAD_RANGE, Math.round(v / step) * step));
+  return {
+    u: snap(((e.clientX - r.left) / r.width * 2 - 1) * PAD_RANGE),
+    v: snap((1 - (e.clientY - r.top) / r.height * 2) * PAD_RANGE),
+  };
+}
+
+function padMove(e, decode) {
+  const work = computeWorking();
+  if (!work) { $('#pad-status').textContent = 'Add Sound A (or 🎲 Latents) first.'; return; }
+  ensurePCA(work);
+  const { u, v } = padPointToSigma(e);
+  setPC(+$('#axis-x').value, u);
+  setPC(+$('#axis-y').value, v);
+  refreshUI();
+  if (decode) previewPoint();
+}
+
+let padDragging = false;
+$('#grid-pad').addEventListener('pointerdown', (e) => { padDragging = true; padMove(e, false); });
+$('#grid-pad').addEventListener('pointermove', (e) => { if (padDragging) padMove(e, false); });
+window.addEventListener('pointerup', (e) => {
+  if (!padDragging) return;
+  padDragging = false;
+  if (e.target === $('#grid-pad')) padMove(e, true);
+  else previewPoint();
+});
+
+/** Render every grid step along one axis (other axis held) into one clip. */
+async function sweepAxis(which) {
+  if (rendering) return;
+  const work0 = computeWorking();
+  if (!work0) { $('#pad-status').textContent = 'Add Sound A (or 🎲 Latents) first.'; return; }
+  ensurePCA(work0);
+  rendering = true;
+  refreshUI();
+  const pcIdx = +$(which === 'x' ? '#axis-x' : '#axis-y').value;
+  const step = +$('#grid-step').value;
+  const orig = getPC(pcIdx);
+  try {
+    if (!model) {
+      $('#pad-status').textContent = 'loading model first…';
+      await ensureModel();
+    }
+    const values = [];
+    for (let v = -PAD_RANGE; v <= PAD_RANGE + 1e-6; v += step) values.push(+v.toFixed(2));
+    const segs = [];
+    for (const [k, v] of values.entries()) {
+      setPC(pcIdx, v);
+      $('#pad-status').textContent = `sweep ${k + 1}/${values.length}: PC${pcIdx + 1} = ${fmtSigned(v)}σ…`;
+      drawPad();
+      const win = centerWindow(computeWorking());
+      segs.push(await decodeLatents(win.latents, win.frames));
+    }
+    const joined = concatCrossfade(segs, Math.floor(0.05 * SR));
+    $('#pad-status').textContent =
+      `sweep of PC${pcIdx + 1}: ${values.length} steps of ${fmtSigned(step)}σ, ${(joined.left.length / SR).toFixed(1)}s`;
+    showResult(joined.left, joined.right, `sweep-pc${pcIdx + 1}`);
+  } catch (err) {
+    console.error('Sweep failed:', err);
+    $('#pad-status').textContent = `error: ${err.message}`;
+  } finally {
+    setPC(pcIdx, orig);
+    rendering = false;
+    refreshUI();
+  }
+}
+
+/** Concatenate stereo segments with short equal-power crossfades. */
+function concatCrossfade(segs, fade) {
+  const n = segs.reduce((s, x) => s + x.left.length, 0) - fade * (segs.length - 1);
+  const left = new Float32Array(n), right = new Float32Array(n);
+  let off = 0;
+  for (const [i, s] of segs.entries()) {
+    for (let j = 0; j < s.left.length; j++) {
+      let g = 1;
+      if (i > 0 && j < fade) g = Math.sin((j / fade) * Math.PI / 2);
+      if (i < segs.length - 1 && j >= s.left.length - fade) g = Math.cos(((j - (s.left.length - fade)) / fade) * Math.PI / 2);
+      left[off + j] += s.left[j] * g;
+      right[off + j] += s.right[j] * g;
+    }
+    off += s.left.length - fade;
+  }
+  return { left, right };
+}
+
+$('#sweep-x').addEventListener('click', () => sweepAxis('x'));
+$('#sweep-y').addEventListener('click', () => sweepAxis('y'));
+$('#grid-reset').addEventListener('click', () => {
+  setPC(+$('#axis-x').value, 0);
+  setPC(+$('#axis-y').value, 0);
+  refreshUI();
+});
+$('#axis-x').addEventListener('change', drawPad);
+$('#axis-y').addEventListener('change', drawPad);
+$('#grid-step').addEventListener('change', drawPad);
+$('#grid-details').addEventListener('toggle', () => {
+  if ($('#grid-details').open) {
+    const work = computeWorking();
+    if (work) ensurePCA(work);
+    drawPad();
+  }
+});
+
 // ── UI wiring ────────────────────────────────────────────────────────────────
 
 const fmt = (v, d = 2) => (+v).toFixed(d);
@@ -890,7 +1100,7 @@ for (const [sel, valSel, f] of liveControls) {
 }
 $('#reverse').addEventListener('change', refreshUI);
 $('#render').addEventListener('click', render);
-$('#stop-play').addEventListener('click', stopPlayback);
+$('#stop-play').addEventListener('click', () => { stopPlayback(); stopLoop(); });
 $('#pca-details').addEventListener('toggle', () => {
   if ($('#pca-details').open && slots.A.latents) {
     const work = computeWorking();
@@ -904,6 +1114,7 @@ function refreshUI() {
   $('#render').disabled = !haveA || rendering;        // missing model loads on demand
   $('#hand-toggle').disabled = !haveA && !handState.running;
   if (!handState.running) drawLatents(computeWorking());
+  if ($('#grid-details').open) drawPad();
 }
 
 refreshUI();

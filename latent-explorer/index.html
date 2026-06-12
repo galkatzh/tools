@@ -114,6 +114,37 @@
         <div id="pca-sliders" class="controls"></div>
       </details>
 
+      <details id="grid-details">
+        <summary>Systematic exploration — 2D grid over latent directions</summary>
+        <div class="grid-explorer">
+          <canvas id="grid-pad" width="360" height="360" title="Click or drag to move through the latent plane"></canvas>
+          <div class="grid-controls">
+            <div class="control">
+              <label for="axis-x">X axis</label>
+              <select id="axis-x"></select>
+            </div>
+            <div class="control">
+              <label for="axis-y">Y axis</label>
+              <select id="axis-y"></select>
+            </div>
+            <div class="control">
+              <label for="grid-step">Grid step (σ)</label>
+              <select id="grid-step">
+                <option value="0.25">0.25</option>
+                <option value="0.5">0.5</option>
+                <option value="1" selected>1.0</option>
+              </select>
+            </div>
+            <div class="grid-buttons">
+              <button id="sweep-x" class="secondary" type="button">▶ Sweep X</button>
+              <button id="sweep-y" class="secondary" type="button">▶ Sweep Y</button>
+              <button id="grid-reset" class="secondary" type="button">Reset</button>
+            </div>
+            <p id="pad-status" class="progress-label">Click a grid point to loop-preview that spot; sweeps render every step along an axis into one clip.</p>
+          </div>
+        </div>
+      </details>
+
       <div class="render-row">
         <button id="render" disabled>▶ Render &amp; play</button>
         <button id="stop-play" class="secondary" disabled>■ Stop</button>

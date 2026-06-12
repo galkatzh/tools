@@ -120,6 +120,13 @@ summary:hover { color: var(--text); }
 .render-row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
 .render-status { color: var(--text-dim); font-size: 0.78rem; }
 
+/* ── Systematic grid explorer ────────────────────────────────────── */
+
+.grid-explorer { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+#grid-pad { border-radius: var(--radius); background: var(--bg); cursor: crosshair; touch-action: none; max-width: 100%; }
+.grid-controls { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 0.75rem; }
+.grid-buttons { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
 .download-btn {
   padding: 0.55rem 1rem;
   background: var(--bg);
