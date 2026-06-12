@@ -51,6 +51,7 @@ const MODELS = {
     totalBytes: 219_594_401,
     fixedFrames: 108,          // both graphs are fixed 10 s windows
     encSamples: 441000,
+    needsF16: true,            // fp16 weights+activations: WebGPU needs shader-f16
   },
 };
 
@@ -58,6 +59,28 @@ const CACHE_NAME = 'latent-explorer-models-v1';
 
 let sessions = null;           // { encoder, decoder }
 let current = null;            // MODELS[...] of the loaded model
+let activeBackend = 'wasm';    // backend of the loaded sessions (for error messages)
+
+/**
+ * Reject silently-broken inference results (e.g. fp16 mis-execution on a
+ * buggy WebGPU driver yields NaN or flatlined output for every input).
+ */
+function validateOutput(arr, what) {
+  let sum = 0, sumSq = 0;
+  for (let i = 0; i < arr.length; i++) {
+    const v = arr[i];
+    if (!Number.isFinite(v)) {
+      throw new Error(`The ${what} produced non-finite values on the ${activeBackend} backend — ` +
+        `this is a GPU/driver issue. Switch Backend to "WASM (CPU)" in settings and reload the model.`);
+    }
+    sum += v; sumSq += v * v;
+  }
+  const mean = sum / arr.length;
+  if (Math.sqrt(sumSq / arr.length - mean * mean) < 1e-7) {
+    throw new Error(`The ${what} produced a constant signal on the ${activeBackend} backend — ` +
+      `this is a GPU/driver issue. Switch Backend to "WASM (CPU)" in settings and reload the model.`);
+  }
+}
 
 /** Fetch `url` as bytes, via Cache Storage, streaming progress through onChunk. */
 async function fetchCached(url, onChunk) {
@@ -99,8 +122,26 @@ async function fetchModel(paths, onChunk) {
   return bytes;
 }
 
-async function createSession(bytes, ep) {
-  if (ep !== 'wasm') {
+async function createSession(bytes, ep, needsF16) {
+  if (ep === 'webgpu' && !navigator.gpu) throw new Error('WebGPU is not available in this browser');
+  // Without navigator.gpu, ORT quietly runs ['webgpu','wasm'] on wasm — skip
+  // straight to wasm so the reported backend is truthful.
+  if (ep !== 'wasm' && navigator.gpu) {
+    // fp16 graphs mis-execute (NaN/constant output) on WebGPU adapters without
+    // shader-f16 — in auto mode, probe the adapter and skip WebGPU when absent.
+    if (needsF16 && ep === 'auto') {
+      let f16 = false;
+      try {
+        const adapter = navigator.gpu ? await navigator.gpu.requestAdapter() : null;
+        f16 = !!adapter && adapter.features.has('shader-f16');
+      } catch (err) {
+        console.error('WebGPU adapter probe failed:', err);
+      }
+      if (!f16) {
+        console.error('WebGPU adapter lacks shader-f16; using WASM for this fp16 model.');
+        return { session: await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] }), backend: 'wasm' };
+      }
+    }
     try {
       const s = await ort.InferenceSession.create(bytes, { executionProviders: ['webgpu', 'wasm'] });
       return { session: s, backend: 'webgpu' };
@@ -132,12 +173,13 @@ async function load({ model, ep }) {
   for (const part of ['encoder', 'decoder']) {
     const bytes = await fetchModel(cfg[part], onChunk);
     self.postMessage({ type: 'progress', frac: 0.99, text: `Initializing ${part}…` });
-    const r = await createSession(bytes, ep);
+    const r = await createSession(bytes, ep, cfg.needsF16);
     next[part] = r.session;
     backend = r.backend;
   }
   sessions = next;
   current = cfg;
+  activeBackend = backend;
   self.postMessage({ type: 'progress', frac: 1, text: `Model ready (${backend})` });
   self.postMessage({ type: 'loaded', model, backend, fixedFrames: cfg.fixedFrames });
 }
@@ -156,6 +198,7 @@ async function encode({ id, left, right }) {
   buf.set(right.subarray(0, Math.min(nReal, nPad)), nPad);
   const t0 = performance.now();
   const { latent } = await sessions.encoder.run({ audio: new ort.Tensor('float32', buf, [1, 2, nPad]) });
+  validateOutput(latent.data, 'encoder');
   // Keep only frames that cover real audio.
   const framesAll = latent.dims[2];
   const frames = Math.min(framesAll, Math.max(1, Math.round(nReal / HOP)));
@@ -180,6 +223,7 @@ async function decode({ id, latents, frames }) {
   }
   const t0 = performance.now();
   const { audio } = await sessions.decoder.run({ latent: new ort.Tensor('float32', input, [1, C, F]) });
+  validateOutput(audio.data, 'decoder');
   const ms = performance.now() - t0;
   const chan = audio.dims[2];
   const wanted = Math.min(frames * HOP, chan);
