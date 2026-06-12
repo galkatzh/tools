@@ -45,6 +45,7 @@ worker.onmessage = ({ data }) => {
     $('#load-model').disabled = false;
     $('#load-model').textContent = 'Reload model';
     $('#hand-window-control').classList.toggle('hidden', !!data.fixedFrames);
+    settleModelWaiters(null);
     onModelLoaded();
   } else if (data.type === 'encoded' || data.type === 'decoded') {
     pending.get(data.id)?.resolve(data);
@@ -56,10 +57,14 @@ worker.onmessage = ({ data }) => {
     } else {
       showError(data.message);
       $('#load-model').disabled = false;
+      settleModelWaiters(new Error(data.message));
     }
   }
 };
-worker.onerror = (e) => showError(e.message || 'Worker crashed');
+worker.onerror = (e) => {
+  showError(e.message || 'Worker crashed');
+  settleModelWaiters(new Error(e.message || 'Worker crashed'));
+};
 
 const request = (msg, transfer = []) => new Promise((resolve, reject) => {
   const id = ++msgId;
@@ -72,13 +77,32 @@ const decodeLatents = (latents, frames) => request({ type: 'decode', latents: la
 
 // ── Model loading + settings persistence ────────────────────────────────────
 
+let modelLoading = false;
+let modelWaiters = [];   // pending ensureModel() promises
+
+function settleModelWaiters(err) {
+  const waiters = modelWaiters;
+  modelWaiters = [];
+  modelLoading = false;
+  for (const w of waiters) err ? w.reject(err) : w.resolve();
+}
+
 function loadModel() {
   if (handState.running) stopHand();   // the loop must not race a model swap
   const choice = { model: $('#model-select').value, ep: $('#ep-select').value };
   localStorage.setItem('latent-explorer-settings', JSON.stringify(choice));
   $('#load-model').disabled = true;
   model = null;
+  modelLoading = true;
   worker.postMessage({ type: 'load', ...choice });
+}
+
+/** Resolve once a model is loaded, kicking off the download if needed. */
+function ensureModel() {
+  if (model) return Promise.resolve();
+  const p = new Promise((resolve, reject) => modelWaiters.push({ resolve, reject }));
+  if (!modelLoading) loadModel();
+  return p;
 }
 
 try {
@@ -502,7 +526,7 @@ function drawLatents(work) {
   if (!work) {
     ctx.fillStyle = 'rgba(255,255,255,0.25)';
     ctx.font = '14px system-ui';
-    ctx.fillText('Load a model and add Sound A to see its latents', 20, h / 2);
+    ctx.fillText('Add Sound A (file, mic, demo, or 🎲 random latents) to explore', 20, h / 2);
     return;
   }
   const { latents, frames } = work;
@@ -606,8 +630,12 @@ async function render() {
   if (!work) return;
   rendering = true;
   $('#render').disabled = true;
-  $('#render-status').textContent = 'decoding…';
   try {
+    if (!model) {
+      $('#render-status').textContent = 'loading model first…';
+      await ensureModel();
+    }
+    $('#render-status').textContent = 'decoding…';
     const t0 = performance.now();
     const { left, right } = await decodeLatents(work.latents, work.frames);
     $('#render-status').textContent = `decoded ${(left.length / SR).toFixed(1)}s in ${((performance.now() - t0) / 1000).toFixed(1)}s`;
@@ -666,11 +694,15 @@ const handState = {
 
 async function startHand() {
   const work = computeWorking();
-  if (!work) { $('#hand-status').textContent = 'Load a model and Sound A first.'; return; }
+  if (!work) { $('#hand-status').textContent = 'Add Sound A (or 🎲 Latents) first.'; return; }
   $('#hand-toggle').disabled = true;
-  $('#hand-status').textContent = 'Loading hand tracker…';
   $('#hand-stage').classList.remove('hidden');
   try {
+    if (!model) {
+      $('#hand-status').textContent = 'Loading model first…';
+      await ensureModel();
+    }
+    $('#hand-status').textContent = 'Loading hand tracker…';
     const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/vision_bundle.mjs');
     const fileset = await vision.FilesetResolver.forVisionTasks(
       'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm');
@@ -710,7 +742,7 @@ function stopHand() {
   handState.features = null;
   stopLoop();
   $('#hand-toggle').textContent = 'Start hand control';
-  $('#hand-toggle').disabled = !model || !slots.A.latents;
+  $('#hand-toggle').disabled = !slots.A.latents;
   $('#hand-stage').classList.add('hidden');
 }
 
@@ -869,8 +901,8 @@ $('#pca-details').addEventListener('toggle', () => {
 function refreshUI() {
   const haveA = !!slots.A.latents;
   $('#morph').disabled = !(slots.A.latents && slots.B.latents);
-  $('#render').disabled = !haveA || !model || rendering;
-  $('#hand-toggle').disabled = (!haveA || !model) && !handState.running;
+  $('#render').disabled = !haveA || rendering;        // missing model loads on demand
+  $('#hand-toggle').disabled = !haveA && !handState.running;
   if (!handState.running) drawLatents(computeWorking());
 }
 
