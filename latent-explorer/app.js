@@ -224,6 +224,45 @@ function makeDemo(slot) {
   return { left: L, right: R };
 }
 
+/**
+ * Synthetic latent field — traverse the space with no input sound.
+ * Per channel: a random "timbre identity" center plus a temporally smoothed
+ * Gaussian wander, scaled to the statistics of real encoded music
+ * (overall std ≈ 0.86 vs ≈ 0.88 measured on encoded clips).
+ */
+function makeRandomLatents(frames, seed) {
+  const rand = mulberry32(seed);
+  const gauss = () => {
+    const u1 = Math.max(rand(), 1e-12), u2 = rand();
+    return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  };
+  const out = new Float32Array(C * frames);
+  const alpha = 1 / 6;                                    // ~6-frame (0.56 s) correlation
+  const emaGain = 1 / Math.sqrt(alpha / (2 - alpha));     // restore unit variance after EMA
+  for (let c = 0; c < C; c++) {
+    const center = 0.5 * gauss();
+    let v = gauss() / emaGain;                            // start near the stationary distribution
+    for (let f = 0; f < frames; f++) {
+      v += alpha * (gauss() - v);
+      out[c * frames + f] = center + 0.7 * emaGain * v;
+    }
+  }
+  return out;
+}
+
+function setSlotLatents(slot) {
+  const seed = Math.floor(Math.random() * 1e9);
+  const frames = Math.floor(Math.min(8, maxSeconds()) * SR / HOP);
+  slots[slot] = { pcm: null, latents: makeRandomLatents(frames, seed), frames, name: `random field` };
+  const wave = $(`#wave-${slot}`);
+  wave.getContext('2d').clearRect(0, 0, wave.width, wave.height);
+  setStatus(slot, `random latents — ${frames} frames (seed ${seed % 100000})`);
+  if (slot === 'A') pcaState = null;
+  refreshUI();
+}
+
+document.querySelectorAll('.latent-btn').forEach((btn) =>
+  btn.addEventListener('click', () => setSlotLatents(btn.dataset.slot)));
 document.querySelectorAll('input[type=file][data-slot]').forEach((inp) =>
   inp.addEventListener('change', () => onFile(inp.dataset.slot, inp.files[0])));
 document.querySelectorAll('.rec-btn').forEach((btn) =>
