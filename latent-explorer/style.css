@@ -1,0 +1,154 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #1a1a2e;
+  --surface: #16213e;
+  --border: #0f3460;
+  --accent: #e94560;
+  --accent2: #7aa2ff;
+  --text: #e0e0e0;
+  --text-dim: #8888a0;
+  --radius: 10px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+#app { max-width: 860px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+h1 { font-size: 1.75rem; font-weight: 700; margin-bottom: 0.25rem; }
+h2 { font-size: 1.05rem; font-weight: 600; margin-bottom: 0.9rem; }
+
+.subtitle { color: var(--text-dim); margin-bottom: 1.5rem; font-size: 0.9rem; line-height: 1.5; }
+a { color: var(--accent); text-decoration: none; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+label { display: block; font-size: 0.85rem; font-weight: 500; margin-bottom: 0.4rem; color: var(--text-dim); }
+.control .val { color: var(--accent); font-weight: 600; }
+.control input[type=range] { width: 100%; accent-color: var(--accent); }
+.checkbox-control { display: flex; align-items: end; }
+.checkbox-control label { margin: 0; }
+.checkbox-control input { accent-color: var(--accent); margin-right: 0.4rem; }
+
+select {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+}
+select:focus { outline: none; border-color: var(--accent); }
+
+button, .file-btn {
+  padding: 0.55rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+button:hover:not(:disabled), .file-btn:hover { border-color: var(--accent); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+#load-model, #render, #hand-toggle {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+#load-model:hover:not(:disabled), #render:hover:not(:disabled), #hand-toggle:hover:not(:disabled) { opacity: 0.9; }
+button.secondary { background: var(--bg); color: var(--text); }
+
+.settings-row { display: flex; gap: 1rem; align-items: end; flex-wrap: wrap; }
+.settings-row .control { flex: 1; min-width: 200px; }
+
+.note { color: var(--text-dim); font-size: 0.78rem; line-height: 1.5; margin-top: 0.85rem; }
+.footer-note { text-align: center; }
+
+.hidden { display: none !important; }
+
+/* ── Progress ─────────────────────────────────────────────────────── */
+
+.progress-track { width: 100%; height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; margin-top: 1rem; }
+.progress-fill { height: 100%; width: 0%; background: var(--accent); border-radius: 3px; transition: width 0.3s; }
+.progress-label { color: var(--text-dim); font-size: 0.82rem; margin-top: 0.5rem; }
+
+/* ── Sound slots ─────────────────────────────────────────────────── */
+
+#slots { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.slot { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.9rem; }
+.slot-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; margin-bottom: 0.6rem; }
+.slot-name { font-weight: 600; font-size: 0.9rem; }
+.slot-status { color: var(--text-dim); font-size: 0.72rem; text-align: right; }
+.slot-buttons { display: flex; gap: 0.5rem; margin-bottom: 0.6rem; flex-wrap: wrap; }
+.rec-btn.recording { border-color: var(--accent); color: var(--accent); animation: rec-pulse 1s infinite; }
+@keyframes rec-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+canvas.wave { width: 100%; height: 60px; border-radius: 6px; display: block; }
+#out-wave { margin-top: 0.9rem; height: 70px; }
+
+/* ── Latent view ─────────────────────────────────────────────────── */
+
+#latent-canvas { width: 100%; height: 180px; border-radius: 6px; display: block; background: var(--bg); }
+.canvas-caption { color: var(--text-dim); font-size: 0.72rem; margin: 0.4rem 0 1.1rem; }
+
+.controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem 1.25rem; margin-bottom: 1rem; }
+.ctrl-hint { display: block; color: var(--text-dim); font-size: 0.7rem; margin-top: 0.25rem; }
+
+details { margin-bottom: 1rem; }
+summary { cursor: pointer; color: var(--text-dim); font-size: 0.85rem; margin-bottom: 0.75rem; }
+summary:hover { color: var(--text); }
+
+.render-row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+.render-status { color: var(--text-dim); font-size: 0.78rem; }
+
+/* ── Systematic grid explorer ────────────────────────────────────── */
+
+.grid-explorer { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+#grid-pad { border-radius: var(--radius); background: var(--bg); cursor: crosshair; touch-action: none; max-width: 100%; }
+.grid-controls { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 0.75rem; }
+.grid-buttons { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
+.download-btn {
+  padding: 0.55rem 1rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+.download-btn:hover { border-color: var(--accent); }
+
+/* ── Hand control ────────────────────────────────────────────────── */
+
+#hand-stage { display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap; }
+#hand-canvas { border-radius: var(--radius); background: var(--bg); max-width: 100%; }
+#hand-meters { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 0.6rem; justify-content: center; }
+.meter { display: flex; align-items: center; gap: 0.6rem; font-size: 0.75rem; color: var(--text-dim); }
+.meter span { width: 4.5rem; }
+.meter-track { flex: 1; height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; }
+.meter-fill { height: 100%; width: 0%; background: var(--accent2); border-radius: 4px; transition: width 0.1s; }
+
+@media (max-width: 640px) {
+  #app { padding: 1.25rem 1rem; }
+  #slots { grid-template-columns: 1fr; }
+}

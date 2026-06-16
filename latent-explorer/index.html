@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Latent Explorer — Stable Audio</title>
+  <meta name="description" content="Explore the latent space of the Stable Audio 3 autoencoder in your browser: morph sounds, sculpt latent directions, or play it with your hands via webcam.">
+  <meta name="theme-color" content="#1a1a2e">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="app">
+    <h1>Latent Explorer</h1>
+    <p class="subtitle">
+      Explore the latent space of the Stable Audio 3 autoencoder — entirely in your browser.
+      Encode sounds into 256-dim latents (~10.8 per second), then morph, sculpt and
+      hand-conduct them back into audio.
+    </p>
+
+    <!-- ── Model ─────────────────────────────────────────────────────────── -->
+    <section class="card">
+      <h2>Model</h2>
+      <div class="settings-row">
+        <div class="control">
+          <label for="model-select">Autoencoder</label>
+          <select id="model-select">
+            <option value="medium">SAME-L · stable-audio-3-medium (int4, 537 MB, any length)</option>
+            <option value="morph">SAME-S · stable-audio-morph-onnx (fp16, 220 MB, 10 s windows)</option>
+          </select>
+        </div>
+        <div class="control">
+          <label for="ep-select">Backend</label>
+          <select id="ep-select">
+            <option value="auto">Auto (WebGPU → WASM)</option>
+            <option value="webgpu">WebGPU only</option>
+            <option value="wasm">WASM (CPU)</option>
+          </select>
+        </div>
+        <button id="load-model">Load model</button>
+      </div>
+      <p class="note">Weights download once and are cached. The SAME-L conversion was made from the
+        <a href="https://huggingface.co/stabilityai/stable-audio-3-medium" target="_blank" rel="noopener">stable-audio-3-medium</a>
+        checkpoint for this app; the alternative is
+        <a href="https://huggingface.co/shoegazerstella/stable-audio-morph-onnx" target="_blank" rel="noopener">stable-audio-morph-onnx</a>.</p>
+      <div id="load-progress" class="progress hidden">
+        <div class="progress-track"><div id="load-bar" class="progress-fill"></div></div>
+        <p id="load-text" class="progress-label"></p>
+      </div>
+    </section>
+
+    <!-- ── Sounds ────────────────────────────────────────────────────────── -->
+    <section class="card">
+      <h2>Sounds</h2>
+      <div id="slots">
+        <div class="slot" data-slot="A">
+          <div class="slot-head"><span class="slot-name">Sound A</span><span class="slot-status" id="status-A">empty</span></div>
+          <div class="slot-buttons">
+            <label class="file-btn"><input type="file" accept="audio/*" hidden data-slot="A">📂 File</label>
+            <button type="button" class="rec-btn" data-slot="A">● Rec</button>
+            <button type="button" class="demo-btn" data-slot="A">✨ Demo</button>
+            <button type="button" class="latent-btn" data-slot="A" title="Random latent field — traverse the space with no input sound">🎲 Latents</button>
+          </div>
+          <canvas class="wave" id="wave-A" width="600" height="60"></canvas>
+        </div>
+        <div class="slot" data-slot="B">
+          <div class="slot-head"><span class="slot-name">Sound B</span><span class="slot-status" id="status-B">empty (optional — enables morphing)</span></div>
+          <div class="slot-buttons">
+            <label class="file-btn"><input type="file" accept="audio/*" hidden data-slot="B">📂 File</label>
+            <button type="button" class="rec-btn" data-slot="B">● Rec</button>
+            <button type="button" class="demo-btn" data-slot="B">✨ Demo</button>
+            <button type="button" class="latent-btn" data-slot="B" title="Random latent field — traverse the space with no input sound">🎲 Latents</button>
+          </div>
+          <canvas class="wave" id="wave-B" width="600" height="60"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Latent view + edits ───────────────────────────────────────────── -->
+    <section class="card" id="explore-card">
+      <h2>Latent space</h2>
+      <canvas id="latent-canvas" width="900" height="180" title="256 latent channels × time"></canvas>
+      <p class="canvas-caption">256 latent channels × time — the working latents after the edits below.</p>
+
+      <div class="controls">
+        <div class="control" id="morph-control">
+          <label for="morph">Morph A ⇄ B <span class="val" id="morph-val">0.00</span></label>
+          <input type="range" id="morph" min="0" max="1" step="0.01" value="0" disabled>
+          <small class="ctrl-hint">spherical interpolation per latent frame</small>
+        </div>
+        <div class="control">
+          <label for="gain">Latent gain <span class="val" id="gain-val">1.00</span></label>
+          <input type="range" id="gain" min="0" max="2.5" step="0.05" value="1">
+        </div>
+        <div class="control">
+          <label for="noise">Noise <span class="val" id="noise-val">0.00</span></label>
+          <input type="range" id="noise" min="0" max="1.5" step="0.05" value="0">
+        </div>
+        <div class="control">
+          <label for="smooth">Time smear <span class="val" id="smooth-val">0</span></label>
+          <input type="range" id="smooth" min="0" max="8" step="1" value="0">
+        </div>
+        <div class="control">
+          <label for="stretch">Time stretch <span class="val" id="stretch-val">1.00×</span></label>
+          <input type="range" id="stretch" min="0.5" max="2" step="0.05" value="1">
+        </div>
+        <div class="control checkbox-control">
+          <label><input type="checkbox" id="reverse"> Reverse time</label>
+        </div>
+      </div>
+
+      <details id="pca-details">
+        <summary>Latent directions (PCA of the current sound)</summary>
+        <div id="pca-sliders" class="controls"></div>
+      </details>
+
+      <details id="grid-details">
+        <summary>Systematic exploration — 2D grid over latent directions</summary>
+        <div class="grid-explorer">
+          <canvas id="grid-pad" width="360" height="360" title="Click or drag to move through the latent plane"></canvas>
+          <div class="grid-controls">
+            <div class="control">
+              <label for="axis-x">X axis</label>
+              <select id="axis-x"></select>
+            </div>
+            <div class="control">
+              <label for="axis-y">Y axis</label>
+              <select id="axis-y"></select>
+            </div>
+            <div class="control">
+              <label for="grid-step">Grid step (σ)</label>
+              <select id="grid-step">
+                <option value="0.25">0.25</option>
+                <option value="0.5">0.5</option>
+                <option value="1" selected>1.0</option>
+              </select>
+            </div>
+            <div class="grid-buttons">
+              <button id="sweep-x" class="secondary" type="button">▶ Sweep X</button>
+              <button id="sweep-y" class="secondary" type="button">▶ Sweep Y</button>
+              <button id="grid-reset" class="secondary" type="button">Reset</button>
+            </div>
+            <p id="pad-status" class="progress-label">Click a grid point to loop-preview that spot; sweeps render every step along an axis into one clip.</p>
+          </div>
+        </div>
+      </details>
+
+      <div class="render-row">
+        <button id="render" disabled>▶ Render &amp; play</button>
+        <button id="stop-play" class="secondary" disabled>■ Stop</button>
+        <a id="download" class="download-btn hidden">Download WAV</a>
+        <span id="render-status" class="render-status"></span>
+      </div>
+      <canvas id="out-wave" class="wave hidden" width="900" height="70"></canvas>
+    </section>
+
+    <!-- ── Hand control ──────────────────────────────────────────────────── -->
+    <section class="card">
+      <h2>Hand control 🖐</h2>
+      <p class="note">Conduct the latent space with your hand via webcam
+        (<a href="https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker" target="_blank" rel="noopener">MediaPipe</a>
+        hand landmarks, processed locally). Move left–right to scrub through the sound; height, openness
+        and pinch steer latent directions. Audio loops a short latent window and re-decodes continuously.</p>
+      <div class="settings-row">
+        <div class="control">
+          <label for="hand-mapping">Keypoint mapping</label>
+          <select id="hand-mapping">
+            <option value="pca">PCA directions (y → PC1, openness → PC2, pinch → gain)</option>
+            <option value="random">Random projection (all 63 coords → latent vector)</option>
+          </select>
+        </div>
+        <div class="control">
+          <label for="hand-amount">Intensity <span class="val" id="hand-amount-val">1.0</span></label>
+          <input type="range" id="hand-amount" min="0" max="3" step="0.1" value="1">
+        </div>
+        <div class="control" id="hand-window-control">
+          <label for="hand-window">Loop window <span class="val" id="hand-window-val">8 frames</span></label>
+          <input type="range" id="hand-window" min="4" max="32" step="1" value="8">
+        </div>
+        <button id="hand-toggle" disabled>Start hand control</button>
+      </div>
+      <div id="hand-stage" class="hidden">
+        <video id="hand-video" playsinline muted hidden></video>
+        <canvas id="hand-canvas" width="480" height="360"></canvas>
+        <div id="hand-meters">
+          <div class="meter"><span>scrub x</span><div class="meter-track"><div id="meter-x" class="meter-fill"></div></div></div>
+          <div class="meter"><span>height y</span><div class="meter-track"><div id="meter-y" class="meter-fill"></div></div></div>
+          <div class="meter"><span>open</span><div class="meter-track"><div id="meter-open" class="meter-fill"></div></div></div>
+          <div class="meter"><span>pinch</span><div class="meter-track"><div id="meter-pinch" class="meter-fill"></div></div></div>
+          <p id="hand-status" class="progress-label"></p>
+        </div>
+      </div>
+    </section>
+
+    <p class="note footer-note">Sounds never leave your device — encoding, decoding and hand tracking all run locally.</p>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
