@@ -22,6 +22,44 @@ body {
 header h1 { font-size: 1.6rem; color: #fff; margin-bottom: 4px; }
 header p  { color: #888; font-size: 0.9rem; }
 
+/* Collapsible "how it works" help panel */
+.help {
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+}
+.help summary {
+  cursor: pointer;
+  padding: 12px 16px;
+  color: #4a9eff;
+  font-size: 0.88rem;
+  user-select: none;
+  list-style-position: inside;
+}
+.help summary:hover { color: #6fb3ff; }
+.help[open] summary { border-bottom: 1px solid #2a2a2a; }
+.help-body {
+  padding: 14px 16px;
+  color: #aaa;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.help-body strong { color: #ddd; }
+.help-body code { color: #4a9eff; }
+.help-body ol { padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+
+/* Inline explanatory hint inside a settings fieldset */
+.setting-hint {
+  grid-column: 1 / -1;
+  font-size: 0.78rem;
+  color: #888;
+  line-height: 1.5;
+}
+.setting-hint strong { color: #bbb; }
+
 /* Settings grid */
 .settings {
   display: grid;
