@@ -17,9 +17,38 @@
         <p>Convert DjVu pages to XTC format for Xteink e-paper readers.</p>
       </header>
 
+      <details class="help">
+        <summary>New here? How this works</summary>
+        <div class="help-body">
+          <p>
+            This tool turns a DjVu into an <strong>.xtc</strong> file — the book
+            format read by Xteink e-paper devices. Everything runs in your
+            browser; your file is never uploaded.
+          </p>
+          <p><strong>The five steps:</strong></p>
+          <ol>
+            <li><strong>Pick your device</strong> so pages are sized to its screen.</li>
+            <li><strong>Drop your DjVu</strong> below (or click to choose a file).</li>
+            <li><strong>Crop the margins.</strong> The box is auto-placed around the
+              text — drag to adjust, or click <em>No crop</em> to keep the whole page.</li>
+            <li><strong>Preview</strong> a page to check the slicing and contrast,
+              tweak the settings, and preview again until it looks right.</li>
+            <li><strong>Export all</strong>, then <strong>download</strong> the
+              <code>.xtc</code> and copy it onto your reader.</li>
+          </ol>
+          <p>
+            <strong>Why is a page cut into "slices"?</strong> Xteink screens are
+            small, so each page is rotated to landscape and cut into horizontal
+            strips that fill the screen. You read one page as a few zoomed-in
+            strips instead of one tiny full page. Defaults work well — only open
+            the <em>Slicing</em> and dithering controls if you want to fine-tune.
+          </p>
+        </div>
+      </details>
+
       <section class="settings" aria-label="Conversion settings">
         <div class="setting-group">
-          <label for="device">Device</label>
+          <label for="device" title="Your Xteink model. Sets the screen size that each slice is fitted to. Pick Custom to enter your own pixel dimensions.">Device</label>
           <select id="device">
             <option value="x4">Xteink X4 (480×800)</option>
             <option value="x3">Xteink X3 (480×640)</option>
@@ -36,8 +65,15 @@
         </div>
         <fieldset class="setting-fieldset">
           <legend>Slicing</legend>
+          <p class="setting-hint">
+            Each page is cut into screen-height strips.
+            <strong>Equal + overlap</strong> cuts evenly and adds spare
+            overlapping strips so no line is lost at a cut.
+            <strong>Auto</strong> instead cuts in the blank gaps between text
+            lines. Start with Equal + overlap.
+          </p>
           <div class="setting-group">
-            <label for="split-mode">Split mode</label>
+            <label for="split-mode" title="Equal + overlap: cut each page into equal screen-height strips, with k extra overlapping strips so nothing is lost at a cut. Auto: place cuts on the blank rows between text lines.">Split mode</label>
             <select id="split-mode">
               <option value="equal" selected>Equal + overlap</option>
               <option value="auto">Auto (between lines)</option>
@@ -69,7 +105,7 @@
           </div>
         </fieldset>
         <div class="setting-group">
-          <label for="dithering">Dithering</label>
+          <label for="dithering" title="How shades of gray become pure black & white. Dithering scatters dots to fake gray tones (good for photos); None gives a hard cutoff (crisp for plain text). Floyd-Steinberg is a safe default.">Dithering</label>
           <select id="dithering">
             <option value="none">None</option>
             <option value="floyd-steinberg" selected>Floyd-Steinberg</option>
@@ -78,19 +114,19 @@
           </select>
         </div>
         <div class="setting-group">
-          <label for="dither-strength">Dither strength: <span id="dither-strength-val">100%</span></label>
+          <label for="dither-strength" title="How strongly the dither pattern is applied, blended against a plain threshold. 100% = full dithering; 0% = none.">Dither strength: <span id="dither-strength-val">100%</span></label>
           <input id="dither-strength" type="range" min="0" max="100" value="100" />
         </div>
         <div class="setting-group">
-          <label for="threshold">Threshold: <span id="threshold-val">128</span></label>
+          <label for="threshold" title="The gray cutoff for black vs white: pixels darker than this become black. Lower = lighter, brighter page; higher = darker, heavier page.">Threshold: <span id="threshold-val">128</span></label>
           <input id="threshold" type="range" min="0" max="255" value="128" />
         </div>
         <div class="setting-group">
-          <label for="auto-preview-page">Auto-preview page</label>
+          <label for="auto-preview-page" title="Which page is shown first when you open a file, so you can jump straight to a representative page.">Auto-preview page</label>
           <input id="auto-preview-page" type="number" value="1" min="1" />
         </div>
         <div class="setting-group">
-          <label for="orientation">Landscape rotation</label>
+          <label for="orientation" title="Which way each portrait page is turned to fit the landscape screen. Try the other direction if text comes out upside-down on your device.">Landscape rotation</label>
           <select id="orientation">
             <option value="cw">Rotate right (↻ CW)</option>
             <option value="ccw">Rotate left (↺ CCW)</option>
