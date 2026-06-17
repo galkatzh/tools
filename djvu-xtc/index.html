@@ -34,37 +34,40 @@
           <label for="custom-h">Device height (px)</label>
           <input id="custom-h" type="number" value="800" min="100" max="4000" />
         </div>
-        <div class="setting-group">
-          <label for="split-mode">Split mode</label>
-          <select id="split-mode">
-            <option value="equal" selected>Equal + overlap</option>
-            <option value="auto">Auto (between lines)</option>
-          </select>
-        </div>
-        <div class="setting-group" id="k-group">
-          <label for="overlap-k" title="Extra slices per DjVu page added on top of the minimum needed. k=0 means no overlap; k=1 adds one overlapping slice per page.">Extra slices k</label>
-          <input id="overlap-k" type="number" value="1" min="0" max="20" />
-        </div>
-        <div class="setting-group" id="auto-n-group" hidden>
-          <label for="auto-n" title="Number of slices each DjVu page is split into.">Slices per page</label>
-          <input id="auto-n" type="number" value="3" min="1" max="50" />
-        </div>
-        <div class="setting-group" id="auto-x-group" hidden>
-          <label for="auto-x" title="Half-window in source pixels: each split point is shifted by up to ±x rows from its equal-split position to land on a row between text lines.">Search window x (px)</label>
-          <input id="auto-x" type="number" value="20" min="1" max="400" />
-        </div>
-        <div class="setting-group" id="auto-lambda-group" hidden>
-          <label for="auto-lambda" title="Drift penalty: how strongly to prefer the equal-split position over a cleaner gap further away. 0 = always take the cleanest row in the window (slice heights vary most); higher = hug equal spacing.">Drift penalty λ: <span id="auto-lambda-val">0.20</span></label>
-          <input id="auto-lambda" type="range" min="0" max="2" step="0.05" value="0.2" />
-        </div>
-        <div class="setting-group" id="auto-band-group" hidden>
-          <label for="auto-band" title="Clearance band in source pixels: a cut is scored by the average ink over ±band rows, so it lands in the middle of a wide gap rather than just grazing a line edge.">Clearance band (px)</label>
-          <input id="auto-band" type="number" value="4" min="0" max="40" />
-        </div>
-        <div class="setting-group" id="auto-ink-group" hidden>
-          <label for="auto-ink" title="Luminance below which a pixel counts as ink when scoring rows. Lower values ignore faint scan noise / gray background; higher values treat near-white pixels as ink.">Ink threshold: <span id="auto-ink-val">230</span></label>
-          <input id="auto-ink" type="range" min="150" max="254" value="230" />
-        </div>
+        <fieldset class="setting-fieldset">
+          <legend>Slicing</legend>
+          <div class="setting-group">
+            <label for="split-mode">Split mode</label>
+            <select id="split-mode">
+              <option value="equal" selected>Equal + overlap</option>
+              <option value="auto">Auto (between lines)</option>
+            </select>
+          </div>
+          <div class="setting-group" id="k-group">
+            <label for="overlap-k" title="Extra slices per DjVu page added on top of the minimum needed. k=0 means no overlap; k=1 adds one overlapping slice per page.">Extra slices k</label>
+            <input id="overlap-k" type="number" value="1" min="0" max="20" />
+          </div>
+          <div class="setting-group" id="auto-n-group" hidden>
+            <label for="auto-n" title="Number of slices each DjVu page is split into.">Slices per page</label>
+            <input id="auto-n" type="number" value="3" min="1" max="50" />
+          </div>
+          <div class="setting-group" id="auto-x-group" hidden>
+            <label for="auto-x" title="Half-window in source pixels: each split point is shifted by up to ±x rows from its equal-split position to land on a row between text lines.">Search window x (px)</label>
+            <input id="auto-x" type="number" value="20" min="1" max="400" />
+          </div>
+          <div class="setting-group" id="auto-lambda-group" hidden>
+            <label for="auto-lambda" title="Drift penalty: how strongly to prefer the equal-split position over a cleaner gap further away. 0 = always take the cleanest row in the window (slice heights vary most); higher = hug equal spacing.">Drift penalty λ: <span id="auto-lambda-val">0.20</span></label>
+            <input id="auto-lambda" type="range" min="0" max="2" step="0.05" value="0.2" />
+          </div>
+          <div class="setting-group" id="auto-band-group" hidden>
+            <label for="auto-band" title="Clearance band in source pixels: a cut is scored by the average ink over ±band rows, so it lands in the middle of a wide gap rather than just grazing a line edge.">Clearance band (px)</label>
+            <input id="auto-band" type="number" value="4" min="0" max="40" />
+          </div>
+          <div class="setting-group" id="auto-ink-group" hidden>
+            <label for="auto-ink" title="Luminance below which a pixel counts as ink when scoring rows. Lower values ignore faint scan noise / gray background; higher values treat near-white pixels as ink.">Ink threshold: <span id="auto-ink-val">230</span></label>
+            <input id="auto-ink" type="range" min="150" max="254" value="230" />
+          </div>
+        </fieldset>
         <div class="setting-group">
           <label for="dithering">Dithering</label>
           <select id="dithering">
