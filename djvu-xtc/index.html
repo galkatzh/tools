@@ -34,25 +34,40 @@
           <label for="custom-h">Device height (px)</label>
           <input id="custom-h" type="number" value="800" min="100" max="4000" />
         </div>
-        <div class="setting-group">
-          <label for="split-mode">Split mode</label>
-          <select id="split-mode">
-            <option value="equal" selected>Equal + overlap</option>
-            <option value="auto">Auto (between lines)</option>
-          </select>
-        </div>
-        <div class="setting-group" id="k-group">
-          <label for="overlap-k" title="Extra slices per DjVu page added on top of the minimum needed. k=0 means no overlap; k=1 adds one overlapping slice per page.">Extra slices k</label>
-          <input id="overlap-k" type="number" value="1" min="0" max="20" />
-        </div>
-        <div class="setting-group" id="auto-n-group" hidden>
-          <label for="auto-n" title="Number of slices each DjVu page is split into.">Slices per page</label>
-          <input id="auto-n" type="number" value="3" min="1" max="50" />
-        </div>
-        <div class="setting-group" id="auto-x-group" hidden>
-          <label for="auto-x" title="Half-window in source pixels: each split point is shifted by up to ±x rows from its equal-split position to land on a row between text lines.">Search window x (px)</label>
-          <input id="auto-x" type="number" value="20" min="1" max="400" />
-        </div>
+        <fieldset class="setting-fieldset">
+          <legend>Slicing</legend>
+          <div class="setting-group">
+            <label for="split-mode">Split mode</label>
+            <select id="split-mode">
+              <option value="equal" selected>Equal + overlap</option>
+              <option value="auto">Auto (between lines)</option>
+            </select>
+          </div>
+          <div class="setting-group" id="k-group">
+            <label for="overlap-k" title="Extra slices per DjVu page added on top of the minimum needed. k=0 means no overlap; k=1 adds one overlapping slice per page.">Extra slices k</label>
+            <input id="overlap-k" type="number" value="1" min="0" max="20" />
+          </div>
+          <div class="setting-group" id="auto-n-group" hidden>
+            <label for="auto-n" title="Number of slices each DjVu page is split into.">Slices per page</label>
+            <input id="auto-n" type="number" value="3" min="1" max="50" />
+          </div>
+          <div class="setting-group" id="auto-x-group" hidden>
+            <label for="auto-x" title="Half-window in source pixels: each split point is shifted by up to ±x rows from its equal-split position to land on a row between text lines.">Search window x (px)</label>
+            <input id="auto-x" type="number" value="20" min="1" max="400" />
+          </div>
+          <div class="setting-group" id="auto-lambda-group" hidden>
+            <label for="auto-lambda" title="Drift penalty: how strongly to prefer the equal-split position over a cleaner gap further away. 0 = always take the cleanest row in the window (slice heights vary most); higher = hug equal spacing.">Drift penalty λ: <span id="auto-lambda-val">0.20</span></label>
+            <input id="auto-lambda" type="range" min="0" max="2" step="0.05" value="0.2" />
+          </div>
+          <div class="setting-group" id="auto-band-group" hidden>
+            <label for="auto-band" title="Clearance band in source pixels: a cut is scored by the average ink over ±band rows, so it lands in the middle of a wide gap rather than just grazing a line edge.">Clearance band (px)</label>
+            <input id="auto-band" type="number" value="4" min="0" max="40" />
+          </div>
+          <div class="setting-group" id="auto-ink-group" hidden>
+            <label for="auto-ink" title="Luminance below which a pixel counts as ink when scoring rows. Lower values ignore faint scan noise / gray background; higher values treat near-white pixels as ink.">Ink threshold: <span id="auto-ink-val">230</span></label>
+            <input id="auto-ink" type="range" min="150" max="254" value="230" />
+          </div>
+        </fieldset>
         <div class="setting-group">
           <label for="dithering">Dithering</label>
           <select id="dithering">
@@ -194,6 +209,9 @@ function getSettings() {
     k:              +$('overlap-k').value,
     autoN:          Math.max(1, +$('auto-n').value || 1),
     autoX:          Math.max(0, +$('auto-x').value || 0),
+    autoLambda:     Math.max(0, +$('auto-lambda').value || 0),
+    autoBand:       Math.max(0, Math.round(+$('auto-band').value || 0)),
+    autoInk:        Math.min(254, Math.max(1, +$('auto-ink').value || 230)),
     dithering:      $('dithering').value,
     ditherStrength: +$('dither-strength').value / 100,
     threshold:      +$('threshold').value,
@@ -284,111 +302,138 @@ function sliceCanvas(srcCanvas, sliceH, n) {
 }
 
 /**
- * Flag each row of srcCanvas as all-white (luminance ≥ 250 for every pixel).
- * Same luminance threshold as isBlank/detectContentBounds for consistency.
+ * Per-row "ink" profile: the average pixel darkness of each row on a 0–255
+ * scale, where a pixel contributes `max(0, inkThreshold − luminance)`. A row
+ * with no ink scores 0; a row crossing dense text scores high. Unlike a binary
+ * all-white test (which is almost never true on a real scan because of
+ * speckle, bleed-through and anti-aliasing), this is continuous, so the
+ * *least*-inky row in any window can always be found instead of clamping.
  */
-function computeWhiteRows(srcCanvas) {
+function computeRowInk(srcCanvas, inkThreshold) {
   const w = srcCanvas.width, h = srcCanvas.height;
   const { data } = srcCanvas.getContext('2d').getImageData(0, 0, w, h);
-  const white = new Uint8Array(h);
+  const ink = new Float32Array(h);
   for (let y = 0; y < h; y++) {
-    let allWhite = 1;
+    let sum = 0;
     const base = y * w * 4;
     for (let x = 0; x < w; x++) {
       const i = base + x * 4;
       const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-      if (lum < 250) { allWhite = 0; break; }
+      if (lum < inkThreshold) sum += inkThreshold - lum;
     }
-    white[y] = allWhite;
+    ink[y] = sum / w;
   }
-  return white;
+  return ink;
 }
 
 /**
- * Pick a split row that (a) lies in [prev+1, prev+sliceH] — guaranteeing the
- * segment `[prev, split)` fits on one device page — and (b) is as close as
- * possible to `ideal` while also landing on a balanced all-white row (equal
- * ±1 consecutive white rows above and below, measured within the clamped
- * window). Falls back to the clamped `ideal` when no balanced white row
- * exists; that may cut through text but is unavoidable given the constraint.
- *
- * Returns { split, clamped } — clamped=true if we had to give up the white-
- * row guarantee, so callers can surface a warning.
+ * Box-blur the row-ink profile over a ±band window so each row's score
+ * reflects the *clearance* around it, not just the single row. This pulls cuts
+ * toward the centre of a wide gap and away from a 1px sliver between two lines.
+ * Uses a prefix sum so each output row is O(1).
  */
-function pickConstrainedSplit(whiteRows, ideal, x, prev, sliceH) {
-  const H  = whiteRows.length;
+function smoothBand(ink, band) {
+  const h = ink.length;
+  if (band <= 0) return ink;
+  const prefix = new Float64Array(h + 1);
+  for (let y = 0; y < h; y++) prefix[y + 1] = prefix[y] + ink[y];
+  const out = new Float32Array(h);
+  for (let y = 0; y < h; y++) {
+    const lo = Math.max(0, y - band), hi = Math.min(h - 1, y + band);
+    out[y] = (prefix[hi + 1] - prefix[lo]) / (hi - lo + 1);
+  }
+  return out;
+}
+
+/**
+ * Pick a split row in [prev+1, min(prev+sliceH, ideal+x)] — guaranteeing the
+ * segment `[prev, split)` fits on one device page — that minimises the cost
+ *   cost(y) = bandInk[y] + λ·|y − ideal|
+ * i.e. the cleanest (least-ink) row, biased toward the equal-split `ideal` by
+ * the drift penalty λ. With λ→0 it always takes the whitest row in the window;
+ * larger λ keeps cuts near equal spacing. Because the score is continuous a
+ * best row always exists — no all-or-nothing fallback.
+ *
+ * Returns { split, ink } where `ink` is the band-ink at the chosen row, so the
+ * caller can warn when even the best cut still crosses real text.
+ */
+function pickConstrainedSplit(bandInk, ideal, x, prev, sliceH, lambda) {
+  const H  = bandInk.length;
   const lo = Math.max(prev + 1, ideal - x);
   const hi = Math.min(H - 1, prev + sliceH, ideal + x);
   if (lo > hi) {
-    // Window is empty (e.g. ideal is well past the sliceH horizon). Clamp
-    // to the furthest legal row so the segment still fits.
-    return { split: Math.min(H - 1, prev + sliceH), clamped: true };
+    // Window is empty (ideal already past the sliceH horizon). Clamp to the
+    // furthest legal row so the segment still fits on one device page.
+    const split = Math.min(H - 1, prev + sliceH);
+    return { split, ink: bandInk[split] ?? Infinity };
   }
 
-  let bestY = -1, bestDiff = Infinity, bestDist = Infinity;
+  let bestY = lo, bestCost = Infinity, bestInk = Infinity, bestDist = Infinity;
   for (let y = lo; y <= hi; y++) {
-    if (!whiteRows[y]) continue;
-    let above = 0;
-    for (let k = y - 1; k >= lo && whiteRows[k]; k--) above++;
-    let below = 0;
-    for (let k = y + 1; k <= hi && whiteRows[k]; k++) below++;
-    const diff = Math.abs(above - below);
-    if (diff > 1) continue;
     const dist = Math.abs(y - ideal);
-    if (diff < bestDiff || (diff === bestDiff && dist < bestDist)) {
-      bestDiff = diff; bestDist = dist; bestY = y;
+    const cost = bandInk[y] + lambda * dist;
+    // Strictly-better cost wins; on a tie prefer the row closest to ideal so
+    // that λ=0 still spaces slices evenly across runs of equally-white rows.
+    if (cost < bestCost - 1e-9 ||
+        (cost <= bestCost + 1e-9 && dist < bestDist)) {
+      bestCost = cost; bestY = y; bestInk = bandInk[y]; bestDist = dist;
     }
   }
-  if (bestY >= 0) return { split: bestY, clamped: false };
-  return { split: Math.max(lo, Math.min(hi, ideal)), clamped: true };
+  return { split: bestY, ink: bestInk };
 }
 
+// Average per-pixel darkness (0–255) above which a chosen cut is considered to
+// cross real text rather than an inter-line gap; only such cuts are warned on.
+const AUTO_TEXT_INK = 8;
+
 /**
- * Split srcCanvas into slices at split points chosen near equal-size
- * positions and nudged onto an inter-line white row within ±x source pixels.
+ * Split srcCanvas into slices at split points chosen near equal-size positions
+ * and nudged onto the cleanest inter-line row within ±x source pixels (see
+ * pickConstrainedSplit). `opts` = { lambda, band, inkThreshold }.
  *
- * Each segment is guaranteed to be ≤ sliceH tall: the search for each split
- * is biased so that `split - prev ≤ sliceH`. If the user-requested n would
- * force any segment above sliceH (i.e. the page is too tall for n slices of
- * the device height), additional slices are appended beyond n until the
- * whole page is covered. A console.warn names the page when any split had to
- * fall through the white-row guarantee because no gap fit the constraint.
+ * Each segment is guaranteed to be ≤ sliceH tall: the search for each split is
+ * biased so that `split - prev ≤ sliceH`. If the user-requested n would force
+ * any segment above sliceH (page too tall for n slices of the device height),
+ * additional slices are appended beyond n until the whole page is covered. A
+ * console.warn names how many cuts had to cross inked rows because no clean gap
+ * fit the constraint.
  */
-function autoSliceCanvas(srcCanvas, n, x, sliceH) {
+function autoSliceCanvas(srcCanvas, n, x, sliceH, opts) {
   const { width: w, height: h } = srcCanvas;
   if (h === 0) return [];
+  const { lambda, band, inkThreshold } = opts;
 
-  const whiteRows = computeWhiteRows(srcCanvas);
+  const bandInk = smoothBand(computeRowInk(srcCanvas, inkThreshold), band);
   const splits = [];
   let prev = 0;
-  let clampedCount = 0;
+  let inkyCuts = 0;
 
   // Plan n-1 splits at equal-size ideals, each clamped to ≤ sliceH from prev.
   for (let i = 1; i < n; i++) {
     const ideal = Math.round(i * h / n);
-    const { split, clamped } = pickConstrainedSplit(whiteRows, ideal, x, prev, sliceH);
+    const { split, ink } = pickConstrainedSplit(bandInk, ideal, x, prev, sliceH, lambda);
     if (split <= prev) break; // page shorter than expected; stop early
     splits.push(split);
-    if (clamped) clampedCount++;
+    if (ink > AUTO_TEXT_INK) inkyCuts++;
     prev = split;
   }
 
-  // Extra slices for leftover content. Each is ~sliceH tall, still nudged
-  // onto a balanced white row when available.
+  // Extra slices for leftover content. Each is ~sliceH tall, still nudged onto
+  // the cleanest row when one is available.
   while (h - prev > sliceH) {
     const ideal = prev + sliceH;
-    const { split, clamped } = pickConstrainedSplit(whiteRows, ideal, x, prev, sliceH);
+    const { split, ink } = pickConstrainedSplit(bandInk, ideal, x, prev, sliceH, lambda);
     if (split <= prev) break; // safety: never infinite-loop
     splits.push(split);
-    if (clamped) clampedCount++;
+    if (ink > AUTO_TEXT_INK) inkyCuts++;
     prev = split;
   }
 
-  if (clampedCount) {
+  if (inkyCuts) {
     console.warn(
-      `Auto-split: ${clampedCount} split point${clampedCount === 1 ? '' : 's'} could not ` +
-      `find a balanced white row within the sliceH constraint and may cut through text. ` +
-      `Increase search window x or slices per page.`
+      `Auto-split: ${inkyCuts} cut${inkyCuts === 1 ? '' : 's'} crossed an inked row — no ` +
+      `clean gap fit within the search window. Increase search window x or slices per ` +
+      `page, or lower the drift penalty λ.`
     );
   }
 
@@ -917,7 +962,8 @@ async function renderDjVuPage(pageNum, s) {
 function processPage(pageCanvas, s) {
   const sliceH = s.deviceW;
   const slices = s.splitMode === 'auto'
-    ? autoSliceCanvas(pageCanvas, s.autoN, s.autoX, sliceH)
+    ? autoSliceCanvas(pageCanvas, s.autoN, s.autoX, sliceH,
+        { lambda: s.autoLambda, band: s.autoBand, inkThreshold: s.autoInk })
     : sliceCanvas(pageCanvas, sliceH, Math.max(1, Math.ceil(pageCanvas.height / sliceH)) + s.k);
   const xtgs = [];
   for (const slice of slices) {
@@ -1125,15 +1171,27 @@ $('device').addEventListener('change', () => {
   $('custom-h-group').hidden = !custom;
 });
 
-// Show k-group for equal mode, auto-n/auto-x for auto mode
+// Show k-group for equal mode, the auto-* controls for auto mode
 function updateSplitModeUI() {
   const auto = $('split-mode').value === 'auto';
-  $('k-group').hidden      = auto;
-  $('auto-n-group').hidden = !auto;
-  $('auto-x-group').hidden = !auto;
+  $('k-group').hidden          = auto;
+  $('auto-n-group').hidden      = !auto;
+  $('auto-x-group').hidden      = !auto;
+  $('auto-lambda-group').hidden = !auto;
+  $('auto-band-group').hidden   = !auto;
+  $('auto-ink-group').hidden    = !auto;
 }
 $('split-mode').addEventListener('change', updateSplitModeUI);
 updateSplitModeUI();
+
+// Live value labels for the auto-split range sliders
+function updateAutoLabels() {
+  $('auto-lambda-val').textContent = (+$('auto-lambda').value).toFixed(2);
+  $('auto-ink-val').textContent    = $('auto-ink').value;
+}
+$('auto-lambda').addEventListener('input', updateAutoLabels);
+$('auto-ink').addEventListener('input', updateAutoLabels);
+updateAutoLabels();
 
 // Dither strength label and dim the control when dithering is off
 const ditherGroup = $('dither-strength').closest('.setting-group');

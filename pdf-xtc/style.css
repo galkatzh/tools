@@ -29,6 +29,24 @@ header p  { color: #888; font-size: 0.9rem; }
   gap: 12px;
 }
 .setting-group { display: flex; flex-direction: column; gap: 4px; }
+/* Visually grouped settings (e.g. slicing): span the full grid and lay the
+   contained .setting-group cells out in their own nested grid. */
+.setting-fieldset {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #333;
+  border-radius: 6px;
+}
+.setting-fieldset legend {
+  grid-column: 1 / -1;
+  font-size: 0.78rem;
+  color: #ccc;
+  padding: 0 4px;
+}
 label { font-size: 0.78rem; color: #999; }
 input[type="number"],
 select {
