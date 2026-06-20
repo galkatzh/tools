@@ -54,7 +54,9 @@ async function fetchRes(url, retries = 2) {
   }
   if (!res.ok) {
     const detail = await res.text().then(t => JSON.parse(t).message).catch(() => '');
-    throw new Error(`${res.status} ${res.statusText} ${detail ? `(${detail}) ` : ''}— ${url}`);
+    const err = new Error(`${res.status} ${res.statusText} ${detail ? `(${detail}) ` : ''}— ${url}`);
+    err.status = res.status; // let callers distinguish an upstream IP-block from other failures
+    throw err;
   }
   return res;
 }
@@ -106,6 +108,21 @@ function proxied(url) {
   const p = getProxy();
   if (!p) throw new Error('No CORS proxy configured');
   return p.includes('{url}') ? p.replace('{url}', enc(url)) : p + enc(url);
+}
+
+// Reddit & Google block traffic from datacenter IPs, so a proxied request that
+// comes back 403/429/451/503 is almost always the target blocking the proxy's
+// IP rather than a bug — surface that instead of a bare status code.
+const PROXY_BLOCK_STATUSES = new Set([403, 429, 451, 503]);
+async function fetchViaProxy(url, parse = fetchJSON) {
+  try {
+    return await parse(proxied(url));
+  } catch (err) {
+    if (PROXY_BLOCK_STATUSES.has(err.status)) {
+      err.message += " — the target likely blocked your proxy's IP. Reddit & Google News routinely block datacenter/Cloudflare IPs; a residential-IP proxy avoids this.";
+    }
+    throw err;
+  }
 }
 
 const PROXY_HINT = `<div class="muted">Reddit and Google News don't allow direct browser requests.
@@ -347,7 +364,7 @@ async function relatedPanel(q) {
 
 async function redditSubsPanel(q) {
   if (!getProxy()) return PROXY_HINT;
-  const data = await fetchJSON(proxied(`https://www.reddit.com/subreddits/search.json?q=${enc(q)}&limit=8&raw_json=1`));
+  const data = await fetchViaProxy(`https://www.reddit.com/subreddits/search.json?q=${enc(q)}&limit=8&raw_json=1`);
   const subs = data.data.children.map(c => c.data).filter(s => !s.over18);
   if (!subs.length) return '<div class="muted">No matching subreddits.</div>';
   return listHTML(subs.map(s => ({
@@ -359,7 +376,7 @@ async function redditSubsPanel(q) {
 
 async function redditPostsPanel(q) {
   if (!getProxy()) return PROXY_HINT;
-  const data = await fetchJSON(proxied(`https://www.reddit.com/search.json?q=${enc(q)}&sort=top&t=year&limit=8&raw_json=1`));
+  const data = await fetchViaProxy(`https://www.reddit.com/search.json?q=${enc(q)}&sort=top&t=year&limit=8&raw_json=1`);
   const posts = data.data.children.map(c => c.data).filter(p => !p.over_18);
   if (!posts.length) return '<div class="muted">No Reddit posts in the past year.</div>';
   return listHTML(posts.map(p => ({
@@ -371,7 +388,7 @@ async function redditPostsPanel(q) {
 
 async function newsPanel(q) {
   if (!getProxy()) return PROXY_HINT;
-  const xml = await fetchText(proxied(`https://news.google.com/rss/search?q=${enc(q)}&hl=en-US&gl=US&ceid=US:en`));
+  const xml = await fetchViaProxy(`https://news.google.com/rss/search?q=${enc(q)}&hl=en-US&gl=US&ceid=US:en`, fetchText);
   const doc = new DOMParser().parseFromString(xml, 'text/xml');
   if (doc.querySelector('parsererror')) throw new Error('Could not parse Google News RSS (is the proxy returning the raw response?)');
   const items = [...doc.querySelectorAll('item')].slice(0, 8).map(it => ({
