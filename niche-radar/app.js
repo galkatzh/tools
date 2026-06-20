@@ -32,7 +32,21 @@ const enc = encodeURIComponent;
 const PALETTE = ['#58a6ff', '#3fb950', '#d29922', '#f778ba'];
 
 async function fetchRes(url, retries = 2) {
-  const res = await fetch(url);
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (err) {
+    // fetch() only throws (TypeError "Failed to fetch") for network-level
+    // failures: host unreachable, mixed-content, or — most commonly here — a
+    // response with no Access-Control-Allow-Origin header that the browser
+    // blocks before we ever see a status. For a proxied request this is the
+    // proxy, not the upstream API, so point the user at the proxy.
+    const proxyPrefix = getProxy().split('{')[0];
+    const hint = proxyPrefix && url.startsWith(proxyPrefix)
+      ? ' Check your CORS proxy: it must be deployed, served over https, and return an Access-Control-Allow-Origin header on every response (including errors).'
+      : '';
+    throw new Error(`Network/CORS error — could not reach ${url}.${hint}`);
+  }
   if (res.status === 429 && retries > 0) {
     // Rate-limited (Wikipedia does this on busy IPs) — back off and retry.
     await new Promise(r => setTimeout(r, (3 - retries) * 1500));
