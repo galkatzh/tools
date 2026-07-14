@@ -62,7 +62,10 @@
           <input type="range" id="cooldown" min="50" max="400" step="10" value="200">
           <span id="cooldown-val">200ms</span>
         </div>
-        <button id="load-samples-btn">Load Custom Samples</button>
+        <div id="sample-btns">
+          <button id="load-samples-btn" class="ctrl-btn">Load Samples</button>
+          <button id="fs-open" class="ctrl-btn">Freesound</button>
+        </div>
         <input type="file" id="file-input" accept="audio/*" multiple class="hidden">
       </div>
 
@@ -79,6 +82,39 @@
     </div>
   </div>
 
+  <!-- Freesound browser (kept outside #app so it can scroll despite touch-action: none) -->
+  <div id="freesound-panel" class="hidden">
+    <div id="fs-header">
+      <h3>Freesound</h3>
+      <button id="fs-close" title="Close">&#x2715;</button>
+    </div>
+    <div id="fs-error" class="hidden"></div>
+
+    <div id="fs-setup" class="hidden">
+      <p>Search freesound.org and load sounds straight onto the pads. You need your own (free) API credential:</p>
+      <ol>
+        <li>Apply at <a href="https://freesound.org/apiv2/apply" target="_blank" rel="noopener">freesound.org/apiv2/apply</a></li>
+        <li>Set the redirect URL of the credential to <code id="fs-redirect-uri"></code></li>
+        <li>Paste the credential below and connect</li>
+      </ol>
+      <input id="fs-client-id" placeholder="Client ID" autocomplete="off" spellcheck="false">
+      <input id="fs-client-secret" placeholder="Client secret / API key" autocomplete="off" spellcheck="false">
+      <button id="fs-connect" class="ctrl-btn">Connect to Freesound</button>
+    </div>
+
+    <div id="fs-browser" class="hidden">
+      <form id="fs-search-form">
+        <input id="fs-query" type="search" placeholder="Search sounds&#8230;" autocomplete="off">
+        <button type="submit" class="ctrl-btn">Search</button>
+      </form>
+      <div id="fs-status"></div>
+      <ul id="fs-results"></ul>
+      <button id="fs-more" class="hidden">Load more</button>
+      <button id="fs-disconnect">Disconnect from Freesound</button>
+    </div>
+  </div>
+
   <script src="app.js"></script>
+  <script src="freesound.js"></script>
 </body>
 </html>

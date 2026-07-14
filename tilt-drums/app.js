@@ -1,6 +1,29 @@
 (function () {
   "use strict";
 
+  // =========================================================================
+  //  Global error reporting — nothing fails silently
+  // =========================================================================
+
+  var errorBanner = document.createElement("div");
+  errorBanner.id = "error-banner";
+  errorBanner.className = "hidden";
+  document.body.appendChild(errorBanner);
+  errorBanner.onclick = function () { errorBanner.classList.add("hidden"); };
+
+  function showErrorBanner(msg) {
+    errorBanner.textContent = msg + " (tap to dismiss)";
+    errorBanner.classList.remove("hidden");
+  }
+
+  window.addEventListener("error", function (e) {
+    showErrorBanner(e.message || "Unknown error");
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    console.error("Unhandled rejection:", e.reason);
+    showErrorBanner(String((e.reason && e.reason.message) || e.reason));
+  });
+
   var PAD_COUNT = 4;
   var RETRIGGER_COOLDOWN_MS = 120;
 
@@ -13,7 +36,12 @@
   var startScreen = document.getElementById("start-screen");
   var mainScreen = document.getElementById("main-screen");
   var startBtn = document.getElementById("start-btn");
-  var pads = document.querySelectorAll(".pad");
+  // Indexed by data-index — DOM order (0,2,1,3 for the d-pad cross) differs
+  // from pad index, so a plain querySelectorAll NodeList would mismatch.
+  var pads = [];
+  document.querySelectorAll(".pad").forEach(function (pad) {
+    pads[parseInt(pad.dataset.index, 10)] = pad;
+  });
   var sensitivitySlider = document.getElementById("sensitivity");
   var cooldownSlider = document.getElementById("cooldown");
   var cooldownVal = document.getElementById("cooldown-val");
@@ -276,17 +304,27 @@
     }
   }
 
-  function loadFileIntoPad(file, padIndex) {
-    var reader = new FileReader();
-    reader.onload = function (e) {
-      audioCtx.decodeAudioData(e.target.result, function (decoded) {
-        sampleBuffers[padIndex] = decoded;
-        pads[padIndex].querySelector(".pad-label").textContent =
-          file.name.replace(/\.[^.]+$/, "").slice(0, 12);
-      });
-    };
-    reader.readAsArrayBuffer(file);
+  /** Decode an ArrayBuffer of audio and assign it to a pad. Returns a Promise. */
+  function loadSampleIntoPad(arrayBuffer, name, padIndex) {
+    return new Promise(function (resolve, reject) {
+      audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
+    }).then(function (decoded) {
+      sampleBuffers[padIndex] = decoded;
+      pads[padIndex].querySelector(".pad-label").textContent = name.slice(0, 12);
+    });
   }
+
+  function loadFileIntoPad(file, padIndex) {
+    file.arrayBuffer().then(function (buf) {
+      return loadSampleIntoPad(buf, file.name.replace(/\.[^.]+$/, ""), padIndex);
+    }).catch(function (err) {
+      console.error("Failed to load sample", file.name, err);
+      showErrorBanner('Could not load "' + file.name + '": ' + (err.message || err));
+    });
+  }
+
+  // Interface for freesound.js: load a fetched sound onto a pad.
+  window.tiltDrums = { loadSampleIntoPad: loadSampleIntoPad };
 
   function recalibrate() { refBeta = null; refGamma = null; }
 
