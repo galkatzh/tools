@@ -473,6 +473,20 @@ html, body {
   gap: 6px;
 }
 
+#fs-custom summary {
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.fs-custom-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
 #fs-setup a {
   color: var(--accent);
 }

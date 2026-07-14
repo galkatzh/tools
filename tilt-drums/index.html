@@ -91,15 +91,22 @@
     <div id="fs-error" class="hidden"></div>
 
     <div id="fs-setup" class="hidden">
-      <p>Search freesound.org and load sounds straight onto the pads. You need your own (free) API credential:</p>
-      <ol>
-        <li>Apply at <a href="https://freesound.org/apiv2/apply" target="_blank" rel="noopener">freesound.org/apiv2/apply</a></li>
-        <li>Set the redirect URL of the credential to <code id="fs-redirect-uri"></code></li>
-        <li>Paste the credential below and connect</li>
-      </ol>
-      <input id="fs-client-id" placeholder="Client ID" autocomplete="off" spellcheck="false">
-      <input id="fs-client-secret" placeholder="Client secret / API key" autocomplete="off" spellcheck="false">
+      <p>Connect a Freesound account to search sounds and load them onto the pads.</p>
       <button id="fs-connect" class="ctrl-btn">Connect to Freesound</button>
+      <details id="fs-custom">
+        <summary>Advanced: use your own API credential</summary>
+        <div class="fs-custom-body">
+          <p>The built-in credential shares one API quota (2000 searches/day) between everyone using this app. For a private quota:</p>
+          <ol>
+            <li>Apply at <a href="https://freesound.org/apiv2/apply" target="_blank" rel="noopener">freesound.org/apiv2/apply</a></li>
+            <li>Set the redirect URL of the credential to <code id="fs-redirect-uri"></code></li>
+            <li>Paste the credential below and connect</li>
+          </ol>
+          <input id="fs-client-id" placeholder="Client ID" autocomplete="off" spellcheck="false">
+          <input id="fs-client-secret" placeholder="Client secret / API key" autocomplete="off" spellcheck="false">
+          <p>Leave both fields empty to use the built-in credential.</p>
+        </div>
+      </details>
     </div>
 
     <div id="fs-browser" class="hidden">

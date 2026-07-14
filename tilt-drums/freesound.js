@@ -18,6 +18,19 @@
   // ==========================================================================
 
   var API = "https://freesound.org/apiv2";
+
+  // Shared built-in credential — intentionally public. Freesound has no PKCE,
+  // so a static app cannot keep a secret anyway; the exposure is limited
+  // because rate limits are keyed to the client_id (everyone on this
+  // credential shares one 60/min, 2000/day quota — only searches count) and
+  // authorization codes are only ever redirected to this app's registered
+  // URL. Users who want a private quota can paste their own credential in
+  // the panel, which is stored in localStorage and overrides this one.
+  var DEFAULT_CREDS = {
+    id: "k5XqvXP2zEPXZB1y1uxx",
+    secret: "XQ4VcZA2JZqmkq0wFvckTzTzVSCggwrI7MdujZYc",
+  };
+
   var LS_CREDS = "tilt-drums.fs-creds";
   var LS_TOKEN = "tilt-drums.fs-token";
   var LS_STATE = "tilt-drums.fs-state";
@@ -73,10 +86,14 @@
 
   // ---- OAuth2 ----
 
+  /** The user's own credential from localStorage, or the shared built-in one. */
+  function getCreds() {
+    return readJSON(LS_CREDS) || DEFAULT_CREDS;
+  }
+
   /** POST to the token endpoint (auth-code exchange or refresh) and store the result. */
   function tokenRequest(params) {
-    var creds = readJSON(LS_CREDS);
-    if (!creds) return Promise.reject(new Error("Missing Freesound credentials"));
+    var creds = getCreds();
     params.client_id = creds.id;
     params.client_secret = creds.secret;
     return fetch(API + "/oauth2/access_token/", {
@@ -126,17 +143,21 @@
     clearError();
     var id = clientIdInput.value.trim();
     var secret = clientSecretInput.value.trim();
-    if (!id || !secret) {
-      showError("Enter both the client ID and the client secret");
+    if (!!id !== !!secret) {
+      showError("Enter both the client ID and the client secret — or leave both empty to use the built-in credential");
       return;
     }
-    localStorage.setItem(LS_CREDS, JSON.stringify({ id: id, secret: secret }));
+    if (id) {
+      localStorage.setItem(LS_CREDS, JSON.stringify({ id: id, secret: secret }));
+    } else {
+      localStorage.removeItem(LS_CREDS);
+    }
     var state = Array.from(crypto.getRandomValues(new Uint8Array(16)), function (b) {
       return b.toString(16).padStart(2, "0");
     }).join("");
     localStorage.setItem(LS_STATE, state);
     location.href = API + "/oauth2/authorize/?" +
-      new URLSearchParams({ client_id: id, response_type: "code", state: state });
+      new URLSearchParams({ client_id: getCreds().id, response_type: "code", state: state });
   };
 
   /** Handle ?code=/?error= on page load after Freesound redirects back. */
@@ -178,11 +199,11 @@
 
   /** Show setup or browser depending on whether we hold a token. */
   function updateView() {
-    var creds = readJSON(LS_CREDS);
-    if (creds) {
-      clientIdInput.value = creds.id;
-      clientSecretInput.value = creds.secret;
-    }
+    // Only a user-supplied credential is shown in the inputs; when on the
+    // built-in one they stay empty so "empty = built-in" holds visually too.
+    var custom = readJSON(LS_CREDS);
+    clientIdInput.value = custom ? custom.id : "";
+    clientSecretInput.value = custom ? custom.secret : "";
     var connected = !!readJSON(LS_TOKEN);
     setupEl.classList.toggle("hidden", connected);
     browserEl.classList.toggle("hidden", !connected);
