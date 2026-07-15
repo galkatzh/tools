@@ -64,6 +64,7 @@
   var loopRecBtn = document.getElementById("loop-rec");
   var loopStopBtn = document.getElementById("loop-stop");
   var loopPlayBtn = document.getElementById("loop-play");
+  var loopDoubleBtn = document.getElementById("loop-double");
   var loopClearBtn = document.getElementById("loop-clear");
   var loopFill = document.getElementById("loop-fill");
   var loopStatusEl = document.getElementById("loop-status");
@@ -153,7 +154,7 @@
     pads[index].classList.add("active");
     setTimeout(function () { pads[index].classList.remove("active"); }, 120);
 
-    captureLoopEvent(index);
+    captureLoopEvent(index, buffer);
   }
 
   // =========================================================================
@@ -209,7 +210,7 @@
     if (Math.abs(vb) >= Math.abs(vg)) {
       return vb < 0 ? 0 : 3; // forward → Up(0), backward → Down(3)
     }
-    return vg > 0 ? 2 : 1;   // right → Right(1), left → Left(2)
+    return vg > 0 ? 1 : 2;   // right (gamma+) → Right(1), left (gamma-) → Left(2)
   }
 
   function handleOrientation(e) {
@@ -323,8 +324,13 @@
     });
   }
 
-  // Interface for freesound.js: load a fetched sound onto a pad.
-  window.tiltDrums = { loadSampleIntoPad: loadSampleIntoPad };
+  // Interface for freesound.js, plus accessors for console debugging / tests.
+  window.tiltDrums = {
+    loadSampleIntoPad: loadSampleIntoPad,
+    getLoopEvents: function () { return loopEvents; },
+    getLoopDuration: function () { return loopDuration; },
+    getPadBuffer: function (i) { return sampleBuffers[i]; },
+  };
 
   function recalibrate() { refBeta = null; refGamma = null; }
 
@@ -336,30 +342,35 @@
   //    2. Press REC again → set loop length, begin looped playback + overdub
   //    3. Keep playing → new hits layer on top each pass
   //    4. Press REC → exit overdub (playback continues)
-  //    5. Press STOP → silence   |   PLAY → resume   |   CLEAR → reset
+  //    5. Press STOP → silence   |   PLAY → resume   |   ×2 → double length
+  //    6. Tap ✕ → clear all; HOLD ✕ and tap a pad → delete just the hits
+  //       whose sound is currently on that pad
+  //
+  //  Each event captures the pad's AudioBuffer at record time, so loading a
+  //  new sound onto a pad layers on top of the old hits instead of rewriting
+  //  them. Hits whose sound is no longer on any pad can only be removed by
+  //  the global clear.
   // =========================================================================
 
-  var loopEvents = [];       // [{pad, time}] — time in seconds from loop start
+  var loopEvents = [];       // [{pad, time, buffer}] — time in s from loop start
   var loopDuration = 0;      // seconds; set when first recording pass ends
   var loopState = "idle";    // idle | recording | overdubbing | playing
   var recordStartTime = 0;   // Tone.now() when recording began
   var loopTickId = null;     // rAF id for progress / status updates
   var scheduledIds = [];     // Tone.Transport event IDs for cleanup
 
-  /** Play a pad sound at the current moment (used by the sequencer). */
-  function playPadNow(index) {
-    var buffer = sampleBuffers[index];
-    if (!buffer) return;
+  /** Play a recorded loop event at the current moment (used by the sequencer). */
+  function playEvent(evt) {
     var src = audioCtx.createBufferSource();
-    src.buffer = buffer;
+    src.buffer = evt.buffer;
     src.connect(audioCtx.destination);
     src.start();
-    pads[index].classList.add("active");
-    setTimeout(function () { pads[index].classList.remove("active"); }, 120);
+    pads[evt.pad].classList.add("active");
+    setTimeout(function () { pads[evt.pad].classList.remove("active"); }, 120);
   }
 
   /** Capture a pad hit into the loop (no-op unless recording/overdubbing). */
-  function captureLoopEvent(padIndex) {
+  function captureLoopEvent(padIndex, buffer) {
     if (loopState !== "recording" && loopState !== "overdubbing") return;
 
     var offset;
@@ -370,12 +381,12 @@
       offset = Tone.Transport.seconds % loopDuration;
     }
 
-    var evt = { pad: padIndex, time: offset };
+    var evt = { pad: padIndex, time: offset, buffer: buffer };
     loopEvents.push(evt);
 
     // During overdub, schedule immediately so it plays on subsequent cycles
     if (loopState === "overdubbing") {
-      var id = Tone.Transport.schedule(function () { playPadNow(evt.pad); }, evt.time);
+      var id = Tone.Transport.schedule(function () { playEvent(evt); }, evt.time);
       scheduledIds.push(id);
     }
   }
@@ -385,7 +396,7 @@
     scheduledIds.forEach(function (id) { Tone.Transport.clear(id); });
     scheduledIds = [];
     loopEvents.forEach(function (evt) {
-      var id = Tone.Transport.schedule(function () { playPadNow(evt.pad); }, evt.time);
+      var id = Tone.Transport.schedule(function () { playEvent(evt); }, evt.time);
       scheduledIds.push(id);
     });
   }
@@ -419,8 +430,9 @@
   function updateLoopUI() {
     loopRecBtn.classList.toggle("rec-active", loopState === "recording" || loopState === "overdubbing");
     loopPlayBtn.classList.toggle("play-active", loopState === "playing" || loopState === "overdubbing");
+    loopDoubleBtn.disabled = !loopDuration || loopState === "recording";
     if (loopState === "idle") {
-      loopStatusEl.textContent = loopEvents.length ? loopDuration.toFixed(1) + "s loop" : "";
+      loopStatusEl.textContent = loopDuration ? loopDuration.toFixed(1) + "s loop" : "";
     } else if (loopState === "overdubbing") {
       loopStatusEl.textContent = "OVERDUB";
     } else if (loopState === "playing") {
@@ -474,7 +486,7 @@
   };
 
   loopPlayBtn.onclick = function () {
-    if (loopState !== "idle" || !loopEvents.length || !loopDuration) return;
+    if (loopState !== "idle" || !loopDuration) return;
     Tone.Transport.loop = true;
     Tone.Transport.loopStart = 0;
     Tone.Transport.loopEnd = loopDuration;
@@ -485,7 +497,21 @@
     updateLoopUI();
   };
 
-  loopClearBtn.onclick = function () {
+  /** Double the loop length, duplicating existing hits into the new half. */
+  loopDoubleBtn.onclick = function () {
+    if (!loopDuration || loopState === "recording") return;
+    loopEvents = loopEvents.concat(loopEvents.map(function (evt) {
+      return { pad: evt.pad, time: evt.time + loopDuration, buffer: evt.buffer };
+    }));
+    loopDuration *= 2;
+    if (loopState === "playing" || loopState === "overdubbing") {
+      Tone.Transport.loopEnd = loopDuration;
+      scheduleAllEvents();
+    }
+    updateLoopUI();
+  };
+
+  function clearLoop() {
     Tone.Transport.stop();
     Tone.Transport.cancel();
     scheduledIds = [];
@@ -494,7 +520,53 @@
     stopTick();
     loopState = "idle";
     updateLoopUI();
-  };
+  }
+
+  // ---- ✕ button: tap = clear everything; hold + tap pads = per-pad delete ----
+  //
+  // While ✕ is held, tapping a pad removes the hits whose sound is CURRENTLY
+  // on that pad (matched by buffer, so hits of an old, since-replaced sound
+  // survive — those are only removable with the global clear).
+
+  var deleteArmed = false;
+  var padDeleteUsed = false;
+
+  /** Remove loop hits whose sound is currently assigned to this pad. */
+  function deletePadSoundFromLoop(padIndex) {
+    var buf = sampleBuffers[padIndex];
+    var kept = loopEvents.filter(function (evt) { return evt.buffer !== buf; });
+    var removed = loopEvents.length - kept.length;
+    loopEvents = kept;
+    if (removed && (loopState === "playing" || loopState === "overdubbing")) {
+      scheduleAllEvents();
+    }
+    loopStatusEl.textContent = removed
+      ? "Removed " + removed + " hit" + (removed === 1 ? "" : "s")
+      : "No hits with this pad's sound";
+  }
+
+  loopClearBtn.addEventListener("pointerdown", function (e) {
+    // Capture so we still get pointerup if the finger slides off the button.
+    // (Skipped for synthetic events, whose pointerId isn't capturable.)
+    if (e.isTrusted) loopClearBtn.setPointerCapture(e.pointerId);
+    deleteArmed = true;
+    padDeleteUsed = false;
+    document.body.classList.add("delete-armed");
+    loopStatusEl.textContent = "Tap a pad to delete its sound / release to clear all";
+  });
+
+  loopClearBtn.addEventListener("pointerup", function () {
+    var deletedPadSound = padDeleteUsed;
+    deleteArmed = false;
+    document.body.classList.remove("delete-armed");
+    if (!deletedPadSound) clearLoop(); // plain tap → global clear
+  });
+
+  loopClearBtn.addEventListener("pointercancel", function () {
+    deleteArmed = false;
+    document.body.classList.remove("delete-armed");
+    updateLoopUI();
+  });
 
   // =========================================================================
   //  Start
@@ -521,11 +593,24 @@
     mainScreen.classList.remove("hidden");
   };
 
-  // Pad taps
-  pads.forEach(function (pad) {
+  // Pad taps — also the target half of the delete combo (hold ✕ + tap pad).
+  // A pad tapped while ✕ is held deletes instead of playing, so its click
+  // (which fires after pointerup) must be swallowed.
+  var suppressPadClick = [false, false, false, false];
+  pads.forEach(function (pad, idx) {
+    pad.addEventListener("pointerdown", function () {
+      if (!deleteArmed) return;
+      padDeleteUsed = true;
+      suppressPadClick[idx] = true;
+      deletePadSoundFromLoop(idx);
+    });
     pad.onclick = function () {
+      if (suppressPadClick[idx]) {
+        suppressPadClick[idx] = false;
+        return;
+      }
       if (audioCtx.state !== "running") audioCtx.resume();
-      triggerPad(parseInt(pad.dataset.index, 10));
+      triggerPad(idx);
     };
   });
 
@@ -559,4 +644,6 @@
     pendingFiles = [];
     sampleLoader.classList.add("hidden");
   };
+
+  updateLoopUI();
 })();

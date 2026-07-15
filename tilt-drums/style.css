@@ -176,6 +176,25 @@ html, body {
   background: var(--pad-bg);
 }
 
+.loop-btn:disabled {
+  opacity: 0.35;
+}
+
+#loop-double {
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+/* Delete combo armed (✕ held): highlight the pads as delete targets */
+body.delete-armed .pad {
+  border-color: #ff9500;
+}
+
+body.delete-armed #loop-clear {
+  border-color: #ff9500;
+  color: #ff9500;
+}
+
 .loop-btn.rec-active {
   border-color: #ff3333;
   color: #ff3333;
