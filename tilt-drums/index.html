@@ -30,8 +30,15 @@
           <button id="loop-rec" class="loop-btn" title="Record / Overdub">&#x23FA;</button>
           <button id="loop-stop" class="loop-btn" title="Stop">&#x23F9;</button>
           <button id="loop-play" class="loop-btn" title="Play">&#x25B6;</button>
+          <button id="loop-undo" class="loop-btn" title="Undo last layer">&#x21A9;</button>
           <button id="loop-double" class="loop-btn" title="Double loop length">&#215;2</button>
           <button id="loop-clear" class="loop-btn" title="Clear (hold + tap pad to delete its sound)">&#x2715;</button>
+        </div>
+        <div id="loop-opts">
+          <button id="metro-btn" class="opt-btn" title="Metronome (adds count-in, snaps loop to beats)">&#9833;</button>
+          <input type="range" id="bpm" min="60" max="180" value="90">
+          <span id="bpm-val">90</span>
+          <button id="quant-btn" class="opt-btn" title="Quantize hits to a 1/16 grid">Q</button>
         </div>
         <div id="loop-status"></div>
       </div>

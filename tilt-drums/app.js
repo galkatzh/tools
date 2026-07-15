@@ -64,8 +64,13 @@
   var loopRecBtn = document.getElementById("loop-rec");
   var loopStopBtn = document.getElementById("loop-stop");
   var loopPlayBtn = document.getElementById("loop-play");
+  var loopUndoBtn = document.getElementById("loop-undo");
   var loopDoubleBtn = document.getElementById("loop-double");
   var loopClearBtn = document.getElementById("loop-clear");
+  var metroBtn = document.getElementById("metro-btn");
+  var quantBtn = document.getElementById("quant-btn");
+  var bpmSlider = document.getElementById("bpm");
+  var bpmVal = document.getElementById("bpm-val");
   var loopFill = document.getElementById("loop-fill");
   var loopStatusEl = document.getElementById("loop-status");
 
@@ -138,23 +143,132 @@
   //  Playback — fire-and-forget BufferSourceNodes
   // =========================================================================
 
-  function triggerPad(index) {
+  /** Play a buffer at the given gain, optionally at an absolute context time. */
+  function playBuffer(buffer, gain, when) {
+    var src = audioCtx.createBufferSource();
+    src.buffer = buffer;
+    var g = audioCtx.createGain();
+    g.gain.value = gain;
+    src.connect(g);
+    g.connect(audioCtx.destination);
+    src.start(when || 0);
+  }
+
+  function flashPad(index) {
+    pads[index].classList.add("active");
+    setTimeout(function () { pads[index].classList.remove("active"); }, 120);
+  }
+
+  /** Trigger a pad. gain (0..1) reflects flick velocity; taps play at 1. */
+  function triggerPad(index, gain) {
     var now = performance.now();
     if (now - lastTriggerTime[index] < RETRIGGER_COOLDOWN_MS) return;
     lastTriggerTime[index] = now;
 
     var buffer = sampleBuffers[index];
     if (!buffer) return;
+    if (gain === undefined) gain = 1;
 
-    var src = audioCtx.createBufferSource();
-    src.buffer = buffer;
-    src.connect(audioCtx.destination);
-    src.start();
+    playBuffer(buffer, gain);
+    flashPad(index);
+    captureLoopEvent(index, buffer, gain);
+  }
 
-    pads[index].classList.add("active");
-    setTimeout(function () { pads[index].classList.remove("active"); }, 120);
+  // =========================================================================
+  //  Metronome — free-running click scheduler on the audio clock.
+  //  When enabled, REC does a one-bar count-in, loop lengths snap to whole
+  //  beats, and the Q toggle quantizes recorded hits to a 1/16 grid.
+  // =========================================================================
 
-    captureLoopEvent(index, buffer);
+  var metroOn = false;
+  var quantizeOn = false;
+  var bpm = 90;
+  var metroRaf = null;
+  var nextClickTime = 0;  // absolute audioCtx time of the next click
+  var clickBeat = 0;      // running beat counter (accent every 4)
+  var clickHi = null, clickLo = null;
+
+  function makeClick(freq) {
+    var sr = audioCtx.sampleRate, len = (sr * 0.05) | 0;
+    var buf = audioCtx.createBuffer(1, len, sr), d = buf.getChannelData(0);
+    for (var i = 0; i < len; i++) {
+      var t = i / sr;
+      d[i] = Math.sin(2 * Math.PI * freq * t) * Math.exp(-t * 80);
+    }
+    return buf;
+  }
+
+  function metroTick() {
+    // Schedule clicks slightly ahead so rAF jitter can't cause misses
+    var horizon = audioCtx.currentTime + 0.12;
+    while (nextClickTime < horizon) {
+      var accent = clickBeat % 4 === 0;
+      playBuffer(accent ? clickHi : clickLo, accent ? 0.5 : 0.3, nextClickTime);
+      clickBeat++;
+      nextClickTime += 60 / bpm;
+    }
+    metroRaf = requestAnimationFrame(metroTick);
+  }
+
+  /** (Re)align the click grid so an accented beat lands at time `when`. */
+  function phaseMetro(when) {
+    clickBeat = 0;
+    nextClickTime = when;
+  }
+
+  function startMetro() {
+    if (metroRaf !== null) return;
+    if (!clickHi) { clickHi = makeClick(1660); clickLo = makeClick(1108); }
+    phaseMetro(audioCtx.currentTime + 0.1);
+    metroTick();
+  }
+
+  function stopMetro() {
+    if (metroRaf !== null) { cancelAnimationFrame(metroRaf); metroRaf = null; }
+  }
+
+  // ---- Metronome / quantize UI ----
+
+  var SETTINGS_KEY = "tilt-drums.settings";
+
+  function saveSettings() {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ bpm: bpm, quantize: quantizeOn }));
+  }
+
+  metroBtn.onclick = function () {
+    metroOn = !metroOn;
+    metroBtn.classList.toggle("on", metroOn);
+    if (metroOn) {
+      if (audioCtx.state !== "running") audioCtx.resume();
+      startMetro();
+    } else {
+      stopMetro();
+    }
+  };
+
+  quantBtn.onclick = function () {
+    quantizeOn = !quantizeOn;
+    quantBtn.classList.toggle("on", quantizeOn);
+    saveSettings();
+  };
+
+  bpmSlider.addEventListener("input", function () {
+    bpm = parseInt(bpmSlider.value, 10);
+    bpmVal.textContent = bpm;
+    saveSettings();
+  });
+
+  try {
+    var savedSettings = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+    if (savedSettings) {
+      bpm = savedSettings.bpm || 90;
+      quantizeOn = !!savedSettings.quantize;
+      bpmSlider.value = bpm;
+      bpmVal.textContent = bpm;
+      quantBtn.classList.toggle("on", quantizeOn);
+    }
+  } catch (err) {
+    console.error("Corrupt settings entry, using defaults", err);
   }
 
   // =========================================================================
@@ -256,6 +370,11 @@
       var rawVelG = (rawG - prevRawG) / dt;
       velB = velB + VEL_SMOOTH * (rawVelB - velB);
       velG = velG + VEL_SMOOTH * (rawVelG - velG);
+    } else {
+      // Event stream paused (tab switch, sensor hiccup) — drop the stale
+      // velocity so it can't ghost-trigger a pad when events resume.
+      velB = 0;
+      velG = 0;
     }
     prevRawB = rawB;
     prevRawG = rawG;
@@ -272,9 +391,11 @@
       setAimedPad(-1);
     }
 
-    // Trigger on significant motion
+    // Trigger on significant motion; flick speed sets the hit strength
+    // (threshold → gain 0.4, ramping to 1.0 at 3× threshold)
     if (maxVel >= threshold && now - lastMotionTime >= MOTION_COOLDOWN_MS) {
-      triggerPad(motionDir(velB, velG));
+      var hitGain = Math.min(1, 0.4 + 0.6 * (maxVel - threshold) / (2 * threshold));
+      triggerPad(motionDir(velB, velG), hitGain);
       lastMotionTime = now;
     }
 
@@ -305,13 +426,72 @@
     }
   }
 
-  /** Decode an ArrayBuffer of audio and assign it to a pad. Returns a Promise. */
-  function loadSampleIntoPad(arrayBuffer, name, padIndex) {
+  // ---- Pad persistence: loaded samples survive reloads via IndexedDB ----
+  // (only user-loaded sounds are stored; the default synths are regenerated)
+
+  var DB_NAME = "tilt-drums";
+  var DB_STORE = "pads";
+
+  function idbOpen() {
+    return new Promise(function (resolve, reject) {
+      var req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = function () { req.result.createObjectStore(DB_STORE); };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+  }
+
+  function idbPutPad(padIndex, entry) {
+    return idbOpen().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(DB_STORE, "readwrite");
+        tx.objectStore(DB_STORE).put(entry, padIndex);
+        tx.oncomplete = resolve;
+        tx.onerror = function () { reject(tx.error); };
+      });
+    });
+  }
+
+  /** Decode audio bytes and assign to a pad (no persistence). */
+  function decodeIntoPad(arrayBuffer, name, padIndex) {
     return new Promise(function (resolve, reject) {
       audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
     }).then(function (decoded) {
       sampleBuffers[padIndex] = decoded;
       pads[padIndex].querySelector(".pad-label").textContent = name.slice(0, 12);
+    });
+  }
+
+  /** Decode an ArrayBuffer of audio, assign it to a pad, and persist it. */
+  function loadSampleIntoPad(arrayBuffer, name, padIndex) {
+    // decodeAudioData detaches the input buffer, so copy the bytes first
+    var bytes = arrayBuffer.slice(0);
+    return decodeIntoPad(arrayBuffer, name, padIndex).then(function () {
+      return idbPutPad(padIndex, { name: name, bytes: bytes }).catch(function (err) {
+        // The sound is loaded and playable; failed persistence shouldn't block it
+        console.error("Failed to save pad sound for next session", err);
+        showErrorBanner("Sound loaded but couldn't be saved for next session: " + (err.message || err));
+      });
+    });
+  }
+
+  /** Load every persisted pad sound back onto its pad. */
+  function restorePads() {
+    idbOpen().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var req = db.transaction(DB_STORE).objectStore(DB_STORE).openCursor();
+        var jobs = [];
+        req.onsuccess = function () {
+          var cur = req.result;
+          if (!cur) { resolve(Promise.all(jobs)); return; }
+          jobs.push(decodeIntoPad(cur.value.bytes, cur.value.name, cur.key));
+          cur.continue();
+        };
+        req.onerror = function () { reject(req.error); };
+      });
+    }).catch(function (err) {
+      console.error("Failed to restore saved pad sounds", err);
+      showErrorBanner("Could not restore saved pad sounds: " + (err.message || err));
     });
   }
 
@@ -343,8 +523,12 @@
   //    3. Keep playing → new hits layer on top each pass
   //    4. Press REC → exit overdub (playback continues)
   //    5. Press STOP → silence   |   PLAY → resume   |   ×2 → double length
-  //    6. Tap ✕ → clear all; HOLD ✕ and tap a pad → delete just the hits
+  //    6. ↩ → undo the last recorded layer (one REC-engaged pass)
+  //    7. Tap ✕ → clear all; HOLD ✕ and tap a pad → delete just the hits
   //       whose sound is currently on that pad
+  //
+  //  With the metronome on, REC first plays a one-bar count-in and the loop
+  //  length snaps to whole beats when closed.
   //
   //  Each event captures the pad's AudioBuffer at record time, so loading a
   //  new sound onto a pad layers on top of the old hits instead of rewriting
@@ -352,37 +536,41 @@
   //  the global clear.
   // =========================================================================
 
-  var loopEvents = [];       // [{pad, time, buffer}] — time in s from loop start
+  var loopEvents = [];       // [{pad, time, buffer, gain, gen}] — time in s from loop start
   var loopDuration = 0;      // seconds; set when first recording pass ends
-  var loopState = "idle";    // idle | recording | overdubbing | playing
-  var recordStartTime = 0;   // Tone.now() when recording began
+  var loopState = "idle";    // idle | countin | recording | overdubbing | playing
+  var recordStartTime = 0;   // audioCtx time when recording begins
+  var loopGen = 0;           // current layer number; bumps per record/overdub pass
   var loopTickId = null;     // rAF id for progress / status updates
   var scheduledIds = [];     // Tone.Transport event IDs for cleanup
 
   /** Play a recorded loop event at the current moment (used by the sequencer). */
   function playEvent(evt) {
-    var src = audioCtx.createBufferSource();
-    src.buffer = evt.buffer;
-    src.connect(audioCtx.destination);
-    src.start();
-    pads[evt.pad].classList.add("active");
-    setTimeout(function () { pads[evt.pad].classList.remove("active"); }, 120);
+    playBuffer(evt.buffer, evt.gain);
+    flashPad(evt.pad);
   }
 
   /** Capture a pad hit into the loop (no-op unless recording/overdubbing). */
-  function captureLoopEvent(padIndex, buffer) {
+  function captureLoopEvent(padIndex, buffer, gain) {
     if (loopState !== "recording" && loopState !== "overdubbing") return;
 
     var offset;
     if (loopState === "recording") {
-      offset = Tone.now() - recordStartTime;
+      offset = audioCtx.currentTime - recordStartTime;
     } else {
       // Wrap to current position within loop
       offset = Tone.Transport.seconds % loopDuration;
     }
+    if (quantizeOn) {
+      var grid = 60 / bpm / 4; // 1/16 note
+      offset = Math.round(offset / grid) * grid;
+      // A late hit near the loop end snaps to the loop start
+      if (loopDuration) offset = offset % loopDuration;
+    }
 
-    var evt = { pad: padIndex, time: offset, buffer: buffer };
+    var evt = { pad: padIndex, time: offset, buffer: buffer, gain: gain, gen: loopGen };
     loopEvents.push(evt);
+    loopUndoBtn.disabled = false;
 
     // During overdub, schedule immediately so it plays on subsequent cycles
     if (loopState === "overdubbing") {
@@ -406,8 +594,17 @@
     if (loopTickId !== null) return;
     (function tick() {
       switch (loopState) {
+        case "countin":
+          if (audioCtx.currentTime >= recordStartTime) {
+            loopState = "recording";
+            updateLoopUI();
+          } else {
+            loopStatusEl.textContent = "COUNT-IN " +
+              Math.ceil((recordStartTime - audioCtx.currentTime) / (60 / bpm));
+          }
+          break;
         case "recording":
-          loopStatusEl.textContent = "REC " + (Tone.now() - recordStartTime).toFixed(1) + "s";
+          loopStatusEl.textContent = "REC " + Math.max(0, audioCtx.currentTime - recordStartTime).toFixed(1) + "s";
           break;
         case "overdubbing":
         case "playing":
@@ -428,9 +625,11 @@
 
   /** Update button active states and status label. */
   function updateLoopUI() {
-    loopRecBtn.classList.toggle("rec-active", loopState === "recording" || loopState === "overdubbing");
+    loopRecBtn.classList.toggle("rec-active",
+      loopState === "recording" || loopState === "overdubbing" || loopState === "countin");
     loopPlayBtn.classList.toggle("play-active", loopState === "playing" || loopState === "overdubbing");
     loopDoubleBtn.disabled = !loopDuration || loopState === "recording";
+    loopUndoBtn.disabled = !loopEvents.length;
     if (loopState === "idle") {
       loopStatusEl.textContent = loopDuration ? loopDuration.toFixed(1) + "s loop" : "";
     } else if (loopState === "overdubbing") {
@@ -443,28 +642,53 @@
   // ---- Looper button handlers ----
 
   loopRecBtn.onclick = function () {
+    var beat = 60 / bpm;
     switch (loopState) {
       case "idle":
-        recordStartTime = Tone.now();
         loopEvents = [];
         loopDuration = 0;
-        loopState = "recording";
+        loopGen = 1;
+        if (metroOn) {
+          // One-bar count-in: re-phase the clicks and start recording
+          // exactly on the accent that follows four of them.
+          phaseMetro(audioCtx.currentTime + 0.1);
+          recordStartTime = nextClickTime + 4 * beat;
+          loopState = "countin";
+        } else {
+          recordStartTime = audioCtx.currentTime;
+          loopState = "recording";
+        }
         startTick();
         break;
+      case "countin": // second press cancels the count-in
+        loopState = "idle";
+        stopTick();
+        break;
       case "recording":
-        loopDuration = Tone.now() - recordStartTime;
-        if (loopDuration < 0.2) return; // ignore accidental double-tap
+        loopDuration = audioCtx.currentTime - recordStartTime;
+        if (metroOn) {
+          // Snap to whole beats so the loop tiles the click grid
+          loopDuration = Math.max(beat, Math.round(loopDuration / beat) * beat);
+        } else if (loopDuration < 0.2) {
+          return; // ignore accidental double-tap
+        }
+        // Quantized/snapped hits can land exactly on the loop end — wrap them
+        loopEvents.forEach(function (evt) { evt.time = evt.time % loopDuration; });
         Tone.Transport.loop = true;
         Tone.Transport.loopStart = 0;
         Tone.Transport.loopEnd = loopDuration;
         scheduleAllEvents();
         Tone.Transport.start();
+        // Transport position 0 occurs at Tone.now(); align the clicks to it
+        if (metroOn) phaseMetro(Tone.now());
+        loopGen++;
         loopState = "overdubbing";
         break;
       case "overdubbing":
         loopState = "playing";
         break;
       case "playing":
+        loopGen++;
         loopState = "overdubbing";
         break;
     }
@@ -473,7 +697,7 @@
 
   loopStopBtn.onclick = function () {
     if (loopState === "idle") return;
-    if (loopState === "recording") {
+    if (loopState === "recording" || loopState === "countin") {
       loopEvents = [];
       loopDuration = 0;
     }
@@ -485,6 +709,19 @@
     updateLoopUI();
   };
 
+  /** Undo the most recent recorded layer (one REC-engaged pass). */
+  loopUndoBtn.onclick = function () {
+    if (!loopEvents.length) return;
+    var maxGen = loopEvents.reduce(function (m, e) { return Math.max(m, e.gen); }, 0);
+    var kept = loopEvents.filter(function (e) { return e.gen !== maxGen; });
+    var removed = loopEvents.length - kept.length;
+    loopEvents = kept;
+    if (loopState === "playing" || loopState === "overdubbing") scheduleAllEvents();
+    loopGen++; // hits added after an undo form a fresh layer
+    loopUndoBtn.disabled = !loopEvents.length;
+    loopStatusEl.textContent = "Undid layer (" + removed + " hit" + (removed === 1 ? "" : "s") + ")";
+  };
+
   loopPlayBtn.onclick = function () {
     if (loopState !== "idle" || !loopDuration) return;
     Tone.Transport.loop = true;
@@ -492,6 +729,7 @@
     Tone.Transport.loopEnd = loopDuration;
     scheduleAllEvents();
     Tone.Transport.start();
+    if (metroOn) phaseMetro(Tone.now()); // clicks re-align to the loop start
     loopState = "playing";
     startTick();
     updateLoopUI();
@@ -574,7 +812,6 @@
 
   startBtn.onclick = function () {
     audioCtx.resume();
-    buildDefaultSamples();
 
     if (typeof DeviceOrientationEvent !== "undefined" &&
         typeof DeviceOrientationEvent.requestPermission === "function") {
@@ -645,5 +882,7 @@
     sampleLoader.classList.add("hidden");
   };
 
+  buildDefaultSamples();
+  restorePads(); // persisted sounds override the defaults once decoded
   updateLoopUI();
 })();
