@@ -212,6 +212,15 @@ textarea {
   line-height: 1.6;
 }
 
+/* Explicit sizes: the browser UA stylesheet shrinks h1 nested in section/article,
+   which made # headings render smaller than ## and ###. */
+.markdown-body h1 { font-size: 2em; }
+.markdown-body h2 { font-size: 1.5em; }
+.markdown-body h3 { font-size: 1.17em; }
+.markdown-body h4 { font-size: 1em; }
+.markdown-body h5 { font-size: 0.83em; }
+.markdown-body h6 { font-size: 0.67em; }
+
 .markdown-body pre,
 .markdown-body code {
   background: #111827;
