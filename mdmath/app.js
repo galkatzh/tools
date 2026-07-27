@@ -104,7 +104,21 @@ function getShareUrl() {
   return `${window.location.origin}${window.location.pathname}?${COMPRESS_PREFIX}${compressed}`;
 }
 
+/** Parses the document data embedded in standalone copies; returns null in the hosted app. */
+function getEmbeddedDoc() {
+  const el = document.getElementById('app-embed');
+  if (!el) return null;
+  try {
+    return JSON.parse(el.textContent);
+  } catch (e) {
+    console.error('Failed to parse embedded document data:', e);
+    return null;
+  }
+}
+
 function updateQueryString(value) {
+  // history.replaceState throws for file:// pages (opaque origin), e.g. standalone copies
+  if (window.location.protocol === 'file:') return;
   if (!value) {
     window.history.replaceState({}, '', window.location.pathname);
     return;
@@ -224,12 +238,13 @@ async function handleGetUrl() {
 }
 
 function init() {
+  const embedded = getEmbeddedDoc();
   const markdownFromUrl = decodeQueryMarkdown();
-  const hasUrlMarkdown = markdownFromUrl.trim().length > 0;
+  const initialMarkdown = markdownFromUrl.trim() ? markdownFromUrl : (embedded?.markdown ?? DEFAULT_MARKDOWN);
 
-  markdownInput.value = hasUrlMarkdown ? markdownFromUrl : DEFAULT_MARKDOWN;
-  macrosInput.value = DEFAULT_MACROS;
-  setEditorHidden(hasUrlMarkdown);
+  markdownInput.value = initialMarkdown;
+  macrosInput.value = embedded?.macros ?? DEFAULT_MACROS;
+  setEditorHidden(initialMarkdown.trim().length > 0);
 
   markdownInput.addEventListener('input', () => {
     updateQueryString(markdownInput.value);
@@ -542,3 +557,118 @@ pixelRatioSlider.addEventListener('input', () => {
 });
 
 exportPngBtn.addEventListener('click', exportPng);
+
+// --- Standalone Download ---
+
+const downloadAppBtn = document.getElementById('download-app');
+
+// MathJax CHTML fetches its woff fonts from the CDN at runtime, so standalone
+// copies use the SVG renderer instead, which is fully self-contained.
+const MATHJAX_CHTML_SRC = 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js';
+const MATHJAX_SVG_SRC = 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js';
+
+/**
+ * Escapes sequences that would terminate an inline <script> tag ("</script")
+ * or open an HTML comment ("<!--"). Both rewrites only ever land inside JS
+ * string/regex literals, where the added backslash is an identity escape.
+ */
+function escapeInlineScript(code) {
+  return code.replace(/<\/(script)/gi, '<\\/$1').replace(/<!--/g, '<\\!--');
+}
+
+/**
+ * Collects the app's HTML/CSS/JS plus all CDN library sources.
+ * Hosted app: everything is fetched over the network. Standalone copy: the
+ * sources are read back from the inlined tags, so no network is needed.
+ */
+async function getStandaloneSources() {
+  const embedded = getEmbeddedDoc();
+  if (embedded) {
+    return {
+      html: embedded.indexHtml,
+      css: document.getElementById('app-style').textContent,
+      js: document.getElementById('app-src').textContent,
+      libs: [...document.querySelectorAll('script[data-lib]')].map(s => ({
+        src: s.dataset.lib,
+        code: s.textContent,
+      })),
+    };
+  }
+
+  const fetchText = async (url) => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch ${url}: HTTP ${res.status}`);
+    return res.text();
+  };
+
+  const [html, css, js] = await Promise.all(['index.html', 'style.css', 'app.js'].map(fetchText));
+  const libSrcs = [...new DOMParser().parseFromString(html, 'text/html').querySelectorAll('script[src]')]
+    .map(s => s.getAttribute('src'))
+    .filter(src => src !== 'app.js');
+  const libs = await Promise.all(libSrcs.map(async src => ({
+    src,
+    code: await fetchText(src === MATHJAX_CHTML_SRC ? MATHJAX_SVG_SRC : src),
+  })));
+  return { html, css, js, libs };
+}
+
+/** Builds a single-file, offline-capable copy of the app with the given text embedded. */
+function buildStandaloneHtml({ html, css, js, libs }, markdown, macros) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+
+  const style = doc.createElement('style');
+  style.id = 'app-style';
+  style.textContent = css;
+  doc.querySelector('link[rel="stylesheet"]').replaceWith(style);
+
+  // Inline every external script in place. Head scripts execute in document
+  // order during parsing, so all libraries are ready before the app source
+  // runs at the end of <body> — this replaces the `defer` loading.
+  doc.querySelectorAll('script[src]').forEach(s => {
+    const src = s.getAttribute('src');
+    if (src === 'app.js') {
+      s.remove();
+      return;
+    }
+    const lib = libs.find(l => l.src === src);
+    if (!lib) throw new Error(`Missing inlined source for script "${src}"`);
+    const inline = doc.createElement('script');
+    inline.dataset.lib = src;
+    inline.textContent = escapeInlineScript(lib.code);
+    s.replaceWith(inline);
+  });
+
+  // Embed the current text plus the pristine index.html so the copy can
+  // regenerate further standalone copies without network access.
+  const data = doc.createElement('script');
+  data.id = 'app-embed';
+  data.type = 'application/json';
+  data.textContent = JSON.stringify({ markdown, macros, indexHtml: html }).replace(/</g, '\\u003c');
+  doc.body.appendChild(data);
+
+  const appScript = doc.createElement('script');
+  appScript.id = 'app-src';
+  appScript.textContent = escapeInlineScript(js);
+  doc.body.appendChild(appScript);
+
+  return `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`;
+}
+
+/** Downloads a self-contained single-file copy of the app with the current text in it. */
+async function handleDownloadApp() {
+  urlStatus.textContent = 'Preparing standalone copy…';
+  downloadAppBtn.disabled = true;
+  try {
+    const sources = await getStandaloneSources();
+    const standalone = buildStandaloneHtml(sources, markdownInput.value, macrosInput.value);
+    downloadBlob(new Blob([standalone], { type: 'text/html;charset=utf-8' }), 'mdmath.html');
+    urlStatus.textContent = 'Standalone copy downloaded.';
+  } catch (err) {
+    console.error('Standalone download failed:', err);
+    urlStatus.textContent = `Download failed: ${err.message}`;
+  } finally {
+    downloadAppBtn.disabled = false;
+  }
+}
+
+downloadAppBtn.addEventListener('click', handleDownloadApp);
