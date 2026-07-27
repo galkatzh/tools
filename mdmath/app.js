@@ -82,11 +82,15 @@ const DEFAULT_MACROS = String.raw`\newcommand{\sparentheses}[1]{\left[#1\right]}
 
 let renderTimer;
 
-/** Decode markdown from URL query string, supporting both compressed (lz~) and legacy formats. */
-function decodeQueryMarkdown() {
-  const raw = window.location.search.slice(1);
-  if (!raw) return '';
+/** Decode markdown from the URL: current format is a compressed hash (#lz~…); legacy query-string URLs still work. */
+function decodeUrlMarkdown() {
   try {
+    const hash = window.location.hash.slice(1);
+    if (hash.startsWith(COMPRESS_PREFIX)) {
+      return LZString.decompressFromEncodedURIComponent(hash.slice(COMPRESS_PREFIX.length)) || '';
+    }
+    const raw = window.location.search.slice(1);
+    if (!raw) return '';
     if (raw.startsWith(COMPRESS_PREFIX)) {
       return LZString.decompressFromEncodedURIComponent(raw.slice(COMPRESS_PREFIX.length)) || '';
     }
@@ -101,7 +105,7 @@ function decodeQueryMarkdown() {
 function getShareUrl() {
   if (!markdownInput.value) return `${window.location.origin}${window.location.pathname}`;
   const compressed = LZString.compressToEncodedURIComponent(markdownInput.value);
-  return `${window.location.origin}${window.location.pathname}?${COMPRESS_PREFIX}${compressed}`;
+  return `${window.location.origin}${window.location.pathname}#${COMPRESS_PREFIX}${compressed}`;
 }
 
 /** Parses the document data embedded in standalone copies; returns null in the hosted app. */
@@ -116,7 +120,9 @@ function getEmbeddedDoc() {
   }
 }
 
-function updateQueryString(value) {
+// The payload lives in the URL hash: unlike a query string, the hash is never sent
+// to the server, so long documents don't hit server URL-length limits (HTTP 414).
+function updateShareUrl(value) {
   // history.replaceState throws for file:// pages (opaque origin), e.g. standalone copies
   if (window.location.protocol === 'file:') return;
   if (!value) {
@@ -124,7 +130,7 @@ function updateQueryString(value) {
     return;
   }
   const compressed = LZString.compressToEncodedURIComponent(value);
-  window.history.replaceState({}, '', `${window.location.pathname}?${COMPRESS_PREFIX}${compressed}`);
+  window.history.replaceState({}, '', `${window.location.pathname}#${COMPRESS_PREFIX}${compressed}`);
 }
 
 function buildMacroPreludeNode() {
@@ -239,7 +245,7 @@ async function handleGetUrl() {
 
 function init() {
   const embedded = getEmbeddedDoc();
-  const markdownFromUrl = decodeQueryMarkdown();
+  const markdownFromUrl = decodeUrlMarkdown();
   const initialMarkdown = markdownFromUrl.trim() ? markdownFromUrl : (embedded?.markdown ?? DEFAULT_MARKDOWN);
 
   markdownInput.value = initialMarkdown;
@@ -247,7 +253,7 @@ function init() {
   setEditorHidden(initialMarkdown.trim().length > 0);
 
   markdownInput.addEventListener('input', () => {
-    updateQueryString(markdownInput.value);
+    updateShareUrl(markdownInput.value);
     scheduleRender();
   });
 
@@ -258,7 +264,7 @@ function init() {
   });
   getUrlBtn.addEventListener('click', handleGetUrl);
 
-  updateQueryString(markdownInput.value);
+  updateShareUrl(markdownInput.value);
   scheduleRender();
 }
 
