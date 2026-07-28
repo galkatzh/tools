@@ -1,15 +1,23 @@
 import {
-  minimalSetup, EditorView, Decoration, WidgetType, placeholder,
-  StateEffect, StateField, markdown, markdownLanguage, syntaxTree,
-  syntaxHighlighting, HighlightStyle, tags,
+  EditorView, Decoration, WidgetType, placeholder, keymap, drawSelection,
+  highlightSpecialChars, StateEffect, StateField, history, defaultKeymap,
+  historyKeymap, markdown, markdownLanguage, syntaxTree, syntaxHighlighting,
+  HighlightStyle, defaultHighlightStyle, tags,
+  Y, yCollab, yUndoManagerKeymap,
+  Awareness, encodeAwarenessUpdate, applyAwarenessUpdate, removeAwarenessStates,
+  joinRoom,
 } from './codemirror.js';
 
 const macrosInput = document.getElementById('macros-input');
 const renderedOutput = document.getElementById('rendered-output');
+const renderedWrap = document.querySelector('.rendered-wrap');
 const macroError = document.getElementById('macro-error');
 const urlStatus = document.getElementById('url-status');
 const toggleEditorBtn = document.getElementById('toggle-editor');
+const toggleDisplayBtn = document.getElementById('toggle-display');
 const getUrlBtn = document.getElementById('get-url');
+const collabToggleBtn = document.getElementById('collab-toggle');
+const collabStatus = document.getElementById('collab-status');
 const editorPanel = document.getElementById('editor-panel');
 
 const COMPRESS_PREFIX = 'lz~';
@@ -200,7 +208,15 @@ function restoreMathSegments(html, segments) {
   }, html);
 }
 
+let renderPending = false;
+
 async function render() {
+  // MathJax mismeasures inside display:none; defer rendering until shown again
+  if (renderedWrap.classList.contains('hidden')) {
+    renderPending = true;
+    return;
+  }
+  renderPending = false;
   try {
     const { protectedMarkdown, segments } = protectMathSegments(getMarkdown());
     const html = marked.parse(protectedMarkdown, {
@@ -477,25 +493,206 @@ const livePreview = StateField.define({
   provide: (f) => EditorView.decorations.from(f),
 });
 
-function createEditor(initialDoc) {
-  return new EditorView({
+/** Replaces the editor (if any) with a fresh one holding initialDoc plus mode-specific extensions. */
+function createEditor(initialDoc, modeExtensions) {
+  if (editorView) editorView.destroy();
+  editorView = new EditorView({
     parent: document.getElementById('markdown-editor'),
     doc: initialDoc,
     extensions: [
-      minimalSetup,
+      highlightSpecialChars(),
+      drawSelection(),
+      keymap.of(defaultKeymap),
       EditorView.lineWrapping,
       placeholder('# Heading, **bold**, - lists, $E = mc^2$ …'),
       markdown({ base: markdownLanguage }),
       syntaxHighlighting(mdHighlight),
+      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       livePreview,
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
-          updateShareUrl(getMarkdown());
+          // In a collab session the URL stays the invite link; solo mode mirrors the doc
+          if (!collab) updateShareUrl(getMarkdown());
           scheduleRender();
         }
       }),
+      ...modeExtensions,
     ],
   });
+  window.mdmathView = editorView; // console/debug handle
+  return editorView;
+}
+
+function createSoloEditor(initialDoc) {
+  return createEditor(initialDoc, [history(), keymap.of(historyKeymap)]);
+}
+
+// --- Collaboration (Yjs CRDT over WebRTC, signaling via public Nostr relays) ---
+
+const ROOM_PREFIX = 'room~';
+const COLLAB_COLORS = ['#30bced', '#6eeb83', '#ffbc42', '#ecd444', '#ee6352', '#9ac2c9', '#8acb88', '#1be7ff'];
+
+let collab = null; // { room, ydoc, awareness, invite } while a session is active
+
+/** Compresses raw bytes into a URL-safe string (and back). */
+function bytesToLz(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  return LZString.compressToEncodedURIComponent(s);
+}
+
+function lzToBytes(lz) {
+  const s = LZString.decompressFromEncodedURIComponent(lz);
+  if (s === null) throw new Error('malformed collab seed');
+  const bytes = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
+  return bytes;
+}
+
+/** Parses a #room~id~password~seed invite hash; null when this isn't a collab link. */
+function parseCollabHash() {
+  const hash = window.location.hash.slice(1);
+  if (!hash.startsWith(ROOM_PREFIX)) return null;
+  const [roomId, password, seed] = hash.slice(ROOM_PREFIX.length).split('~');
+  if (!roomId || !password || !seed) {
+    throw new Error('malformed collab invite link');
+  }
+  return { roomId, password, seed };
+}
+
+/**
+ * Builds the initial document as a Yjs update with a FIXED clientID, so every
+ * peer can apply the identical update idempotently — late joiners seed from the
+ * link alone, and merging with live peers never duplicates the initial text.
+ */
+function makeCollabSeed(text) {
+  const seedDoc = new Y.Doc();
+  seedDoc.clientID = 1;
+  seedDoc.getText('mdmath').insert(0, text);
+  const update = Y.encodeStateAsUpdate(seedDoc);
+  seedDoc.destroy();
+  return update;
+}
+
+function randomToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(12));
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function setCollabStatus(text) {
+  collabStatus.textContent = text;
+  collabStatus.classList.toggle('hidden', !text);
+}
+
+function updatePeerCount() {
+  if (!collab) return;
+  const n = Object.keys(collab.room.getPeers()).length;
+  setCollabStatus(n === 0 ? 'Waiting for peers…' : `${n} peer${n === 1 ? '' : 's'} connected`);
+}
+
+/** Joins the room, wires Yjs + awareness over the mesh, and swaps in a collab editor. */
+function startCollab({ roomId, password, seed }) {
+  const ydoc = new Y.Doc();
+  Y.applyUpdate(ydoc, lzToBytes(seed));
+  const ytext = ydoc.getText('mdmath');
+
+  const awareness = new Awareness(ydoc);
+  const color = COLLAB_COLORS[Math.floor(Math.random() * COLLAB_COLORS.length)];
+  awareness.setLocalStateField('user', {
+    name: `Guest ${10 + Math.floor(Math.random() * 90)}`,
+    color,
+    colorLight: `${color}55`,
+  });
+
+  // window.MDMATH_COLLAB_RELAYS overrides the default public Nostr relays (self-hosting, tests)
+  const relays = window.MDMATH_COLLAB_RELAYS;
+  const room = joinRoom(
+    { appId: 'mdmath-collab', password, ...(relays ? { relayConfig: { urls: relays } } : {}) },
+    roomId
+  );
+  const docAction = room.makeAction('yjs');
+  const awareAction = room.makeAction('aware');
+
+  ydoc.on('update', (update, origin) => {
+    if (origin !== 'remote') docAction.send(update);
+  });
+  docAction.onMessage = (data) => Y.applyUpdate(ydoc, new Uint8Array(data), 'remote');
+
+  awareness.on('update', ({ added, updated, removed }, origin) => {
+    if (origin === 'remote') return;
+    awareAction.send(encodeAwarenessUpdate(awareness, [...added, ...updated, ...removed]));
+  });
+  awareAction.onMessage = (data) => applyAwarenessUpdate(awareness, new Uint8Array(data), 'remote');
+
+  room.onPeerJoin = (peerId) => {
+    // Late joiners get the full state; Yjs merges duplicates away
+    docAction.send(Y.encodeStateAsUpdate(ydoc), { target: peerId });
+    awareAction.send(encodeAwarenessUpdate(awareness, [ydoc.clientID]), { target: peerId });
+    updatePeerCount();
+  };
+  room.onPeerLeave = () => {
+    updatePeerCount();
+    if (Object.keys(room.getPeers()).length === 0) {
+      // Stale remote cursors would otherwise linger until the awareness timeout
+      const remote = [...awareness.getStates().keys()].filter((id) => id !== ydoc.clientID);
+      removeAwarenessStates(awareness, remote, 'local');
+    }
+  };
+
+  collab = { room, ydoc, awareness, invite: window.location.href };
+  const undoManager = new Y.UndoManager(ytext);
+  createEditor(ytext.toString(), [
+    yCollab(ytext, awareness, { undoManager }),
+    keymap.of(yUndoManagerKeymap),
+  ]);
+  collabToggleBtn.textContent = 'Leave collab';
+  updatePeerCount();
+  scheduleRender();
+}
+
+/** Tears the session down and returns to solo editing with the current text. */
+function leaveCollab() {
+  const text = getMarkdown();
+  try {
+    collab.room.leave();
+  } catch (err) {
+    console.error('Error leaving collab room:', err);
+  }
+  collab.awareness.destroy();
+  collab.ydoc.destroy();
+  collab = null;
+  createSoloEditor(text);
+  collabToggleBtn.textContent = 'Collaborate';
+  setCollabStatus('');
+  updateShareUrl(text);
+  scheduleRender();
+}
+
+async function handleCollabToggle() {
+  if (collab) {
+    leaveCollab();
+    return;
+  }
+  try {
+    const roomId = randomToken();
+    const password = randomToken();
+    const seed = bytesToLz(makeCollabSeed(getMarkdown()));
+    const invite = `${window.location.origin}${window.location.pathname}#${ROOM_PREFIX}${roomId}~${password}~${seed}`;
+    window.history.replaceState({}, '', invite);
+    startCollab({ roomId, password, seed });
+    try {
+      await navigator.clipboard.writeText(invite);
+      setCollabStatus('Invite copied — waiting for peers…');
+    } catch (clipErr) {
+      console.error('Clipboard unavailable:', clipErr);
+      window.prompt('Share this invite link:', invite);
+    }
+  } catch (err) {
+    console.error('Failed to start collaboration:', err);
+    setCollabStatus(`Collab failed: ${err.message}`);
+  }
 }
 
 function setEditorHidden(hidden) {
@@ -503,22 +700,51 @@ function setEditorHidden(hidden) {
   toggleEditorBtn.textContent = hidden ? 'Show editor' : 'Hide editor';
 }
 
+function setDisplayHidden(hidden) {
+  renderedWrap.classList.toggle('hidden', hidden);
+  toggleDisplayBtn.textContent = hidden ? 'Show display' : 'Hide display';
+  if (!hidden && renderPending) render();
+}
+
 async function handleGetUrl() {
-  const shareUrl = getShareUrl();
+  // During a collab session, share the invite link; otherwise a doc snapshot URL
+  const shareUrl = collab ? collab.invite : getShareUrl();
+  const label = collab ? 'Invite link' : 'URL';
   try {
     await navigator.clipboard.writeText(shareUrl);
-    urlStatus.textContent = 'URL copied to clipboard.';
+    urlStatus.textContent = `${label} copied to clipboard.`;
   } catch {
-    window.prompt('Copy this URL:', shareUrl);
-    urlStatus.textContent = 'Clipboard unavailable; URL shown in prompt.';
+    window.prompt(`Copy this ${label}:`, shareUrl);
+    urlStatus.textContent = `Clipboard unavailable; ${label} shown in prompt.`;
   }
 }
 
 function init() {
-  const markdownFromUrl = decodeUrlMarkdown();
-  editorView = createEditor(markdownFromUrl);
   macrosInput.value = DEFAULT_MACROS;
-  setEditorHidden(markdownFromUrl.trim().length > 0);
+
+  let invite = null;
+  try {
+    invite = parseCollabHash();
+  } catch (err) {
+    console.error('Bad collab link:', err);
+    setCollabStatus(`Collab failed: ${err.message}`);
+  }
+  if (invite) {
+    try {
+      startCollab(invite);
+    } catch (err) {
+      console.error('Failed to join collab session:', err);
+      setCollabStatus(`Collab failed: ${err.message}`);
+    }
+  }
+  if (!collab) {
+    const markdownFromUrl = decodeUrlMarkdown();
+    createSoloEditor(markdownFromUrl);
+    setEditorHidden(markdownFromUrl.trim().length > 0);
+    updateShareUrl(markdownFromUrl);
+  } else {
+    setEditorHidden(false);
+  }
 
   macrosInput.addEventListener('input', () => {
     // Macros affect typeset output, so cached editor math is stale
@@ -531,9 +757,12 @@ function init() {
     setEditorHidden(!hidden);
     if (hidden) editorView.requestMeasure();
   });
+  toggleDisplayBtn.addEventListener('click', () => {
+    setDisplayHidden(!renderedWrap.classList.contains('hidden'));
+  });
   getUrlBtn.addEventListener('click', handleGetUrl);
+  collabToggleBtn.addEventListener('click', handleCollabToggle);
 
-  updateShareUrl(getMarkdown());
   scheduleRender();
 }
 
@@ -688,6 +917,7 @@ function scalePreview() {
 
 /** Opens the export modal, flushing any pending render first. */
 async function openExportModal() {
+  setDisplayHidden(false); // capture needs the preview laid out
   clearTimeout(renderTimer);
   await render();
   updateExportPngBtnLabel();
