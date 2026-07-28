@@ -1,4 +1,9 @@
-const markdownInput = document.getElementById('markdown-input');
+import {
+  minimalSetup, EditorView, Decoration, WidgetType, placeholder,
+  StateEffect, StateField, markdown, markdownLanguage, syntaxTree,
+  syntaxHighlighting, HighlightStyle, tags,
+} from './codemirror.js';
+
 const macrosInput = document.getElementById('macros-input');
 const renderedOutput = document.getElementById('rendered-output');
 const macroError = document.getElementById('macro-error');
@@ -7,7 +12,6 @@ const toggleEditorBtn = document.getElementById('toggle-editor');
 const getUrlBtn = document.getElementById('get-url');
 const editorPanel = document.getElementById('editor-panel');
 
-const DEFAULT_MARKDOWN = '';
 const COMPRESS_PREFIX = 'lz~';
 
 const DEFAULT_MACROS = String.raw`\newcommand{\sparentheses}[1]{\left[#1\right]}
@@ -80,13 +84,26 @@ const DEFAULT_MACROS = String.raw`\newcommand{\sparentheses}[1]{\left[#1\right]}
 \newcommand{\adl}{\mathrm{ADL}}
 \newcommand{\diag}{\mathrm{diag}}`;
 
+let editorView;
 let renderTimer;
 
-/** Decode markdown from URL query string, supporting both compressed (lz~) and legacy formats. */
-function decodeQueryMarkdown() {
-  const raw = window.location.search.slice(1);
-  if (!raw) return '';
+window.addEventListener('error', (e) => console.error('Uncaught error:', e.error ?? e.message));
+window.addEventListener('unhandledrejection', (e) => console.error('Unhandled rejection:', e.reason));
+
+/** Current markdown source (the editor document). */
+function getMarkdown() {
+  return editorView ? editorView.state.doc.toString() : '';
+}
+
+/** Decode markdown from the URL: current format is a compressed hash (#lz~…); legacy query-string URLs still work. */
+function decodeUrlMarkdown() {
   try {
+    const hash = window.location.hash.slice(1);
+    if (hash.startsWith(COMPRESS_PREFIX)) {
+      return LZString.decompressFromEncodedURIComponent(hash.slice(COMPRESS_PREFIX.length)) || '';
+    }
+    const raw = window.location.search.slice(1);
+    if (!raw) return '';
     if (raw.startsWith(COMPRESS_PREFIX)) {
       return LZString.decompressFromEncodedURIComponent(raw.slice(COMPRESS_PREFIX.length)) || '';
     }
@@ -99,88 +116,82 @@ function decodeQueryMarkdown() {
 }
 
 function getShareUrl() {
-  if (!markdownInput.value) return `${window.location.origin}${window.location.pathname}`;
-  const compressed = LZString.compressToEncodedURIComponent(markdownInput.value);
-  return `${window.location.origin}${window.location.pathname}?${COMPRESS_PREFIX}${compressed}`;
+  const value = getMarkdown();
+  if (!value) return `${window.location.origin}${window.location.pathname}`;
+  const compressed = LZString.compressToEncodedURIComponent(value);
+  return `${window.location.origin}${window.location.pathname}#${COMPRESS_PREFIX}${compressed}`;
 }
 
-/** Parses the document data embedded in standalone copies; returns null in the hosted app. */
-function getEmbeddedDoc() {
-  const el = document.getElementById('app-embed');
-  if (!el) return null;
-  try {
-    return JSON.parse(el.textContent);
-  } catch (e) {
-    console.error('Failed to parse embedded document data:', e);
-    return null;
-  }
-}
-
-function updateQueryString(value) {
-  // history.replaceState throws for file:// pages (opaque origin), e.g. standalone copies
-  if (window.location.protocol === 'file:') return;
+// The payload lives in the URL hash: unlike a query string, the hash is never sent
+// to the server, so long documents don't hit server URL-length limits (HTTP 414).
+function updateShareUrl(value) {
   if (!value) {
     window.history.replaceState({}, '', window.location.pathname);
     return;
   }
   const compressed = LZString.compressToEncodedURIComponent(value);
-  window.history.replaceState({}, '', `${window.location.pathname}?${COMPRESS_PREFIX}${compressed}`);
+  window.history.replaceState({}, '', `${window.location.pathname}#${COMPRESS_PREFIX}${compressed}`);
 }
 
-function buildMacroPreludeNode() {
-  const macroText = macrosInput.value.trim();
-  if (!macroText) {
-    return null;
-  }
+// --- MathJax ---
 
-  const preludeNode = document.createElement('span');
-  preludeNode.style.display = 'none';
-  preludeNode.textContent = `\\(${macroText}\\)`;
-  return preludeNode;
+let mathJaxQueue = Promise.resolve();
+
+/**
+ * Serializes MathJax typeset jobs (concurrent typesetPromise calls are unsupported)
+ * and defers them until MathJax has finished starting up. The returned promise
+ * carries the job's own failure; the queue itself always continues.
+ */
+function queueTypeset(job) {
+  const run = mathJaxQueue.then(async () => {
+    await window.MathJax.startup.promise;
+    return job();
+  });
+  mathJaxQueue = run.catch((err) => console.error('MathJax typeset failed:', err));
+  return run;
 }
 
-function protectMathSegments(markdown) {
-  const segments = [];
-  let protectedMarkdown = '';
-  let index = 0;
-
-  while (index < markdown.length) {
-    if (markdown[index] !== '$' || markdown[index - 1] === '\\') {
-      protectedMarkdown += markdown[index];
-      index += 1;
+/** Scans text for unescaped $…$ / $$…$$ spans; returns [{from, to, display}]. */
+function scanMathSpans(text) {
+  const spans = [];
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== '$' || text[i - 1] === '\\') {
+      i += 1;
       continue;
     }
-
-    const delimiter = markdown[index + 1] === '$' ? '$$' : '$';
-    const start = index;
-    let cursor = index + delimiter.length;
-    let foundEnd = false;
-
-    while (cursor < markdown.length) {
-      if (
-        markdown.slice(cursor, cursor + delimiter.length) === delimiter
-        && markdown[cursor - 1] !== '\\'
-      ) {
-        cursor += delimiter.length;
-        foundEnd = true;
+    const delim = text[i + 1] === '$' ? '$$' : '$';
+    let cursor = i + delim.length;
+    let end = -1;
+    while (cursor < text.length) {
+      if (text.startsWith(delim, cursor) && text[cursor - 1] !== '\\') {
+        end = cursor + delim.length;
         break;
       }
       cursor += 1;
     }
-
-    if (!foundEnd) {
-      protectedMarkdown += markdown[index];
-      index += 1;
+    if (end === -1) {
+      i += 1;
       continue;
     }
-
-    const token = `@@MATH${segments.length}@@`;
-    segments.push({ token, value: markdown.slice(start, cursor) });
-    protectedMarkdown += token;
-    index = cursor;
+    spans.push({ from: i, to: end, display: delim === '$$' });
+    i = end;
   }
+  return spans;
+}
 
-  return { protectedMarkdown, segments };
+/** Replaces math spans with placeholder tokens so marked doesn't mangle TeX. */
+function protectMathSegments(markdownText) {
+  const segments = [];
+  let protectedMarkdown = '';
+  let last = 0;
+  scanMathSpans(markdownText).forEach((span, n) => {
+    const token = `@@MATH${n}@@`;
+    segments.push({ token, value: markdownText.slice(span.from, span.to) });
+    protectedMarkdown += markdownText.slice(last, span.from) + token;
+    last = span.to;
+  });
+  return { protectedMarkdown: protectedMarkdown + markdownText.slice(last), segments };
 }
 
 function restoreMathSegments(html, segments) {
@@ -191,7 +202,7 @@ function restoreMathSegments(html, segments) {
 
 async function render() {
   try {
-    const { protectedMarkdown, segments } = protectMathSegments(markdownInput.value);
+    const { protectedMarkdown, segments } = protectMathSegments(getMarkdown());
     const html = marked.parse(protectedMarkdown, {
       gfm: true,
       breaks: true
@@ -199,17 +210,21 @@ async function render() {
 
     renderedOutput.innerHTML = DOMPurify.sanitize(restoreMathSegments(html, segments));
 
-    const preludeNode = buildMacroPreludeNode();
-    if (preludeNode) {
+    const macroText = macrosInput.value.trim();
+    if (macroText) {
+      const preludeNode = document.createElement('span');
+      preludeNode.style.display = 'none';
+      preludeNode.textContent = `\\(${macroText}\\)`;
       renderedOutput.prepend(preludeNode);
     }
 
     macroError.textContent = '';
-    if (window.MathJax?.typesetPromise) {
+    await queueTypeset(() => {
       window.MathJax.texReset();
-      await window.MathJax.typesetPromise([renderedOutput]);
-    }
+      return window.MathJax.typesetPromise([renderedOutput]);
+    });
   } catch (error) {
+    console.error('Render failed:', error);
     macroError.textContent = `Math render error: ${error.message}`;
   }
 }
@@ -219,6 +234,268 @@ function scheduleRender() {
   renderTimer = setTimeout(() => {
     render();
   }, 120);
+}
+
+// --- Editor (CodeMirror live preview) ---
+
+const mdHighlight = HighlightStyle.define([
+  { tag: tags.heading, fontWeight: '700' },
+  { tag: tags.emphasis, fontStyle: 'italic' },
+  { tag: tags.strong, fontWeight: '700' },
+  { tag: tags.strikethrough, textDecoration: 'line-through' },
+  { tag: tags.link, color: '#93c5fd', textDecoration: 'underline' },
+  { tag: tags.url, color: '#64748b' },
+  { tag: tags.quote, color: '#94a3b8', fontStyle: 'italic' },
+  { tag: tags.contentSeparator, color: '#64748b' },
+  // markdown punctuation marks (#, *, >, ```) when visible
+  { tag: tags.processingInstruction, color: '#64748b' },
+]);
+
+/** Effect dispatched when an async editor math typeset finishes, to trigger a redraw. */
+const mathRendered = StateEffect.define();
+const mathHtmlCache = new Map(); // 'D|tex' / 'I|tex' -> typeset innerHTML
+const mathPending = new Set();
+
+/** Typesets tex off-screen (with the current macro prelude) and caches the resulting HTML. */
+function typesetForEditor(tex, display, key) {
+  if (mathPending.has(key)) return;
+  mathPending.add(key);
+  queueTypeset(async () => {
+    // Off-screen but laid out: MathJax CHTML needs real layout to measure correctly.
+    const host = document.createElement('div');
+    host.style.cssText = 'position:absolute;left:-99999px;top:0;';
+    const prelude = document.createElement('span');
+    prelude.style.display = 'none';
+    prelude.textContent = `\\(${macrosInput.value.trim()}\\)`;
+    const target = document.createElement('span');
+    target.textContent = display ? `\\[${tex}\\]` : `\\(${tex}\\)`;
+    host.append(prelude, target);
+    document.body.appendChild(host);
+    try {
+      window.MathJax.texReset();
+      await window.MathJax.typesetPromise([host]);
+      mathHtmlCache.set(key, target.innerHTML);
+    } finally {
+      host.remove();
+      mathPending.delete(key);
+    }
+    editorView.dispatch({ effects: mathRendered.of(null) });
+  }).catch((err) => console.error('Editor math typeset failed:', err));
+}
+
+class MathWidget extends WidgetType {
+  constructor(tex, display) {
+    super();
+    this.tex = tex;
+    this.display = display;
+    this.key = (display ? 'D|' : 'I|') + tex;
+    this.cached = mathHtmlCache.get(this.key) ?? null;
+  }
+  eq(other) {
+    return other.key === this.key && other.cached === this.cached;
+  }
+  // Let clicks through to CodeMirror so they place the cursor (revealing the source).
+  ignoreEvent() {
+    return false;
+  }
+  toDOM() {
+    const el = document.createElement('span');
+    el.className = this.display ? 'cm-math cm-math-display' : 'cm-math';
+    if (this.cached !== null) {
+      el.innerHTML = this.cached;
+    } else {
+      el.textContent = this.tex;
+      typesetForEditor(this.tex, this.display, this.key);
+    }
+    return el;
+  }
+}
+
+class BulletWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+  toDOM() {
+    const el = document.createElement('span');
+    el.className = 'cm-live-bullet';
+    el.textContent = '•';
+    return el;
+  }
+}
+
+class CheckboxWidget extends WidgetType {
+  constructor(checked) {
+    super();
+    this.checked = checked;
+  }
+  eq(other) {
+    return other.checked === this.checked;
+  }
+  toDOM() {
+    const el = document.createElement('input');
+    el.type = 'checkbox';
+    el.checked = this.checked;
+    el.disabled = true;
+    el.className = 'cm-live-checkbox';
+    return el;
+  }
+}
+
+class HrWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+  toDOM() {
+    const el = document.createElement('span');
+    el.className = 'cm-live-hr';
+    return el;
+  }
+}
+
+/**
+ * Obsidian-style live preview: markdown syntax is hidden and formatting applied
+ * inside the editor, except on lines the cursor/selection touches, which show
+ * the raw source. $…$ / $$…$$ spans become MathJax-typeset widgets.
+ * A StateField (not a ViewPlugin) because $$ blocks replace line breaks,
+ * which plugin-provided decorations aren't allowed to do.
+ */
+function buildLiveDecorations(state) {
+  const doc = state.doc;
+  const text = doc.toString();
+  const deco = [];
+
+  const activeLines = new Set();
+  for (const range of state.selection.ranges) {
+    for (let l = doc.lineAt(range.from).number; l <= doc.lineAt(range.to).number; l++) {
+      activeLines.add(l);
+    }
+  }
+  const isActive = (from, to) => {
+    for (let l = doc.lineAt(from).number; l <= doc.lineAt(to).number; l++) {
+      if (activeLines.has(l)) return true;
+    }
+    return false;
+  };
+  const hide = (from, to) => deco.push(Decoration.replace({}).range(from, to));
+  const hideMark = (from, to) => hide(from, text[to] === ' ' ? to + 1 : to);
+  const eachLine = (from, to, cls) => {
+    for (let l = doc.lineAt(from).number; l <= doc.lineAt(to).number; l++) {
+      deco.push(Decoration.line({ class: cls }).range(doc.line(l).from));
+    }
+  };
+
+  const tree = syntaxTree(state);
+
+  // Math widgets (lezer-markdown doesn't parse $…$, so scan the text directly)
+  for (const span of scanMathSpans(text)) {
+    if (isActive(span.from, span.to)) continue;
+    let inCode = false;
+    for (let n = tree.resolveInner(span.from + 1, 1); n; n = n.parent) {
+      if (n.name === 'InlineCode' || n.name === 'FencedCode' || n.name === 'CodeBlock') {
+        inCode = true;
+        break;
+      }
+    }
+    if (inCode) continue;
+    const pad = span.display ? 2 : 1;
+    const tex = text.slice(span.from + pad, span.to - pad).trim();
+    deco.push(Decoration.replace({
+      widget: new MathWidget(tex, span.display),
+    }).range(span.from, span.to));
+  }
+
+  tree.iterate({
+    enter: (node) => {
+      const { from, to } = node;
+      switch (node.name) {
+        case 'ATXHeading1': case 'ATXHeading2': case 'ATXHeading3':
+        case 'ATXHeading4': case 'ATXHeading5': case 'ATXHeading6':
+          eachLine(from, from, 'cm-live-h' + node.name.slice(-1));
+          break;
+        case 'HeaderMark':
+          if (!isActive(from, to)) hideMark(from, to);
+          break;
+        case 'EmphasisMark':
+        case 'StrikethroughMark':
+          if (!isActive(from, to)) hide(from, to);
+          break;
+        case 'CodeMark':
+          if (node.node.parent?.name === 'InlineCode' && !isActive(from, to)) hide(from, to);
+          break;
+        case 'InlineCode':
+          deco.push(Decoration.mark({ class: 'cm-live-code' }).range(from, to));
+          break;
+        case 'FencedCode':
+          eachLine(from, to, 'cm-live-codeblock');
+          break;
+        case 'Blockquote':
+          eachLine(from, to, 'cm-live-quote');
+          break;
+        case 'QuoteMark':
+          if (!isActive(from, to)) hideMark(from, to);
+          break;
+        case 'ListMark': {
+          if (isActive(from, to)) break;
+          // Task-list items get only the checkbox; hide the bullet mark entirely
+          if (/^\s?\[[ xX]\]/.test(text.slice(to, to + 4))) {
+            hideMark(from, to);
+            break;
+          }
+          const mark = text.slice(from, to);
+          if (mark === '-' || mark === '*' || mark === '+') {
+            deco.push(Decoration.replace({ widget: new BulletWidget() }).range(from, to));
+          }
+          break;
+        }
+        case 'TaskMarker':
+          if (!isActive(from, to)) {
+            deco.push(Decoration.replace({
+              widget: new CheckboxWidget(/x/i.test(text.slice(from, to))),
+            }).range(from, to));
+          }
+          break;
+        case 'HorizontalRule':
+          if (!isActive(from, to)) {
+            deco.push(Decoration.replace({ widget: new HrWidget() }).range(from, to));
+          }
+          break;
+      }
+    },
+  });
+
+  return Decoration.set(deco, true);
+}
+
+const livePreview = StateField.define({
+  create: buildLiveDecorations,
+  update(deco, tr) {
+    if (tr.docChanged || tr.selection || tr.effects.some((e) => e.is(mathRendered))) {
+      return buildLiveDecorations(tr.state);
+    }
+    return deco;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+function createEditor(initialDoc) {
+  return new EditorView({
+    parent: document.getElementById('markdown-editor'),
+    doc: initialDoc,
+    extensions: [
+      minimalSetup,
+      EditorView.lineWrapping,
+      placeholder('# Heading, **bold**, - lists, $E = mc^2$ …'),
+      markdown({ base: markdownLanguage }),
+      syntaxHighlighting(mdHighlight),
+      livePreview,
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          updateShareUrl(getMarkdown());
+          scheduleRender();
+        }
+      }),
+    ],
+  });
 }
 
 function setEditorHidden(hidden) {
@@ -238,27 +515,25 @@ async function handleGetUrl() {
 }
 
 function init() {
-  const embedded = getEmbeddedDoc();
-  const markdownFromUrl = decodeQueryMarkdown();
-  const initialMarkdown = markdownFromUrl.trim() ? markdownFromUrl : (embedded?.markdown ?? DEFAULT_MARKDOWN);
+  const markdownFromUrl = decodeUrlMarkdown();
+  editorView = createEditor(markdownFromUrl);
+  macrosInput.value = DEFAULT_MACROS;
+  setEditorHidden(markdownFromUrl.trim().length > 0);
 
-  markdownInput.value = initialMarkdown;
-  macrosInput.value = embedded?.macros ?? DEFAULT_MACROS;
-  setEditorHidden(initialMarkdown.trim().length > 0);
-
-  markdownInput.addEventListener('input', () => {
-    updateQueryString(markdownInput.value);
+  macrosInput.addEventListener('input', () => {
+    // Macros affect typeset output, so cached editor math is stale
+    mathHtmlCache.clear();
+    editorView.dispatch({ effects: mathRendered.of(null) });
     scheduleRender();
   });
-
-  macrosInput.addEventListener('input', scheduleRender);
   toggleEditorBtn.addEventListener('click', () => {
     const hidden = editorPanel.classList.contains('hidden');
     setEditorHidden(!hidden);
+    if (hidden) editorView.requestMeasure();
   });
   getUrlBtn.addEventListener('click', handleGetUrl);
 
-  updateQueryString(markdownInput.value);
+  updateShareUrl(getMarkdown());
   scheduleRender();
 }
 
@@ -295,7 +570,7 @@ function updateDimsDisplay() {
   const naturalH = clone ? Math.min(clone.scrollHeight, maxHeight) : maxHeight;
   const physH = Math.round(naturalH * exportPixelRatio);
   pixelRatioVal.textContent = exportPixelRatio;
-  exportDims.textContent = `1600 \u00d7 ${physH}`;
+  exportDims.textContent = `1600 × ${physH}`;
 }
 
 /**
@@ -331,7 +606,8 @@ function canShareFiles() {
   try {
     return typeof navigator.canShare === 'function' &&
       navigator.canShare({ files: [new File([''], 'test.png', { type: 'image/png' })] });
-  } catch {
+  } catch (e) {
+    console.error('canShare probe failed:', e);
     return false;
   }
 }
@@ -422,10 +698,6 @@ async function openExportModal() {
 }
 
 /**
- * Builds an off-screen DOM node for html-to-image capture.
- * Caller must remove it from the document in a finally block.
- */
-/**
  * Temporarily applies export styles directly to renderedOutput, captures it,
  * then restores the original styles. Must be done this way because html-to-image
  * reads computed styles (including MathJax layout) at call time — using the
@@ -491,7 +763,7 @@ function downloadBlob(blob, filename) {
 
 /** Exports the rendered content as PNG: share on mobile, copy on desktop, download as fallback. */
 async function exportPng() {
-  exportStatus.textContent = 'Generating image\u2026';
+  exportStatus.textContent = 'Generating image…';
   exportPngBtn.disabled = true;
   try {
     const blob = await captureExport();
@@ -557,118 +829,3 @@ pixelRatioSlider.addEventListener('input', () => {
 });
 
 exportPngBtn.addEventListener('click', exportPng);
-
-// --- Standalone Download ---
-
-const downloadAppBtn = document.getElementById('download-app');
-
-// MathJax CHTML fetches its woff fonts from the CDN at runtime, so standalone
-// copies use the SVG renderer instead, which is fully self-contained.
-const MATHJAX_CHTML_SRC = 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js';
-const MATHJAX_SVG_SRC = 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js';
-
-/**
- * Escapes sequences that would terminate an inline <script> tag ("</script")
- * or open an HTML comment ("<!--"). Both rewrites only ever land inside JS
- * string/regex literals, where the added backslash is an identity escape.
- */
-function escapeInlineScript(code) {
-  return code.replace(/<\/(script)/gi, '<\\/$1').replace(/<!--/g, '<\\!--');
-}
-
-/**
- * Collects the app's HTML/CSS/JS plus all CDN library sources.
- * Hosted app: everything is fetched over the network. Standalone copy: the
- * sources are read back from the inlined tags, so no network is needed.
- */
-async function getStandaloneSources() {
-  const embedded = getEmbeddedDoc();
-  if (embedded) {
-    return {
-      html: embedded.indexHtml,
-      css: document.getElementById('app-style').textContent,
-      js: document.getElementById('app-src').textContent,
-      libs: [...document.querySelectorAll('script[data-lib]')].map(s => ({
-        src: s.dataset.lib,
-        code: s.textContent,
-      })),
-    };
-  }
-
-  const fetchText = async (url) => {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Failed to fetch ${url}: HTTP ${res.status}`);
-    return res.text();
-  };
-
-  const [html, css, js] = await Promise.all(['index.html', 'style.css', 'app.js'].map(fetchText));
-  const libSrcs = [...new DOMParser().parseFromString(html, 'text/html').querySelectorAll('script[src]')]
-    .map(s => s.getAttribute('src'))
-    .filter(src => src !== 'app.js');
-  const libs = await Promise.all(libSrcs.map(async src => ({
-    src,
-    code: await fetchText(src === MATHJAX_CHTML_SRC ? MATHJAX_SVG_SRC : src),
-  })));
-  return { html, css, js, libs };
-}
-
-/** Builds a single-file, offline-capable copy of the app with the given text embedded. */
-function buildStandaloneHtml({ html, css, js, libs }, markdown, macros) {
-  const doc = new DOMParser().parseFromString(html, 'text/html');
-
-  const style = doc.createElement('style');
-  style.id = 'app-style';
-  style.textContent = css;
-  doc.querySelector('link[rel="stylesheet"]').replaceWith(style);
-
-  // Inline every external script in place. Head scripts execute in document
-  // order during parsing, so all libraries are ready before the app source
-  // runs at the end of <body> — this replaces the `defer` loading.
-  doc.querySelectorAll('script[src]').forEach(s => {
-    const src = s.getAttribute('src');
-    if (src === 'app.js') {
-      s.remove();
-      return;
-    }
-    const lib = libs.find(l => l.src === src);
-    if (!lib) throw new Error(`Missing inlined source for script "${src}"`);
-    const inline = doc.createElement('script');
-    inline.dataset.lib = src;
-    inline.textContent = escapeInlineScript(lib.code);
-    s.replaceWith(inline);
-  });
-
-  // Embed the current text plus the pristine index.html so the copy can
-  // regenerate further standalone copies without network access.
-  const data = doc.createElement('script');
-  data.id = 'app-embed';
-  data.type = 'application/json';
-  data.textContent = JSON.stringify({ markdown, macros, indexHtml: html }).replace(/</g, '\\u003c');
-  doc.body.appendChild(data);
-
-  const appScript = doc.createElement('script');
-  appScript.id = 'app-src';
-  appScript.textContent = escapeInlineScript(js);
-  doc.body.appendChild(appScript);
-
-  return `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`;
-}
-
-/** Downloads a self-contained single-file copy of the app with the current text in it. */
-async function handleDownloadApp() {
-  urlStatus.textContent = 'Preparing standalone copy…';
-  downloadAppBtn.disabled = true;
-  try {
-    const sources = await getStandaloneSources();
-    const standalone = buildStandaloneHtml(sources, markdownInput.value, macrosInput.value);
-    downloadBlob(new Blob([standalone], { type: 'text/html;charset=utf-8' }), 'mdmath.html');
-    urlStatus.textContent = 'Standalone copy downloaded.';
-  } catch (err) {
-    console.error('Standalone download failed:', err);
-    urlStatus.textContent = `Download failed: ${err.message}`;
-  } finally {
-    downloadAppBtn.disabled = false;
-  }
-}
-
-downloadAppBtn.addEventListener('click', handleDownloadApp);

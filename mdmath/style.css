@@ -75,6 +75,91 @@ textarea {
   color: #e2e8f0;
 }
 
+/* --- Editor (CodeMirror live preview) --- */
+
+#markdown-editor .cm-editor {
+  border: 1px solid #475569;
+  border-radius: 8px;
+  background: #0f172a;
+  max-height: 45vh;
+}
+
+#markdown-editor .cm-editor.cm-focused {
+  outline: none;
+  border-color: #93c5fd;
+}
+
+#markdown-editor .cm-scroller {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  overflow: auto;
+}
+
+#markdown-editor .cm-content {
+  padding: 10px;
+  min-height: 150px;
+  color: #e2e8f0;
+  caret-color: #e2e8f0;
+}
+
+#markdown-editor .cm-cursor {
+  border-left-color: #e2e8f0;
+}
+
+#markdown-editor .cm-selectionBackground,
+#markdown-editor .cm-focused .cm-selectionBackground {
+  background: #334155;
+}
+
+#markdown-editor .cm-placeholder {
+  color: #64748b;
+}
+
+.cm-live-h1 { font-size: 1.6em; }
+.cm-live-h2 { font-size: 1.4em; }
+.cm-live-h3 { font-size: 1.2em; }
+.cm-live-h4 { font-size: 1.1em; }
+.cm-live-h5 { font-size: 1em; }
+.cm-live-h6 { font-size: 1em; color: #94a3b8; }
+
+.cm-live-quote {
+  border-left: 3px solid #475569;
+  padding-left: 8px;
+}
+
+.cm-live-code,
+.cm-live-codeblock {
+  background: #111827;
+}
+
+.cm-live-code {
+  border-radius: 4px;
+}
+
+.cm-live-bullet {
+  color: #93c5fd;
+}
+
+.cm-live-checkbox {
+  pointer-events: none;
+  accent-color: #93c5fd;
+  margin: 0 2px;
+}
+
+.cm-live-hr {
+  display: inline-block;
+  width: 100%;
+  border-top: 1px solid #475569;
+  vertical-align: middle;
+}
+
+.cm-math-display {
+  display: inline-block;
+  width: 100%;
+  text-align: center;
+}
+
 #preamble-details {
   display: grid;
   gap: 8px;
@@ -126,6 +211,15 @@ textarea {
   margin: 0 auto;
   line-height: 1.6;
 }
+
+/* Explicit sizes: the browser UA stylesheet shrinks h1 nested in section/article,
+   which made # headings render smaller than ## and ###. */
+.markdown-body h1 { font-size: 2em; }
+.markdown-body h2 { font-size: 1.5em; }
+.markdown-body h3 { font-size: 1.17em; }
+.markdown-body h4 { font-size: 1em; }
+.markdown-body h5 { font-size: 0.83em; }
+.markdown-body h6 { font-size: 0.67em; }
 
 .markdown-body pre,
 .markdown-body code {
