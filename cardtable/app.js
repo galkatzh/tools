@@ -14,6 +14,7 @@ import { joinRoom, selfId } from 'https://cdn.jsdelivr.net/npm/trystero@0.25.3/n
 const $ = (id) => document.getElementById(id);
 const tableEl = $('table'), wrapEl = $('table-wrap'), handEl = $('hand'), barEl = $('action-bar');
 const hintEl = $('table-hint'), toastEl = $('toast'), netEl = $('net-status'), playersEl = $('players');
+const sideEl = $('side'), logEl = $('log');
 
 const TABLE_W = 1600, TABLE_H = 1000, CARD_W = 100, CARD_H = 140;
 const COLORS = ['#30bced', '#6eeb83', '#ffbc42', '#ecd444', '#ee6352', '#9ac2c9', '#8acb88', '#1be7ff'];
@@ -49,11 +50,12 @@ let myName = localStorage.getItem('ct-name') || `Player-${pid.slice(0, 4)}`;
 // host:   authoritative state (host only): {seq, items, players:{pid:{name,color,online,hand:[{d,i}]}}}
 // view:   what render() consumes — on guests this arrives from the host.
 let role = null, roomId, password, room = null;
-let sendAct, sendState, sendDecks;
+let sendAct, sendState, sendDecks, sendLog;
 let decks = {};
 let host = null;
 let view = { seq: 0, items: {}, players: {} };
 let myHand = [];
+let gameLog = []; // the shared activity/chat feed (authoritative copy lives in host.log)
 let peerPid = {};    // host only: Trystero peerId -> stable player id
 let hostPeer = null; // guest only: peerId currently acting as host
 
@@ -72,7 +74,31 @@ function ensurePlayer(p, name) {
     name: '', color: COLORS[Object.keys(host.players).length % COLORS.length], online: true, hand: [],
   });
   pl.online = true;
-  if (name) pl.name = String(name).slice(0, 24);
+  // Only fill an empty name here — explicit renames go through the 'name'
+  // action so they land in the log.
+  if (name && !pl.name) pl.name = String(name).slice(0, 24);
+}
+
+// --- activity log (host-authored, broadcast to everyone) -------------------
+/** Human name for a card that is public knowledge; never call for hidden cards. */
+function cardName(d, i) {
+  const deck = decks[d], c = deck?.cards[i];
+  if (!c) return 'a card';
+  if (c.img) return `${deck.name} #${i + 1}`;
+  if (c.r === 'JOKER') return 'Joker 🃏';
+  return c.r + c.s;
+}
+function itemLabel(it) {
+  if (it.k === 'c') return it.up ? cardName(it.d, it.i) : 'a face-down card';
+  return `the ${it.name || 'stacked'} pile`;
+}
+/** Appends to the shared log. Consecutive duplicates (drag/rotate spam) collapse. */
+function logEvent(p, txt, chat) {
+  const last = host.log.at(-1);
+  if (!chat && last && last.p === p && last.txt === txt) return;
+  host.log.push({ p, txt, ts: Date.now(), ...(chat ? { c: 1 } : {}) });
+  if (host.log.length > 200) host.log.splice(0, host.log.length - 200);
+  logDirty = true;
 }
 function dropIfEmpty(pileId) {
   if (host.items[pileId]?.cards.length === 0) delete host.items[pileId];
@@ -89,8 +115,10 @@ function apply(p, a) {
   const items = host.items, pl = host.players[p];
   const it = a.id != null ? items[a.id] : null;
   switch (a.t) {
-    case 'hello': ensurePlayer(p, a.name); break;
-    case 'name': if (pl && a.name) pl.name = String(a.name).slice(0, 24); break;
+    case 'hello': break; // registration + join logging happen in the action handler
+    case 'name':
+      if (pl && a.name) { pl.name = String(a.name).slice(0, 24); logEvent(p, `is now known as "${pl.name}"`); }
+      break;
     case 'addDeck': {
       decks[a.deckId] = a.deck;
       decksDirty = true;
@@ -98,13 +126,28 @@ function apply(p, a) {
         k: 'p', x: a.x, y: a.y, rot: 0, z: zTop(), name: a.deck.name,
         cards: a.deck.cards.map((_, i) => ({ d: a.deckId, i, up: false })),
       };
+      logEvent(p, `added deck "${a.deck.name}" (${a.deck.cards.length} cards)`);
       break;
     }
-    case 'move': if (it) { it.x = clamp(a.x, -CARD_W / 2, TABLE_W - CARD_W / 2); it.y = clamp(a.y, -CARD_H / 2, TABLE_H - CARD_H / 2); it.z = zTop(); } break;
-    case 'rot': if (it) it.rot = ((a.rot % 360) + 360) % 360; break;
+    case 'move':
+      if (it) {
+        it.x = clamp(a.x, -CARD_W / 2, TABLE_W - CARD_W / 2);
+        it.y = clamp(a.y, -CARD_H / 2, TABLE_H - CARD_H / 2);
+        it.z = zTop();
+        logEvent(p, `moved ${itemLabel(it)}`);
+      }
+      break;
+    case 'rot': if (it) { it.rot = ((a.rot % 360) + 360) % 360; logEvent(p, `rotated ${itemLabel(it)}`); } break;
     case 'flip':
-      if (it?.k === 'c') it.up = !it.up;
-      else if (it?.k === 'p') { it.cards.reverse(); for (const c of it.cards) c.up = !c.up; }
+      if (it?.k === 'c') {
+        it.up = !it.up;
+        // Either way the identity is public: it was face up a moment ago or is now.
+        logEvent(p, `flipped ${cardName(it.d, it.i)} face ${it.up ? 'up' : 'down'}`);
+      } else if (it?.k === 'p') {
+        it.cards.reverse();
+        for (const c of it.cards) c.up = !c.up;
+        logEvent(p, `flipped ${itemLabel(it)}`);
+      }
       break;
     case 'shuffle':
       if (it?.k === 'p') {
@@ -112,16 +155,25 @@ function apply(p, a) {
           const j = Math.floor(Math.random() * (i + 1));
           [it.cards[i], it.cards[j]] = [it.cards[j], it.cards[i]];
         }
+        logEvent(p, `shuffled ${itemLabel(it)} (${it.cards.length} cards)`);
       }
       break;
     case 'draw': {
       const c = it?.k === 'p' && it.cards.pop();
-      if (c && pl) { pl.hand.push({ d: c.d, i: c.i }); dropIfEmpty(a.id); }
+      if (c && pl) {
+        pl.hand.push({ d: c.d, i: c.i });
+        logEvent(p, `drew a card from ${itemLabel(it)}`);
+        dropIfEmpty(a.id);
+      }
       break;
     }
     case 'deal': {
       const c = it?.k === 'p' && it.cards.pop();
-      if (c) { items[uid()] = { k: 'c', x: a.x, y: a.y, rot: 0, z: zTop(), d: c.d, i: c.i, up: a.up }; dropIfEmpty(a.id); }
+      if (c) {
+        items[uid()] = { k: 'c', x: a.x, y: a.y, rot: 0, z: zTop(), d: c.d, i: c.i, up: a.up };
+        logEvent(p, `dealt ${a.up ? cardName(c.d, c.i) : 'a card face down'} from ${itemLabel(it)}`);
+        dropIfEmpty(a.id);
+      }
       break;
     }
     case 'play': {
@@ -129,6 +181,7 @@ function apply(p, a) {
       if (pl && idx >= 0) {
         const c = pl.hand.splice(idx, 1)[0];
         items[uid()] = { k: 'c', x: a.x, y: a.y, rot: 0, z: zTop(), d: c.d, i: c.i, up: a.up };
+        logEvent(p, `played ${a.up ? cardName(c.d, c.i) : 'a card face down'} from hand`);
       }
       break;
     }
@@ -139,19 +192,32 @@ function apply(p, a) {
         const c = pl.hand.splice(idx, 1)[0];
         // A card discarded onto a pile matches the pile's exposed face
         // (face up onto a face-up pile, face down onto a deck).
-        pile.cards.push({ d: c.d, i: c.i, up: pile.cards.at(-1)?.up ?? false });
+        const up = pile.cards.at(-1)?.up ?? false;
+        pile.cards.push({ d: c.d, i: c.i, up });
+        logEvent(p, `put ${up ? cardName(c.d, c.i) : 'a card face down'} from hand onto ${itemLabel(pile)}`);
       }
       break;
     }
-    case 'toHand': if (it?.k === 'c' && pl) { pl.hand.push({ d: it.d, i: it.i }); delete items[a.id]; } break;
+    case 'toHand':
+      if (it?.k === 'c' && pl) {
+        logEvent(p, `took ${itemLabel(it)} from the table into hand`);
+        pl.hand.push({ d: it.d, i: it.i });
+        delete items[a.id];
+      }
+      break;
     case 'toPile': {
       const pile = items[a.pile];
-      if (it?.k === 'c' && pile?.k === 'p') { pile.cards.push({ d: it.d, i: it.i, up: it.up }); delete items[a.id]; }
+      if (it?.k === 'c' && pile?.k === 'p') {
+        logEvent(p, `put ${itemLabel(it)} onto ${itemLabel(pile)}`);
+        pile.cards.push({ d: it.d, i: it.i, up: it.up });
+        delete items[a.id];
+      }
       break;
     }
     case 'stack': {
       const b = items[a.onto];
       if (it?.k === 'c' && b?.k === 'c') {
+        logEvent(p, `stacked ${itemLabel(it)} onto ${itemLabel(b)}`);
         items[uid()] = { k: 'p', x: b.x, y: b.y, rot: b.rot, z: zTop(), name: '', cards: [{ d: b.d, i: b.i, up: b.up }, { d: it.d, i: it.i, up: it.up }] };
         delete items[a.id];
         delete items[a.onto];
@@ -160,10 +226,20 @@ function apply(p, a) {
     }
     case 'merge': {
       const to = items[a.pile];
-      if (it?.k === 'p' && to?.k === 'p' && it !== to) { to.cards.push(...it.cards); delete items[a.id]; }
+      if (it?.k === 'p' && to?.k === 'p' && it !== to) {
+        logEvent(p, `merged ${itemLabel(it)} (${it.cards.length} cards) into ${itemLabel(to)}`);
+        to.cards.push(...it.cards);
+        delete items[a.id];
+      }
       break;
     }
-    case 'del': delete items[a.id]; break;
+    case 'del':
+      if (it) {
+        logEvent(p, `removed ${itemLabel(it)}${it.k === 'p' ? ` (${it.cards.length} cards)` : ''}`);
+        delete items[a.id];
+      }
+      break;
+    case 'chat': if (pl && a.msg) logEvent(p, String(a.msg).slice(0, 300), true); break;
     default: console.warn('unknown action', a);
   }
   host.seq++;
@@ -173,14 +249,16 @@ function apply(p, a) {
   persist();
 }
 
-/** Routes a local UI action: hosts apply directly, guests send to the room. */
+/** Routes a local UI action: hosts apply directly, guests send to the room.
+ *  Every guest action carries the sender's stable player id + name, so the
+ *  host can (re)register a player even if the initial hello got lost. */
 function act(a) {
   if (role === 'host') apply(pid, a);
-  else sendAct(a).catch((err) => { console.error('send failed', err); toast('Failed to reach the room'); });
+  else sendAct({ ...a, _pid: pid, _name: myName }).catch((err) => { console.error('send failed', err); toast('Failed to reach the room'); });
 }
 
 // --- host <-> guest sync --------------------------------------------------
-let decksDirty = false, bcastT = 0;
+let decksDirty = false, logDirty = false, bcastT = 0;
 
 function publicPlayers() {
   return Object.fromEntries(Object.entries(host.players).map(([p, pl]) => [
@@ -192,6 +270,7 @@ function refreshView() {
   if (role !== 'host') return;
   view = { seq: host.seq, items: host.items, players: publicPlayers() };
   myHand = host.players[pid]?.hand || [];
+  gameLog = host.log;
 }
 
 function scheduleBroadcast() {
@@ -199,12 +278,12 @@ function scheduleBroadcast() {
   bcastT = setTimeout(() => { bcastT = 0; broadcast(); }, 40);
 }
 
-function broadcast(onlyPeer) {
+function broadcast() {
   if (role !== 'host' || !room) return;
-  if (decksDirty && !onlyPeer) { decksDirty = false; sendDecks(decks).catch((e) => console.error('decks send failed', e)); }
+  if (decksDirty) { decksDirty = false; sendDecks(decks).catch((e) => console.error('decks send failed', e)); }
+  if (logDirty) { logDirty = false; sendLog(host.log).catch((e) => console.error('log send failed', e)); }
   const pub = { seq: host.seq, items: host.items, players: publicPlayers() };
-  const peers = onlyPeer ? [onlyPeer] : Object.keys(room.getPeers());
-  for (const peer of peers) {
+  for (const peer of Object.keys(room.getPeers())) {
     sendState({ ...pub, hand: host.players[peerPid[peer]]?.hand || [] }, peer)
       .catch((e) => console.error('state send failed', e));
   }
@@ -235,29 +314,45 @@ function connect() {
   const actA = room.makeAction('act');
   const stateA = room.makeAction('state');
   const decksA = room.makeAction('decks');
-  sendAct = (data, target) => actA.send(data, target ? { target } : {});
+  const logA = room.makeAction('log');
+  sendAct = (data) => actA.send(data, {});
   sendState = (data, target) => stateA.send(data, { target });
-  sendDecks = (data) => decksA.send(data, {});
+  sendDecks = (data, target) => decksA.send(data, target ? { target } : {});
+  sendLog = (data, target) => logA.send(data, target ? { target } : {});
 
   actA.onMessage = (a, { peerId: peer }) => {
     if (role !== 'host') return; // actions are broadcast; only the host adjudicates
-    if (a.t === 'hello') {
-      peerPid[peer] = a.pid;
-      decksDirty = true; // late joiner needs the deck images
-      apply(a.pid, a); // apply() schedules a broadcast, which catches the joiner up
-    } else {
-      const p = peerPid[peer];
-      if (!p) { console.warn('action from unknown peer', peer, a); return; }
-      apply(p, a);
+    if (!a?._pid) { console.warn('action without player id ignored', a); return; }
+    // Register/refresh the sender on EVERY action, not just hello — if the
+    // hello was lost, the first real action still registers the player.
+    const newConn = peerPid[peer] !== a._pid;
+    const known = host.players[a._pid];
+    peerPid[peer] = a._pid;
+    ensurePlayer(a._pid, a._name);
+    if (!known?.online) logEvent(a._pid, known ? 'is back at the table' : 'joined the table');
+    if (newConn) {
+      // Fresh connection: hand over the (possibly large) deck images and the
+      // log targeted, so regular broadcasts stay light.
+      sendDecks(decks, peer).catch((e) => console.error('decks send failed', e));
+      sendLog(host.log, peer).catch((e) => console.error('log send failed', e));
     }
+    apply(a._pid, a); // apply() schedules a broadcast, which catches joiners up
   };
   stateA.onMessage = (s, { peerId: peer }) => handleState(s, peer);
   decksA.onMessage = (d) => { if (role !== 'host') { decks = d; renderAll(); } };
+  logA.onMessage = (l) => { if (role !== 'host') { gameLog = l; renderAll(); } };
 
   room.onPeerJoin = (peer) => {
     updateNet();
-    if (role !== 'host') sendAct({ t: 'hello', pid, name: myName }, peer).catch((e) => console.error('hello failed', e));
+    if (role !== 'host') act({ t: 'hello' });
   };
+  // Belt and braces: until the first state arrives, keep knocking — covers a
+  // hello lost in the initial connection churn (the host drops actions from
+  // peers it has never registered, so a lost hello used to mean a dead guest).
+  const helloRetry = setInterval(() => {
+    if (role === 'guest' && view.seq === 0) act({ t: 'hello' });
+    else if (role !== 'guest' || view.seq > 0) clearInterval(helloRetry);
+  }, 3000);
   room.onPeerLeave = (peer) => {
     updateNet();
     if (role !== 'host') return;
@@ -265,6 +360,7 @@ function connect() {
     delete peerPid[peer];
     if (p && host.players[p] && !Object.values(peerPid).includes(p)) {
       host.players[p].online = false;
+      logEvent(p, 'left the table');
       host.seq++;
       refreshView(); renderAll(); scheduleBroadcast(); persist();
     }
@@ -389,10 +485,29 @@ function renderHand() {
   });
 }
 
+let logSig = '';
+function renderLog() {
+  const last = gameLog.at(-1);
+  const sig = `${gameLog.length}|${last?.ts}|${last?.txt}`;
+  if (sig === logSig) return;
+  logSig = sig;
+  const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 60;
+  logEl.innerHTML = gameLog.map((e) => {
+    const pl = view.players[e.p];
+    const name = `<b style="color:${pl?.color || '#94a3b8'}">${esc(pl?.name || 'Player')}</b>`;
+    const time = `<span class="lt">${new Date(e.ts).toTimeString().slice(0, 5)}</span>`;
+    return e.c
+      ? `<div class="lg chat">${time}${name}: ${esc(e.txt)}</div>`
+      : `<div class="lg">${time}${name} ${esc(e.txt)}</div>`;
+  }).join('');
+  if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+}
+
 function renderAll() {
   renderItems();
   renderPlayers();
   renderHand();
+  renderLog();
   updateNet();
 }
 
@@ -597,6 +712,18 @@ $('invite-btn').addEventListener('click', async () => {
 
 $('help-btn').addEventListener('click', () => $('help-dialog').showModal());
 $('add-deck-btn').addEventListener('click', () => $('deck-dialog').showModal());
+$('log-btn').addEventListener('click', () => {
+  sideEl.classList.toggle('hidden');
+  if (!sideEl.classList.contains('hidden')) logEl.scrollTop = logEl.scrollHeight;
+});
+
+$('chat-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const msg = $('chat-input').value.trim();
+  if (!msg) return;
+  act({ t: 'chat', msg });
+  $('chat-input').value = '';
+});
 
 // --- deck creation --------------------------------------------------------
 /** Downscales an image file to a compact data URL (keeps decks shareable & persistable). */
@@ -644,11 +771,13 @@ function becomeHost(saved) {
   if (saved) {
     decks = saved.decks;
     host = saved.state;
+    host.log ||= []; // saves from before the log existed
     for (const pl of Object.values(host.players)) pl.online = false;
     ensurePlayer(pid, myName);
+    logEvent(pid, 'resumed the table');
     host.seq++;
   } else {
-    host = { seq: 1, items: {}, players: {} };
+    host = { seq: 1, items: {}, players: {}, log: [] };
     ensurePlayer(pid, myName);
     const deck = standardDeck(false);
     const deckId = uid();
@@ -657,24 +786,45 @@ function becomeHost(saved) {
       k: 'p', x: TABLE_W / 2 - CARD_W / 2, y: TABLE_H / 2 - CARD_H / 2, rot: 0, z: 1,
       name: deck.name, cards: deck.cards.map((_, i) => ({ d: deckId, i, up: false })),
     };
+    logEvent(pid, 'opened the table');
   }
-  decksDirty = true;
   refreshView();
   persist();
 }
 
-const m = location.hash.match(/^#room~([0-9a-f]+)~([0-9a-f]+)$/);
-if (m) {
-  [, roomId, password] = m;
-  const saved = loadSave();
-  if (saved) becomeHost(saved);
-  else role = 'guest';
-} else {
-  roomId = rand(8);
-  password = rand(8);
-  history.replaceState({}, '', `#room~${roomId}~${password}`);
-  becomeHost(null);
+/** First-visit nickname prompt; resolves once the player picked a name. */
+function askName() {
+  return new Promise((resolve) => {
+    const dlg = $('name-dialog');
+    $('name-first').value = myName;
+    dlg.addEventListener('close', () => {
+      const v = $('name-first').value.trim();
+      if (v) myName = v;
+      localStorage.setItem('ct-name', myName);
+      nameInput.value = myName;
+      resolve();
+    }, { once: true });
+    dlg.showModal();
+  });
 }
-layout();
-renderAll();
-connect();
+
+async function boot() {
+  const m = location.hash.match(/^#room~([0-9a-f]+)~([0-9a-f]+)$/);
+  let saved = null;
+  if (m) {
+    [, roomId, password] = m;
+    saved = loadSave();
+  } else {
+    roomId = rand(8);
+    password = rand(8);
+    history.replaceState({}, '', `#room~${roomId}~${password}`);
+  }
+  if (!localStorage.getItem('ct-name')) await askName();
+  if (!m || saved) becomeHost(saved);
+  else role = 'guest';
+  if (window.innerWidth <= 820) sideEl.classList.add('hidden');
+  layout();
+  renderAll();
+  connect();
+}
+boot().catch((err) => { console.error('boot failed', err); toast(`Failed to start: ${err.message}`); });

@@ -5,8 +5,16 @@ shared table: load decks, shuffle, draw, deal, move/rotate/flip cards, keep a
 private hand, play face up or face down. Enough freedom to simulate most card
 games the way a physical table does.
 
-Open the page → you're hosting a room → **Copy invite** → friends join in
-their browser and everyone sees the table live.
+Open the page → pick a nickname → you're hosting a room → **Copy invite** →
+friends open the link, pick their nickname, and everyone plays on the same
+live table.
+
+A **table log** panel records every action for all to see — who drew, dealt,
+played, flipped, shuffled, took a card into their hand — plus a chat box.
+Hidden information stays hidden in the log ("drew a card", "played a card
+face down"), but the *fact* that something happened is always on record,
+which is the anti-cheat mechanism: you can palm a card, but everyone sees
+you palm it.
 
 ## How it works
 
@@ -24,6 +32,13 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   host's first broadcast.
 - **Identity**: players get a persistent random id in `localStorage`, so a
   reloaded guest reclaims their hand (WebRTC peer ids change per page load).
+  Every guest action carries that id + nickname, and the host registers the
+  sender on *any* action — so a lost join handshake can't permanently mute a
+  guest (guests also retry the hello every 3s until the first state arrives).
+- **Log**: the host authors log entries while adjudicating actions (it's the
+  only peer that can name cards trustworthily), keeps the last 200 in state,
+  and pushes them on a dedicated channel only when the log changes; repeated
+  drag/rotate entries collapse so moves don't flood it.
 - **Persistence**: the host throttle-saves `{decks, state}` to `localStorage`
   keyed by room id; reopening the invite link in the host's browser resumes
   the game. If two hosts ever collide (stale resume, invite opened twice in

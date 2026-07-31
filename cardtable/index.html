@@ -14,21 +14,42 @@
     <input id="name-input" maxlength="24" placeholder="Your name" autocomplete="off">
     <button id="add-deck-btn">+ Deck</button>
     <button id="invite-btn">Copy invite</button>
+    <button id="log-btn" title="Table log & chat">💬</button>
     <button id="help-btn" title="Help">?</button>
     <span id="net-status" title="Peers connected">●</span>
   </header>
 
-  <main id="table-wrap">
-    <div id="table">
-      <div id="table-hint" class="hidden"></div>
+  <main id="main">
+    <div id="table-wrap">
+      <div id="table">
+        <div id="table-hint" class="hidden"></div>
+      </div>
+      <div id="action-bar" class="hidden"></div>
     </div>
-    <div id="action-bar" class="hidden"></div>
+    <aside id="side">
+      <div id="side-head">Table log</div>
+      <div id="log"></div>
+      <form id="chat-form">
+        <input id="chat-input" maxlength="300" placeholder="Say something…" autocomplete="off">
+        <button title="Send">➤</button>
+      </form>
+    </aside>
   </main>
 
   <footer id="hand-bar">
     <button id="facedown-toggle" title="When on, cards dragged from your hand land face down">🂠<br>face-down</button>
     <div id="hand"></div>
   </footer>
+
+  <dialog id="name-dialog">
+    <form method="dialog">
+      <h3>Choose your nickname</h3>
+      <label>Everyone at the table will see this name
+        <input id="name-first" maxlength="24" required autocomplete="off" placeholder="Your name">
+      </label>
+      <menu><button id="name-join">Join the table</button></menu>
+    </form>
+  </dialog>
 
   <dialog id="deck-dialog">
     <form id="deck-form" method="dialog">
