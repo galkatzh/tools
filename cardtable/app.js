@@ -92,6 +92,15 @@ function itemLabel(it) {
   if (it.k === 'c') return it.up ? cardName(it.d, it.i) : 'a face-down card';
   return `the ${it.name || 'stacked'} pile`;
 }
+/** Tags an applied action with actor + item for the transient name bulbs every
+ *  other player sees. Call BEFORE deleting an item so the position survives. */
+function mark(p, id) {
+  const it = host.items[id];
+  const f = { p, id, x: it?.x ?? 0, y: it?.y ?? 0 };
+  fxQueue.push(f);
+  if (p !== pid) showFx(f); // the host is a viewer too; own actions stay silent
+}
+
 /** Appends to the shared log. Consecutive duplicates (drag/rotate spam) collapse. */
 function logEvent(p, txt, chat) {
   const last = host.log.at(-1);
@@ -122,11 +131,13 @@ function apply(p, a) {
     case 'addDeck': {
       decks[a.deckId] = a.deck;
       decksDirty = true;
-      items[uid()] = {
+      const nid = uid();
+      items[nid] = {
         k: 'p', x: a.x, y: a.y, rot: 0, z: zTop(), name: a.deck.name,
         cards: a.deck.cards.map((_, i) => ({ d: a.deckId, i, up: false })),
       };
       logEvent(p, `added deck "${a.deck.name}" (${a.deck.cards.length} cards)`);
+      mark(p, nid);
       break;
     }
     case 'move':
@@ -135,18 +146,21 @@ function apply(p, a) {
         it.y = clamp(a.y, -CARD_H / 2, TABLE_H - CARD_H / 2);
         it.z = zTop();
         logEvent(p, `moved ${itemLabel(it)}`);
+        mark(p, a.id);
       }
       break;
-    case 'rot': if (it) { it.rot = ((a.rot % 360) + 360) % 360; logEvent(p, `rotated ${itemLabel(it)}`); } break;
+    case 'rot': if (it) { it.rot = ((a.rot % 360) + 360) % 360; logEvent(p, `rotated ${itemLabel(it)}`); mark(p, a.id); } break;
     case 'flip':
       if (it?.k === 'c') {
         it.up = !it.up;
         // Either way the identity is public: it was face up a moment ago or is now.
         logEvent(p, `flipped ${cardName(it.d, it.i)} face ${it.up ? 'up' : 'down'}`);
+        mark(p, a.id);
       } else if (it?.k === 'p') {
         it.cards.reverse();
         for (const c of it.cards) c.up = !c.up;
         logEvent(p, `flipped ${itemLabel(it)}`);
+        mark(p, a.id);
       }
       break;
     case 'shuffle':
@@ -156,6 +170,7 @@ function apply(p, a) {
           [it.cards[i], it.cards[j]] = [it.cards[j], it.cards[i]];
         }
         logEvent(p, `shuffled ${itemLabel(it)} (${it.cards.length} cards)`);
+        mark(p, a.id);
       }
       break;
     case 'draw': {
@@ -163,6 +178,7 @@ function apply(p, a) {
       if (c && pl) {
         pl.hand.push({ d: c.d, i: c.i });
         logEvent(p, `drew a card from ${itemLabel(it)}`);
+        mark(p, a.id);
         dropIfEmpty(a.id);
       }
       break;
@@ -170,8 +186,10 @@ function apply(p, a) {
     case 'deal': {
       const c = it?.k === 'p' && it.cards.pop();
       if (c) {
-        items[uid()] = { k: 'c', x: a.x, y: a.y, rot: 0, z: zTop(), d: c.d, i: c.i, up: a.up };
+        const nid = uid();
+        items[nid] = { k: 'c', x: a.x, y: a.y, rot: ((a.rot || 0) % 360 + 360) % 360, z: zTop(), d: c.d, i: c.i, up: a.up };
         logEvent(p, `dealt ${a.up ? cardName(c.d, c.i) : 'a card face down'} from ${itemLabel(it)}`);
+        mark(p, nid);
         dropIfEmpty(a.id);
       }
       break;
@@ -180,8 +198,10 @@ function apply(p, a) {
       const idx = pl && handIdx(pl, a);
       if (pl && idx >= 0) {
         const c = pl.hand.splice(idx, 1)[0];
-        items[uid()] = { k: 'c', x: a.x, y: a.y, rot: 0, z: zTop(), d: c.d, i: c.i, up: a.up };
+        const nid = uid();
+        items[nid] = { k: 'c', x: a.x, y: a.y, rot: ((a.rot || 0) % 360 + 360) % 360, z: zTop(), d: c.d, i: c.i, up: a.up };
         logEvent(p, `played ${a.up ? cardName(c.d, c.i) : 'a card face down'} from hand`);
+        mark(p, nid);
       }
       break;
     }
@@ -195,12 +215,14 @@ function apply(p, a) {
         const up = pile.cards.at(-1)?.up ?? false;
         pile.cards.push({ d: c.d, i: c.i, up });
         logEvent(p, `put ${up ? cardName(c.d, c.i) : 'a card face down'} from hand onto ${itemLabel(pile)}`);
+        mark(p, a.pile);
       }
       break;
     }
     case 'toHand':
       if (it?.k === 'c' && pl) {
         logEvent(p, `took ${itemLabel(it)} from the table into hand`);
+        mark(p, a.id);
         pl.hand.push({ d: it.d, i: it.i });
         delete items[a.id];
       }
@@ -209,6 +231,7 @@ function apply(p, a) {
       const pile = items[a.pile];
       if (it?.k === 'c' && pile?.k === 'p') {
         logEvent(p, `put ${itemLabel(it)} onto ${itemLabel(pile)}`);
+        mark(p, a.pile);
         pile.cards.push({ d: it.d, i: it.i, up: it.up });
         delete items[a.id];
       }
@@ -218,9 +241,11 @@ function apply(p, a) {
       const b = items[a.onto];
       if (it?.k === 'c' && b?.k === 'c') {
         logEvent(p, `stacked ${itemLabel(it)} onto ${itemLabel(b)}`);
-        items[uid()] = { k: 'p', x: b.x, y: b.y, rot: b.rot, z: zTop(), name: '', cards: [{ d: b.d, i: b.i, up: b.up }, { d: it.d, i: it.i, up: it.up }] };
+        const nid = uid();
+        items[nid] = { k: 'p', x: b.x, y: b.y, rot: b.rot, z: zTop(), name: '', cards: [{ d: b.d, i: b.i, up: b.up }, { d: it.d, i: it.i, up: it.up }] };
         delete items[a.id];
         delete items[a.onto];
+        mark(p, nid);
       }
       break;
     }
@@ -228,6 +253,7 @@ function apply(p, a) {
       const to = items[a.pile];
       if (it?.k === 'p' && to?.k === 'p' && it !== to) {
         logEvent(p, `merged ${itemLabel(it)} (${it.cards.length} cards) into ${itemLabel(to)}`);
+        mark(p, a.pile);
         to.cards.push(...it.cards);
         delete items[a.id];
       }
@@ -236,14 +262,15 @@ function apply(p, a) {
     case 'del':
       if (it) {
         logEvent(p, `removed ${itemLabel(it)}${it.k === 'p' ? ` (${it.cards.length} cards)` : ''}`);
+        mark(p, a.id);
         delete items[a.id];
       }
       break;
     // Peek is deliberately "loud": the reveal happens on the peeker's screen
     // only, but the fact of peeking goes on the record for everyone.
     case 'peek':
-      if (it?.k === 'c' && !it.up) logEvent(p, 'peeked at a face-down card');
-      else if (it?.k === 'p' && it.cards.length) logEvent(p, `peeked at the top card of ${itemLabel(it)}`);
+      if (it?.k === 'c' && !it.up) { logEvent(p, 'peeked at a face-down card'); mark(p, a.id); }
+      else if (it?.k === 'p' && it.cards.length) { logEvent(p, `peeked at the top card of ${itemLabel(it)}`); mark(p, a.id); }
       break;
     case 'chat': if (pl && a.msg) logEvent(p, String(a.msg).slice(0, 300), true); break;
     default: console.warn('unknown action', a);
@@ -265,6 +292,7 @@ function act(a) {
 
 // --- host <-> guest sync --------------------------------------------------
 let decksDirty = false, logDirty = false, bcastT = 0;
+let fxQueue = []; // action markers accumulated since the last broadcast
 
 function publicPlayers() {
   return Object.fromEntries(Object.entries(host.players).map(([p, pl]) => [
@@ -288,7 +316,8 @@ function broadcast() {
   if (role !== 'host' || !room) return;
   if (decksDirty) { decksDirty = false; sendDecks(decks).catch((e) => console.error('decks send failed', e)); }
   if (logDirty) { logDirty = false; sendLog(host.log).catch((e) => console.error('log send failed', e)); }
-  const pub = { seq: host.seq, items: host.items, players: publicPlayers() };
+  const pub = { seq: host.seq, items: host.items, players: publicPlayers(), fx: fxQueue };
+  fxQueue = [];
   for (const peer of Object.keys(room.getPeers())) {
     sendState({ ...pub, hand: host.players[peerPid[peer]]?.hand || [] }, peer)
       .catch((e) => console.error('state send failed', e));
@@ -310,6 +339,7 @@ function handleState(s, peer) {
   hostPeer = peer;
   view = { seq: s.seq, items: s.items, players: s.players };
   myHand = s.hand || [];
+  for (const f of s.fx || []) if (f.p !== pid) showFx(f);
   renderAll();
 }
 
@@ -517,21 +547,45 @@ function renderAll() {
   updateNet();
 }
 
-// Fit the fixed-size logical table into the viewport.
+// --- viewport: fit + per-player view rotation ------------------------------
+// Each player can rotate their OWN view of the table in 90° steps (to sit
+// "across" from an opponent). Purely a local projection — the shared state
+// stays in one logical coordinate space; only this client's screen<->table
+// mapping composes in the rotation.
+let viewAngle = parseInt(localStorage.getItem('ct-view'), 10) || 0;
+
+/** Rotates a vector by the view angle (multiples of 90° only). */
+function rotv(x, y, a) {
+  return a === 90 ? [-y, x] : a === 180 ? [-x, -y] : a === 270 ? [y, -x] : [x, y];
+}
+
 function layout() {
   const w = wrapEl.clientWidth, h = wrapEl.clientHeight;
-  scale = Math.min(w / TABLE_W, h / TABLE_H);
-  tableEl.style.transform = `scale(${scale})`;
-  tableEl.style.left = `${(w - TABLE_W * scale) / 2}px`;
-  tableEl.style.top = `${(h - TABLE_H * scale) / 2}px`;
+  const sideways = viewAngle % 180 !== 0;
+  scale = sideways ? Math.min(w / TABLE_H, h / TABLE_W) : Math.min(w / TABLE_W, h / TABLE_H);
+  // Center the unscaled table on the wrap; rotate+scale about its center.
+  tableEl.style.left = `${(w - TABLE_W) / 2}px`;
+  tableEl.style.top = `${(h - TABLE_H) / 2}px`;
+  tableEl.style.transform = `rotate(${viewAngle}deg) scale(${scale})`;
+  hintEl.style.transform = `rotate(${-viewAngle}deg)`; // keep the hint readable
   if (sel) placeBar();
 }
 new ResizeObserver(layout).observe(wrapEl);
 
 function toTable(e) {
-  const r = tableEl.getBoundingClientRect();
-  return { x: (e.clientX - r.left) / scale, y: (e.clientY - r.top) / scale };
+  const r = wrapEl.getBoundingClientRect();
+  const [ux, uy] = rotv(e.clientX - r.left - r.width / 2, e.clientY - r.top - r.height / 2, (360 - viewAngle) % 360);
+  return { x: TABLE_W / 2 + ux / scale, y: TABLE_H / 2 + uy / scale };
 }
+
+/** Table coords -> wrap-relative screen px, honoring the view rotation. */
+function tableToScreen(x, y) {
+  const [rx, ry] = rotv((x - TABLE_W / 2) * scale, (y - TABLE_H / 2) * scale, viewAngle);
+  return [wrapEl.clientWidth / 2 + rx, wrapEl.clientHeight / 2 + ry];
+}
+
+/** Item rotation that appears upright on THIS player's rotated screen. */
+const uprightRot = () => (360 - viewAngle) % 360;
 
 // --- selection & action bar ----------------------------------------------
 function select(id) {
@@ -551,11 +605,38 @@ function select(id) {
 function placeBar() {
   const it = view.items[sel];
   if (!it) return;
-  const ox = parseFloat(tableEl.style.left) || 0, oy = parseFloat(tableEl.style.top) || 0;
-  const x = ox + (it.x + CARD_W / 2) * scale;
-  const yAbove = oy + it.y * scale - 44;
-  barEl.style.left = `${clamp(x, 90, wrapEl.clientWidth - 90)}px`;
-  barEl.style.top = `${yAbove >= 4 ? yAbove : oy + (it.y + CARD_H) * scale + 10}px`;
+  const [sx, sy] = tableToScreen(it.x + CARD_W / 2, it.y + CARD_H / 2);
+  const half = CARD_H * 0.6 * scale; // covers rotated cards too
+  const yAbove = sy - half - 42;
+  barEl.style.left = `${clamp(sx, 90, wrapEl.clientWidth - 90)}px`;
+  barEl.style.top = `${yAbove >= 4 ? yAbove : sy + half + 8}px`;
+}
+
+// --- transient "who did that" bulbs ----------------------------------------
+const bulbs = new Map(); // "pid|itemId" -> {el, timer}
+function showFx(f) {
+  const pl = view.players[f.p];
+  const it = f.id && view.items[f.id];
+  const [sx, sy] = tableToScreen((it ? it.x : f.x) + CARD_W / 2, (it ? it.y : f.y) + CARD_H / 2);
+  const key = `${f.p}|${f.id}`;
+  let b = bulbs.get(key);
+  if (!b) {
+    const el = document.createElement('div');
+    el.className = 'fx-bulb';
+    wrapEl.appendChild(el);
+    b = { el, timer: 0 };
+    bulbs.set(key, b);
+  }
+  b.el.textContent = pl?.name || 'Player';
+  b.el.style.borderColor = pl?.color || '#94a3b8';
+  b.el.style.left = `${clamp(sx, 30, wrapEl.clientWidth - 30)}px`;
+  b.el.style.top = `${Math.max(20, sy - CARD_H * 0.55 * scale)}px`;
+  b.el.classList.remove('fade');
+  clearTimeout(b.timer);
+  b.timer = setTimeout(() => {
+    b.el.classList.add('fade');
+    b.timer = setTimeout(() => { b.el.remove(); bulbs.delete(key); }, 450);
+  }, 1500);
 }
 
 /** A spot next to a pile for dealt cards, jittered so repeated deals stay visible. */
@@ -576,8 +657,8 @@ barEl.addEventListener('click', (e) => {
     hand: () => act({ t: 'toHand', id: sel }),
     del: () => act({ t: 'del', id: sel }),
     draw: () => act({ t: 'draw', id: sel }),
-    dealup: () => act({ t: 'deal', id: sel, up: true, ...dealSpot(it) }),
-    dealdn: () => act({ t: 'deal', id: sel, up: false, ...dealSpot(it) }),
+    dealup: () => act({ t: 'deal', id: sel, up: true, rot: uprightRot(), ...dealSpot(it) }),
+    dealdn: () => act({ t: 'deal', id: sel, up: false, rot: uprightRot(), ...dealSpot(it) }),
     shuffle: () => act({ t: 'shuffle', id: sel }),
     peek: () => {
       const c = it.k === 'c' ? it : it.cards.at(-1);
@@ -699,7 +780,8 @@ function dropGhost(e) {
   if (tgt?.k === 'p') { act({ t: 'handPile', idx, d: card.d, i: card.i, pile: tgt.id }); return; }
   if (!under?.closest('#table')) return;
   const p = toTable(e);
-  act({ t: 'play', idx, d: card.d, i: card.i, x: p.x - CARD_W / 2, y: p.y - CARD_H / 2, up: !facedown });
+  // rot: cards land upright from the player's (possibly rotated) point of view
+  act({ t: 'play', idx, d: card.d, i: card.i, x: p.x - CARD_W / 2, y: p.y - CARD_H / 2, up: !facedown, rot: uprightRot() });
 }
 
 $('facedown-toggle').addEventListener('click', () => {
@@ -732,6 +814,11 @@ $('invite-btn').addEventListener('click', async () => {
 
 $('help-btn').addEventListener('click', () => $('help-dialog').showModal());
 $('add-deck-btn').addEventListener('click', () => $('deck-dialog').showModal());
+$('view-btn').addEventListener('click', () => {
+  viewAngle = (viewAngle + 90) % 360;
+  localStorage.setItem('ct-view', viewAngle);
+  layout();
+});
 $('log-btn').addEventListener('click', () => {
   sideEl.classList.toggle('hidden');
   if (!sideEl.classList.contains('hidden')) logEl.scrollTop = logEl.scrollHeight;
