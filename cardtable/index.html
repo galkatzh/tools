@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Card Table</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header id="toolbar">
+    <span id="logo">🂡 Card Table</span>
+    <span id="players"></span>
+    <span class="spacer"></span>
+    <input id="name-input" maxlength="24" placeholder="Your name" autocomplete="off">
+    <button id="add-deck-btn">+ Deck</button>
+    <button id="invite-btn">Copy invite</button>
+    <button id="help-btn" title="Help">?</button>
+    <span id="net-status" title="Peers connected">●</span>
+  </header>
+
+  <main id="table-wrap">
+    <div id="table">
+      <div id="table-hint" class="hidden"></div>
+    </div>
+    <div id="action-bar" class="hidden"></div>
+  </main>
+
+  <footer id="hand-bar">
+    <button id="facedown-toggle" title="When on, cards dragged from your hand land face down">🂠<br>face-down</button>
+    <div id="hand"></div>
+  </footer>
+
+  <dialog id="deck-dialog">
+    <form id="deck-form" method="dialog">
+      <h3>Add a deck</h3>
+      <label>Name <input id="deck-name" maxlength="24" placeholder="Standard" autocomplete="off"></label>
+      <label class="radio"><input type="radio" name="deck-kind" value="std" checked> Standard 52
+        <label class="sub"><input type="checkbox" id="deck-jokers"> + 2 jokers</label>
+      </label>
+      <label class="radio"><input type="radio" name="deck-kind" value="img"> Custom images</label>
+      <div id="img-fields">
+        <label>Card faces (one image per card) <input type="file" id="deck-files" multiple accept="image/*"></label>
+        <label>Card back (optional) <input type="file" id="deck-back" accept="image/*"></label>
+      </div>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button id="deck-add" value="add">Add deck</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="help-dialog">
+    <h3>How to play</h3>
+    <ul>
+      <li><b>Drag</b> cards and piles to move them around the table.</li>
+      <li><b>Click</b> a card or pile for actions: flip, rotate, shuffle, deal, draw, delete.</li>
+      <li><b>Double-click</b> a card to flip it; double-click a pile to draw into your hand.</li>
+      <li>Drop a card <b>onto a pile</b> to place it on top; onto <b>another card</b> to start a pile; drop a <b>pile onto a pile</b> to merge them.</li>
+      <li>Drag a card to the <b>bottom bar</b> to take it into your hand (hands are private).</li>
+      <li>Drag from your hand to the table to play it — toggle <b>🂠 face-down</b> to play cards face down.</li>
+      <li><b>Copy invite</b> and send the link to friends; everyone sees the table live over WebRTC (no server).</li>
+      <li>The game lives in the host's browser tab — if the host closes it, reopening the same link on the host's browser resumes the game.</li>
+    </ul>
+    <form method="dialog"><menu><button>Close</button></menu></form>
+  </dialog>
+
+  <div id="toast" class="hidden"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
