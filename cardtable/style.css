@@ -154,6 +154,21 @@ dialog ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 14px; }
 #img-fields input[type="file"] { font-size: 13px; }
 #deck-add { background: #059669; }
 
+/* --- private peek overlay --- */
+#peek {
+  position: fixed; inset: 0; z-index: 500000; background: #000b;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+#peek-inner {
+  width: var(--cw); height: var(--ch); position: relative; transform: scale(2.3);
+  border-radius: 8px; overflow: hidden; background: #fff; box-shadow: 0 4px 18px #000;
+}
+#peek::after {
+  content: "Only you can see this — everyone knows you peeked. Click to close.";
+  position: absolute; bottom: 8%; left: 0; right: 0; text-align: center;
+  color: #cbd5e1; font-size: 14px; pointer-events: none;
+}
+
 #toast {
   position: fixed; bottom: 150px; left: 50%; transform: translateX(-50%);
   background: #dc2626; color: #fff; padding: 10px 16px; border-radius: 10px;

@@ -239,6 +239,12 @@ function apply(p, a) {
         delete items[a.id];
       }
       break;
+    // Peek is deliberately "loud": the reveal happens on the peeker's screen
+    // only, but the fact of peeking goes on the record for everyone.
+    case 'peek':
+      if (it?.k === 'c' && !it.up) logEvent(p, 'peeked at a face-down card');
+      else if (it?.k === 'p' && it.cards.length) logEvent(p, `peeked at the top card of ${itemLabel(it)}`);
+      break;
     case 'chat': if (pl && a.msg) logEvent(p, String(a.msg).slice(0, 300), true); break;
     default: console.warn('unknown action', a);
   }
@@ -534,8 +540,8 @@ function select(id) {
   if (!sel) { barEl.classList.add('hidden'); return; }
   const it = view.items[sel];
   barEl.innerHTML = it.k === 'c'
-    ? `<button data-cmd="flip">Flip</button><button data-cmd="rl">⟲90</button><button data-cmd="rr">⟳90</button><button data-cmd="hand">Hand</button><button data-cmd="del">🗑</button>`
-    : `<button data-cmd="draw">Draw</button><button data-cmd="dealup">Deal↑</button><button data-cmd="dealdn">Deal↓</button><button data-cmd="shuffle">Shuffle</button><button data-cmd="flip">Flip</button><button data-cmd="rr">⟳90</button><button data-cmd="del">🗑</button>`;
+    ? `<button data-cmd="flip">Flip</button>${it.up ? '' : '<button data-cmd="peek">Peek</button>'}<button data-cmd="rl">⟲90</button><button data-cmd="rr">⟳90</button><button data-cmd="hand">Hand</button><button data-cmd="del">🗑</button>`
+    : `<button data-cmd="draw">Draw</button><button data-cmd="peek">Peek</button><button data-cmd="dealup">Deal↑</button><button data-cmd="dealdn">Deal↓</button><button data-cmd="shuffle">Shuffle</button><button data-cmd="flip">Flip</button><button data-cmd="rr">⟳90</button><button data-cmd="del">🗑</button>`;
   barEl.classList.remove('hidden');
   placeBar();
 }
@@ -573,9 +579,23 @@ barEl.addEventListener('click', (e) => {
     dealup: () => act({ t: 'deal', id: sel, up: true, ...dealSpot(it) }),
     dealdn: () => act({ t: 'deal', id: sel, up: false, ...dealSpot(it) }),
     shuffle: () => act({ t: 'shuffle', id: sel }),
+    peek: () => {
+      const c = it.k === 'c' ? it : it.cards.at(-1);
+      if (!c) return;
+      act({ t: 'peek', id: sel }); // announce it before enjoying it
+      showPeek(c.d, c.i);
+    },
   };
   cmds[cmd]?.();
 });
+
+// --- private peek overlay --------------------------------------------------
+const peekEl = $('peek');
+function showPeek(d, i) {
+  $('peek-inner').innerHTML = faceHTML(d, i);
+  peekEl.classList.remove('hidden');
+}
+peekEl.addEventListener('click', () => peekEl.classList.add('hidden'));
 
 // --- dragging table items -------------------------------------------------
 tableEl.addEventListener('pointerdown', (e) => {

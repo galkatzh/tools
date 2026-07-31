@@ -14,7 +14,9 @@ played, flipped, shuffled, took a card into their hand — plus a chat box.
 Hidden information stays hidden in the log ("drew a card", "played a card
 face down"), but the *fact* that something happened is always on record,
 which is the anti-cheat mechanism: you can palm a card, but everyone sees
-you palm it.
+you palm it. **Peek** follows the same rule — you can privately look at a
+face-down card or a pile's top card, and the log announces to everyone that
+you looked.
 
 ## How it works
 

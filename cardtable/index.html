@@ -78,6 +78,7 @@
       <li><b>Double-click</b> a card to flip it; double-click a pile to draw into your hand.</li>
       <li>Drop a card <b>onto a pile</b> to place it on top; onto <b>another card</b> to start a pile; drop a <b>pile onto a pile</b> to merge them.</li>
       <li>Drag a card to the <b>bottom bar</b> to take it into your hand (hands are private).</li>
+      <li><b>Peek</b> shows you a face-down card (or the top of a pile) privately — but everyone sees in the log <i>that</i> you peeked.</li>
       <li>Drag from your hand to the table to play it — toggle <b>🂠 face-down</b> to play cards face down.</li>
       <li><b>Copy invite</b> and send the link to friends; everyone sees the table live over WebRTC (no server).</li>
       <li>The game lives in the host's browser tab — if the host closes it, reopening the same link on the host's browser resumes the game.</li>
@@ -85,6 +86,7 @@
     <form method="dialog"><menu><button>Close</button></menu></form>
   </dialog>
 
+  <div id="peek" class="hidden"><div id="peek-inner"></div></div>
   <div id="toast" class="hidden"></div>
   <script type="module" src="app.js"></script>
 </body>
