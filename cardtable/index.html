@@ -13,6 +13,7 @@
     <input id="name-input" maxlength="24" placeholder="Your name" autocomplete="off">
     <button id="add-deck-btn">+ Deck</button>
     <button id="invite-btn">Copy invite</button>
+    <button id="qr-btn" title="Show the invite link as a QR code">QR</button>
     <button id="view-btn" title="Rotate the table back to your seat (view is yours alone — spin it by dragging empty felt)">🧭</button>
     <button id="log-btn" title="Table log & chat">💬</button>
     <button id="help-btn" title="Help">?</button>
@@ -40,6 +41,13 @@
     <button id="facedown-toggle" title="When on, cards dragged from your hand land face down">🂠<br>face-down</button>
     <div id="hand"></div>
   </footer>
+
+  <dialog id="qr-dialog">
+    <h3>Scan to join this table</h3>
+    <canvas id="qr-canvas"></canvas>
+    <p id="qr-link"></p>
+    <form method="dialog"><menu><button>Close</button></menu></form>
+  </dialog>
 
   <dialog id="name-dialog">
     <form method="dialog">
@@ -81,7 +89,7 @@
       <li><b>Peek</b> shows you a face-down card (or the top of a pile) privately — but everyone sees in the log <i>that</i> you peeked.</li>
       <li>Everyone gets a <b>seat</b> around the table, and the table auto-turns so your seat is at the bottom. <b>Drag empty felt</b> to spin your view freely (others keep theirs); <b>🧭</b> snaps back to your seat. Cards you play land facing you.</li>
       <li>Drag from your hand to the table to play it — toggle <b>🂠 face-down</b> to play cards face down.</li>
-      <li><b>Copy invite</b> and send the link to friends; everyone sees the table live over WebRTC (no server).</li>
+      <li><b>Copy invite</b> and send the link to friends — or tap <b>QR</b> so they can scan it with a phone. Everyone sees the table live over WebRTC (no server).</li>
       <li>The game lives in the host's browser tab — if the host closes it, reopening the same link on the host's browser resumes the game.</li>
     </ul>
     <form method="dialog"><menu><button>Close</button></menu></form>

@@ -186,6 +186,10 @@ dialog ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 14px; }
   color: #cbd5e1; font-size: 14px; pointer-events: none;
 }
 
+/* --- QR invite --- */
+#qr-canvas { display: block; margin: 0 auto; border-radius: 8px; background: #fff; max-width: 100%; }
+#qr-link { font-size: 11px; color: #94a3b8; overflow-wrap: anywhere; margin: 8px 0 0; max-width: 320px; }
+
 #toast {
   position: fixed; bottom: 150px; left: 50%; transform: translateX(-50%);
   background: #dc2626; color: #fff; padding: 10px 16px; border-radius: 10px;

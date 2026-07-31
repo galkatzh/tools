@@ -932,6 +932,19 @@ $('invite-btn').addEventListener('click', async () => {
   }
 });
 
+$('qr-btn').addEventListener('click', async () => {
+  try {
+    // Lazy-loaded: the QR library is only fetched when someone actually asks for a code.
+    const { toCanvas } = await import('https://cdn.jsdelivr.net/npm/qrcode@1.5.4/+esm');
+    await toCanvas($('qr-canvas'), location.href, { width: 320, margin: 2 });
+    $('qr-link').textContent = location.href;
+    $('qr-dialog').showModal();
+  } catch (err) {
+    console.error('QR code failed', err);
+    toast(`QR code failed: ${err.message}`);
+  }
+});
+
 $('help-btn').addEventListener('click', () => $('help-dialog').showModal());
 $('add-deck-btn').addEventListener('click', () => $('deck-dialog').showModal());
 $('view-btn').addEventListener('click', () => {

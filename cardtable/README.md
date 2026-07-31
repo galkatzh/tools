@@ -5,9 +5,9 @@ shared table: load decks, shuffle, draw, deal, move/rotate/flip cards, keep a
 private hand, play face up or face down. Enough freedom to simulate most card
 games the way a physical table does.
 
-Open the page → pick a nickname → you're hosting a room → **Copy invite** →
-friends open the link, pick their nickname, and everyone plays on the same
-live table.
+Open the page → pick a nickname → you're hosting a room → **Copy invite**
+(or show the invite as a **QR** code for phones to scan) → friends open the
+link, pick their nickname, and everyone plays on the same live table.
 
 The table is **round** and everyone gets a **seat** on the rim (host-assigned
 into the largest empty arc, so two players sit opposite, a third between
