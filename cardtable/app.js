@@ -9,7 +9,7 @@
 // to localStorage so reloading the invite link in the host's browser resumes
 // the room; if two hosts ever collide (e.g. a stale resume), the one with the
 // older state demotes itself to guest.
-import { joinRoom, selfId } from 'https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm';
+import { joinRoom, selfId, getRelaySockets } from 'https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm';
 
 const $ = (id) => document.getElementById(id);
 const tableEl = $('table'), wrapEl = $('table-wrap'), handEl = $('hand'), barEl = $('action-bar');
@@ -373,10 +373,14 @@ function handleState(s, peer) {
   renderAll();
 }
 
+let helloTimer = 0;
 function connect() {
-  // window.CARDTABLE_RELAYS overrides the default public Nostr relays (tests, self-hosting)
+  clearInterval(helloTimer);
+  // window.CARDTABLE_RELAYS overrides the default public Nostr relays (tests, self-hosting).
+  // redundancy 10 (default 5): more relays per room = better odds that two
+  // peers share a live one when parts of the public infrastructure are down.
   const relays = window.CARDTABLE_RELAYS;
-  room = joinRoom({ appId: 'gk-cardtable', password, ...(relays ? { relayConfig: { urls: relays } } : {}) }, roomId);
+  room = joinRoom({ appId: 'gk-cardtable', password, relayConfig: relays ? { urls: relays } : { redundancy: 10 } }, roomId);
   const actA = room.makeAction('act');
   const stateA = room.makeAction('state');
   const decksA = room.makeAction('decks');
@@ -415,9 +419,9 @@ function connect() {
   // Belt and braces: until the first state arrives, keep knocking — covers a
   // hello lost in the initial connection churn (the host drops actions from
   // peers it has never registered, so a lost hello used to mean a dead guest).
-  const helloRetry = setInterval(() => {
+  helloTimer = setInterval(() => {
     if (role === 'guest' && view.seq === 0) act({ t: 'hello' });
-    else if (role !== 'guest' || view.seq > 0) clearInterval(helloRetry);
+    else clearInterval(helloTimer);
   }, 3000);
   room.onPeerLeave = (peer) => {
     updateNet();
@@ -431,19 +435,54 @@ function connect() {
       refreshView(); renderAll(); scheduleBroadcast(); persist();
     }
   };
-  window.addEventListener('pagehide', () => { try { room.leave(); } catch (e) { console.error(e); } });
+}
+window.addEventListener('pagehide', () => { try { room?.leave(); } catch (e) { console.error(e); } });
+
+/** Open WebSockets to signaling relays right now. 0 = we're invisible. */
+function openRelays() {
+  try {
+    return Object.values(getRelaySockets()).filter((s) => s?.readyState === 1).length;
+  } catch (err) { console.error('relay status unavailable', err); return 0; }
 }
 
 function updateNet() {
   const n = room ? Object.keys(room.getPeers()).length : 0;
+  const r = openRelays();
   netEl.classList.toggle('on', n > 0);
-  netEl.textContent = n > 0 ? `● ${n + 1}` : '●';
-  netEl.title = n > 0 ? `${n + 1} players connected` : 'Waiting for peers…';
+  netEl.classList.toggle('dead', r === 0);
+  netEl.textContent = n > 0 ? `● ${n + 1}` : r > 0 ? '● …' : '● ✕';
+  netEl.title = `${n + 1} player${n ? 's' : ''} here · ${r} signaling relays connected${r ? '' : ' — searching for relays'}`;
   if (role === 'guest') {
     hintEl.classList.toggle('hidden', view.seq > 0);
     hintEl.textContent = 'Waiting for the host…\n(the table lives in the host\'s open tab)';
   }
 }
+
+// --- signaling watchdog ----------------------------------------------------
+// Public Nostr relays are best-effort. If signaling dies (no open relay
+// sockets) or a guest can't find the host, recover by RELOADING the page with
+// backoff. (Rejoining in place — room.leave() + joinRoom — proved unreliable:
+// tearing down a room over dead sockets can leave trystero half-subscribed
+// and undiscoverable. A reload is the reset that provably works: the host
+// resumes from its save, a guest re-enters with identity and hand intact.)
+// The backoff lives in sessionStorage precisely so it survives those reloads.
+const bootAt = Date.now();
+setInterval(() => {
+  if (!room) return;
+  updateNet(); // keep the relay indicator fresh even when nothing happens
+  const n = Object.keys(room.getPeers()).length;
+  const starving = n === 0 && (openRelays() === 0 || (role === 'guest' && view.seq === 0));
+  try {
+    if (!starving) { sessionStorage.removeItem('ct-rejoin'); return; }
+    const st = JSON.parse(sessionStorage.getItem('ct-rejoin') || '{}');
+    const backoff = clamp(st.backoff || 20000, 20000, 120000);
+    if (Date.now() - (st.at || bootAt) < backoff) return;
+    sessionStorage.setItem('ct-rejoin', JSON.stringify({ backoff: Math.min(backoff * 2, 120000), at: Date.now() }));
+    console.warn(`reconnecting via reload: ${openRelays() === 0 ? 'no relays reachable' : 'no host found yet'}`);
+    toast('Connection is struggling — reconnecting…');
+    setTimeout(() => location.reload(), 600); // let the toast paint first
+  } catch (err) { console.error('watchdog failed', err); }
+}, 5000);
 
 // --- host persistence -----------------------------------------------------
 let persistT = 0, lastSave = 0, persistWarned = false;

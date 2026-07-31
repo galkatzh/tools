@@ -47,6 +47,15 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   Every guest action carries that id + nickname, and the host registers the
   sender on *any* action — so a lost join handshake can't permanently mute a
   guest (guests also retry the hello every 3s until the first state arrives).
+- **Signaling health**: public Nostr relays are best-effort, so the status
+  dot shows the truth — green with a player count when peers are connected,
+  `● …` while searching, red `● ✕` when zero relays are reachable. A watchdog
+  recovers from dead signaling (or a guest that can't find its host) by
+  auto-reloading with backoff (20s doubling to 2 min, persisted in
+  sessionStorage) — a reload is the reset that provably clears wedged relay
+  subscriptions, and it's safe here because the host resumes from its save
+  and guests re-enter with identity and hand intact. Relay redundancy is
+  raised to 10 (default 5) so two peers are more likely to share a live one.
 - **Log**: the host authors log entries while adjudicating actions (it's the
   only peer that can name cards trustworthily), keeps the last 200 in state,
   and pushes them on a dedicated channel only when the log changes; repeated
