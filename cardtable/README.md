@@ -9,6 +9,16 @@ Open the page → pick a nickname → you're hosting a room → **Copy invite** 
 friends open the link, pick their nickname, and everyone plays on the same
 live table.
 
+The table is **round** and everyone gets a **seat** on the rim (host-assigned
+into the largest empty arc, so two players sit opposite, a third between
+them, …). Seat labels show every player's name and hand count at their spot,
+and each player's view auto-rotates so their own seat is at the bottom —
+opponents genuinely face each other. Drag empty felt to spin your view to any
+angle (a lazy susan, local to you); 🧭 snaps back to your seat. Cards you
+play or deal land facing you, so your tableau reads upright to you and
+upside-down to the player across, like a physical table. A circle makes all
+of this work: rotation never changes how the table fits the screen.
+
 A **table log** panel records every action for all to see — who drew, dealt,
 played, flipped, shuffled, took a card into their hand — plus a chat box.
 Hidden information stays hidden in the log ("drew a card", "played a card
@@ -57,8 +67,8 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
 - Hands are genuinely private (never sent to other peers), but face-**down
   table cards** are identified in the broadcast state — a devtools-level
   cheat. Fine for friendly play (§3.3: "no secrets" tier).
-- No pan/zoom; the fixed 16:10 table simply scales to fit, so portrait phones
-  get a small table.
+- No pan/zoom; the fixed round table simply scales to fit the smaller screen
+  dimension, so phones get a small table.
 
 ## Testing
 

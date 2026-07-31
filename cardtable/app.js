@@ -13,11 +13,25 @@ import { joinRoom, selfId } from 'https://cdn.jsdelivr.net/npm/trystero@0.25.3/n
 
 const $ = (id) => document.getElementById(id);
 const tableEl = $('table'), wrapEl = $('table-wrap'), handEl = $('hand'), barEl = $('action-bar');
-const hintEl = $('table-hint'), toastEl = $('toast'), netEl = $('net-status'), playersEl = $('players');
+const hintEl = $('table-hint'), toastEl = $('toast'), netEl = $('net-status');
 const sideEl = $('side'), logEl = $('log');
 
-const TABLE_W = 1600, TABLE_H = 1000, CARD_W = 100, CARD_H = 140;
+// The table is a circle: a square logical space with a round felt. A circle is
+// rotation-invariant, which is what makes per-player arbitrary view rotation
+// (and seats anywhere on the rim) work without letterboxing.
+const TABLE_W = 1300, TABLE_H = 1300, CARD_W = 100, CARD_H = 140;
+const PLAY_R = 540; // max distance of a card's center from the table center
+const SEAT_R = 600; // radius where the seat name labels sit
 const COLORS = ['#30bced', '#6eeb83', '#ffbc42', '#ecd444', '#ee6352', '#9ac2c9', '#8acb88', '#1be7ff'];
+
+/** Radially clamps an item's top-left position so the card stays on the felt. */
+function clampToFelt(x, y) {
+  const cx = x + CARD_W / 2 - TABLE_W / 2, cy = y + CARD_H / 2 - TABLE_H / 2;
+  const d = Math.hypot(cx, cy);
+  if (d <= PLAY_R) return { x, y };
+  const f = PLAY_R / d;
+  return { x: TABLE_W / 2 + cx * f - CARD_W / 2, y: TABLE_H / 2 + cy * f - CARD_H / 2 };
+}
 
 // --- loud error reporting -------------------------------------------------
 let toastT = 0;
@@ -69,10 +83,27 @@ function standardDeck(jokers) {
 }
 
 const zTop = () => 1 + Object.values(host.items).reduce((m, it) => Math.max(m, it.z), 0);
+
+/** Picks a seat angle for a new player: bottom first, then always the middle
+ *  of the largest empty arc — 2 players sit opposite, a 3rd between them, etc.
+ *  (Angles are table-space degrees; 90° = the table's "south" rim.) */
+function assignSeat() {
+  const seats = Object.values(host.players).map((pl) => pl.seat).filter((s) => s != null).sort((a, b) => a - b);
+  if (!seats.length) return 90;
+  if (seats.length === 1) return (seats[0] + 180) % 360;
+  let best = 0, bestGap = -1;
+  for (let i = 0; i < seats.length; i++) {
+    const a = seats[i], b = i + 1 < seats.length ? seats[i + 1] : seats[0] + 360;
+    if (b - a > bestGap) { bestGap = b - a; best = (a + (b - a) / 2) % 360; }
+  }
+  return best;
+}
+
 function ensurePlayer(p, name) {
   const pl = host.players[p] || (host.players[p] = {
     name: '', color: COLORS[Object.keys(host.players).length % COLORS.length], online: true, hand: [],
   });
+  pl.seat ??= assignSeat();
   pl.online = true;
   // Only fill an empty name here — explicit renames go through the 'name'
   // action so they land in the log.
@@ -142,8 +173,7 @@ function apply(p, a) {
     }
     case 'move':
       if (it) {
-        it.x = clamp(a.x, -CARD_W / 2, TABLE_W - CARD_W / 2);
-        it.y = clamp(a.y, -CARD_H / 2, TABLE_H - CARD_H / 2);
+        ({ x: it.x, y: it.y } = clampToFelt(a.x, a.y));
         it.z = zTop();
         logEvent(p, `moved ${itemLabel(it)}`);
         mark(p, a.id);
@@ -186,8 +216,8 @@ function apply(p, a) {
     case 'deal': {
       const c = it?.k === 'p' && it.cards.pop();
       if (c) {
-        const nid = uid();
-        items[nid] = { k: 'c', x: a.x, y: a.y, rot: ((a.rot || 0) % 360 + 360) % 360, z: zTop(), d: c.d, i: c.i, up: a.up };
+        const nid = uid(), at = clampToFelt(a.x, a.y);
+        items[nid] = { k: 'c', x: at.x, y: at.y, rot: ((a.rot || 0) % 360 + 360) % 360, z: zTop(), d: c.d, i: c.i, up: a.up };
         logEvent(p, `dealt ${a.up ? cardName(c.d, c.i) : 'a card face down'} from ${itemLabel(it)}`);
         mark(p, nid);
         dropIfEmpty(a.id);
@@ -198,8 +228,8 @@ function apply(p, a) {
       const idx = pl && handIdx(pl, a);
       if (pl && idx >= 0) {
         const c = pl.hand.splice(idx, 1)[0];
-        const nid = uid();
-        items[nid] = { k: 'c', x: a.x, y: a.y, rot: ((a.rot || 0) % 360 + 360) % 360, z: zTop(), d: c.d, i: c.i, up: a.up };
+        const nid = uid(), at = clampToFelt(a.x, a.y);
+        items[nid] = { k: 'c', x: at.x, y: at.y, rot: ((a.rot || 0) % 360 + 360) % 360, z: zTop(), d: c.d, i: c.i, up: a.up };
         logEvent(p, `played ${a.up ? cardName(c.d, c.i) : 'a card face down'} from hand`);
         mark(p, nid);
       }
@@ -296,7 +326,7 @@ let fxQueue = []; // action markers accumulated since the last broadcast
 
 function publicPlayers() {
   return Object.fromEntries(Object.entries(host.players).map(([p, pl]) => [
-    p, { name: pl.name, color: pl.color, online: pl.online, handCount: pl.hand.length },
+    p, { name: pl.name, color: pl.color, online: pl.online, handCount: pl.hand.length, seat: pl.seat },
   ]));
 }
 
@@ -496,14 +526,25 @@ function renderItems() {
   else if (sel) placeBar();
 }
 
-let playersSig = '';
+// Seat labels: everyone sees the same seating, each from their own rotation.
+let seatSig = '';
 function renderPlayers() {
-  const sig = JSON.stringify(view.players);
-  if (sig === playersSig) return;
-  playersSig = sig;
-  playersEl.innerHTML = Object.entries(view.players).map(([p, pl]) =>
-    `<span class="chip ${pl.online ? '' : 'offline'}" style="--pc:${pl.color}">${esc(pl.name || p)} 🂠${pl.handCount}</span>`
-  ).join('');
+  const sig = JSON.stringify(view.players) + '|' + viewAngle.toFixed(1) + '|' + wrapEl.clientWidth;
+  if (sig === seatSig) return;
+  seatSig = sig;
+  for (const el of wrapEl.querySelectorAll('.seat')) el.remove();
+  for (const [p, pl] of Object.entries(view.players)) {
+    if (pl.seat == null) continue;
+    const rad = (pl.seat * Math.PI) / 180;
+    const [sx, sy] = tableToScreen(TABLE_W / 2 + SEAT_R * Math.cos(rad), TABLE_H / 2 + SEAT_R * Math.sin(rad));
+    const el = document.createElement('div');
+    el.className = `seat${pl.online ? '' : ' offline'}${p === pid ? ' me' : ''}`;
+    el.style.borderColor = pl.color;
+    el.style.left = `${sx}px`;
+    el.style.top = `${sy}px`;
+    el.textContent = `${pl.name || 'Player'} 🂠${pl.handCount}`;
+    wrapEl.appendChild(el);
+  }
 }
 
 let handSig = '';
@@ -540,6 +581,7 @@ function renderLog() {
 }
 
 function renderAll() {
+  applySeatView();
   renderItems();
   renderPlayers();
   renderHand();
@@ -548,33 +590,36 @@ function renderAll() {
 }
 
 // --- viewport: fit + per-player view rotation ------------------------------
-// Each player can rotate their OWN view of the table in 90° steps (to sit
-// "across" from an opponent). Purely a local projection — the shared state
-// stays in one logical coordinate space; only this client's screen<->table
-// mapping composes in the rotation.
-let viewAngle = parseInt(localStorage.getItem('ct-view'), 10) || 0;
+// Each player has their OWN view angle of the round table. By default it
+// auto-rotates so their assigned seat is at the bottom; dragging empty felt
+// spins the table freely (like turning a lazy susan), and 🧭 snaps back to
+// the seat. Purely a local projection — the shared state stays in one logical
+// coordinate space; only this client's screen<->table mapping rotates.
+let viewAngle = 0;
+let manualView = false; // true after a felt-drag, until 🧭 resets to the seat
 
-/** Rotates a vector by the view angle (multiples of 90° only). */
+/** Rotates a vector by `a` degrees (screen coords, clockwise-positive). */
 function rotv(x, y, a) {
-  return a === 90 ? [-y, x] : a === 180 ? [-x, -y] : a === 270 ? [y, -x] : [x, y];
+  const r = (a * Math.PI) / 180, c = Math.cos(r), s = Math.sin(r);
+  return [x * c - y * s, x * s + y * c];
 }
 
 function layout() {
   const w = wrapEl.clientWidth, h = wrapEl.clientHeight;
-  const sideways = viewAngle % 180 !== 0;
-  scale = sideways ? Math.min(w / TABLE_H, h / TABLE_W) : Math.min(w / TABLE_W, h / TABLE_H);
+  scale = Math.min(w / TABLE_W, h / TABLE_H); // circle: rotation never changes the fit
   // Center the unscaled table on the wrap; rotate+scale about its center.
   tableEl.style.left = `${(w - TABLE_W) / 2}px`;
   tableEl.style.top = `${(h - TABLE_H) / 2}px`;
   tableEl.style.transform = `rotate(${viewAngle}deg) scale(${scale})`;
   hintEl.style.transform = `rotate(${-viewAngle}deg)`; // keep the hint readable
   if (sel) placeBar();
+  renderPlayers(); // seat labels live in screen space and track the rotation
 }
 new ResizeObserver(layout).observe(wrapEl);
 
 function toTable(e) {
   const r = wrapEl.getBoundingClientRect();
-  const [ux, uy] = rotv(e.clientX - r.left - r.width / 2, e.clientY - r.top - r.height / 2, (360 - viewAngle) % 360);
+  const [ux, uy] = rotv(e.clientX - r.left - r.width / 2, e.clientY - r.top - r.height / 2, -viewAngle);
   return { x: TABLE_W / 2 + ux / scale, y: TABLE_H / 2 + uy / scale };
 }
 
@@ -585,7 +630,16 @@ function tableToScreen(x, y) {
 }
 
 /** Item rotation that appears upright on THIS player's rotated screen. */
-const uprightRot = () => (360 - viewAngle) % 360;
+const uprightRot = () => ((-viewAngle % 360) + 360) % 360;
+
+/** Rotates the view so the player's own seat is at the bottom of the screen. */
+function applySeatView() {
+  if (manualView) return;
+  const s = view.players[pid]?.seat;
+  if (s == null) return;
+  const want = (((90 - s) % 360) + 360) % 360;
+  if (Math.abs(want - viewAngle) > 0.5) { viewAngle = want; layout(); }
+}
 
 // --- selection & action bar ----------------------------------------------
 function select(id) {
@@ -678,11 +732,22 @@ function showPeek(d, i) {
 }
 peekEl.addEventListener('click', () => peekEl.classList.add('hidden'));
 
-// --- dragging table items -------------------------------------------------
+// --- dragging table items / spinning the view ------------------------------
+let feltDrag = null; // dragging empty felt = rotating MY view (lazy susan)
+
+/** Pointer angle (deg) around the wrap center, for felt-spin. */
+function ptrAngle(e) {
+  const r = wrapEl.getBoundingClientRect();
+  return (Math.atan2(e.clientY - r.top - r.height / 2, e.clientX - r.left - r.width / 2) * 180) / Math.PI;
+}
+
 tableEl.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || e.target.closest('#action-bar')) return;
   const el = e.target.closest('.item');
-  if (!el) { select(null); return; }
+  if (!el) {
+    feltDrag = { startView: viewAngle, startPtr: ptrAngle(e), turned: false };
+    return;
+  }
   const it = view.items[el.dataset.id];
   if (!it) return;
   e.preventDefault();
@@ -692,6 +757,17 @@ tableEl.addEventListener('pointerdown', (e) => {
 
 window.addEventListener('pointermove', (e) => {
   if (handDrag) { moveGhost(e); return; }
+  if (feltDrag) {
+    let delta = ptrAngle(e) - feltDrag.startPtr;
+    delta = ((delta + 540) % 360) - 180;
+    if (Math.abs(delta) > 3) feltDrag.turned = true;
+    if (feltDrag.turned) {
+      manualView = true;
+      viewAngle = (((feltDrag.startView + delta) % 360) + 360) % 360;
+      layout();
+    }
+    return;
+  }
   if (!drag) return;
   const p = toTable(e);
   const it = view.items[drag.id];
@@ -703,8 +779,7 @@ window.addEventListener('pointermove', (e) => {
     drag.el.style.zIndex = 100000; // visually on top; the host assigns the real z on move
     select(null);
   }
-  it.x = clamp(p.x - drag.dx, -CARD_W / 2, TABLE_W - CARD_W / 2);
-  it.y = clamp(p.y - drag.dy, -CARD_H / 2, TABLE_H - CARD_H / 2);
+  ({ x: it.x, y: it.y } = clampToFelt(p.x - drag.dx, p.y - drag.dy));
   drag.el.style.left = `${it.x}px`;
   drag.el.style.top = `${it.y}px`;
   // Throttled live position for the other players; the final one is sent on drop.
@@ -716,6 +791,12 @@ window.addEventListener('pointermove', (e) => {
 
 window.addEventListener('pointerup', (e) => {
   if (handDrag) { dropGhost(e); return; }
+  if (feltDrag) {
+    const spun = feltDrag.turned;
+    feltDrag = null;
+    if (!spun) select(null); // a plain click on empty felt just deselects
+    return;
+  }
   if (!drag) return;
   const d = drag;
   drag = null;
@@ -815,9 +896,8 @@ $('invite-btn').addEventListener('click', async () => {
 $('help-btn').addEventListener('click', () => $('help-dialog').showModal());
 $('add-deck-btn').addEventListener('click', () => $('deck-dialog').showModal());
 $('view-btn').addEventListener('click', () => {
-  viewAngle = (viewAngle + 90) % 360;
-  localStorage.setItem('ct-view', viewAngle);
-  layout();
+  manualView = false;
+  applySeatView(); // back to "my seat at the bottom"
 });
 $('log-btn').addEventListener('click', () => {
   sideEl.classList.toggle('hidden');
@@ -880,6 +960,10 @@ function becomeHost(saved) {
     host = saved.state;
     host.log ||= []; // saves from before the log existed
     for (const pl of Object.values(host.players)) pl.online = false;
+    // Migrate older saves: seats didn't exist, and the table used to be a
+    // larger rectangle — pull stranded items back onto the round felt.
+    for (const pl of Object.values(host.players)) pl.seat ??= assignSeat();
+    for (const it of Object.values(host.items)) ({ x: it.x, y: it.y } = clampToFelt(it.x, it.y));
     ensurePlayer(pid, myName);
     logEvent(pid, 'resumed the table');
     host.seq++;
