@@ -19,10 +19,23 @@ const sideEl = $('side'), logEl = $('log');
 // The table is a circle: a square logical space with a round felt. A circle is
 // rotation-invariant, which is what makes per-player arbitrary view rotation
 // (and seats anywhere on the rim) work without letterboxing.
-const TABLE_W = 1300, TABLE_H = 1300, CARD_W = 100, CARD_H = 140;
-const PLAY_R = 540; // max distance of a card's center from the table center
-const SEAT_R = 600; // radius where the seat name labels sit
+// Its diameter is part of the shared game state — the host can grow the table
+// for bigger groups — so these are variables kept in sync via setTableSize().
+let TABLE_W = 1300, TABLE_H = 1300;
+let PLAY_R = 540; // max distance of a card's center from the table center
+let SEAT_R = 600; // radius where the seat name labels sit
+const CARD_W = 100, CARD_H = 140;
+const TABLE_SIZES = { 1300: 'small', 1800: 'medium', 2400: 'large' };
 const COLORS = ['#30bced', '#6eeb83', '#ffbc42', '#ecd444', '#ee6352', '#9ac2c9', '#8acb88', '#1be7ff'];
+
+function setTableSize(size) {
+  TABLE_W = TABLE_H = size;
+  PLAY_R = size / 2 - 110;
+  SEAT_R = size / 2 - 50;
+  tableEl.style.width = `${size}px`;
+  tableEl.style.height = `${size}px`;
+  layout();
+}
 
 /** Radially clamps an item's top-left position so the card stays on the felt. */
 function clampToFelt(x, y) {
@@ -302,6 +315,21 @@ function apply(p, a) {
       if (it?.k === 'c' && !it.up) { logEvent(p, 'peeked at a face-down card'); mark(p, a.id); }
       else if (it?.k === 'p' && it.cards.length) { logEvent(p, `peeked at the top card of ${itemLabel(it)}`); mark(p, a.id); }
       break;
+    case 'size': {
+      // Host-only: the size selector is only shown to the host, and the host
+      // applies its own actions, so p must be the host's own player id.
+      const size = TABLE_SIZES[a.size] && a.size;
+      if (p === pid && size && size !== TABLE_W) {
+        const shift = (size - TABLE_W) / 2; // items stay centered on the felt
+        host.size = size;
+        setTableSize(size);
+        for (const o of Object.values(items)) {
+          ({ x: o.x, y: o.y } = clampToFelt(o.x + shift, o.y + shift));
+        }
+        logEvent(p, `set the table size to ${TABLE_SIZES[size]}`);
+      }
+      break;
+    }
     case 'chat': if (pl && a.msg) logEvent(p, String(a.msg).slice(0, 300), true); break;
     default: console.warn('unknown action', a);
   }
@@ -356,7 +384,7 @@ function broadcast() {
     sendDecks(delta).catch((e) => console.error('decks send failed', e));
   }
   if (logDirty) { logDirty = false; sendLog(host.log).catch((e) => console.error('log send failed', e)); }
-  const pub = { seq: host.seq, items: host.items, players: publicPlayers(), fx: fxQueue };
+  const pub = { seq: host.seq, size: host.size, items: host.items, players: publicPlayers(), fx: fxQueue };
   fxQueue = [];
   for (const peer of Object.keys(room.getPeers())) {
     sendState({ ...pub, hand: host.players[peerPid[peer]]?.hand || [] }, peer)
@@ -373,10 +401,12 @@ function handleState(s, peer) {
       toast('Another host is active — joined as guest');
       role = 'guest';
       host = null;
+      $('size-sel').classList.add('hidden');
     } else { scheduleBroadcast(); return; }
   }
   if (s.seq < view.seq) return; // stale reordering
   hostPeer = peer;
+  if (s.size && s.size !== TABLE_W) setTableSize(s.size);
   view = { seq: s.seq, items: s.items, players: s.players };
   myHand = s.hand || [];
   for (const f of s.fx || []) if (f.p !== pid) showFx(f);
@@ -580,7 +610,7 @@ function renderItems() {
 // Seat labels: everyone sees the same seating, each from their own rotation.
 let seatSig = '';
 function renderPlayers() {
-  const sig = JSON.stringify(view.players) + '|' + viewAngle.toFixed(1) + '|' + wrapEl.clientWidth;
+  const sig = `${JSON.stringify(view.players)}|${viewAngle.toFixed(1)}|${scale.toFixed(4)}|${panX | 0},${panY | 0}|${wrapEl.clientWidth}`;
   if (sig === seatSig) return;
   seatSig = sig;
   for (const el of wrapEl.querySelectorAll('.seat')) el.remove();
@@ -640,14 +670,15 @@ function renderAll() {
   updateNet();
 }
 
-// --- viewport: fit + per-player view rotation ------------------------------
-// Each player has their OWN view angle of the round table. By default it
-// auto-rotates so their assigned seat is at the bottom; dragging empty felt
-// spins the table freely (like turning a lazy susan), and 🧭 snaps back to
-// the seat. Purely a local projection — the shared state stays in one logical
-// coordinate space; only this client's screen<->table mapping rotates.
+// --- viewport: fit + per-player view (rotate / zoom / pan) ------------------
+// Each player has their OWN view of the round table: a rotation (auto-set so
+// their seat is at the bottom), a zoom factor and a pan offset. Desktop:
+// wheel zooms about the cursor, dragging empty felt pans. Touch: two fingers
+// pinch-zoom, twist-rotate and pan in one gesture. 🧭 resets everything to
+// the seat view. All purely local projection — shared state never rotates.
 let viewAngle = 0;
-let manualView = false; // true after a felt-drag, until 🧭 resets to the seat
+let manualView = false; // true after a manual rotation, until 🧭 resets it
+let zoomZ = 1, panX = 0, panY = 0;
 
 /** Rotates a vector by `a` degrees (screen coords, clockwise-positive). */
 function rotv(x, y, a) {
@@ -657,28 +688,49 @@ function rotv(x, y, a) {
 
 function layout() {
   const w = wrapEl.clientWidth, h = wrapEl.clientHeight;
-  scale = Math.min(w / TABLE_W, h / TABLE_H); // circle: rotation never changes the fit
-  // Center the unscaled table on the wrap; rotate+scale about its center.
+  scale = Math.min(w / TABLE_W, h / TABLE_H) * zoomZ; // fit × user zoom
+  const lim = (TABLE_W * scale) / 2; // keep at least the table's center reachable
+  panX = clamp(panX, -lim, lim);
+  panY = clamp(panY, -lim, lim);
+  // Center the unscaled table on the wrap; then scale, rotate, and pan.
   tableEl.style.left = `${(w - TABLE_W) / 2}px`;
   tableEl.style.top = `${(h - TABLE_H) / 2}px`;
-  tableEl.style.transform = `rotate(${viewAngle}deg) scale(${scale})`;
+  tableEl.style.transform = `translate(${panX}px, ${panY}px) rotate(${viewAngle}deg) scale(${scale})`;
   hintEl.style.transform = `rotate(${-viewAngle}deg)`; // keep the hint readable
   if (sel) placeBar();
-  renderPlayers(); // seat labels live in screen space and track the rotation
+  renderPlayers(); // seat labels live in screen space and track the view
 }
 new ResizeObserver(layout).observe(wrapEl);
 
 function toTable(e) {
   const r = wrapEl.getBoundingClientRect();
-  const [ux, uy] = rotv(e.clientX - r.left - r.width / 2, e.clientY - r.top - r.height / 2, -viewAngle);
+  const [ux, uy] = rotv(e.clientX - r.left - r.width / 2 - panX, e.clientY - r.top - r.height / 2 - panY, -viewAngle);
   return { x: TABLE_W / 2 + ux / scale, y: TABLE_H / 2 + uy / scale };
 }
 
-/** Table coords -> wrap-relative screen px, honoring the view rotation. */
+/** Table coords -> wrap-relative screen px, honoring the view transform. */
 function tableToScreen(x, y) {
   const [rx, ry] = rotv((x - TABLE_W / 2) * scale, (y - TABLE_H / 2) * scale, viewAngle);
-  return [wrapEl.clientWidth / 2 + rx, wrapEl.clientHeight / 2 + ry];
+  return [wrapEl.clientWidth / 2 + panX + rx, wrapEl.clientHeight / 2 + panY + ry];
 }
+
+/** Re-anchors the view so table point `t` sits at client position (cx, cy). */
+function anchorView(t, cx, cy) {
+  const r = wrapEl.getBoundingClientRect();
+  const [sx, sy] = tableToScreen(t.x, t.y);
+  panX += cx - r.left - sx;
+  panY += cy - r.top - sy;
+  layout();
+}
+
+// Wheel: zoom about the cursor so the point under it stays put.
+wrapEl.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const before = toTable(e);
+  zoomZ = clamp(zoomZ * Math.exp(-e.deltaY * 0.0015), 0.5, 4);
+  layout();
+  anchorView(before, e.clientX, e.clientY);
+}, { passive: false });
 
 /** Item rotation that appears upright on THIS player's rotated screen. */
 const uprightRot = () => ((-viewAngle % 360) + 360) % 360;
@@ -789,20 +841,54 @@ function showZoom(d, i, caption) {
 }
 peekEl.addEventListener('click', () => peekEl.classList.add('hidden'));
 
-// --- dragging table items / spinning the view ------------------------------
-let feltDrag = null; // dragging empty felt = rotating MY view (lazy susan)
+// --- dragging table items / pan / pinch -------------------------------------
+let feltDrag = null; // dragging empty felt = panning MY view
+let pinch = null;    // two-finger gesture: zoom + rotate + pan in one
+const tPtrs = new Map(); // pointers currently down on the table
 
-/** Pointer angle (deg) around the wrap center, for felt-spin. */
-function ptrAngle(e) {
-  const r = wrapEl.getBoundingClientRect();
-  return (Math.atan2(e.clientY - r.top - r.height / 2, e.clientX - r.left - r.width / 2) * 180) / Math.PI;
+/** Ends an in-flight item drag cleanly (used when a pinch takes over). */
+function cancelItemDrag() {
+  if (!drag) return;
+  const it = view.items[drag.id];
+  drag.el.classList.remove('dragging');
+  if (drag.moved && it) act({ t: 'move', id: drag.id, x: it.x, y: it.y });
+  drag = null;
+}
+
+function startPinch() {
+  cancelItemDrag();
+  feltDrag = null;
+  const [p1, p2] = [...tPtrs.values()];
+  const m = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+  pinch = {
+    z0: zoomZ,
+    a0: viewAngle,
+    d0: Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1,
+    ang0: (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI,
+    t0: toTable({ clientX: m.x, clientY: m.y }), // table point pinned under the fingers
+  };
+}
+
+function updatePinch() {
+  const [p1, p2] = [...tPtrs.values()];
+  const m = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+  const d = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+  const ang = (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI;
+  zoomZ = clamp(pinch.z0 * (d / pinch.d0), 0.5, 4);
+  viewAngle = (((pinch.a0 + ang - pinch.ang0) % 360) + 360) % 360;
+  manualView = true;
+  layout();
+  anchorView(pinch.t0, m.x, m.y); // the felt tracks the fingers
 }
 
 tableEl.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || e.target.closest('#action-bar')) return;
+  tPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (tPtrs.size === 2) { e.preventDefault(); startPinch(); return; }
+  if (tPtrs.size > 2 || pinch) return;
   const el = e.target.closest('.item');
   if (!el) {
-    feltDrag = { startView: viewAngle, startPtr: ptrAngle(e), turned: false };
+    feltDrag = { sx: e.clientX, sy: e.clientY, px: panX, py: panY, moved: false };
     return;
   }
   const it = view.items[el.dataset.id];
@@ -813,6 +899,8 @@ tableEl.addEventListener('pointerdown', (e) => {
 });
 
 window.addEventListener('pointermove', (e) => {
+  if (tPtrs.has(e.pointerId)) tPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinch) { if (tPtrs.size >= 2) updatePinch(); return; }
   if (handResize) {
     handH = clamp(handResize.h + (handResize.y - e.clientY), 80, 340);
     document.documentElement.style.setProperty('--hch', `${handH}px`);
@@ -820,14 +908,11 @@ window.addEventListener('pointermove', (e) => {
   }
   if (handDrag) { moveGhost(e); return; }
   if (feltDrag) {
-    let delta = ptrAngle(e) - feltDrag.startPtr;
-    delta = ((delta + 540) % 360) - 180;
-    if (Math.abs(delta) > 3) feltDrag.turned = true;
-    if (feltDrag.turned) {
-      manualView = true;
-      viewAngle = (((feltDrag.startView + delta) % 360) + 360) % 360;
-      layout();
-    }
+    if (!feltDrag.moved && Math.hypot(e.clientX - feltDrag.sx, e.clientY - feltDrag.sy) < 5) return;
+    feltDrag.moved = true;
+    panX = feltDrag.px + (e.clientX - feltDrag.sx);
+    panY = feltDrag.py + (e.clientY - feltDrag.sy);
+    layout();
     return;
   }
   if (!drag) return;
@@ -851,7 +936,22 @@ window.addEventListener('pointermove', (e) => {
   }
 });
 
+window.addEventListener('pointercancel', (e) => {
+  tPtrs.delete(e.pointerId);
+  if (tPtrs.size < 2) pinch = null;
+  handResize = null;
+  feltDrag = null;
+  if (handDrag?.moved) { ghost?.remove(); ghost = null; }
+  handDrag = null;
+  cancelItemDrag();
+});
+
 window.addEventListener('pointerup', (e) => {
+  tPtrs.delete(e.pointerId);
+  if (pinch) {
+    if (tPtrs.size < 2) pinch = null; // gesture ends; a leftover finger is inert
+    return;
+  }
   if (handResize) {
     handResize = null;
     localStorage.setItem('ct-handh', handH);
@@ -859,9 +959,9 @@ window.addEventListener('pointerup', (e) => {
   }
   if (handDrag) { dropGhost(e); return; }
   if (feltDrag) {
-    const spun = feltDrag.turned;
+    const panned = feltDrag.moved;
     feltDrag = null;
-    if (!spun) select(null); // a plain click on empty felt just deselects
+    if (!panned) select(null); // a plain click on empty felt just deselects
     return;
   }
   if (!drag) return;
@@ -989,9 +1089,15 @@ $('qr-btn').addEventListener('click', async () => {
 $('help-btn').addEventListener('click', () => $('help-dialog').showModal());
 $('add-deck-btn').addEventListener('click', () => $('deck-dialog').showModal());
 $('view-btn').addEventListener('click', () => {
+  // Full view reset: zoom, pan, and rotation back to "my seat at the bottom".
   manualView = false;
-  applySeatView(); // back to "my seat at the bottom"
+  zoomZ = 1;
+  panX = panY = 0;
+  applySeatView();
+  layout();
 });
+
+$('size-sel').addEventListener('change', () => act({ t: 'size', size: +$('size-sel').value }));
 $('log-btn').addEventListener('click', () => {
   sideEl.classList.toggle('hidden');
   if (!sideEl.classList.contains('hidden')) logEl.scrollTop = logEl.scrollHeight;
@@ -1048,10 +1154,14 @@ $('deck-form').addEventListener('submit', async (e) => {
 // --- boot -----------------------------------------------------------------
 function becomeHost(saved) {
   role = 'host';
+  $('size-sel').classList.remove('hidden'); // table size is the host's call
   if (saved) {
     decks = saved.decks;
     host = saved.state;
     host.log ||= []; // saves from before the log existed
+    host.size ||= 1300;
+    setTableSize(host.size);
+    $('size-sel').value = String(host.size);
     for (const pl of Object.values(host.players)) pl.online = false;
     // Migrate older saves: seats didn't exist, and the table used to be a
     // larger rectangle — pull stranded items back onto the round felt.
@@ -1061,7 +1171,7 @@ function becomeHost(saved) {
     logEvent(pid, 'resumed the table');
     host.seq++;
   } else {
-    host = { seq: 1, items: {}, players: {}, log: [] };
+    host = { seq: 1, size: TABLE_W, items: {}, players: {}, log: [] };
     ensurePlayer(pid, myName);
     const deck = standardDeck(false);
     const deckId = uid();

@@ -13,11 +13,15 @@ The table is **round** and everyone gets a **seat** on the rim (host-assigned
 into the largest empty arc, so two players sit opposite, a third between
 them, …). Seat labels show every player's name and hand count at their spot,
 and each player's view auto-rotates so their own seat is at the bottom —
-opponents genuinely face each other. Drag empty felt to spin your view to any
-angle (a lazy susan, local to you); 🧭 snaps back to your seat. Cards you
-play or deal land facing you, so your tableau reads upright to you and
-upside-down to the player across, like a physical table. A circle makes all
-of this work: rotation never changes how the table fits the screen.
+opponents genuinely face each other. Each player also has a private zoom and
+pan: scroll to zoom about the cursor, drag empty felt to pan, and on touch
+screens a two-finger pinch zooms, rotates and pans in one anchored gesture;
+🧭 resets everything back to the seat view. Cards you play or deal land
+facing you, so your tableau reads upright to you and upside-down to the
+player across, like a physical table. A circle makes all of this work:
+rotation never changes how the table fits the screen. The **host** can grow
+the table (small / medium / large — a shared, logged change that keeps items
+centered) when more players squeeze in.
 
 A **table log** panel records every action for all to see — who drew, dealt,
 played, flipped, shuffled, took a card into their hand — plus a chat box.
@@ -80,8 +84,8 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
 - Hands are genuinely private (never sent to other peers), but face-**down
   table cards** are identified in the broadcast state — a devtools-level
   cheat. Fine for friendly play (§3.3: "no secrets" tier).
-- No pan/zoom; the fixed round table simply scales to fit the smaller screen
-  dimension, so phones get a small table.
+- The table always starts fitted to the smaller screen dimension; zoom and
+  pan are per-player remedies, not persisted between reloads.
 
 ## Testing
 

@@ -17,6 +17,10 @@ input[type="text"], input:not([type]) {
   background: #0f172a; color: #e2e8f0; border: 1px solid #475569;
   border-radius: 8px; padding: 6px 8px; font-size: 14px;
 }
+select {
+  background: #334155; color: #e2e8f0; border: none; border-radius: 8px;
+  padding: 6px 8px; font-size: 14px; cursor: pointer;
+}
 
 /* --- toolbar --- */
 #toolbar {
@@ -50,6 +54,7 @@ input[type="text"], input:not([type]) {
 }
 #table {
   position: absolute; width: 1300px; height: 1300px; transform-origin: 50% 50%;
+  touch-action: none; /* two-finger gestures are ours, not the browser's */
   background: radial-gradient(circle at 50% 44%, #1d6b45 0%, #14532d 62%, #0d3b21 100%);
   border-radius: 50%; border: 16px solid #4a2e1b;
   box-shadow: inset 0 0 90px #0009, 0 0 40px #000a;
