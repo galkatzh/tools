@@ -699,7 +699,7 @@ function select(id) {
   if (!sel) { barEl.classList.add('hidden'); return; }
   const it = view.items[sel];
   barEl.innerHTML = it.k === 'c'
-    ? `<button data-cmd="flip">Flip</button>${it.up ? '' : '<button data-cmd="peek">Peek</button>'}<button data-cmd="rl">⟲90</button><button data-cmd="rr">⟳90</button><button data-cmd="hand">Hand</button><button data-cmd="del">🗑</button>`
+    ? `<button data-cmd="flip">Flip</button>${it.up ? '<button data-cmd="zoom">🔍</button>' : '<button data-cmd="peek">Peek</button>'}<button data-cmd="rl">⟲90</button><button data-cmd="rr">⟳90</button><button data-cmd="hand">Hand</button><button data-cmd="del">🗑</button>`
     : `<button data-cmd="draw">Draw</button><button data-cmd="peek">Peek</button><button data-cmd="dealup">Deal↑</button><button data-cmd="dealdn">Deal↓</button><button data-cmd="shuffle">Shuffle</button><button data-cmd="flip">Flip</button><button data-cmd="rr">⟳90</button><button data-cmd="del">🗑</button>`;
   barEl.classList.remove('hidden');
   placeBar();
@@ -769,16 +769,22 @@ barEl.addEventListener('click', (e) => {
       const c = it.k === 'c' ? it : it.cards.at(-1);
       if (!c) return;
       act({ t: 'peek', id: sel }); // announce it before enjoying it
-      showPeek(c.d, c.i);
+      showZoom(c.d, c.i, 'Only you can see this — everyone knows you peeked. Click to close.');
     },
+    zoom: () => showZoom(it.d, it.i), // face-up card: public info, silent
   };
   cmds[cmd]?.();
 });
 
-// --- private peek overlay --------------------------------------------------
+// --- card zoom overlay (also used by the loud peek) -------------------------
 const peekEl = $('peek');
-function showPeek(d, i) {
+function showZoom(d, i, caption) {
+  // Scale the card to comfortably fill the viewport — this is the readable
+  // view for decks with small text.
+  const f = Math.min((window.innerHeight * 0.72) / CARD_H, (window.innerWidth * 0.85) / CARD_W);
+  $('peek-inner').style.transform = `scale(${f})`;
   $('peek-inner').innerHTML = faceHTML(d, i);
+  $('peek-cap').textContent = caption || 'Click anywhere to close';
   peekEl.classList.remove('hidden');
 }
 peekEl.addEventListener('click', () => peekEl.classList.add('hidden'));
@@ -807,6 +813,11 @@ tableEl.addEventListener('pointerdown', (e) => {
 });
 
 window.addEventListener('pointermove', (e) => {
+  if (handResize) {
+    handH = clamp(handResize.h + (handResize.y - e.clientY), 80, 340);
+    document.documentElement.style.setProperty('--hch', `${handH}px`);
+    return;
+  }
   if (handDrag) { moveGhost(e); return; }
   if (feltDrag) {
     let delta = ptrAngle(e) - feltDrag.startPtr;
@@ -841,6 +852,11 @@ window.addEventListener('pointermove', (e) => {
 });
 
 window.addEventListener('pointerup', (e) => {
+  if (handResize) {
+    handResize = null;
+    localStorage.setItem('ct-handh', handH);
+    return;
+  }
   if (handDrag) { dropGhost(e); return; }
   if (feltDrag) {
     const spun = feltDrag.turned;
@@ -877,7 +893,7 @@ tableEl.addEventListener('dblclick', (e) => {
   act(it.k === 'c' ? { t: 'flip', id: el.dataset.id } : { t: 'draw', id: el.dataset.id });
 });
 
-// --- dragging out of the hand ---------------------------------------------
+// --- dragging out of the hand (a plain click zooms the card instead) -------
 let ghost = null;
 handEl.addEventListener('pointerdown', (e) => {
   const el = e.target.closest('.hcard');
@@ -885,23 +901,27 @@ handEl.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   const idx = +el.dataset.idx;
   if (!myHand[idx]) return;
-  handDrag = { idx, card: myHand[idx] };
-  ghost = document.createElement('div');
-  ghost.id = 'ghost';
-  ghost.innerHTML = facedown ? backHTML(handDrag.card.d) : faceHTML(handDrag.card.d, handDrag.card.i);
-  document.body.appendChild(ghost);
-  moveGhost(e);
+  handDrag = { idx, card: myHand[idx], sx: e.clientX, sy: e.clientY, moved: false };
 });
 
 function moveGhost(e) {
-  ghost.style.left = `${e.clientX - 43}px`;
-  ghost.style.top = `${e.clientY - 60}px`;
+  if (!handDrag.moved) {
+    if (Math.hypot(e.clientX - handDrag.sx, e.clientY - handDrag.sy) < 6) return;
+    handDrag.moved = true;
+    ghost = document.createElement('div');
+    ghost.id = 'ghost';
+    ghost.innerHTML = facedown ? backHTML(handDrag.card.d) : faceHTML(handDrag.card.d, handDrag.card.i);
+    document.body.appendChild(ghost);
+  }
+  ghost.style.left = `${e.clientX - handH * 5 / 14}px`; // center: half of hch*5/7 width
+  ghost.style.top = `${e.clientY - handH / 2}px`;
   $('hand-bar').classList.toggle('droppable', !!e.target.closest?.('#hand-bar'));
 }
 
 function dropGhost(e) {
-  const { idx, card } = handDrag;
+  const { idx, card, moved } = handDrag;
   handDrag = null;
+  if (!moved) { showZoom(card.d, card.i); return; } // click, not drag: enlarge
   ghost.remove();
   ghost = null;
   $('hand-bar').classList.remove('droppable');
@@ -919,6 +939,15 @@ function dropGhost(e) {
 $('facedown-toggle').addEventListener('click', () => {
   facedown = !facedown;
   $('facedown-toggle').classList.toggle('on', facedown);
+});
+
+// --- resizable hand tray ---------------------------------------------------
+let handH = clamp(parseInt(localStorage.getItem('ct-handh'), 10) || 120, 80, 340);
+let handResize = null;
+document.documentElement.style.setProperty('--hch', `${handH}px`);
+$('hand-resize').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  handResize = { y: e.clientY, h: handH };
 });
 
 // --- toolbar --------------------------------------------------------------

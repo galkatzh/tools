@@ -1,4 +1,4 @@
-:root { --cw: 100px; --ch: 140px; }
+:root { --cw: 100px; --ch: 140px; --hch: 120px; /* --hch: hand card height, user-resizable */ }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body {
@@ -118,30 +118,37 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 
 /* --- hand --- */
 #hand-bar {
-  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
-  background: #1e293b; min-height: 138px; z-index: 10;
+  position: relative; display: flex; align-items: center; gap: 8px; padding: 10px 10px 8px;
+  background: #1e293b; min-height: calc(var(--hch) + 20px); z-index: 10;
 }
 #hand-bar.droppable { background: #2d3f5a; }
+#hand-resize {
+  position: absolute; top: -7px; left: 0; right: 0; height: 14px;
+  cursor: ns-resize; touch-action: none; z-index: 11;
+}
+#hand-resize::after {
+  content: ""; position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
+  width: 64px; height: 4px; border-radius: 999px; background: #475569;
+}
+#hand-resize:hover::after { background: #94a3b8; }
 #facedown-toggle { font-size: 12px; line-height: 1.3; }
 #facedown-toggle.on { background: #b45309; }
 #hand { display: flex; gap: 8px; overflow-x: auto; flex: 1; padding: 4px 2px; }
+.hcard, #ghost { width: calc(var(--hch) * 5 / 7); height: var(--hch); border-radius: 7px; overflow: hidden; background: #fff; }
 .hcard {
-  position: relative; flex: 0 0 auto; width: 86px; height: 120px;
-  border-radius: 7px; overflow: hidden; background: #fff; box-shadow: 0 2px 5px #0007;
+  position: relative; flex: 0 0 auto; box-shadow: 0 2px 5px #0007;
   cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
 }
-.hcard .mid .mr, #ghost .mid .mr { font-size: 32px; }
-.hcard .mid .ms, #ghost .mid .ms { font-size: 20px; }
-.hcard .corner { font-size: 14px; }
+.hcard .mid .mr, #ghost .mid .mr { font-size: calc(var(--hch) * 0.27); }
+.hcard .mid .ms, #ghost .mid .ms { font-size: calc(var(--hch) * 0.17); }
+.hcard .corner, #ghost .corner { font-size: calc(var(--hch) * 0.12); }
 #hand:empty::after { content: "Your hand is empty"; color: #64748b; align-self: center; font-size: 14px; }
 
 /* ghost card that follows the pointer while dragging out of the hand */
 #ghost {
-  position: fixed; width: 86px; height: 120px; border-radius: 7px; overflow: hidden;
-  background: #fff; pointer-events: none; z-index: 999999; opacity: 0.92;
+  position: fixed; pointer-events: none; z-index: 999999; opacity: 0.92;
   box-shadow: 0 6px 16px #000a;
 }
-#ghost .corner { font-size: 14px; }
 
 /* --- dialogs & toast --- */
 dialog {
@@ -180,8 +187,7 @@ dialog ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 14px; }
   width: var(--cw); height: var(--ch); position: relative; transform: scale(2.3);
   border-radius: 8px; overflow: hidden; background: #fff; box-shadow: 0 4px 18px #000;
 }
-#peek::after {
-  content: "Only you can see this — everyone knows you peeked. Click to close.";
+#peek-cap {
   position: absolute; bottom: 8%; left: 0; right: 0; text-align: center;
   color: #cbd5e1; font-size: 14px; pointer-events: none;
 }
