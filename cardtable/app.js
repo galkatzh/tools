@@ -161,7 +161,7 @@ function apply(p, a) {
       break;
     case 'addDeck': {
       decks[a.deckId] = a.deck;
-      decksDirty = true;
+      dirtyDecks.add(a.deckId);
       const nid = uid();
       items[nid] = {
         k: 'p', x: a.x, y: a.y, rot: 0, z: zTop(), name: a.deck.name,
@@ -314,14 +314,19 @@ function apply(p, a) {
 
 /** Routes a local UI action: hosts apply directly, guests send to the room.
  *  Every guest action carries the sender's stable player id + name, so the
- *  host can (re)register a player even if the initial hello got lost. */
+ *  host can (re)register a player even if the initial hello got lost.
+ *  Actions go targeted to the host once we know who it is — only the host
+ *  adjudicates, so shipping them (incl. multi-MB addDeck payloads) to every
+ *  guest is pure waste. Until the first state reveals the host, broadcast. */
 function act(a) {
-  if (role === 'host') apply(pid, a);
-  else sendAct({ ...a, _pid: pid, _name: myName }).catch((err) => { console.error('send failed', err); toast('Failed to reach the room'); });
+  if (role === 'host') { apply(pid, a); return; }
+  const target = hostPeer && room?.getPeers()[hostPeer] ? hostPeer : undefined;
+  sendAct({ ...a, _pid: pid, _name: myName }, target)
+    .catch((err) => { console.error('send failed', err); toast('Failed to reach the room'); });
 }
 
 // --- host <-> guest sync --------------------------------------------------
-let decksDirty = false, logDirty = false, bcastT = 0;
+let dirtyDecks = new Set(), logDirty = false, bcastT = 0; // deck ids not yet broadcast
 let fxQueue = []; // action markers accumulated since the last broadcast
 
 function publicPlayers() {
@@ -344,7 +349,12 @@ function scheduleBroadcast() {
 
 function broadcast() {
   if (role !== 'host' || !room) return;
-  if (decksDirty) { decksDirty = false; sendDecks(decks).catch((e) => console.error('decks send failed', e)); }
+  if (dirtyDecks.size) {
+    // Delta, not the whole map: adding a second deck must not re-ship the first.
+    const delta = Object.fromEntries([...dirtyDecks].map((id) => [id, decks[id]]));
+    dirtyDecks.clear();
+    sendDecks(delta).catch((e) => console.error('decks send failed', e));
+  }
   if (logDirty) { logDirty = false; sendLog(host.log).catch((e) => console.error('log send failed', e)); }
   const pub = { seq: host.seq, items: host.items, players: publicPlayers(), fx: fxQueue };
   fxQueue = [];
@@ -409,7 +419,8 @@ function connect() {
     apply(a._pid, a); // apply() schedules a broadcast, which catches joiners up
   };
   stateA.onMessage = (s, { peerId: peer }) => handleState(s, peer);
-  decksA.onMessage = (d) => { if (role !== 'host') { decks = d; renderAll(); } };
+  // Deck messages are deltas (or the full map for new joiners) — always merge.
+  decksA.onMessage = (d) => { if (role !== 'host') { Object.assign(decks, d); renderAll(); } };
   logA.onMessage = (l) => { if (role !== 'host') { gameLog = l; renderAll(); } };
 
   room.onPeerJoin = (peer) => {
@@ -425,6 +436,7 @@ function connect() {
   }, 3000);
   room.onPeerLeave = (peer) => {
     updateNet();
+    if (peer === hostPeer) hostPeer = null; // fall back to broadcast until a host reappears
     if (role !== 'host') return;
     const p = peerPid[peer];
     delete peerPid[peer];

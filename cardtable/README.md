@@ -66,7 +66,11 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   the host's browser), the one holding older state demotes itself to guest.
 - **Decks**: the standard 52-card deck renders as DOM/CSS; custom decks are
   uploaded images, downscaled client-side to ≤560px WebP data-URLs so they
-  stay cheap to broadcast and persist.
+  stay cheap to broadcast and persist (~25–50 KB per card on the wire).
+  Deck traffic is minimized: guests send actions targeted at the host rather
+  than broadcasting to the whole mesh, and the host relays newly added decks
+  as per-deck deltas (guests merge), so each player downloads a deck once and
+  adding a second deck never re-ships the first.
 
 ## Honest limits
 
