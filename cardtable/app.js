@@ -1500,6 +1500,13 @@ const RULES_TEMPLATES = {
     t.say('Dummy (' + dummy.name + '): ' + hand.join(' ') + ' — plays as the declarer instructs.');
   },
   validate(t, a) {
+    if (t.data.phase === 'bid') {
+      // While bidding, all 52 cards stay where they are — hands in hands.
+      if (['play', 'handPile', 'draw', 'deal', 'toHand', 'flip'].includes(a.t)) {
+        return 'Bidding — cards stay in hand until "!contract 4H <name>"';
+      }
+      return;
+    }
     if (t.data.phase !== 'play') {
       if (a.t === 'draw' || a.t === 'deal') return 'Use the Deal button';
       return;
