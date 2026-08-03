@@ -561,6 +561,7 @@ const tApi = {
     host.items[nid].name = deck.name;
     return nid;
   },
+  geom: () => ({ size: TABLE_W, cx: TABLE_W / 2, cy: TABLE_H / 2, r: PLAY_R }),
   say: (msg) => logEvent(RULES, String(msg).slice(0, 300)),
   tell: (p, msg) => notify(p, String(msg)),
   schedule(sec, tag) { (host.rules.data._timers ||= []).push({ at: Date.now() + sec * 1000, tag: String(tag) }); },
@@ -598,7 +599,10 @@ function publicPlayers() {
 
 function refreshView() {
   if (role !== 'host') return;
-  view = { seq: host.seq, items: host.items, players: publicPlayers() };
+  view = {
+    seq: host.seq, items: host.items, players: publicPlayers(),
+    rules: host.rules ? { name: host.rules.name, enabled: host.rules.enabled, public: host.rules.public } : null,
+  };
   myHand = host.players[pid]?.hand || [];
   gameLog = host.log;
 }
@@ -1414,18 +1418,148 @@ const RULES_TEMPLATES = {
   onButton(t, id) {
     const deck = this.deck(t);
     if (!deck) return t.say('No pile to deal from!');
+    const g = t.geom();
     if (id === 'new') {
       for (const it of t.items()) if (it.k === 'c') t.toPile(it.id, deck.id);
       for (const p of t.players()) t.takeHand(p.id, deck.id);
       t.shuffle(deck.id);
       t.dealToAll(deck.id, 2);
+      t.data.community = 0;
       t.say('New hand — 2 hole cards to everyone.');
-    } else if (id === 'flop') {
-      t.deal(deck.id, { up: false }); // burn
-      for (let i = 0; i < 3; i++) t.deal(deck.id, { up: true });
-    } else { // turn / river
-      t.deal(deck.id, { up: false }); // burn
-      t.deal(deck.id, { up: true });
+    } else {
+      // burns collect left of the community row; streets fill it left to right
+      t.deal(deck.id, { x: g.cx - 480, y: g.cy - 220, up: false });
+      const n = id === 'flop' ? 3 : 1;
+      for (let i = 0; i < n; i++) {
+        t.deal(deck.id, { x: g.cx - 330 + (t.data.community || 0) * 115, y: g.cy - 220, up: true });
+        t.data.community = (t.data.community || 0) + 1;
+      }
+    }
+  },
+})`,
+  bridge: `({
+  name: 'Bridge (play phase)',
+  // Bidding happens in CHAT. Then "!contract 4H Alice" (level optional,
+  // strain S/H/D/C/NT) starts play: left of declarer leads, the dummy's
+  // hand is announced to everyone, and the dummy plays their own cards as
+  // the declarer instructs. The script enforces turns and following suit,
+  // decides each trick (trump-aware), sweeps it to the winning side, and
+  // keeps score.
+  setup(t) {
+    t.say(t.players().length === 4
+      ? 'Bridge: press Deal, bid in chat, then "!contract 4H <name>".'
+      : 'Bridge needs exactly 4 players (' + t.players().length + ' seated).');
+  },
+  buttons: () => [{ id: 'deal', label: '🂠 Deal (13 each)' }],
+  deck(t) { return t.piles().sort((a, b) => b.cards.length - a.cards.length)[0]; },
+  suitOf(t, c) { return t.cardName(c).slice(-1); },
+  rankOf(t, c) {
+    const r = t.cardName(c).slice(0, -1);
+    return { A: 14, K: 13, Q: 12, J: 11 }[r] || parseInt(r, 10) || 0;
+  },
+  seats(t) { return t.players().map((p) => p.id); },
+  sideName(t, s) { const ps = t.players(); return ps[s].name + '–' + ps[s + 2].name; },
+  onButton(t, id) {
+    if (id !== 'deal') return;
+    const ps = t.players();
+    if (ps.length !== 4) return t.say('Bridge needs exactly 4 players.');
+    const deck = this.deck(t);
+    if (!deck) return t.say('No deck on the table!');
+    for (const it of t.items()) if (it.k === 'c') t.toPile(it.id, deck.id);
+    for (const p of ps) t.takeHand(p.id, deck.id);
+    t.shuffle(deck.id);
+    t.dealToAll(deck.id, 13);
+    Object.assign(t.data, { phase: 'bid', trump: null, level: null, declarer: null, dummy: null, trick: [], tricks: [0, 0], sidePiles: {}, firstLead: false });
+    t.public.turn = null;
+    t.say('Dealt 13 to each (' + this.sideName(t, 0) + ' vs ' + this.sideName(t, 1) + '). Bid in chat, then "!contract 4H <name>".');
+  },
+  onChat(t, a) {
+    const m = /^!contract\\s*(\\d)?\\s*(NT|[SHDC])\\s+(.+)$/i.exec(a.msg || '');
+    if (!m) return;
+    const ps = t.players();
+    const decl = ps.find((p) => p.name.toLowerCase().startsWith(m[3].trim().toLowerCase()));
+    if (!decl) return t.say('No player named "' + m[3].trim() + '"');
+    t.data.level = m[1] ? +m[1] : null;
+    t.data.trump = { S: '♠', H: '♥', D: '♦', C: '♣' }[m[2].toUpperCase()] || null;
+    t.data.declarer = decl.id;
+    t.data.dummy = ps[(ps.indexOf(decl) + 2) % 4].id;
+    t.data.phase = 'play';
+    t.data.firstLead = true;
+    t.data.trick = [];
+    t.data.turn = t.nextSeat(decl.id);
+    t.public.turn = t.data.turn;
+    const leader = ps.find((p) => p.id === t.data.turn);
+    t.say('Contract: ' + (m[1] || '') + m[2].toUpperCase() + ' by ' + decl.name + '. ' + leader.name + ' leads.');
+  },
+  showDummy(t) {
+    const dummy = t.players().find((p) => p.id === t.data.dummy);
+    if (!dummy) return;
+    const order = { '♠': 0, '♥': 1, '♦': 2, '♣': 3 };
+    const hand = t.hand(dummy.id).map((c) => t.cardName(c))
+      .sort((a, b) => (order[a.slice(-1)] - order[b.slice(-1)]) || b.length - a.length || (a < b ? 1 : -1));
+    t.say('Dummy (' + dummy.name + '): ' + hand.join(' ') + ' — plays as the declarer instructs.');
+  },
+  validate(t, a) {
+    if (t.data.phase !== 'play') {
+      if (a.t === 'draw' || a.t === 'deal') return 'Use the Deal button';
+      return;
+    }
+    if (['draw', 'deal', 'handPile', 'toHand'].includes(a.t)) return 'The hand is in progress';
+    if (a.t !== 'play') return; // arranging the table is free
+    if (a.p !== t.data.turn) return "It's not your turn";
+    if (!a.up) return 'Play your card face up';
+    const led = t.data.trick[0] && this.suitOf(t, t.data.trick[0]);
+    if (led && this.suitOf(t, a) !== led && t.hand(a.p).some((c) => this.suitOf(t, c) === led)) {
+      return 'You must follow ' + led;
+    }
+  },
+  onAction(t, a) {
+    if (a.t === 'chat') return this.onChat(t, a);
+    if (t.data.phase !== 'play' || a.t !== 'play') return;
+    if (t.data.firstLead) { t.data.firstLead = false; this.showDummy(t); }
+    t.data.trick.push({ p: a.p, d: a.d, i: a.i });
+    if (t.data.trick.length === 4) {
+      t.public.turn = null;
+      t.schedule(2.5, 'sweep'); // let everyone look at the trick first
+    } else {
+      t.data.turn = t.nextSeat(a.p);
+      t.public.turn = t.data.turn;
+    }
+  },
+  onTimer(t, tag) {
+    if (tag !== 'sweep' || t.data.trick.length !== 4) return;
+    const trick = t.data.trick;
+    let win = trick[0];
+    for (const c of trick.slice(1)) {
+      const s = this.suitOf(t, c), ws = this.suitOf(t, win), tr = t.data.trump;
+      if ((s === ws && this.rankOf(t, c) > this.rankOf(t, win)) || (tr && s === tr && ws !== tr)) win = c;
+    }
+    const ps = this.seats(t);
+    const side = ps.indexOf(win.p) % 2;
+    t.data.tricks[side]++;
+    const winner = t.players().find((p) => p.id === win.p);
+    // sweep the four cards into the winning side's face-down trick pile
+    let pileId = t.data.sidePiles[side];
+    if (!pileId || !t.items().some((it) => it.id === pileId)) {
+      const g = t.geom(), rad = (winner.seat * Math.PI) / 180;
+      pileId = t.newPile([], { x: g.cx + Math.cos(rad) * (g.r - 40) - 50, y: g.cy + Math.sin(rad) * (g.r - 40) - 70, name: this.sideName(t, side) + ' tricks' });
+      t.data.sidePiles[side] = pileId;
+    }
+    for (const it of t.items()) {
+      if (it.k === 'c' && trick.some((c) => c.d === it.d && c.i === it.i)) t.toPile(it.id, pileId);
+    }
+    t.data.trick = [];
+    t.say('Trick to ' + winner.name + ' — ' + this.sideName(t, 0) + ' ' + t.data.tricks[0] + ' : ' + t.data.tricks[1] + ' ' + this.sideName(t, 1));
+    if (t.data.tricks[0] + t.data.tricks[1] === 13) {
+      const made = t.data.tricks[ps.indexOf(t.data.declarer) % 2];
+      let msg = 'Hand over — declarer side took ' + made + ' tricks';
+      if (t.data.level) msg += made >= 6 + t.data.level ? ' — contract MADE' : ' — DOWN ' + (6 + t.data.level - made);
+      t.say(msg);
+      t.data.phase = 'done';
+      t.public.turn = null;
+    } else {
+      t.data.turn = win.p;
+      t.public.turn = win.p;
     }
   },
 })`,

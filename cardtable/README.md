@@ -93,9 +93,11 @@ Scripts run **on the host only** — guests receive data, never code — and
 everyone can read the exact script being enforced (read-only view in the
 Rules dialog). A script error disables the rules loudly rather than wedging
 the game; rules, their state, and pending timers survive host reloads.
-Templates ship for turn order, a Hold'em dealer, and a simple dealer — all
-plain scripts on the public API, demos of the engine rather than features
-of it.
+Templates ship for turn order, a Hold'em dealer, **Bridge** (the full play
+phase: bid in chat, `!contract 4H <name>`, enforced turns and follow-suit,
+public dummy, trump-aware trick resolution, sweeping and scoring), and a
+simple dealer — all plain scripts on the public API, demos of the engine
+rather than features of it.
 
 ## Honest limits
 
