@@ -19,7 +19,8 @@
     <button id="add-deck-btn">+ Deck</button>
     <button id="invite-btn">Copy invite</button>
     <button id="qr-btn" title="Show the invite link as a QR code">QR</button>
-    <button id="view-btn" title="Rotate the table back to your seat (view is yours alone — spin it by dragging empty felt)">🧭</button>
+    <button id="rules-btn" title="Game rules script">📜</button>
+    <button id="view-btn" title="Reset your view to your seat">🧭</button>
     <button id="log-btn" title="Table log & chat">💬</button>
     <button id="help-btn" title="Help">?</button>
     <span id="net-status" title="Peers connected">●</span>
@@ -31,6 +32,7 @@
         <div id="table-hint" class="hidden"></div>
       </div>
       <div id="action-bar" class="hidden"></div>
+      <div id="rules-btns" class="hidden"></div>
     </div>
     <aside id="side">
       <div id="side-head">Table log</div>
@@ -47,6 +49,26 @@
     <button id="facedown-toggle" title="When on, cards dragged from your hand land face down">🂠<br>face-down</button>
     <div id="hand"></div>
   </footer>
+
+  <dialog id="rules-dialog">
+    <form id="rules-form" method="dialog">
+      <h3>📜 Rules script <span id="rules-status"></span></h3>
+      <select id="rules-tpl">
+        <option value="">Load a template…</option>
+        <option value="blank">Blank skeleton</option>
+        <option value="turns">Turn order</option>
+        <option value="holdem">Hold'em dealer</option>
+        <option value="dealer">Simple dealer</option>
+      </select>
+      <textarea id="rules-code" spellcheck="false"></textarea>
+      <div id="rules-err"></div>
+      <menu>
+        <button value="cancel" formnovalidate>Close</button>
+        <button id="rules-disable" type="button">Disable</button>
+        <button id="rules-enable" value="enable">Enable</button>
+      </menu>
+    </form>
+  </dialog>
 
   <dialog id="qr-dialog">
     <h3>Scan to join this table</h3>
@@ -97,6 +119,7 @@
       <li>Everyone gets a <b>seat</b> around the table, and the table auto-turns so your seat is at the bottom. Cards you play land facing you.</li>
       <li><b>Scroll</b> to zoom, <b>drag empty felt</b> to pan; on touch screens, <b>pinch with two fingers</b> to zoom, rotate and pan at once. Your view is yours alone — <b>🧭</b> resets it to your seat.</li>
       <li>The <b>host</b> can enlarge the table (Table: small / medium / large) when more players join.</li>
+      <li><b>📜 Rules</b>: the host can write a script that enforces rules (turn order, legal moves) and automates play (auto-dealing, a poker dealer). Everyone can read the active script; everything it does appears in the log as "📜 Rules".</li>
       <li>Drag from your hand to the table to play it — toggle <b>🂠 face-down</b> to play cards face down.</li>
       <li><b>Copy invite</b> and send the link to friends — or tap <b>QR</b> so they can scan it with a phone. Everyone sees the table live over WebRTC (no server).</li>
       <li>The game lives in the host's browser tab — if the host closes it, reopening the same link on the host's browser resumes the game.</li>

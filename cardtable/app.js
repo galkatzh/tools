@@ -77,7 +77,7 @@ let myName = localStorage.getItem('ct-name') || `Player-${pid.slice(0, 4)}`;
 // host:   authoritative state (host only): {seq, items, players:{pid:{name,color,online,hand:[{d,i}]}}}
 // view:   what render() consumes — on guests this arrives from the host.
 let role = null, roomId, password, room = null;
-let sendAct, sendState, sendDecks, sendLog;
+let sendAct, sendState, sendDecks, sendLog, sendNote, sendRules;
 let decks = {};
 let host = null;
 let view = { seq: 0, items: {}, players: {} };
@@ -163,10 +163,114 @@ function handIdx(pl, a) {
   return pl.hand.findIndex((c) => c.d === a.d && c.i === a.i);
 }
 
+/** State changed: renumber, re-render, sync, save. (host only) */
+function bump() {
+  host.seq++;
+  refreshView();
+  renderAll();
+  scheduleBroadcast();
+  persist();
+}
+
+// --- core table ops ---------------------------------------------------------
+// Shared between apply() and the rules-script facade, so scripted automations
+// mutate state through exactly the same audited path as human actions.
+// `actor` is a player id or RULES; every op logs and marks as that actor.
+
+/** Deals the top card of a pile — to a player's hand ({to}) or onto the table. */
+function opDealTop(actor, pileId, o = {}) {
+  const pile = host.items[pileId];
+  const c = pile?.k === 'p' && pile.cards.pop();
+  if (!c) { console.warn('opDealTop: no card to deal', pileId); return false; }
+  if (o.to) {
+    const pl = host.players[o.to];
+    if (!pl) { pile.cards.push(c); console.warn('opDealTop: unknown player', o.to); return false; }
+    pl.hand.push({ d: c.d, i: c.i });
+    logEvent(actor, `dealt a card from ${itemLabel(pile)} to ${pl.name || 'a player'}`);
+  } else {
+    const at = clampToFelt(o.x ?? pile.x + CARD_W + 18, o.y ?? pile.y);
+    const nid = uid();
+    host.items[nid] = { k: 'c', x: at.x, y: at.y, rot: ((o.rot || 0) % 360 + 360) % 360, z: zTop(), d: c.d, i: c.i, up: !!o.up };
+    logEvent(actor, `dealt ${o.up ? cardName(c.d, c.i) : 'a card face down'} from ${itemLabel(pile)}`);
+    mark(actor, nid);
+  }
+  mark(actor, pileId);
+  dropIfEmpty(pileId);
+  return true;
+}
+
+function opShuffle(actor, pileId) {
+  const pile = host.items[pileId];
+  if (pile?.k !== 'p') return false;
+  for (let i = pile.cards.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pile.cards[i], pile.cards[j]] = [pile.cards[j], pile.cards[i]];
+  }
+  logEvent(actor, `shuffled ${itemLabel(pile)} (${pile.cards.length} cards)`);
+  mark(actor, pileId);
+  return true;
+}
+
+function opFlip(actor, id) {
+  const it = host.items[id];
+  if (!it) return false;
+  if (it.k === 'c') {
+    it.up = !it.up;
+    logEvent(actor, `flipped ${cardName(it.d, it.i)} face ${it.up ? 'up' : 'down'}`);
+  } else {
+    it.cards.reverse();
+    for (const c of it.cards) c.up = !c.up;
+    logEvent(actor, `flipped ${itemLabel(it)}`);
+  }
+  mark(actor, id);
+  return true;
+}
+
+function opToPile(actor, cardId, pileId) {
+  const it = host.items[cardId], pile = host.items[pileId];
+  if (it?.k !== 'c' || pile?.k !== 'p') return false;
+  logEvent(actor, `put ${itemLabel(it)} onto ${itemLabel(pile)}`);
+  mark(actor, pileId);
+  pile.cards.push({ d: it.d, i: it.i, up: it.up });
+  delete host.items[cardId];
+  return true;
+}
+
+function opNewPile(actor, cards, o = {}) {
+  const at = clampToFelt(o.x ?? TABLE_W / 2 - CARD_W / 2, o.y ?? TABLE_H / 2 - CARD_H / 2);
+  const nid = uid();
+  host.items[nid] = { k: 'p', x: at.x, y: at.y, rot: 0, z: zTop(), name: String(o.name || '').slice(0, 24), cards: cards.map((c) => ({ d: c.d, i: c.i, up: !!c.up })) };
+  logEvent(actor, `made a pile of ${cards.length} cards`);
+  mark(actor, nid);
+  return nid;
+}
+
+/** Moves every card of a player's hand onto a pile, face down. */
+function opTakeHand(actor, p, pileId) {
+  const pl = host.players[p], pile = host.items[pileId];
+  if (!pl || pile?.k !== 'p') return false;
+  if (pl.hand.length) {
+    logEvent(actor, `returned ${pl.name || 'a player'}'s hand (${pl.hand.length}) to ${itemLabel(pile)}`);
+    mark(actor, pileId);
+    for (const c of pl.hand.splice(0)) pile.cards.push({ d: c.d, i: c.i, up: false });
+  }
+  return true;
+}
+
 /** Applies one action from player `p` to the authoritative state (host only). */
 function apply(p, a) {
   const items = host.items, pl = host.players[p];
   const it = a.id != null ? items[a.id] : null;
+  // Rules veto: an enabled script may block gameplay actions with a reason.
+  if (RULED_ACTIONS.has(a.t) && host.rules?.enabled) {
+    const reason = runHook('validate', { ...a, p });
+    if (typeof reason === 'string' && reason) {
+      logEvent(RULES, `blocked ${pl?.name || 'a player'}: ${reason}`);
+      notify(p, `🚫 ${reason}`);
+      bump(); // the fresh broadcast reverts the actor's optimistic UI
+      return;
+    }
+  }
   switch (a.t) {
     case 'hello': break; // registration + join logging happen in the action handler
     case 'name':
@@ -193,29 +297,8 @@ function apply(p, a) {
       }
       break;
     case 'rot': if (it) { it.rot = ((a.rot % 360) + 360) % 360; logEvent(p, `rotated ${itemLabel(it)}`); mark(p, a.id); } break;
-    case 'flip':
-      if (it?.k === 'c') {
-        it.up = !it.up;
-        // Either way the identity is public: it was face up a moment ago or is now.
-        logEvent(p, `flipped ${cardName(it.d, it.i)} face ${it.up ? 'up' : 'down'}`);
-        mark(p, a.id);
-      } else if (it?.k === 'p') {
-        it.cards.reverse();
-        for (const c of it.cards) c.up = !c.up;
-        logEvent(p, `flipped ${itemLabel(it)}`);
-        mark(p, a.id);
-      }
-      break;
-    case 'shuffle':
-      if (it?.k === 'p') {
-        for (let i = it.cards.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [it.cards[i], it.cards[j]] = [it.cards[j], it.cards[i]];
-        }
-        logEvent(p, `shuffled ${itemLabel(it)} (${it.cards.length} cards)`);
-        mark(p, a.id);
-      }
-      break;
+    case 'flip': if (it) opFlip(p, a.id); break;
+    case 'shuffle': if (it?.k === 'p') opShuffle(p, a.id); break;
     case 'draw': {
       const c = it?.k === 'p' && it.cards.pop();
       if (c && pl) {
@@ -226,17 +309,7 @@ function apply(p, a) {
       }
       break;
     }
-    case 'deal': {
-      const c = it?.k === 'p' && it.cards.pop();
-      if (c) {
-        const nid = uid(), at = clampToFelt(a.x, a.y);
-        items[nid] = { k: 'c', x: at.x, y: at.y, rot: ((a.rot || 0) % 360 + 360) % 360, z: zTop(), d: c.d, i: c.i, up: a.up };
-        logEvent(p, `dealt ${a.up ? cardName(c.d, c.i) : 'a card face down'} from ${itemLabel(it)}`);
-        mark(p, nid);
-        dropIfEmpty(a.id);
-      }
-      break;
-    }
+    case 'deal': if (it?.k === 'p') opDealTop(p, a.id, { x: a.x, y: a.y, up: a.up, rot: a.rot }); break;
     case 'play': {
       const idx = pl && handIdx(pl, a);
       if (pl && idx >= 0) {
@@ -270,16 +343,7 @@ function apply(p, a) {
         delete items[a.id];
       }
       break;
-    case 'toPile': {
-      const pile = items[a.pile];
-      if (it?.k === 'c' && pile?.k === 'p') {
-        logEvent(p, `put ${itemLabel(it)} onto ${itemLabel(pile)}`);
-        mark(p, a.pile);
-        pile.cards.push({ d: it.d, i: it.i, up: it.up });
-        delete items[a.id];
-      }
-      break;
-    }
+    case 'toPile': opToPile(p, a.id, a.pile); break;
     case 'stack': {
       const b = items[a.onto];
       if (it?.k === 'c' && b?.k === 'c') {
@@ -331,13 +395,41 @@ function apply(p, a) {
       break;
     }
     case 'chat': if (pl && a.msg) logEvent(p, String(a.msg).slice(0, 300), true); break;
+    case 'setRules': {
+      if (p !== pid) break; // only the host configures rules
+      if (a.enabled) {
+        try {
+          const s = evalRules(a.code);
+          if (!s || typeof s !== 'object') throw new Error('script must evaluate to an ({...}) object');
+          script = s;
+          host.rules = { code: a.code, name: String(s.name || 'Rules').slice(0, 40), enabled: true, data: {}, public: {} };
+          rulesCodeDirty = true;
+          lastRulesError = '';
+          logEvent(RULES, `«${host.rules.name}» enabled by ${pl?.name || 'the host'}`);
+          runHook('setup');
+          refreshButtons();
+        } catch (err) {
+          console.error('rules script failed to load', err);
+          lastRulesError = err.message;
+          toast(`Rules error: ${err.message}`);
+          script = null;
+          if (host.rules) host.rules.enabled = false;
+        }
+      } else if (host.rules?.enabled) {
+        host.rules.enabled = false;
+        rulesCodeDirty = true;
+        logEvent(RULES, `rules disabled by ${pl?.name || 'the host'}`);
+      }
+      break;
+    }
+    case 'rulesBtn': if (host.rules?.enabled) runHook('onButton', String(a.id), p); break;
     default: console.warn('unknown action', a);
   }
-  host.seq++;
-  refreshView();
-  renderAll();
-  scheduleBroadcast();
-  persist();
+  if (host.rules?.enabled && (RULED_ACTIONS.has(a.t) || a.t === 'chat' || a.t === 'rulesBtn')) {
+    runHook('onAction', { ...a, p });
+    refreshButtons();
+  }
+  bump();
 }
 
 /** Routes a local UI action: hosts apply directly, guests send to the room.
@@ -352,6 +444,147 @@ function act(a) {
   sendAct({ ...a, _pid: pid, _name: myName }, target)
     .catch((err) => { console.error('send failed', err); toast('Failed to reach the room'); });
 }
+
+// --- rules engine (see ENGINE.md) ------------------------------------------
+// Host-only execution of a host-written script that can veto actions
+// (validate) and drive automations (setup/onAction/onButton/onJoin/onLeave/
+// onTimer) through the same audited ops as human actions. The engine knows
+// no game concepts — all game semantics live in the script.
+const RULES = 'RULES'; // synthetic actor id for script-performed ops
+const RULED_ACTIONS = new Set(['move', 'rot', 'flip', 'shuffle', 'draw', 'deal', 'play', 'handPile', 'toHand', 'toPile', 'stack', 'merge', 'del', 'addDeck']);
+let script = null;          // evaluated script object (host only)
+let lastRulesError = '';    // shown in the rules dialog
+let rulesCodeDirty = false; // code changed -> resend on next broadcast
+let guestRules = { code: '', name: '' }; // guests: the script text, for reading
+
+function evalRules(code) {
+  return new Function(`"use strict"; return (${code});`)();
+}
+
+/** Runs one script hook; any throw disables the rules loudly. */
+function runHook(name, ...args) {
+  if (role !== 'host' || !host.rules?.enabled || typeof script?.[name] !== 'function') return undefined;
+  try {
+    return script[name](tApi, ...args);
+  } catch (err) {
+    console.error(`rules hook ${name}() failed`, err);
+    lastRulesError = `${name}(): ${err.message}`;
+    host.rules.enabled = false;
+    rulesCodeDirty = true;
+    logEvent(RULES, `rules disabled — script error in ${name}()`);
+    toast(`Rules disabled — error in ${name}(): ${err.message}`);
+    return undefined;
+  }
+}
+
+/** Sends a private text notice to a player (toast on their screen). */
+function notify(p, msg) {
+  if (p === pid) { toast(msg); return; }
+  for (const [peer, mapped] of Object.entries(peerPid)) {
+    if (mapped === p) sendNote({ msg: String(msg).slice(0, 200) }, peer).catch((e) => console.error('note failed', e));
+  }
+}
+
+/** Refreshes the script-declared button row into the broadcast public data. */
+function refreshButtons() {
+  if (role !== 'host' || !host.rules?.enabled || typeof script?.buttons !== 'function') return;
+  try {
+    const btns = script.buttons(tApi) || [];
+    host.rules.public.buttons = btns.map((b) => ({ id: String(b.id), label: String(b.label).slice(0, 30), ...(b.pid ? { pid: b.pid } : {}) }));
+  } catch (err) {
+    console.error('rules buttons() failed', err);
+    lastRulesError = `buttons(): ${err.message}`;
+    host.rules.enabled = false;
+    rulesCodeDirty = true;
+    toast(`Rules disabled — error in buttons(): ${err.message}`);
+  }
+}
+
+// The script's window onto the table: full read access, the complete op set
+// (audited as the "📜 Rules" actor), scratch state, and player interaction.
+const tApi = {
+  get data() { return host.rules.data; },
+  get public() { return host.rules.public; },
+  set public(v) { host.rules.public = v || {}; },
+  players: () => Object.entries(host.players)
+    .filter(([, pl]) => pl.seat != null)
+    .map(([id, pl]) => ({ id, name: pl.name, seat: pl.seat, online: pl.online, handCount: pl.hand.length }))
+    .sort((a, b) => a.seat - b.seat),
+  hand: (p) => (host.players[p]?.hand || []).map((c) => ({ ...c })),
+  items: () => Object.entries(host.items).map(([id, it]) => structuredClone({ id, ...it })),
+  piles() { return this.items().filter((it) => it.k === 'p'); },
+  deal: (pileId, o) => opDealTop(RULES, pileId, o),
+  dealToAll(pileId, n = 1, o = {}) {
+    for (let i = 0; i < n; i++) {
+      for (const p of this.players()) {
+        if (o.onlineOnly !== false && !host.players[p.id].online) continue;
+        opDealTop(RULES, pileId, { ...o, to: p.id });
+      }
+    }
+  },
+  draw(p, pileId, n = 1) { for (let i = 0; i < n; i++) opDealTop(RULES, pileId, { to: p }); },
+  takeHand: (p, pileId) => opTakeHand(RULES, p, pileId),
+  shuffle: (id) => opShuffle(RULES, id),
+  flip: (id) => opFlip(RULES, id),
+  toPile: (cardId, pileId) => opToPile(RULES, cardId, pileId),
+  newPile: (cards, o) => opNewPile(RULES, cards, o),
+  move(id, x, y) {
+    const it = host.items[id];
+    if (!it) return false;
+    ({ x: it.x, y: it.y } = clampToFelt(x, y));
+    it.z = zTop();
+    logEvent(RULES, `moved ${itemLabel(it)}`);
+    mark(RULES, id);
+    return true;
+  },
+  rot(id, deg) {
+    const it = host.items[id];
+    if (!it) return false;
+    it.rot = ((deg % 360) + 360) % 360;
+    mark(RULES, id);
+    return true;
+  },
+  remove(id) {
+    const it = host.items[id];
+    if (!it) return false;
+    logEvent(RULES, `removed ${itemLabel(it)}${it.k === 'p' ? ` (${it.cards.length} cards)` : ''}`);
+    mark(RULES, id);
+    delete host.items[id];
+    return true;
+  },
+  addStandardDeck(o = {}) {
+    const deck = standardDeck(!!o.jokers);
+    const deckId = uid();
+    decks[deckId] = deck;
+    dirtyDecks.add(deckId);
+    const nid = opNewPile(RULES, deck.cards.map((_, i) => ({ d: deckId, i, up: false })), { x: o.x, y: o.y, name: deck.name });
+    host.items[nid].name = deck.name;
+    return nid;
+  },
+  say: (msg) => logEvent(RULES, String(msg).slice(0, 300)),
+  tell: (p, msg) => notify(p, String(msg)),
+  schedule(sec, tag) { (host.rules.data._timers ||= []).push({ at: Date.now() + sec * 1000, tag: String(tag) }); },
+  nextSeat(p) {
+    const ps = this.players().filter((x) => x.online || x.id === p);
+    const i = ps.findIndex((x) => x.id === p);
+    return ps.length ? ps[(i + 1) % ps.length].id : p;
+  },
+  cardName: (ref) => cardName(ref.d, ref.i),
+};
+
+// Fire due script timers (t.schedule). They live in rules.data, so they
+// survive a host reload along with everything else.
+setInterval(() => {
+  if (role !== 'host' || !host?.rules?.enabled) return;
+  const timers = host.rules.data._timers;
+  if (!timers?.length) return;
+  const due = timers.filter((x) => x.at <= Date.now());
+  if (!due.length) return;
+  host.rules.data._timers = timers.filter((x) => x.at > Date.now());
+  for (const x of due) runHook('onTimer', x.tag);
+  refreshButtons();
+  bump();
+}, 700);
 
 // --- host <-> guest sync --------------------------------------------------
 let dirtyDecks = new Set(), logDirty = false, bcastT = 0; // deck ids not yet broadcast
@@ -384,7 +617,12 @@ function broadcast() {
     sendDecks(delta).catch((e) => console.error('decks send failed', e));
   }
   if (logDirty) { logDirty = false; sendLog(host.log).catch((e) => console.error('log send failed', e)); }
-  const pub = { seq: host.seq, size: host.size, items: host.items, players: publicPlayers(), fx: fxQueue };
+  if (rulesCodeDirty) {
+    rulesCodeDirty = false;
+    sendRules({ code: host.rules?.code || '', name: host.rules?.name || '' }).catch((e) => console.error('rules send failed', e));
+  }
+  const rules = host.rules ? { name: host.rules.name, enabled: host.rules.enabled, public: host.rules.public } : null;
+  const pub = { seq: host.seq, size: host.size, rules, items: host.items, players: publicPlayers(), fx: fxQueue };
   fxQueue = [];
   for (const peer of Object.keys(room.getPeers())) {
     sendState({ ...pub, hand: host.players[peerPid[peer]]?.hand || [] }, peer)
@@ -407,7 +645,7 @@ function handleState(s, peer) {
   if (s.seq < view.seq) return; // stale reordering
   hostPeer = peer;
   if (s.size && s.size !== TABLE_W) setTableSize(s.size);
-  view = { seq: s.seq, items: s.items, players: s.players };
+  view = { seq: s.seq, items: s.items, players: s.players, rules: s.rules };
   myHand = s.hand || [];
   for (const f of s.fx || []) if (f.p !== pid) showFx(f);
   renderAll();
@@ -425,10 +663,16 @@ function connect() {
   const stateA = room.makeAction('state');
   const decksA = room.makeAction('decks');
   const logA = room.makeAction('log');
+  const noteA = room.makeAction('note');
+  const rulesA = room.makeAction('rules');
   sendAct = (data) => actA.send(data, {});
   sendState = (data, target) => stateA.send(data, { target });
   sendDecks = (data, target) => decksA.send(data, target ? { target } : {});
   sendLog = (data, target) => logA.send(data, target ? { target } : {});
+  sendNote = (data, target) => noteA.send(data, { target });
+  sendRules = (data, target) => rulesA.send(data, target ? { target } : {});
+  noteA.onMessage = (n) => { if (role !== 'host' && n?.msg) toast(String(n.msg)); };
+  rulesA.onMessage = (r) => { if (role !== 'host') { guestRules = { code: String(r.code || ''), name: String(r.name || '') }; } };
 
   actA.onMessage = (a, { peerId: peer }) => {
     if (role !== 'host') return; // actions are broadcast; only the host adjudicates
@@ -441,11 +685,13 @@ function connect() {
     ensurePlayer(a._pid, a._name);
     if (!known?.online) logEvent(a._pid, known ? 'is back at the table' : 'joined the table');
     if (newConn) {
-      // Fresh connection: hand over the (possibly large) deck images and the
-      // log targeted, so regular broadcasts stay light.
+      // Fresh connection: hand over the (possibly large) deck images, the
+      // log, and the rules code targeted, so regular broadcasts stay light.
       sendDecks(decks, peer).catch((e) => console.error('decks send failed', e));
       sendLog(host.log, peer).catch((e) => console.error('log send failed', e));
+      if (host.rules) sendRules({ code: host.rules.code, name: host.rules.name }, peer).catch((e) => console.error('rules send failed', e));
     }
+    if (!known?.online && host.rules?.enabled) { runHook('onJoin', a._pid); refreshButtons(); }
     apply(a._pid, a); // apply() schedules a broadcast, which catches joiners up
   };
   stateA.onMessage = (s, { peerId: peer }) => handleState(s, peer);
@@ -473,8 +719,8 @@ function connect() {
     if (p && host.players[p] && !Object.values(peerPid).includes(p)) {
       host.players[p].online = false;
       logEvent(p, 'left the table');
-      host.seq++;
-      refreshView(); renderAll(); scheduleBroadcast(); persist();
+      if (host.rules?.enabled) { runHook('onLeave', p); refreshButtons(); }
+      bump();
     }
   };
 }
@@ -610,7 +856,8 @@ function renderItems() {
 // Seat labels: everyone sees the same seating, each from their own rotation.
 let seatSig = '';
 function renderPlayers() {
-  const sig = `${JSON.stringify(view.players)}|${viewAngle.toFixed(1)}|${scale.toFixed(4)}|${panX | 0},${panY | 0}|${wrapEl.clientWidth}`;
+  const turn = view.rules?.enabled ? view.rules.public?.turn : null;
+  const sig = `${JSON.stringify(view.players)}|${turn}|${viewAngle.toFixed(1)}|${scale.toFixed(4)}|${panX | 0},${panY | 0}|${wrapEl.clientWidth}`;
   if (sig === seatSig) return;
   seatSig = sig;
   for (const el of wrapEl.querySelectorAll('.seat')) el.remove();
@@ -619,11 +866,11 @@ function renderPlayers() {
     const rad = (pl.seat * Math.PI) / 180;
     const [sx, sy] = tableToScreen(TABLE_W / 2 + SEAT_R * Math.cos(rad), TABLE_H / 2 + SEAT_R * Math.sin(rad));
     const el = document.createElement('div');
-    el.className = `seat${pl.online ? '' : ' offline'}${p === pid ? ' me' : ''}`;
+    el.className = `seat${pl.online ? '' : ' offline'}${p === pid ? ' me' : ''}${p === turn ? ' turn' : ''}`;
     el.style.borderColor = pl.color;
     el.style.left = `${sx}px`;
     el.style.top = `${sy}px`;
-    el.textContent = `${pl.name || 'Player'} 🂠${pl.handCount}`;
+    el.textContent = `${p === turn ? '⏳ ' : ''}${pl.name || 'Player'} 🂠${pl.handCount}`;
     wrapEl.appendChild(el);
   }
 }
@@ -643,6 +890,13 @@ function renderHand() {
   });
 }
 
+/** Display identity for a log/bulb actor (players or the Rules script). */
+function actorInfo(p) {
+  if (p === RULES) return { name: '📜 Rules', color: '#a78bfa' };
+  const pl = view.players[p];
+  return { name: pl?.name || 'Player', color: pl?.color || '#94a3b8' };
+}
+
 let logSig = '';
 function renderLog() {
   const last = gameLog.at(-1);
@@ -651,8 +905,8 @@ function renderLog() {
   logSig = sig;
   const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 60;
   logEl.innerHTML = gameLog.map((e) => {
-    const pl = view.players[e.p];
-    const name = `<b style="color:${pl?.color || '#94a3b8'}">${esc(pl?.name || 'Player')}</b>`;
+    const who = actorInfo(e.p);
+    const name = `<b style="color:${who.color}">${esc(who.name)}</b>`;
     const time = `<span class="lt">${new Date(e.ts).toTimeString().slice(0, 5)}</span>`;
     return e.c
       ? `<div class="lg chat">${time}${name}: ${esc(e.txt)}</div>`
@@ -661,12 +915,31 @@ function renderLog() {
   if (atBottom) logEl.scrollTop = logEl.scrollHeight;
 }
 
+let rbSig = '';
+function renderRulesBtns() {
+  const rules = role === 'host' ? host?.rules : view.rules;
+  const btns = (rules?.enabled && (rules.public?.buttons || []).filter((b) => !b.pid || b.pid === pid)) || [];
+  const sig = JSON.stringify(btns) + (rules?.enabled ? rules.name : '');
+  if (sig === rbSig) return;
+  rbSig = sig;
+  const row = $('rules-btns');
+  row.classList.toggle('hidden', !btns.length);
+  row.innerHTML = btns.map((b) => `<button data-rbtn="${esc(b.id)}">${esc(b.label)}</button>`).join('');
+  $('rules-btn').classList.toggle('on', !!rules?.enabled);
+  $('rules-btn').title = rules?.enabled ? `Rules active: ${rules.name}` : 'Game rules script';
+}
+$('rules-btns').addEventListener('click', (e) => {
+  const id = e.target.dataset.rbtn;
+  if (id) act({ t: 'rulesBtn', id });
+});
+
 function renderAll() {
   applySeatView();
   renderItems();
   renderPlayers();
   renderHand();
   renderLog();
+  renderRulesBtns();
   updateNet();
 }
 
@@ -772,7 +1045,7 @@ function placeBar() {
 // --- transient "who did that" bulbs ----------------------------------------
 const bulbs = new Map(); // "pid|itemId" -> {el, timer}
 function showFx(f) {
-  const pl = view.players[f.p];
+  const who = actorInfo(f.p);
   const it = f.id && view.items[f.id];
   const [sx, sy] = tableToScreen((it ? it.x : f.x) + CARD_W / 2, (it ? it.y : f.y) + CARD_H / 2);
   const key = `${f.p}|${f.id}`;
@@ -784,8 +1057,8 @@ function showFx(f) {
     b = { el, timer: 0 };
     bulbs.set(key, b);
   }
-  b.el.textContent = pl?.name || 'Player';
-  b.el.style.borderColor = pl?.color || '#94a3b8';
+  b.el.textContent = who.name;
+  b.el.style.borderColor = who.color;
   b.el.style.left = `${clamp(sx, 30, wrapEl.clientWidth - 30)}px`;
   b.el.style.top = `${Math.max(20, sy - CARD_H * 0.55 * scale)}px`;
   b.el.classList.remove('fade');
@@ -1088,6 +1361,125 @@ $('qr-btn').addEventListener('click', async () => {
 
 $('help-btn').addEventListener('click', () => $('help-dialog').showModal());
 $('add-deck-btn').addEventListener('click', () => $('deck-dialog').showModal());
+
+// --- rules dialog -----------------------------------------------------------
+const RULES_TEMPLATES = {
+  blank: `({
+  name: 'My game',
+  // Runs once when you enable the rules.
+  setup(t) { t.say('Rules are on.'); },
+  // Return a string to BLOCK a player's action. a = {t, p, ...}; a.p is the
+  // acting player's id, a.t the action type ('play', 'draw', 'move', ...).
+  validate(t, a) { },
+  // React AFTER an action applies — automations go here.
+  onAction(t, a) { },
+  // Buttons shown under the table ({pid: playerId} restricts who sees one).
+  buttons: (t) => [],
+  onButton(t, id, byPid) { },
+  onJoin(t, p) { }, onLeave(t, p) { },
+  // t.schedule(seconds, tag) later fires onTimer(t, tag).
+  onTimer(t, tag) { },
+})`,
+  turns: `({
+  name: 'Turn order',
+  setup(t) {
+    const ps = t.players();
+    t.data.turn = ps[0]?.id;
+    t.public.turn = t.data.turn;
+    t.say('Turn order: ' + ps.map((p) => p.name).join(' → '));
+  },
+  validate(t, a) {
+    const guarded = ['play', 'handPile', 'deal', 'draw', 'toHand'];
+    if (guarded.includes(a.t) && a.p !== t.data.turn) return "It's not your turn";
+  },
+  onAction(t, a) {
+    if (a.t === 'play' || a.t === 'handPile') {
+      t.data.turn = t.nextSeat(t.data.turn);
+      t.public.turn = t.data.turn;
+    }
+  },
+})`,
+  holdem: `({
+  name: "Hold'em dealer",
+  setup(t) { t.say("Hold'em dealer ready — use the buttons under the table."); },
+  buttons: () => [
+    { id: 'new', label: '🂠 New hand' },
+    { id: 'flop', label: 'Flop' },
+    { id: 'turn', label: 'Turn' },
+    { id: 'river', label: 'River' },
+  ],
+  deck(t) { // the biggest pile on the table acts as the deck
+    return t.piles().sort((a, b) => b.cards.length - a.cards.length)[0];
+  },
+  onButton(t, id) {
+    const deck = this.deck(t);
+    if (!deck) return t.say('No pile to deal from!');
+    if (id === 'new') {
+      for (const it of t.items()) if (it.k === 'c') t.toPile(it.id, deck.id);
+      for (const p of t.players()) t.takeHand(p.id, deck.id);
+      t.shuffle(deck.id);
+      t.dealToAll(deck.id, 2);
+      t.say('New hand — 2 hole cards to everyone.');
+    } else if (id === 'flop') {
+      t.deal(deck.id, { up: false }); // burn
+      for (let i = 0; i < 3; i++) t.deal(deck.id, { up: true });
+    } else { // turn / river
+      t.deal(deck.id, { up: false }); // burn
+      t.deal(deck.id, { up: true });
+    }
+  },
+})`,
+  dealer: `({
+  name: 'Simple dealer',
+  buttons: () => [{ id: 'deal1', label: 'Deal 1 to all' }],
+  onButton(t, id) {
+    const deck = t.piles().sort((a, b) => b.cards.length - a.cards.length)[0];
+    if (deck) t.dealToAll(deck.id, 1);
+  },
+})`,
+};
+
+function updateRulesDialog() {
+  const isHost = role === 'host';
+  const meta = isHost ? host?.rules : view.rules;
+  $('rules-status').textContent = meta?.enabled ? `active: ${meta.name}` : 'inactive';
+  $('rules-tpl').classList.toggle('hidden', !isHost);
+  $('rules-enable').classList.toggle('hidden', !isHost);
+  $('rules-disable').classList.toggle('hidden', !isHost || !meta?.enabled);
+  $('rules-code').readOnly = !isHost;
+  $('rules-err').textContent = lastRulesError;
+}
+
+$('rules-btn').addEventListener('click', () => {
+  const ta = $('rules-code');
+  if (role === 'host') {
+    if (!ta.value.trim()) ta.value = host?.rules?.code || RULES_TEMPLATES.blank;
+  } else {
+    ta.value = guestRules.code || '// The host has not written a rules script yet.';
+  }
+  updateRulesDialog();
+  $('rules-dialog').showModal();
+});
+
+$('rules-tpl').addEventListener('change', () => {
+  const k = $('rules-tpl').value;
+  if (RULES_TEMPLATES[k]) $('rules-code').value = RULES_TEMPLATES[k];
+  $('rules-tpl').value = '';
+});
+
+$('rules-form').addEventListener('submit', (e) => {
+  if (e.submitter?.id !== 'rules-enable') return; // Close button
+  e.preventDefault();
+  lastRulesError = '';
+  act({ t: 'setRules', code: $('rules-code').value, enabled: true });
+  if (host?.rules?.enabled) $('rules-dialog').close();
+  else updateRulesDialog(); // keep it open and show the error
+});
+
+$('rules-disable').addEventListener('click', () => {
+  act({ t: 'setRules', enabled: false });
+  updateRulesDialog();
+});
 $('view-btn').addEventListener('click', () => {
   // Full view reset: zoom, pan, and rotation back to "my seat at the bottom".
   manualView = false;
@@ -1160,6 +1552,19 @@ function becomeHost(saved) {
     host = saved.state;
     host.log ||= []; // saves from before the log existed
     host.size ||= 1300;
+    // Re-evaluate a saved rules script; a save that no longer parses
+    // disables the rules loudly rather than wedging the resume.
+    if (host.rules?.code) {
+      try {
+        script = evalRules(host.rules.code);
+        rulesCodeDirty = true;
+      } catch (err) {
+        console.error('saved rules script failed to load', err);
+        lastRulesError = err.message;
+        host.rules.enabled = false;
+        toast(`Saved rules failed to load: ${err.message}`);
+      }
+    }
     setTableSize(host.size);
     $('size-sel').value = String(host.size);
     for (const pl of Object.values(host.players)) pl.online = false;

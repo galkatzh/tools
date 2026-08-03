@@ -76,6 +76,27 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   as per-deck deltas (guests merge), so each player downloads a deck once and
   adding a second deck never re-ships the first.
 
+## Scriptable rules (📜)
+
+The host can write JavaScript that turns the free-form simulator into an
+enforced, automated game — see [`ENGINE.md`](ENGINE.md) for the full design.
+The engine is game-agnostic: a script object with optional hooks
+(`setup` / `validate` / `onAction` / `onButton` / `onJoin` / `onLeave` /
+`onTimer`) plus a facade `t` exposing every table primitive (deal, draw,
+shuffle, flip, piles, hands, …), persistent scratch state (`t.data`),
+broadcast UI state (`t.public`, e.g. the ⏳ turn marker), scripted buttons,
+timers, and player messaging. `validate` can veto any gameplay action with a
+reason (the actor gets a toast; the block goes in the log); everything a
+script does is logged and bulb-marked as the "📜 Rules" actor.
+
+Scripts run **on the host only** — guests receive data, never code — and
+everyone can read the exact script being enforced (read-only view in the
+Rules dialog). A script error disables the rules loudly rather than wedging
+the game; rules, their state, and pending timers survive host reloads.
+Templates ship for turn order, a Hold'em dealer, and a simple dealer — all
+plain scripts on the public API, demos of the engine rather than features
+of it.
+
 ## Honest limits
 
 - The game lives in the host's open tab. Host offline = table frozen for
@@ -86,6 +107,10 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   cheat. Fine for friendly play (§3.3: "no secrets" tier).
 - The table always starts fitted to the smaller screen dimension; zoom and
   pan are per-player remedies, not persisted between reloads.
+- Rules scripts are trusted code on the host's machine: a runaway loop can
+  freeze the host's tab (refresh recovers via the save), and a dishonest
+  host could run different code than displayed — the same trust tier as the
+  host already holding all hands.
 
 ## Testing
 

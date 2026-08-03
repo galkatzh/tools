@@ -69,6 +69,17 @@ select {
 }
 .seat.offline { opacity: 0.45; }
 .seat.me { box-shadow: 0 0 0 2.5px #fbbf2466, 0 2px 8px #0009; }
+.seat.turn { box-shadow: 0 0 0 3px #f59e0bcc, 0 2px 10px #0009; }
+
+/* scripted rules: button row + toolbar state */
+#rules-btns {
+  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 8px; z-index: 9500;
+  background: #0f172ad9; padding: 7px; border-radius: 12px; box-shadow: 0 2px 10px #000a;
+}
+#rules-btns button { background: #7c3aed; }
+#rules-btns button:hover { background: #8b5cf6; }
+#rules-btn.on { background: #7c3aed; }
 #table-hint {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   font-size: 34px; color: #ffffff88; text-align: center; padding: 40px; pointer-events: none;
@@ -196,6 +207,18 @@ dialog ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 14px; }
   position: absolute; bottom: 8%; left: 0; right: 0; text-align: center;
   color: #cbd5e1; font-size: 14px; pointer-events: none;
 }
+
+/* --- rules dialog --- */
+#rules-dialog { max-width: min(92vw, 720px); width: min(92vw, 720px); }
+#rules-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+  width: 100%; height: 46vh; resize: vertical; white-space: pre; overflow: auto;
+  background: #0f172a; color: #e2e8f0; border: 1px solid #475569; border-radius: 8px; padding: 8px;
+}
+#rules-code[readonly] { opacity: 0.8; }
+#rules-err { color: #f87171; font-size: 12.5px; min-height: 1.2em; white-space: pre-wrap; }
+#rules-status { font-size: 13px; color: #94a3b8; font-weight: 400; }
+#rules-enable { background: #7c3aed; }
 
 /* --- QR invite --- */
 #qr-canvas { display: block; margin: 0 auto; border-radius: 8px; background: #fff; max-width: 100%; }
