@@ -524,6 +524,26 @@ const tApi = {
   },
   draw(p, pileId, n = 1) { for (let i = 0; i < n; i++) opDealTop(RULES, pileId, { to: p }); },
   takeHand: (p, pileId) => opTakeHand(RULES, p, pileId),
+  playFromHand(p, idx, o = {}) {
+    const pl = host.players[p];
+    const c = pl?.hand.splice(idx, 1)[0];
+    if (!c) return false;
+    const at = clampToFelt(o.x ?? TABLE_W / 2 - CARD_W / 2, o.y ?? TABLE_H / 2 - CARD_H / 2);
+    const nid = uid();
+    host.items[nid] = { k: 'c', x: at.x, y: at.y, rot: ((o.rot || 0) % 360 + 360) % 360, z: zTop(), d: c.d, i: c.i, up: o.up !== false };
+    logEvent(RULES, `played ${o.up !== false ? cardName(c.d, c.i) : 'a card face down'} from ${pl.name || 'a player'}'s hand`);
+    mark(RULES, nid);
+    return nid;
+  },
+  toHand(p, cardId) {
+    const it = host.items[cardId], pl = host.players[p];
+    if (it?.k !== 'c' || !pl) return false;
+    logEvent(RULES, `gave ${itemLabel(it)} to ${pl.name || 'a player'}`);
+    mark(RULES, cardId);
+    pl.hand.push({ d: it.d, i: it.i });
+    delete host.items[cardId];
+    return true;
+  },
   shuffle: (id) => opShuffle(RULES, id),
   flip: (id) => opFlip(RULES, id),
   toPile: (cardId, pileId) => opToPile(RULES, cardId, pileId),
@@ -1440,17 +1460,18 @@ const RULES_TEMPLATES = {
   bridge: `({
   name: 'Bridge (play phase)',
   // Bidding happens in CHAT. Then "!contract 4H Alice" (level optional,
-  // strain S/H/D/C/NT) starts play: left of declarer leads, the dummy's
-  // hand is announced to everyone, and the dummy plays their own cards as
-  // the declarer instructs. The script enforces turns and following suit,
-  // decides each trick (trump-aware), sweeps it to the winning side, and
-  // keeps score.
+  // strain S/H/D/C/NT) starts play: left of declarer leads. On the opening
+  // lead the dummy's whole hand is laid FACE UP by the dummy's seat, and
+  // the DECLARER plays it by sliding a dummy card to the middle of the
+  // table. Turns and following suit are enforced (for the dummy too), each
+  // trick is decided trump-aware and swept to the winning side, and the
+  // score is kept. No dealing or new decks until the hand is over.
   setup(t) {
     t.say(t.players().length === 4
       ? 'Bridge: press Deal, bid in chat, then "!contract 4H <name>".'
       : 'Bridge needs exactly 4 players (' + t.players().length + ' seated).');
   },
-  buttons: () => [{ id: 'deal', label: '🂠 Deal (13 each)' }],
+  buttons: (t) => (t.data.phase === 'play' ? [] : [{ id: 'deal', label: '🂠 Deal (13 each)' }]),
   deck(t) { return t.piles().sort((a, b) => b.cards.length - a.cards.length)[0]; },
   suitOf(t, c) { return t.cardName(c).slice(-1); },
   rankOf(t, c) {
@@ -1459,8 +1480,14 @@ const RULES_TEMPLATES = {
   },
   seats(t) { return t.players().map((p) => p.id); },
   sideName(t, s) { const ps = t.players(); return ps[s].name + '–' + ps[s + 2].name; },
+  inCenter(t, x, y) { const g = t.geom(); return Math.hypot(x + 50 - g.cx, y + 70 - g.cy) < g.r * 0.4; },
+  dummyRef(t, id) {
+    const it = t.items().find((x) => x.id === id);
+    return it && it.k === 'c' && (t.data.dummyCards || []).find((c) => c.d === it.d && c.i === it.i);
+  },
   onButton(t, id) {
     if (id !== 'deal') return;
+    if (t.data.phase === 'play') return t.say('Finish the hand first.');
     const ps = t.players();
     if (ps.length !== 4) return t.say('Bridge needs exactly 4 players.');
     const deck = this.deck(t);
@@ -1469,7 +1496,7 @@ const RULES_TEMPLATES = {
     for (const p of ps) t.takeHand(p.id, deck.id);
     t.shuffle(deck.id);
     t.dealToAll(deck.id, 13);
-    Object.assign(t.data, { phase: 'bid', trump: null, level: null, declarer: null, dummy: null, trick: [], tricks: [0, 0], sidePiles: {}, firstLead: false });
+    Object.assign(t.data, { phase: 'bid', trump: null, level: null, declarer: null, dummy: null, trick: [], tricks: [0, 0], sidePiles: {}, firstLead: false, dummyCards: [] });
     t.public.turn = null;
     t.say('Dealt 13 to each (' + this.sideName(t, 0) + ' vs ' + this.sideName(t, 1) + '). Bid in chat, then "!contract 4H <name>".');
   },
@@ -1491,18 +1518,34 @@ const RULES_TEMPLATES = {
     const leader = ps.find((p) => p.id === t.data.turn);
     t.say('Contract: ' + (m[1] || '') + m[2].toUpperCase() + ' by ' + decl.name + '. ' + leader.name + ' leads.');
   },
+  // Lays the dummy's whole hand face up in two sorted rows by their seat,
+  // oriented to face them; the declarer plays these by sliding to the middle.
   showDummy(t) {
     const dummy = t.players().find((p) => p.id === t.data.dummy);
     if (!dummy) return;
     const order = { '♠': 0, '♥': 1, '♦': 2, '♣': 3 };
-    const hand = t.hand(dummy.id).map((c) => t.cardName(c))
-      .sort((a, b) => (order[a.slice(-1)] - order[b.slice(-1)]) || b.length - a.length || (a < b ? 1 : -1));
-    t.say('Dummy (' + dummy.name + '): ' + hand.join(' ') + ' — plays as the declarer instructs.');
+    const refs = t.hand(dummy.id).sort((a, b) =>
+      (order[this.suitOf(t, a)] - order[this.suitOf(t, b)]) || (this.rankOf(t, b) - this.rankOf(t, a)));
+    t.data.dummyCards = refs.map((c) => ({ d: c.d, i: c.i }));
+    const g = t.geom(), rad = (dummy.seat * Math.PI) / 180;
+    const tx = -Math.sin(rad), ty = Math.cos(rad); // tangent along the rim
+    const rot = ((dummy.seat - 90) % 360 + 360) % 360; // upright for the dummy
+    refs.forEach((c, k) => {
+      const row = k < 7 ? 0 : 1, off = ((k < 7 ? k : k - 7) - 3) * 68;
+      const rr = g.r - 260 + row * 155; // both rows clear of the r*0.4 'played' center zone
+      const idx = t.hand(dummy.id).findIndex((h) => h.d === c.d && h.i === c.i);
+      t.playFromHand(dummy.id, idx, {
+        x: g.cx + Math.cos(rad) * rr + tx * off - 50,
+        y: g.cy + Math.sin(rad) * rr + ty * off - 70,
+        up: true, rot,
+      });
+    });
+    t.say('Dummy (' + dummy.name + ') is on the table — the DECLARER slides dummy cards to an empty spot in the middle to play them.');
   },
   validate(t, a) {
     if (t.data.phase === 'bid') {
       // While bidding, all 52 cards stay where they are — hands in hands.
-      if (['play', 'handPile', 'draw', 'deal', 'toHand', 'flip'].includes(a.t)) {
+      if (['play', 'handPile', 'draw', 'deal', 'toHand', 'flip', 'addDeck'].includes(a.t)) {
         return 'Bidding — cards stay in hand until "!contract 4H <name>"';
       }
       return;
@@ -1511,8 +1554,32 @@ const RULES_TEMPLATES = {
       if (a.t === 'draw' || a.t === 'deal') return 'Use the Deal button';
       return;
     }
-    if (['draw', 'deal', 'handPile', 'toHand'].includes(a.t)) return 'The hand is in progress';
-    if (a.t !== 'play') return; // arranging the table is free
+    if (['draw', 'deal', 'handPile', 'toHand', 'addDeck'].includes(a.t)) return 'The hand is in progress';
+    // cards of the current trick must stay loose so the sweep can collect them
+    const inTrick = (id) => {
+      const it = t.items().find((x) => x.id === id);
+      return it && it.k === 'c' && t.data.trick.some((c) => c.d === it.d && c.i === it.i);
+    };
+    if (['toPile', 'stack', 'del', 'flip'].includes(a.t) && ((a.id && inTrick(a.id)) || (a.onto && inTrick(a.onto)))) {
+      return 'Those cards are mid-trick';
+    }
+    // the dummy's exposed cards: only the declarer touches them
+    if (a.id && ['toPile', 'stack', 'del', 'flip'].includes(a.t) && this.dummyRef(t, a.id)) {
+      return 'Slide dummy cards to an EMPTY spot in the middle to play them';
+    }
+    if (a.t === 'move' && a.id && this.dummyRef(t, a.id)) {
+      if (a.p !== t.data.declarer) return 'Only the declarer plays the dummy';
+      if (this.inCenter(t, a.x, a.y)) {
+        if (t.data.turn !== t.data.dummy) return "Not dummy's turn yet";
+        const it = t.items().find((x) => x.id === a.id);
+        const led = t.data.trick[0] && this.suitOf(t, t.data.trick[0]);
+        if (led && this.suitOf(t, it) !== led && (t.data.dummyCards || []).some((c) => this.suitOf(t, c) === led)) {
+          return 'Dummy must follow ' + led;
+        }
+      }
+      return;
+    }
+    if (a.t !== 'play') return; // arranging the table is otherwise free
     if (a.p !== t.data.turn) return "It's not your turn";
     if (!a.up) return 'Play your card face up';
     const led = t.data.trick[0] && this.suitOf(t, t.data.trick[0]);
@@ -1520,17 +1587,29 @@ const RULES_TEMPLATES = {
       return 'You must follow ' + led;
     }
   },
-  onAction(t, a) {
-    if (a.t === 'chat') return this.onChat(t, a);
-    if (t.data.phase !== 'play' || a.t !== 'play') return;
+  recordPlay(t, card) {
     if (t.data.firstLead) { t.data.firstLead = false; this.showDummy(t); }
-    t.data.trick.push({ p: a.p, d: a.d, i: a.i });
+    t.data.trick.push(card);
     if (t.data.trick.length === 4) {
       t.public.turn = null;
       t.schedule(2.5, 'sweep'); // let everyone look at the trick first
     } else {
-      t.data.turn = t.nextSeat(a.p);
+      t.data.turn = t.nextSeat(card.p);
       t.public.turn = t.data.turn;
+    }
+  },
+  onAction(t, a) {
+    if (a.t === 'chat') return this.onChat(t, a);
+    if (t.data.phase !== 'play') return;
+    if (a.t === 'play') return this.recordPlay(t, { p: a.p, d: a.d, i: a.i });
+    // declarer sliding a dummy card into the middle = the dummy's play
+    if (a.t === 'move' && a.p === t.data.declarer && t.data.turn === t.data.dummy) {
+      const ref = this.dummyRef(t, a.id);
+      const it = ref && t.items().find((x) => x.id === a.id);
+      if (ref && this.inCenter(t, it.x, it.y)) {
+        t.data.dummyCards = t.data.dummyCards.filter((c) => c !== ref);
+        this.recordPlay(t, { p: t.data.dummy, d: ref.d, i: ref.i });
+      }
     }
   },
   onTimer(t, tag) {
