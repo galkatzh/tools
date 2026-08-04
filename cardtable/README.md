@@ -93,11 +93,16 @@ Scripts run **on the host only** — guests receive data, never code — and
 everyone can read the exact script being enforced (read-only view in the
 Rules dialog). A script error disables the rules loudly rather than wedging
 the game; rules, their state, and pending timers survive host reloads.
-Templates ship for turn order, a Hold'em dealer, **Bridge** (the full play
-phase: bid in chat, `!contract 4H <name>`, enforced turns and follow-suit,
-public dummy, trump-aware trick resolution, sweeping and scoring), and a
-simple dealer — all plain scripts on the public API, demos of the engine
-rather than features of it.
+Templates ship for turn order, a Hold'em dealer (with `!winner <name>` in
+chat to award the pot), **Bridge** (a real chat auction — `!bid 1H`,
+`!pass`, `!double`, dealer rotation, insufficiency checks — then enforced
+turns and follow-suit, the dummy laid face-up and played by the declarer,
+trump-aware trick resolution, sweeping, scoring, and a 🏆 for the winning
+side), and a simple dealer — all plain scripts on the public API, demos of
+the engine rather than features of it. The generic engine primitives behind
+winners and bidding are `onChat` (scripts parse any chat command),
+`t.announce` (banner to all), and `t.win` (🏆 seat markers via
+`public.winners`).
 
 ## Honest limits
 

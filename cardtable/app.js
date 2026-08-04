@@ -426,6 +426,7 @@ function apply(p, a) {
     default: console.warn('unknown action', a);
   }
   if (host.rules?.enabled && (RULED_ACTIONS.has(a.t) || a.t === 'chat' || a.t === 'rulesBtn')) {
+    if (a.t === 'chat') runHook('onChat', String(a.msg || ''), p);
     runHook('onAction', { ...a, p });
     refreshButtons();
   }
@@ -583,6 +584,18 @@ const tApi = {
   },
   geom: () => ({ size: TABLE_W, cx: TABLE_W / 2, cy: TABLE_H / 2, r: PLAY_R }),
   say: (msg) => logEvent(RULES, String(msg).slice(0, 300)),
+  /** Big banner on every screen (also logged). For "Flop!", "You win", ... */
+  announce(msg) {
+    const text = String(msg).slice(0, 200);
+    logEvent(RULES, `📣 ${text}`);
+    annQueue.push(text);
+    showAnnounce(text); // the host is a viewer too
+  },
+  /** Declares winner(s): 🏆 on their seats (public.winners) + an announcement. */
+  win(winners, msg) {
+    host.rules.public.winners = (Array.isArray(winners) ? winners : [winners]).filter(Boolean);
+    this.announce(msg || 'Game over!');
+  },
   tell: (p, msg) => notify(p, String(msg)),
   schedule(sec, tag) { (host.rules.data._timers ||= []).push({ at: Date.now() + sec * 1000, tag: String(tag) }); },
   nextSeat(p) {
@@ -609,7 +622,8 @@ setInterval(() => {
 
 // --- host <-> guest sync --------------------------------------------------
 let dirtyDecks = new Set(), logDirty = false, bcastT = 0; // deck ids not yet broadcast
-let fxQueue = []; // action markers accumulated since the last broadcast
+let fxQueue = [];  // action markers accumulated since the last broadcast
+let annQueue = []; // script announcements (banners) since the last broadcast
 
 function publicPlayers() {
   return Object.fromEntries(Object.entries(host.players).map(([p, pl]) => [
@@ -646,8 +660,9 @@ function broadcast() {
     sendRules({ code: host.rules?.code || '', name: host.rules?.name || '' }).catch((e) => console.error('rules send failed', e));
   }
   const rules = host.rules ? { name: host.rules.name, enabled: host.rules.enabled, public: host.rules.public } : null;
-  const pub = { seq: host.seq, size: host.size, rules, items: host.items, players: publicPlayers(), fx: fxQueue };
+  const pub = { seq: host.seq, size: host.size, rules, items: host.items, players: publicPlayers(), fx: fxQueue, ann: annQueue };
   fxQueue = [];
+  annQueue = [];
   for (const peer of Object.keys(room.getPeers())) {
     sendState({ ...pub, hand: host.players[peerPid[peer]]?.hand || [] }, peer)
       .catch((e) => console.error('state send failed', e));
@@ -672,6 +687,7 @@ function handleState(s, peer) {
   view = { seq: s.seq, items: s.items, players: s.players, rules: s.rules };
   myHand = s.hand || [];
   for (const f of s.fx || []) if (f.p !== pid) showFx(f);
+  for (const msg of s.ann || []) showAnnounce(msg);
   renderAll();
 }
 
@@ -881,7 +897,8 @@ function renderItems() {
 let seatSig = '';
 function renderPlayers() {
   const turn = view.rules?.enabled ? view.rules.public?.turn : null;
-  const sig = `${JSON.stringify(view.players)}|${turn}|${viewAngle.toFixed(1)}|${scale.toFixed(4)}|${panX | 0},${panY | 0}|${wrapEl.clientWidth}`;
+  const winners = (view.rules?.enabled && view.rules.public?.winners) || [];
+  const sig = `${JSON.stringify(view.players)}|${turn}|${winners.join()}|${viewAngle.toFixed(1)}|${scale.toFixed(4)}|${panX | 0},${panY | 0}|${wrapEl.clientWidth}`;
   if (sig === seatSig) return;
   seatSig = sig;
   for (const el of wrapEl.querySelectorAll('.seat')) el.remove();
@@ -890,11 +907,11 @@ function renderPlayers() {
     const rad = (pl.seat * Math.PI) / 180;
     const [sx, sy] = tableToScreen(TABLE_W / 2 + SEAT_R * Math.cos(rad), TABLE_H / 2 + SEAT_R * Math.sin(rad));
     const el = document.createElement('div');
-    el.className = `seat${pl.online ? '' : ' offline'}${p === pid ? ' me' : ''}${p === turn ? ' turn' : ''}`;
+    el.className = `seat${pl.online ? '' : ' offline'}${p === pid ? ' me' : ''}${p === turn ? ' turn' : ''}${winners.includes(p) ? ' winner' : ''}`;
     el.style.borderColor = pl.color;
     el.style.left = `${sx}px`;
     el.style.top = `${sy}px`;
-    el.textContent = `${p === turn ? '⏳ ' : ''}${pl.name || 'Player'} 🂠${pl.handCount}`;
+    el.textContent = `${winners.includes(p) ? '🏆 ' : ''}${p === turn ? '⏳ ' : ''}${pl.name || 'Player'} 🂠${pl.handCount}`;
     wrapEl.appendChild(el);
   }
 }
@@ -1064,6 +1081,19 @@ function placeBar() {
   const yAbove = sy - half - 42;
   barEl.style.left = `${clamp(sx, 90, wrapEl.clientWidth - 90)}px`;
   barEl.style.top = `${yAbove >= 4 ? yAbove : sy + half + 8}px`;
+}
+
+// --- announcement banner (t.announce / t.win) -------------------------------
+let annT = 0;
+function showAnnounce(msg) {
+  const el = $('announce');
+  el.textContent = String(msg);
+  el.classList.remove('hidden', 'fade');
+  clearTimeout(annT);
+  annT = setTimeout(() => {
+    el.classList.add('fade');
+    annT = setTimeout(() => el.classList.add('hidden'), 700);
+  }, 3800);
 }
 
 // --- transient "who did that" bulbs ----------------------------------------
@@ -1435,6 +1465,13 @@ const RULES_TEMPLATES = {
   deck(t) { // the biggest pile on the table acts as the deck
     return t.piles().sort((a, b) => b.cards.length - a.cards.length)[0];
   },
+  // showdown is decided by the humans: anyone types "!winner <name>"
+  onChat(t, msg) {
+    const m = /^!winner\\s+(.+)$/i.exec(msg);
+    if (!m) return;
+    const w = t.players().find((x) => x.name.toLowerCase().startsWith(m[1].trim().toLowerCase()));
+    if (w) t.win([w.id], w.name + ' takes the pot! 🏆');
+  },
   onButton(t, id) {
     const deck = this.deck(t);
     if (!deck) return t.say('No pile to deal from!');
@@ -1445,6 +1482,7 @@ const RULES_TEMPLATES = {
       t.shuffle(deck.id);
       t.dealToAll(deck.id, 2);
       t.data.community = 0;
+      t.public.winners = null;
       t.say('New hand — 2 hole cards to everyone.');
     } else {
       // burns collect left of the community row; streets fill it left to right
@@ -1458,20 +1496,24 @@ const RULES_TEMPLATES = {
   },
 })`,
   bridge: `({
-  name: 'Bridge (play phase)',
-  // Bidding happens in CHAT. Then "!contract 4H Alice" (level optional,
-  // strain S/H/D/C/NT) starts play: left of declarer leads. On the opening
-  // lead the dummy's whole hand is laid FACE UP by the dummy's seat, and
-  // the DECLARER plays it by sliding a dummy card to the middle of the
-  // table. Turns and following suit are enforced (for the dummy too), each
-  // trick is decided trump-aware and swept to the winning side, and the
-  // score is kept. No dealing or new decks until the hand is over.
+  name: 'Bridge',
+  // Full flow: Deal -> AUCTION IN CHAT -> play. Bidding commands (in turn,
+  // dealer first, rotating each deal): "!bid 1H" (or "!1H"; strains C D H S NT),
+  // "!pass", "!double", "!redouble". Three passes after a bid fix the
+  // contract (declarer = first of the winning side to name the strain);
+  // four passes throw the hand in. "!contract 4H <name>" skips the auction
+  // if you bid out loud instead. Then: left of declarer leads, the dummy is
+  // laid face up and played by the DECLARER (slide a dummy card to an empty
+  // spot in the middle), turns and following suit are enforced, tricks are
+  // resolved trump-aware and swept, and the winning side takes the trophy.
+  STRAINS: ['C', 'D', 'H', 'S', 'NT'],
+  SYMS: { C: '♣', D: '♦', H: '♥', S: '♠', NT: 'NT' },
   setup(t) {
     t.say(t.players().length === 4
-      ? 'Bridge: press Deal, bid in chat, then "!contract 4H <name>".'
+      ? 'Bridge: press Deal, then bid in chat ("!bid 1H", "!pass", ...).'
       : 'Bridge needs exactly 4 players (' + t.players().length + ' seated).');
   },
-  buttons: (t) => (t.data.phase === 'play' ? [] : [{ id: 'deal', label: '🂠 Deal (13 each)' }]),
+  buttons: (t) => (t.data.phase === 'play' || t.data.phase === 'bid' ? [] : [{ id: 'deal', label: '🂠 Deal (13 each)' }]),
   deck(t) { return t.piles().sort((a, b) => b.cards.length - a.cards.length)[0]; },
   suitOf(t, c) { return t.cardName(c).slice(-1); },
   rankOf(t, c) {
@@ -1479,7 +1521,10 @@ const RULES_TEMPLATES = {
     return { A: 14, K: 13, Q: 12, J: 11 }[r] || parseInt(r, 10) || 0;
   },
   seats(t) { return t.players().map((p) => p.id); },
+  sideOf(t, p) { return this.seats(t).indexOf(p) % 2; },
   sideName(t, s) { const ps = t.players(); return ps[s].name + '–' + ps[s + 2].name; },
+  sidePids(t, s) { return this.seats(t).filter((_, i) => i % 2 === s); },
+  nameOf(t, p) { return (t.players().find((x) => x.id === p) || {}).name || '?'; },
   inCenter(t, x, y) { const g = t.geom(); return Math.hypot(x + 50 - g.cx, y + 70 - g.cy) < g.r * 0.4; },
   dummyRef(t, id) {
     const it = t.items().find((x) => x.id === id);
@@ -1487,7 +1532,7 @@ const RULES_TEMPLATES = {
   },
   onButton(t, id) {
     if (id !== 'deal') return;
-    if (t.data.phase === 'play') return t.say('Finish the hand first.');
+    if (t.data.phase === 'play' || t.data.phase === 'bid') return t.say('Finish the hand first.');
     const ps = t.players();
     if (ps.length !== 4) return t.say('Bridge needs exactly 4 players.');
     const deck = this.deck(t);
@@ -1496,27 +1541,87 @@ const RULES_TEMPLATES = {
     for (const p of ps) t.takeHand(p.id, deck.id);
     t.shuffle(deck.id);
     t.dealToAll(deck.id, 13);
-    Object.assign(t.data, { phase: 'bid', trump: null, level: null, declarer: null, dummy: null, trick: [], tricks: [0, 0], sidePiles: {}, firstLead: false, dummyCards: [] });
-    t.public.turn = null;
-    t.say('Dealt 13 to each (' + this.sideName(t, 0) + ' vs ' + this.sideName(t, 1) + '). Bid in chat, then "!contract 4H <name>".');
+    const dealerIdx = ((t.data.dealerIdx ?? -1) + 1) % 4; // rotates every deal
+    Object.assign(t.data, {
+      phase: 'bid', dealerIdx, trump: null, level: null, declarer: null, dummy: null,
+      trick: [], tricks: [0, 0], sidePiles: {}, firstLead: false, dummyCards: [],
+      auction: { passes: 0, best: null, first: {}, dbl: '' },
+      turn: this.seats(t)[dealerIdx],
+    });
+    t.public = { turn: t.data.turn };
+    t.say('Dealt 13 to each (' + this.sideName(t, 0) + ' vs ' + this.sideName(t, 1) + ').');
+    t.announce('Auction: ' + this.nameOf(t, t.data.turn) + ' bids first — "!bid 1H", "!pass", ...');
   },
-  onChat(t, a) {
-    const m = /^!contract\\s*(\\d)?\\s*(NT|[SHDC])\\s+(.+)$/i.exec(a.msg || '');
+  onChat(t, msg, p) {
+    if (t.data.phase === 'bid') return this.onBid(t, msg.trim(), p);
+    // manual override for tables that bid out loud: "!contract 4H Alice"
+    const m = /^!contract\\s*(\\d)?\\s*(NT|[SHDC])\\s+(.+)$/i.exec(msg);
     if (!m) return;
-    const ps = t.players();
-    const decl = ps.find((p) => p.name.toLowerCase().startsWith(m[3].trim().toLowerCase()));
+    const decl = t.players().find((x) => x.name.toLowerCase().startsWith(m[3].trim().toLowerCase()));
     if (!decl) return t.say('No player named "' + m[3].trim() + '"');
-    t.data.level = m[1] ? +m[1] : null;
-    t.data.trump = { S: '♠', H: '♥', D: '♦', C: '♣' }[m[2].toUpperCase()] || null;
-    t.data.declarer = decl.id;
-    t.data.dummy = ps[(ps.indexOf(decl) + 2) % 4].id;
+    this.startPlay(t, m[1] ? +m[1] : null, m[2].toUpperCase(), decl.id, '');
+  },
+  onBid(t, msg, p) {
+    const a = t.data.auction;
+    const bid = /^!(?:bid\\s+)?([1-7])\\s*(NT|[SHDC])$/i.exec(msg);
+    const pass = /^!p(?:ass)?$/i.exec(msg);
+    const dbl = /^!double$/i.exec(msg) || /^!x$/i.exec(msg);
+    const rdbl = /^!redouble$/i.exec(msg) || /^!xx$/i.exec(msg);
+    const contract = /^!contract\\s/i.test(msg);
+    if (contract) { t.data.phase = 'done'; return this.onChat(t, msg, p); }
+    if (!bid && !pass && !dbl && !rdbl) return; // ordinary chatter
+    if (p !== t.data.turn) return t.tell(p, "It's not your turn to bid");
+    const side = this.sideOf(t, p);
+    if (bid) {
+      const level = +bid[1], s = this.STRAINS.indexOf(bid[2].toUpperCase());
+      const b = a.best;
+      if (b && (level < b.level || (level === b.level && s <= b.s))) {
+        return t.tell(p, 'Insufficient — you must outbid ' + b.level + this.SYMS[this.STRAINS[b.s]]);
+      }
+      a.best = { level, s, side, by: p };
+      a.first[side + ':' + s] ??= p;
+      a.passes = 0;
+      a.dbl = '';
+      t.say(this.nameOf(t, p) + ' bids ' + level + this.SYMS[this.STRAINS[s]]);
+    } else if (dbl) {
+      if (!a.best || a.best.side === side || a.dbl) return t.tell(p, 'Nothing to double');
+      a.dbl = 'X';
+      a.passes = 0;
+      t.say(this.nameOf(t, p) + ' doubles');
+    } else if (rdbl) {
+      if (a.dbl !== 'X' || !a.best || a.best.side !== side) return t.tell(p, 'Nothing to redouble');
+      a.dbl = 'XX';
+      a.passes = 0;
+      t.say(this.nameOf(t, p) + ' redoubles');
+    } else {
+      a.passes++;
+      t.say(this.nameOf(t, p) + ' passes');
+    }
+    if (a.best && a.passes === 3) {
+      const declarer = a.first[a.best.side + ':' + a.best.s] || a.best.by;
+      return this.startPlay(t, a.best.level, this.STRAINS[a.best.s], declarer, a.dbl);
+    }
+    if (!a.best && a.passes === 4) {
+      t.data.phase = 'done';
+      t.public.turn = null;
+      return t.announce('Passed out — press Deal for a new hand');
+    }
+    t.data.turn = t.nextSeat(p);
+    t.public.turn = t.data.turn;
+  },
+  startPlay(t, level, strain, declarer, dbl) {
+    const ps = t.players();
+    t.data.level = level;
+    t.data.trump = strain === 'NT' ? null : this.SYMS[strain];
+    t.data.declarer = declarer;
+    t.data.dummy = ps[(ps.findIndex((x) => x.id === declarer) + 2) % 4].id;
     t.data.phase = 'play';
     t.data.firstLead = true;
     t.data.trick = [];
-    t.data.turn = t.nextSeat(decl.id);
+    t.data.turn = t.nextSeat(declarer);
     t.public.turn = t.data.turn;
-    const leader = ps.find((p) => p.id === t.data.turn);
-    t.say('Contract: ' + (m[1] || '') + m[2].toUpperCase() + ' by ' + decl.name + '. ' + leader.name + ' leads.');
+    t.announce('Contract: ' + (level || '') + this.SYMS[strain] + (dbl ? ' ' + dbl : '') + ' by '
+      + this.nameOf(t, declarer) + ' — ' + this.nameOf(t, t.data.turn) + ' leads');
   },
   // Lays the dummy's whole hand face up in two sorted rows by their seat,
   // oriented to face them; the declarer plays these by sliding to the middle.
@@ -1546,7 +1651,7 @@ const RULES_TEMPLATES = {
     if (t.data.phase === 'bid') {
       // While bidding, all 52 cards stay where they are — hands in hands.
       if (['play', 'handPile', 'draw', 'deal', 'toHand', 'flip', 'addDeck'].includes(a.t)) {
-        return 'Bidding — cards stay in hand until "!contract 4H <name>"';
+        return 'Bidding — cards stay in hand ("!bid 1H", "!pass", ...)';
       }
       return;
     }
@@ -1599,7 +1704,6 @@ const RULES_TEMPLATES = {
     }
   },
   onAction(t, a) {
-    if (a.t === 'chat') return this.onChat(t, a);
     if (t.data.phase !== 'play') return;
     if (a.t === 'play') return this.recordPlay(t, { p: a.p, d: a.d, i: a.i });
     // declarer sliding a dummy card into the middle = the dummy's play
@@ -1620,8 +1724,7 @@ const RULES_TEMPLATES = {
       const s = this.suitOf(t, c), ws = this.suitOf(t, win), tr = t.data.trump;
       if ((s === ws && this.rankOf(t, c) > this.rankOf(t, win)) || (tr && s === tr && ws !== tr)) win = c;
     }
-    const ps = this.seats(t);
-    const side = ps.indexOf(win.p) % 2;
+    const side = this.sideOf(t, win.p);
     t.data.tricks[side]++;
     const winner = t.players().find((p) => p.id === win.p);
     // sweep the four cards into the winning side's face-down trick pile
@@ -1637,10 +1740,14 @@ const RULES_TEMPLATES = {
     t.data.trick = [];
     t.say('Trick to ' + winner.name + ' — ' + this.sideName(t, 0) + ' ' + t.data.tricks[0] + ' : ' + t.data.tricks[1] + ' ' + this.sideName(t, 1));
     if (t.data.tricks[0] + t.data.tricks[1] === 13) {
-      const made = t.data.tricks[ps.indexOf(t.data.declarer) % 2];
-      let msg = 'Hand over — declarer side took ' + made + ' tricks';
-      if (t.data.level) msg += made >= 6 + t.data.level ? ' — contract MADE' : ' — DOWN ' + (6 + t.data.level - made);
-      t.say(msg);
+      const dSide = this.sideOf(t, t.data.declarer);
+      const made = t.data.tricks[dSide];
+      const target = t.data.level ? 6 + t.data.level : null;
+      const success = target === null || made >= target;
+      const winSide = success ? dSide : 1 - dSide;
+      let msg = this.sideName(t, winSide) + ' win — declarer took ' + made + ' tricks';
+      if (target) msg += success ? ' (contract MADE)' : ' (DOWN ' + (target - made) + ')';
+      t.win(this.sidePids(t, winSide), msg + ' 🏆');
       t.data.phase = 'done';
       t.public.turn = null;
     } else {

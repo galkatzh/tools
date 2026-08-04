@@ -50,6 +50,7 @@ A rules script is a JS object literal the host writes in a dialog:
   },
   buttons: (t) => [{ id: 'flop', label: 'Deal flop' }],
   onButton(t, id, byPid) { ... },   // scripted UI buttons
+  onChat(t, text, byPid) { ... },   // chat commands: bids, raises, votes, ...
   onJoin(t, pid) { ... },           // player joins/rejoins mid-game
   onLeave(t, pid) { ... },          // player disconnects
   onTimer(t, tag) { ... },          // fired by t.schedule(seconds, tag)
@@ -91,9 +92,13 @@ A thin wrapper over existing internals in `app.js`:
   through `logEvent`/`mark`, so automations are visible in the table log
   and as name bulbs — the same anti-cheat property as human actions.
 - **Player interaction**: `t.say(msg)` (log line as Rules),
-  `t.tell(pid, msg)` (targeted toast), scripted `buttons` (global,
-  per-player, or host-only), and `t.schedule(seconds, tag)` → `onTimer`
-  for turn clocks and reveal delays (timers persist in `t.data`).
+  `t.tell(pid, msg)` (targeted toast), `t.announce(msg)` (a big banner on
+  every screen, also logged), `t.win(winners, msg)` (sets
+  `public.winners`, rendered by the engine as 🏆 on the winners' seat
+  labels — the generic way any game declares its outcome), scripted
+  `buttons` (global, per-player, or host-only), and
+  `t.schedule(seconds, tag)` → `onTimer` for turn clocks and reveal
+  delays (timers persist in `t.data`).
 - **Convenience utils** (pure functions, no engine state):
   `t.nextSeat(pid)` (next occupied seat clockwise), `t.cardName(ref)`.
   Scripts own all actual game logic.
