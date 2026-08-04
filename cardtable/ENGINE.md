@@ -139,10 +139,13 @@ the default.
 
 1. **Turn order** — locks play/deal/draw to the current turn, advances on
    `play`, shows ⏳ on the active seat. A composable base for any game.
-2. **Poker dealer (Hold'em)** — buttons: *New hand* (collect all cards
-   into the deck, shuffle, deal 2 to each hand), *Flop* (burn 1, deal 3
-   face up), *Turn*, *River*. Proves a full game loop runs on the engine.
-   No chips/betting arithmetic (chips can be a custom deck).
+2. **Poker dealer (Hold'em)** — gated street buttons (*New hand*, *Flop*,
+   *Turn*, *River*, *Showdown*) plus per-player *Fold*. The showdown
+   evaluates each contender's best 5 of 7 (all standard rankings, wheel
+   included), reveals the hole cards, and awards the pot automatically —
+   ties split; a lone unfolded player wins instantly. Proves a full game
+   loop incl. outcome determination runs as pure script. No chips/betting
+   arithmetic (chips can be a custom deck).
 3. **War / simple dealer** — deal N to all, flip top on a button; the
    minimal-script example.
 

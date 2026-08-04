@@ -182,6 +182,7 @@ function opDealTop(actor, pileId, o = {}) {
   const pile = host.items[pileId];
   const c = pile?.k === 'p' && pile.cards.pop();
   if (!c) { console.warn('opDealTop: no card to deal', pileId); return false; }
+  let nid = null;
   if (o.to) {
     const pl = host.players[o.to];
     if (!pl) { pile.cards.push(c); console.warn('opDealTop: unknown player', o.to); return false; }
@@ -189,14 +190,15 @@ function opDealTop(actor, pileId, o = {}) {
     logEvent(actor, `dealt a card from ${itemLabel(pile)} to ${pl.name || 'a player'}`);
   } else {
     const at = clampToFelt(o.x ?? pile.x + CARD_W + 18, o.y ?? pile.y);
-    const nid = uid();
+    nid = uid();
     host.items[nid] = { k: 'c', x: at.x, y: at.y, rot: ((o.rot || 0) % 360 + 360) % 360, z: zTop(), d: c.d, i: c.i, up: !!o.up };
     logEvent(actor, `dealt ${o.up ? cardName(c.d, c.i) : 'a card face down'} from ${itemLabel(pile)}`);
     mark(actor, nid);
   }
   mark(actor, pileId);
   dropIfEmpty(pileId);
-  return true;
+  // the dealt card's identity, so scripts can track what they dealt
+  return o.to ? { d: c.d, i: c.i } : { id: nid, d: c.d, i: c.i };
 }
 
 function opShuffle(actor, pileId) {
@@ -549,6 +551,15 @@ const tApi = {
   flip: (id) => opFlip(RULES, id),
   toPile: (cardId, pileId) => opToPile(RULES, cardId, pileId),
   newPile: (cards, o) => opNewPile(RULES, cards, o),
+  merge(fromId, toId) {
+    const from = host.items[fromId], to = host.items[toId];
+    if (from?.k !== 'p' || to?.k !== 'p' || from === to) return false;
+    logEvent(RULES, `merged ${itemLabel(from)} (${from.cards.length} cards) into ${itemLabel(to)}`);
+    mark(RULES, toId);
+    to.cards.push(...from.cards);
+    delete host.items[fromId];
+    return true;
+  },
   move(id, x, y) {
     const it = host.items[id];
     if (!it) return false;
@@ -1455,43 +1466,142 @@ const RULES_TEMPLATES = {
 })`,
   holdem: `({
   name: "Hold'em dealer",
+  // A dealer that also CALLS THE HAND: gated street buttons (Flop/Turn/
+  // River), per-player Fold buttons, and a Showdown that reveals the
+  // remaining hole cards, evaluates everyone's best 5 of 7, and awards the
+  // pot automatically (ties split). No betting arithmetic — chips are yours.
   setup(t) { t.say("Hold'em dealer ready — use the buttons under the table."); },
-  buttons: () => [
-    { id: 'new', label: '🂠 New hand' },
-    { id: 'flop', label: 'Flop' },
-    { id: 'turn', label: 'Turn' },
-    { id: 'river', label: 'River' },
-  ],
-  deck(t) { // the biggest pile on the table acts as the deck
-    return t.piles().sort((a, b) => b.cards.length - a.cards.length)[0];
+  buttons(t) {
+    const d = t.data, btns = [{ id: 'new', label: '🂠 New hand' }];
+    if (d.stage === 'hand') {
+      const n = d.comm.length;
+      if (n === 0) btns.push({ id: 'flop', label: 'Flop' });
+      if (n === 3) btns.push({ id: 'turn', label: 'Turn' });
+      if (n === 4) btns.push({ id: 'river', label: 'River' });
+      if (n === 5) btns.push({ id: 'show', label: '⚔️ Showdown' });
+      for (const p of t.players()) {
+        if (p.handCount === 2 && !d.folded.includes(p.id)) btns.push({ id: 'fold', label: 'Fold', pid: p.id });
+      }
+    }
+    return btns;
   },
-  // showdown is decided by the humans: anyone types "!winner <name>"
-  onChat(t, msg) {
-    const m = /^!winner\\s+(.+)$/i.exec(msg);
-    if (!m) return;
-    const w = t.players().find((x) => x.name.toLowerCase().startsWith(m[1].trim().toLowerCase()));
-    if (w) t.win([w.id], w.name + ' takes the pot! 🏆');
+  deck(t) { return t.piles().filter((x) => x.id !== t.data.muckId).sort((a, b) => b.cards.length - a.cards.length)[0]; },
+  contenders(t) { return t.players().filter((p) => p.handCount === 2 && !t.data.folded.includes(p.id)); },
+  // --- hand evaluation (best 5 of 7) ---
+  HANDS: ['High card', 'Pair', 'Two pair', 'Three of a kind', 'Straight', 'Flush', 'Full house', 'Four of a kind', 'Straight flush'],
+  parsed(t, ref) {
+    const n = t.cardName(ref), r = n.slice(0, -1);
+    return { v: { A: 14, K: 13, Q: 12, J: 11 }[r] || parseInt(r, 10) || 0, s: n.slice(-1) };
   },
-  onButton(t, id) {
+  score5(cs) { // -> array compared lexicographically; [category, tiebreaks...]
+    const vs = cs.map((c) => c.v).sort((a, b) => b - a);
+    const flush = cs.every((c) => c.s === cs[0].s);
+    const u = [...new Set(vs)];
+    let straight = 0;
+    if (u.length === 5) {
+      if (u[0] - u[4] === 4) straight = u[0];
+      else if (u[0] === 14 && u[1] === 5 && u[4] === 2) straight = 5; // the wheel
+    }
+    const cnt = {};
+    for (const v of vs) cnt[v] = (cnt[v] || 0) + 1;
+    const groups = Object.entries(cnt).map(([v, c]) => [+v, c]).sort((a, b) => b[1] - a[1] || b[0] - a[0]);
+    const kick = groups.flatMap(([v, c]) => Array(c).fill(v));
+    if (flush && straight) return [8, straight];
+    if (groups[0][1] === 4) return [7, ...kick];
+    if (groups[0][1] === 3 && groups[1][1] === 2) return [6, ...kick];
+    if (flush) return [5, ...vs];
+    if (straight) return [4, straight];
+    if (groups[0][1] === 3) return [3, ...kick];
+    if (groups[0][1] === 2 && groups[1][1] === 2) return [2, ...kick];
+    if (groups[0][1] === 2) return [1, ...kick];
+    return [0, ...vs];
+  },
+  cmp(a, b) {
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const d = (a[i] || 0) - (b[i] || 0);
+      if (d) return d;
+    }
+    return 0;
+  },
+  best7(t, refs) {
+    const cs = refs.map((r) => this.parsed(t, r));
+    let best = null;
+    for (let i = 0; i < 7; i++) {
+      for (let j = i + 1; j < 7; j++) {
+        const s = this.score5(cs.filter((_, k) => k !== i && k !== j));
+        if (!best || this.cmp(s, best) > 0) best = s;
+      }
+    }
+    return best;
+  },
+  // --- flow ---
+  onButton(t, id, byPid) {
+    const d = t.data, g = t.geom();
+    if (id === 'fold') {
+      if (d.stage !== 'hand' || d.folded.includes(byPid)) return;
+      if (!d.muckId || !t.items().some((x) => x.id === d.muckId)) {
+        d.muckId = t.newPile([], { x: g.cx - 480, y: g.cy - 400, name: 'muck' });
+      }
+      d.folded.push(byPid);
+      t.takeHand(byPid, d.muckId);
+      const left = this.contenders(t);
+      if (left.length === 1) {
+        t.win([left[0].id], left[0].name + ' takes the pot — everyone else folded');
+        d.stage = 'done';
+      }
+      return;
+    }
     const deck = this.deck(t);
     if (!deck) return t.say('No pile to deal from!');
-    const g = t.geom();
     if (id === 'new') {
       for (const it of t.items()) if (it.k === 'c') t.toPile(it.id, deck.id);
+      if (d.muckId && t.items().some((x) => x.id === d.muckId)) t.merge(d.muckId, deck.id);
       for (const p of t.players()) t.takeHand(p.id, deck.id);
       t.shuffle(deck.id);
       t.dealToAll(deck.id, 2);
-      t.data.community = 0;
+      Object.assign(d, { stage: 'hand', comm: [], folded: [], muckId: null });
       t.public.winners = null;
       t.say('New hand — 2 hole cards to everyone.');
-    } else {
-      // burns collect left of the community row; streets fill it left to right
-      t.deal(deck.id, { x: g.cx - 480, y: g.cy - 220, up: false });
+      return;
+    }
+    if (id === 'flop' || id === 'turn' || id === 'river') {
+      t.deal(deck.id, { x: g.cx - 480, y: g.cy - 220, up: false }); // burn
       const n = id === 'flop' ? 3 : 1;
       for (let i = 0; i < n; i++) {
-        t.deal(deck.id, { x: g.cx - 330 + (t.data.community || 0) * 115, y: g.cy - 220, up: true });
-        t.data.community = (t.data.community || 0) + 1;
+        const c = t.deal(deck.id, { x: g.cx - 330 + d.comm.length * 115, y: g.cy - 220, up: true });
+        if (c) d.comm.push({ d: c.d, i: c.i });
       }
+      return;
+    }
+    if (id === 'show') return this.showdown(t);
+  },
+  showdown(t) {
+    const d = t.data, g = t.geom();
+    const players = this.contenders(t);
+    if (d.comm.length < 5 || !players.length) return t.say('Deal all five community cards first.');
+    const results = players.map((p) => {
+      const hole = t.hand(p.id);
+      // reveal the hole cards face up by the player's seat
+      const rad = (p.seat * Math.PI) / 180, tx = -Math.sin(rad), ty = Math.cos(rad);
+      for (let k = t.hand(p.id).length - 1; k >= 0; k--) {
+        t.playFromHand(p.id, k, {
+          x: g.cx + Math.cos(rad) * (g.r - 250) + tx * (k * 72 - 36) - 50,
+          y: g.cy + Math.sin(rad) * (g.r - 250) + ty * (k * 72 - 36) - 70,
+          up: true, rot: ((p.seat - 90) % 360 + 360) % 360,
+        });
+      }
+      const score = this.best7(t, hole.concat(d.comm));
+      return { p, score };
+    });
+    let best = results[0];
+    for (const r of results.slice(1)) if (this.cmp(r.score, best.score) > 0) best = r;
+    const winners = results.filter((r) => this.cmp(r.score, best.score) === 0);
+    const handName = this.HANDS[best.score[0]];
+    d.stage = 'done';
+    if (winners.length === 1) {
+      t.win([best.p.id], best.p.name + ' wins with ' + handName + '! 🏆');
+    } else {
+      t.win(winners.map((r) => r.p.id), 'Split pot — ' + winners.map((r) => r.p.name).join(' & ') + ' tie with ' + handName);
     }
   },
 })`,
