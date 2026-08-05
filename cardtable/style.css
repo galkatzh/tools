@@ -116,6 +116,10 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
   border: 5px solid #f8fafc;
 }
 .face.loading { display: flex; align-items: center; justify-content: center; font-size: 30px; background: #e2e8f0; }
+/* Image-less custom cards (manifest-only decks): name + rule text on a plain face. */
+.face.txt { display: flex; flex-direction: column; gap: 3px; padding: 8% 7%; background: #fdfcf7; color: #1e293b; border: 3px solid #64748b; border-radius: 6px; overflow: hidden; }
+.face.txt .tn { font-weight: 700; font-size: 12px; line-height: 1.15; }
+.face.txt .tt { font-size: 9px; line-height: 1.3; color: #475569; white-space: pre-wrap; }
 .std { background: #fff; color: #1e293b; font-weight: 600; }
 .std.r { color: #dc2626; }
 .corner { position: absolute; top: 5px; left: 7px; font-size: 17px; line-height: 1.1; text-align: center; white-space: pre-line; }
@@ -169,6 +173,8 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 .hcard .mid .mr, #ghost .mid .mr { font-size: calc(var(--hch) * 0.27); }
 .hcard .mid .ms, #ghost .mid .ms { font-size: calc(var(--hch) * 0.17); }
 .hcard .corner, #ghost .corner { font-size: calc(var(--hch) * 0.12); }
+.hcard .face.txt .tn, #ghost .face.txt .tn { font-size: calc(var(--hch) * 0.1); }
+.hcard .face.txt .tt, #ghost .face.txt .tt { font-size: calc(var(--hch) * 0.075); }
 #hand:empty::after { content: "Your hand is empty"; color: #64748b; align-self: center; font-size: 14px; }
 
 /* ghost card that follows the pointer while dragging out of the hand */
@@ -217,6 +223,11 @@ dialog ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 14px; }
 #peek-cap {
   position: absolute; bottom: 8%; left: 0; right: 0; text-align: center;
   color: #cbd5e1; font-size: 14px; pointer-events: none;
+}
+
+#help-dialog pre {
+  background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 8px;
+  font-size: 11px; overflow-x: auto; margin: 6px 0 0;
 }
 
 /* --- rules dialog --- */

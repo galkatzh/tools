@@ -100,8 +100,11 @@ A thin wrapper over existing internals in `app.js`:
   `t.schedule(seconds, tag)` → `onTimer` for turn clocks and reveal
   delays (timers persist in `t.data`).
 - **Convenience utils** (pure functions, no engine state):
-  `t.nextSeat(pid)` (next occupied seat clockwise), `t.cardName(ref)`.
-  Scripts own all actual game logic.
+  `t.nextSeat(pid)` (next occupied seat clockwise), `t.cardName(ref)`, and
+  `t.card(ref)` → `{name, rank, suit, text, meta, deck}` — `meta` being the
+  free-form JSON a custom deck's `deck.json` manifest attached to the card,
+  so scripts key game logic on `meta.cost`/`meta.type` instead of parsing
+  names. Scripts own all actual game logic.
 
 ## 3. Enforcement path (the one structural change)
 

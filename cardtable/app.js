@@ -128,9 +128,10 @@ function ensurePlayer(p, name) {
 function cardName(d, i) {
   const deck = decks[d], c = deck?.cards[i];
   if (!c) return 'a card';
-  if (c.img) return `${deck.name} #${i + 1}`;
+  if (c.n) return c.n; // custom decks carry per-card names (manifest or filename)
   if (c.r === 'JOKER') return 'Joker 🃏';
-  return c.r + c.s;
+  if (c.r) return c.r + c.s;
+  return `${deck.name} #${i + 1}`;
 }
 function itemLabel(it) {
   if (it.k === 'c') return it.up ? cardName(it.d, it.i) : 'a face-down card';
@@ -615,6 +616,16 @@ const tApi = {
     return ps.length ? ps[(i + 1) % ps.length].id : p;
   },
   cardName: (ref) => cardName(ref.d, ref.i),
+  /** Full card identity for game logic: {name, rank, suit, text, meta, deck}.
+   *  `meta` is the free-form JSON from a custom deck's manifest. */
+  card(ref) {
+    const deck = decks[ref.d], c = deck?.cards[ref.i];
+    if (!c) return null;
+    return structuredClone({
+      name: cardName(ref.d, ref.i), rank: c.r, suit: c.s, text: c.txt,
+      meta: c.meta, deck: deck.name,
+    });
+  },
 };
 
 // Fire due script timers (t.schedule). They live in rules.data, so they
@@ -857,9 +868,12 @@ let scale = 1;
 function faceHTML(d, i) {
   const deck = decks[d], c = deck?.cards[i];
   if (!c) return '<div class="face loading">🂠</div>'; // deck data not yet received
-  if (c.img) return `<img class="face" src="${c.img}" alt="">`;
+  const img = c.img ?? (c.g != null ? deck.imgs?.[c.g] : null); // g: shared-image index (copies ship the image once)
+  if (img) return `<img class="face" src="${img}" alt="">`;
   if (c.r === 'JOKER') return `<div class="face std ${c.c}"><div class="corner">★</div><div class="mid joker">🃏</div><div class="corner br">★</div></div>`;
-  return `<div class="face std ${c.c}"><div class="corner">${c.r}\n${c.s}</div><div class="mid"><div class="mr">${c.r}</div><div class="ms">${c.s}</div></div><div class="corner br">${c.r}\n${c.s}</div></div>`;
+  if (c.r) return `<div class="face std ${c.c}"><div class="corner">${c.r}\n${c.s}</div><div class="mid"><div class="mr">${c.r}</div><div class="ms">${c.s}</div></div><div class="corner br">${c.r}\n${c.s}</div></div>`;
+  // Image-less custom card: rendered from its manifest name/text/color.
+  return `<div class="face txt" style="border-color:${esc(c.col || '#64748b')}"><div class="tn">${esc(c.n || '')}</div>${c.txt ? `<div class="tt">${esc(c.txt)}</div>` : ''}</div>`;
 }
 function backHTML(d) {
   const b = decks[d]?.back;
@@ -2116,6 +2130,60 @@ async function fileToDataURL(file, max = 560) {
   return canvas.toDataURL('image/webp', 0.8);
 }
 
+/** Card name from an image filename: "dragon_rider.png" → "dragon rider". */
+const nameFromFile = (fn) => fn.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim().slice(0, 60);
+
+/** Custom deck without a manifest: one card per image, named after its file. */
+async function filenameDeck(images) {
+  const imgs = [], cards = [];
+  for (const f of images) {
+    cards.push({ g: imgs.length, n: nameFromFile(f.name) });
+    imgs.push(await fileToDataURL(f));
+  }
+  return { name: 'Deck', back: null, imgs, cards };
+}
+
+/** Custom deck from a deck.json manifest plus its images. Entries:
+ *  { file?, name?, count?, text?, color?, meta? } — `file`-less entries render
+ *  as text cards; `meta` is free-form JSON for rules scripts (t.card).
+ *  Each image is stored once in deck.imgs and shared by all its copies. */
+async function manifestDeck(m, images) {
+  if (!Array.isArray(m.cards) || !m.cards.length) throw new Error('deck.json needs a non-empty "cards" array');
+  const byName = new Map(images.map((f) => [f.name, f]));
+  const imgs = [], gOf = new Map(); // filename → index into imgs
+  const imgIdx = async (fn) => {
+    if (!gOf.has(fn)) {
+      const f = byName.get(fn);
+      if (!f) throw new Error(`deck.json references "${fn}" but no such image was uploaded`);
+      gOf.set(fn, imgs.length);
+      imgs.push(await fileToDataURL(f));
+    }
+    return gOf.get(fn);
+  };
+  const cards = [];
+  for (const e of m.cards) {
+    if (!e.file && !e.name) throw new Error('every deck.json card needs a "file" or a "name"');
+    const card = {
+      n: String(e.name ?? nameFromFile(e.file)).slice(0, 60),
+      ...(e.file ? { g: await imgIdx(String(e.file)) } : {}),
+      ...(e.text ? { txt: String(e.text).slice(0, 300) } : {}),
+      ...(e.color ? { col: String(e.color).slice(0, 24) } : {}),
+      ...(e.meta !== undefined ? { meta: e.meta } : {}),
+    };
+    const count = Math.min(Math.max(1, e.count | 0 || 1), 500);
+    for (let k = 0; k < count; k++) cards.push(card); // copies share the object; card defs are never mutated
+  }
+  const deck = { name: String(m.name || 'Deck').slice(0, 24), back: null, imgs, cards };
+  if (m.back != null) deck.back = imgs[await imgIdx(String(m.back))];
+  // Uploaded images the manifest didn't mention still join, filename-named.
+  for (const f of images) {
+    if (gOf.has(f.name)) continue;
+    cards.push({ g: imgs.length, n: nameFromFile(f.name) });
+    imgs.push(await fileToDataURL(f));
+  }
+  return deck;
+}
+
 $('deck-form').addEventListener('submit', async (e) => {
   if (e.submitter?.value !== 'add') return;
   e.preventDefault();
@@ -2128,11 +2196,19 @@ $('deck-form').addEventListener('submit', async (e) => {
       if (name) deck.name = name;
     } else {
       const files = [...$('deck-files').files];
-      if (!files.length) { toast('Pick at least one card image'); return; }
-      const cards = [];
-      for (const f of files) cards.push({ img: await fileToDataURL(f) });
+      const mf = files.find((f) => /\.json$/i.test(f.name));
+      const images = files.filter((f) => f !== mf);
+      if (!mf && !images.length) { toast('Pick card images and/or a deck.json'); return; }
+      if (mf) {
+        let m;
+        try { m = JSON.parse(await mf.text()); } catch (err) { throw new Error(`${mf.name} is not valid JSON: ${err.message}`); }
+        deck = await manifestDeck(m, images);
+      } else {
+        deck = await filenameDeck(images);
+      }
       const backFile = $('deck-back').files[0];
-      deck = { name: name || 'Deck', back: backFile ? await fileToDataURL(backFile) : null, cards };
+      if (backFile) deck.back = await fileToDataURL(backFile);
+      if (name) deck.name = name;
     }
     act({ t: 'addDeck', deckId: uid(), deck, x: TABLE_W / 2 - CARD_W / 2, y: TABLE_H / 2 - CARD_H / 2 });
     $('deck-dialog').close();

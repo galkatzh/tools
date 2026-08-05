@@ -76,6 +76,38 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   as per-deck deltas (guests merge), so each player downloads a deck once and
   adding a second deck never re-ships the first.
 
+## Custom decks for custom games
+
+Uploaded cards are **named after their files** — `dragon_rider.png` becomes
+"dragon rider" — so the log can say *played dragon rider* instead of
+"MyDeck #7". For full control, include a **`deck.json`** manifest in the
+same file picker as the images:
+
+```json
+{ "name": "My Game", "back": "back.png",
+  "cards": [
+    { "file": "dragon.png", "name": "Ancient Dragon", "count": 2,
+      "meta": { "cost": 5, "type": "creature", "power": 7 } },
+    { "name": "Gold", "text": "Worth 1 coin", "color": "#eab308", "count": 20 }
+  ] }
+```
+
+- `name`/`count` control display and copies; each image is stored **once**
+  (cards reference a shared image table), so 20 copies cost the bytes of one.
+- A card without a `file` renders as a **text card** — name, rule text, and
+  an accent color drawn in DOM/CSS like the standard deck. A manifest-only
+  deck needs no art at all and weighs a few KB, the fastest way to prototype
+  a game.
+- `meta` is free-form JSON the app never interprets: rules scripts read it
+  via `t.card(ref)` (→ `{name, rank, suit, text, meta, deck}`), so a script
+  can enforce `meta.cost` or `meta.type` instead of parsing card names.
+- `back` names an uploaded image to use as the card back (the separate back
+  picker still works and wins if both are given).
+- Fail-loudly validation: bad JSON, a `file` that matches no uploaded image,
+  or an entry with neither `file` nor `name` abort the upload with a visible
+  error. Uploaded images the manifest doesn't mention still join the deck,
+  filename-named.
+
 ## Scriptable rules (📜)
 
 The host can write JavaScript that turns the free-form simulator into an
