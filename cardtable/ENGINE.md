@@ -122,9 +122,11 @@ actions.
   exact code being enforced** in a read-only view — the same
   everything-on-the-record philosophy as the table log.
 - `public` is script-controlled JSON for UI: `{ turn: pid }` highlights
-  that player's **seat label** (⏳ + glow) on every screen; `buttons`
-  renders a scripted-button row (visibility per button), and clicks route
-  back to `onButton` via a `rulesBtn` action.
+  that player's **seat label** (⏳ + glow) on every screen; `winners`
+  renders 🏆; `badges` ({pid: text}) appends per-player text to seat
+  labels (chip stacks, scores, tricks won — any game's counters);
+  `buttons` renders a scripted-button row (visibility per button), and
+  clicks route back to `onButton` via a `rulesBtn` action.
 - Host UI: a "📜 Rules" toolbar button → dialog with name, a monospace
   `<textarea>` editor, an examples dropdown, Enable / Disable, and a live
   error line. Guests: the same dialog, read-only.
@@ -139,13 +141,17 @@ the default.
 
 1. **Turn order** — locks play/deal/draw to the current turn, advances on
    `play`, shows ⏳ on the active seat. A composable base for any game.
-2. **Poker dealer (Hold'em)** — gated street buttons (*New hand*, *Flop*,
-   *Turn*, *River*, *Showdown*) plus per-player *Fold*. The showdown
-   evaluates each contender's best 5 of 7 (all standard rankings, wheel
-   included), reveals the hole cards, and awards the pot automatically —
-   ties split; a lone unfolded player wins instantly. Proves a full game
-   loop incl. outcome determination runs as pure script. No chips/betting
-   arithmetic (chips can be a custom deck).
+2. **No-limit Hold'em with chips** — stacks tracked per player and shown
+   on seat labels (via the generic `public.badges`), automatic blinds with
+   a rotating dealer button, turn-enforced betting rounds (Check/Call/Fold
+   buttons for the actor; `!bet N` / `!raise N` / `!allin` in chat, with
+   min-raise validation), streets that deal themselves when a round
+   closes, automatic all-in run-outs, and a showdown that evaluates each
+   contender's best 5 of 7 (all standard rankings, wheel included), builds
+   main + side pots from the contribution ledger, and pays each pot to the
+   best eligible hand — ties split, odd chips forward. `!rebuy` and
+   `!blinds a b` between hands. Proves a complete money game runs as pure
+   script.
 3. **War / simple dealer** — deal N to all, flip top on a button; the
    minimal-script example.
 

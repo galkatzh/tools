@@ -93,10 +93,12 @@ Scripts run **on the host only** — guests receive data, never code — and
 everyone can read the exact script being enforced (read-only view in the
 Rules dialog). A script error disables the rules loudly rather than wedging
 the game; rules, their state, and pending timers survive host reloads.
-Templates ship for turn order, a Hold'em dealer (gated street buttons,
-per-player Fold, and an automatic showdown: the script evaluates every
-contender's best 5 of 7 and awards the pot itself, splitting ties),
-**Bridge** (a real chat auction — `!bid 1H`,
+Templates ship for turn order, full **no-limit Hold'em with chips** (stacks
+on the seat labels, automatic blinds with a rotating button, turn-enforced
+betting via buttons and chat — `!bet 50`, `!allin`, `!rebuy` — streets that
+deal themselves when a round closes, all-in run-outs, and an automatic
+showdown that evaluates best-5-of-7, builds side pots, and pays each pot to
+the right hands), **Bridge** (a real chat auction — `!bid 1H`,
 `!pass`, `!double`, dealer rotation, insufficiency checks — then enforced
 turns and follow-suit, the dummy laid face-up and played by the declarer,
 trump-aware trick resolution, sweeping, scoring, and a 🏆 for the winning

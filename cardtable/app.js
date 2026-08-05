@@ -909,7 +909,8 @@ let seatSig = '';
 function renderPlayers() {
   const turn = view.rules?.enabled ? view.rules.public?.turn : null;
   const winners = (view.rules?.enabled && view.rules.public?.winners) || [];
-  const sig = `${JSON.stringify(view.players)}|${turn}|${winners.join()}|${viewAngle.toFixed(1)}|${scale.toFixed(4)}|${panX | 0},${panY | 0}|${wrapEl.clientWidth}`;
+  const badges = (view.rules?.enabled && view.rules.public?.badges) || {};
+  const sig = `${JSON.stringify(view.players)}|${turn}|${winners.join()}|${JSON.stringify(badges)}|${viewAngle.toFixed(1)}|${scale.toFixed(4)}|${panX | 0},${panY | 0}|${wrapEl.clientWidth}`;
   if (sig === seatSig) return;
   seatSig = sig;
   for (const el of wrapEl.querySelectorAll('.seat')) el.remove();
@@ -922,7 +923,7 @@ function renderPlayers() {
     el.style.borderColor = pl.color;
     el.style.left = `${sx}px`;
     el.style.top = `${sy}px`;
-    el.textContent = `${winners.includes(p) ? '🏆 ' : ''}${p === turn ? '⏳ ' : ''}${pl.name || 'Player'} 🂠${pl.handCount}`;
+    el.textContent = `${winners.includes(p) ? '🏆 ' : ''}${p === turn ? '⏳ ' : ''}${pl.name || 'Player'} 🂠${pl.handCount}${badges[p] ? ` ${badges[p]}` : ''}`;
     wrapEl.appendChild(el);
   }
 }
@@ -1465,35 +1466,198 @@ const RULES_TEMPLATES = {
   },
 })`,
   holdem: `({
-  name: "Hold'em dealer",
-  // A dealer that also CALLS THE HAND: gated street buttons (Flop/Turn/
-  // River), per-player Fold buttons, and a Showdown that reveals the
-  // remaining hole cards, evaluates everyone's best 5 of 7, and awards the
-  // pot automatically (ties split). No betting arithmetic — chips are yours.
-  setup(t) { t.say("Hold'em dealer ready — use the buttons under the table."); },
+  name: "Hold'em (chips)",
+  // Full no-limit Hold'em with chip tracking: stacks live on the seat labels
+  // (💰), blinds post automatically (dealer button rotates), betting rounds
+  // are turn-enforced — buttons for Check/Call/Fold, chat for sizing:
+  // "!bet 50" / "!raise 50" (raise TO 50), "!allin", "!check", "!call",
+  // "!fold". Streets deal themselves when a round closes, all-ins run out
+  // automatically, and the showdown evaluates best-5-of-7, builds side pots,
+  // and pays every pot to the right hands (ties split). Between hands:
+  // "!rebuy" tops a busted stack up, "!blinds 5 10" changes the blinds.
+  BUYIN: 1000,
+  setup(t) {
+    t.data.stacks ||= {};
+    t.data.blinds ||= { sb: 5, bb: 10 };
+    for (const p of t.players()) t.data.stacks[p.id] ??= this.BUYIN;
+    this.badges(t);
+    t.say("Hold'em: everyone starts with 💰" + this.BUYIN + '. Press New hand.');
+  },
+  onJoin(t, p) { t.data.stacks ||= {}; t.data.stacks[p] ??= this.BUYIN; this.badges(t); },
+  badges(t) {
+    t.public.badges = Object.fromEntries(t.players().map((p) => [p.id, '💰' + (t.data.stacks[p.id] ?? 0)]));
+  },
+  nameOf(t, p) { return (t.players().find((x) => x.id === p) || {}).name || '?'; },
+  deck(t) { return t.piles().filter((x) => x.id !== t.data.muckId).sort((a, b) => b.cards.length - a.cards.length)[0]; },
+  funded(t) { return t.players().filter((p) => (t.data.stacks[p.id] || 0) > 0 || p.handCount === 2); },
+  contenders(t) { return t.players().filter((p) => p.handCount === 2 && !t.data.folded.includes(p.id)); },
+  active(t) { return this.contenders(t).filter((p) => t.data.stacks[p.id] > 0); },
+  nextFrom(t, p, list) {
+    let q = p;
+    for (let i = 0; i < 16; i++) { q = t.nextSeat(q); if (list.some((x) => x.id === q)) return q; }
+    return null;
+  },
+  put(t, p, amt) {
+    const d = t.data;
+    amt = Math.max(0, Math.min(amt, d.stacks[p]));
+    d.stacks[p] -= amt;
+    d.paid[p] = (d.paid[p] || 0) + amt;
+    d.bet[p] = (d.bet[p] || 0) + amt;
+    d.pot += amt;
+    this.badges(t);
+    return amt;
+  },
   buttons(t) {
     const d = t.data, btns = [{ id: 'new', label: '🂠 New hand' }];
-    if (d.stage === 'hand') {
-      const n = d.comm.length;
-      if (n === 0) btns.push({ id: 'flop', label: 'Flop' });
-      if (n === 3) btns.push({ id: 'turn', label: 'Turn' });
-      if (n === 4) btns.push({ id: 'river', label: 'River' });
-      if (n === 5) btns.push({ id: 'show', label: '⚔️ Showdown' });
-      for (const p of t.players()) {
-        if (p.handCount === 2 && !d.folded.includes(p.id)) btns.push({ id: 'fold', label: 'Fold', pid: p.id });
-      }
+    if (d.stage === 'hand' && d.turn) {
+      const owed = d.curBet - (d.bet[d.turn] || 0);
+      btns.push(owed > 0
+        ? { id: 'call', label: 'Call ' + Math.min(owed, d.stacks[d.turn]), pid: d.turn }
+        : { id: 'check', label: 'Check', pid: d.turn });
+      btns.push({ id: 'fold', label: 'Fold', pid: d.turn });
     }
     return btns;
   },
-  deck(t) { return t.piles().filter((x) => x.id !== t.data.muckId).sort((a, b) => b.cards.length - a.cards.length)[0]; },
-  contenders(t) { return t.players().filter((p) => p.handCount === 2 && !t.data.folded.includes(p.id)); },
+  onButton(t, id, byPid) {
+    if (id === 'new') return this.startHand(t);
+    this.doAction(t, byPid, id);
+  },
+  onChat(t, msg, p) {
+    const d = t.data;
+    let m;
+    if ((m = /^!(check|call|fold|allin)$/i.exec(msg))) return this.doAction(t, p, m[1].toLowerCase());
+    if ((m = /^!(?:bet|raise)\\s+(\\d+)$/i.exec(msg))) return this.doAction(t, p, 'bet', +m[1]);
+    if (/^!rebuy$/i.test(msg)) {
+      if (d.stage === 'hand' && this.contenders(t).some((x) => x.id === p)) return t.tell(p, 'After this hand');
+      d.stacks[p] = (d.stacks[p] || 0) + this.BUYIN;
+      this.badges(t);
+      return t.say(this.nameOf(t, p) + ' rebuys for ' + this.BUYIN);
+    }
+    if ((m = /^!blinds\\s+(\\d+)\\s+(\\d+)$/i.exec(msg))) {
+      if (d.stage === 'hand') return t.tell(p, 'After this hand');
+      d.blinds = { sb: +m[1], bb: +m[2] };
+      return t.say('Blinds set to ' + m[1] + '/' + m[2]);
+    }
+  },
+  startHand(t) {
+    const d = t.data, deckP = this.deck(t);
+    if (!deckP) return t.say('No deck on the table!');
+    if (d.stage === 'hand') { // abandon the current hand: refund every bet
+      for (const [p, amt] of Object.entries(d.paid || {})) d.stacks[p] += amt;
+      t.say('Hand abandoned — bets refunded.');
+    }
+    const funded = t.players().filter((p) => (d.stacks[p.id] || 0) > 0);
+    if (funded.length < 2) return t.say('Need 2+ players with chips ("!rebuy" if busted).');
+    for (const it of t.items()) if (it.k === 'c') t.toPile(it.id, deckP.id);
+    if (d.muckId && t.items().some((x) => x.id === d.muckId)) t.merge(d.muckId, deckP.id);
+    for (const p of t.players()) t.takeHand(p.id, deckP.id);
+    t.shuffle(deckP.id);
+    for (const p of funded) { t.deal(deckP.id, { to: p.id }); t.deal(deckP.id, { to: p.id }); }
+    Object.assign(d, { stage: 'hand', comm: [], folded: [], muckId: null, paid: {}, bet: {}, pot: 0 });
+    t.public.winners = null;
+    d.dealer = d.dealer && funded.some((x) => x.id !== d.dealer) ? this.nextFrom(t, d.dealer, funded) : funded[0].id;
+    const sb = funded.length === 2 ? d.dealer : this.nextFrom(t, d.dealer, funded);
+    const bb = this.nextFrom(t, sb, funded);
+    this.put(t, sb, d.blinds.sb);
+    this.put(t, bb, d.blinds.bb);
+    d.curBet = d.blinds.bb;
+    d.minRaise = d.blinds.bb;
+    const act = this.active(t);
+    d.pending = act.map((x) => x.id);
+    d.turn = this.nextFrom(t, bb, act);
+    t.public.turn = d.turn;
+    t.announce('New hand — blinds ' + d.blinds.sb + '/' + d.blinds.bb + ' (' + this.nameOf(t, sb) + '/' + this.nameOf(t, bb) + '), ' + this.nameOf(t, d.turn) + ' to act');
+  },
+  doAction(t, p, kind, amt) {
+    const d = t.data;
+    if (d.stage !== 'hand' || !d.turn) return t.tell(p, 'No betting right now');
+    if (p !== d.turn) return t.tell(p, 'Not your turn');
+    const name = this.nameOf(t, p);
+    const owed = d.curBet - (d.bet[p] || 0);
+    if (kind === 'check') {
+      if (owed > 0) return t.tell(p, 'You must call ' + owed + ' (or raise / fold)');
+      t.say(name + ' checks');
+    } else if (kind === 'call') {
+      if (owed <= 0) return this.doAction(t, p, 'check');
+      const paid = this.put(t, p, owed);
+      t.say(name + ' calls ' + paid + (d.stacks[p] === 0 ? ' (all-in)' : ''));
+    } else if (kind === 'fold') {
+      d.folded.push(p);
+      if (!d.muckId || !t.items().some((x) => x.id === d.muckId)) {
+        const g = t.geom();
+        d.muckId = t.newPile([], { x: g.cx - 480, y: g.cy - 400, name: 'muck' });
+      }
+      t.takeHand(p, d.muckId);
+      t.say(name + ' folds');
+    } else if (kind === 'bet') {
+      if (!(amt > 0)) return t.tell(p, 'Say "!bet 50" (the round total to raise to)');
+      const maxTotal = (d.bet[p] || 0) + d.stacks[p];
+      if (amt >= maxTotal) return this.doAction(t, p, 'allin');
+      const delta = amt - d.curBet;
+      if (delta < d.minRaise) return t.tell(p, 'Min raise to ' + (d.curBet + d.minRaise));
+      this.put(t, p, amt - (d.bet[p] || 0));
+      d.minRaise = delta;
+      d.curBet = amt;
+      t.say(name + ' raises to ' + amt);
+      return this.afterAction(t, p, true);
+    } else if (kind === 'allin') {
+      const total = (d.bet[p] || 0) + d.stacks[p];
+      if (total <= 0) return t.tell(p, 'No chips left — "!rebuy" after the hand');
+      this.put(t, p, d.stacks[p]);
+      const raised = total > d.curBet;
+      if (raised) { d.minRaise = Math.max(d.minRaise, total - d.curBet); d.curBet = total; }
+      t.say(name + ' is ALL-IN for ' + total);
+      return this.afterAction(t, p, raised);
+    }
+    this.afterAction(t, p, false);
+  },
+  afterAction(t, p, raised) {
+    const d = t.data;
+    if (raised) d.pending = this.active(t).map((x) => x.id).filter((id) => id !== p);
+    else d.pending = d.pending.filter((id) => id !== p);
+    const live = this.contenders(t);
+    if (live.length === 1) {
+      d.stacks[live[0].id] += d.pot;
+      this.badges(t);
+      d.stage = 'done';
+      d.turn = null;
+      t.public.turn = null;
+      return t.win([live[0].id], live[0].name + ' takes the pot (' + d.pot + ') — everyone else folded');
+    }
+    if (!d.pending.length) return this.nextStreet(t);
+    const waiting = this.active(t).filter((x) => d.pending.includes(x.id));
+    d.turn = this.nextFrom(t, p, waiting);
+    t.public.turn = d.turn;
+  },
+  nextStreet(t) {
+    const d = t.data, g = t.geom();
+    d.bet = {};
+    d.curBet = 0;
+    d.minRaise = d.blinds.bb;
+    d.turn = null;
+    t.public.turn = null;
+    if (d.comm.length === 5) return this.showdown(t);
+    const deckP = this.deck(t);
+    t.deal(deckP.id, { x: g.cx - 480, y: g.cy - 220, up: false }); // burn
+    const n = d.comm.length === 0 ? 3 : 1;
+    for (let i = 0; i < n; i++) {
+      const c = t.deal(deckP.id, { x: g.cx - 330 + d.comm.length * 115, y: g.cy - 220, up: true });
+      if (c) d.comm.push({ d: c.d, i: c.i });
+    }
+    t.announce((n === 3 ? 'Flop' : d.comm.length === 4 ? 'Turn' : 'River') + ' — pot ' + d.pot);
+    const act = this.active(t);
+    if (act.length <= 1) return this.nextStreet(t); // all-in run-out
+    d.pending = act.map((x) => x.id);
+    d.turn = this.nextFrom(t, d.dealer, act);
+    t.public.turn = d.turn;
+  },
   // --- hand evaluation (best 5 of 7) ---
   HANDS: ['High card', 'Pair', 'Two pair', 'Three of a kind', 'Straight', 'Flush', 'Full house', 'Four of a kind', 'Straight flush'],
   parsed(t, ref) {
     const n = t.cardName(ref), r = n.slice(0, -1);
     return { v: { A: 14, K: 13, Q: 12, J: 11 }[r] || parseInt(r, 10) || 0, s: n.slice(-1) };
   },
-  score5(cs) { // -> array compared lexicographically; [category, tiebreaks...]
+  score5(cs) {
     const vs = cs.map((c) => c.v).sort((a, b) => b - a);
     const flush = cs.every((c) => c.s === cs[0].s);
     const u = [...new Set(vs)];
@@ -1534,74 +1698,73 @@ const RULES_TEMPLATES = {
     }
     return best;
   },
-  // --- flow ---
-  onButton(t, id, byPid) {
-    const d = t.data, g = t.geom();
-    if (id === 'fold') {
-      if (d.stage !== 'hand' || d.folded.includes(byPid)) return;
-      if (!d.muckId || !t.items().some((x) => x.id === d.muckId)) {
-        d.muckId = t.newPile([], { x: g.cx - 480, y: g.cy - 400, name: 'muck' });
-      }
-      d.folded.push(byPid);
-      t.takeHand(byPid, d.muckId);
-      const left = this.contenders(t);
-      if (left.length === 1) {
-        t.win([left[0].id], left[0].name + ' takes the pot — everyone else folded');
-        d.stage = 'done';
-      }
-      return;
+  /** Main + side pots from per-player contributions. Pure data -> data. */
+  buildPots(paid, contenderIds) {
+    const lvls = [...new Set(contenderIds.map((p) => paid[p] || 0))].sort((a, b) => a - b);
+    const pots = [];
+    let prev = 0;
+    for (const lvl of lvls) {
+      let amt = 0;
+      for (const v of Object.values(paid)) amt += Math.max(0, Math.min(v, lvl) - prev);
+      const elig = contenderIds.filter((p) => (paid[p] || 0) >= lvl);
+      if (amt > 0) pots.push({ amt, elig });
+      prev = lvl;
     }
-    const deck = this.deck(t);
-    if (!deck) return t.say('No pile to deal from!');
-    if (id === 'new') {
-      for (const it of t.items()) if (it.k === 'c') t.toPile(it.id, deck.id);
-      if (d.muckId && t.items().some((x) => x.id === d.muckId)) t.merge(d.muckId, deck.id);
-      for (const p of t.players()) t.takeHand(p.id, deck.id);
-      t.shuffle(deck.id);
-      t.dealToAll(deck.id, 2);
-      Object.assign(d, { stage: 'hand', comm: [], folded: [], muckId: null });
-      t.public.winners = null;
-      t.say('New hand — 2 hole cards to everyone.');
-      return;
-    }
-    if (id === 'flop' || id === 'turn' || id === 'river') {
-      t.deal(deck.id, { x: g.cx - 480, y: g.cy - 220, up: false }); // burn
-      const n = id === 'flop' ? 3 : 1;
-      for (let i = 0; i < n; i++) {
-        const c = t.deal(deck.id, { x: g.cx - 330 + d.comm.length * 115, y: g.cy - 220, up: true });
-        if (c) d.comm.push({ d: c.d, i: c.i });
-      }
-      return;
-    }
-    if (id === 'show') return this.showdown(t);
+    return pots;
   },
   showdown(t) {
     const d = t.data, g = t.geom();
     const players = this.contenders(t);
-    if (d.comm.length < 5 || !players.length) return t.say('Deal all five community cards first.');
-    const results = players.map((p) => {
+    const scores = {};
+    for (const p of players) {
       const hole = t.hand(p.id);
-      // reveal the hole cards face up by the player's seat
       const rad = (p.seat * Math.PI) / 180, tx = -Math.sin(rad), ty = Math.cos(rad);
-      for (let k = t.hand(p.id).length - 1; k >= 0; k--) {
+      for (let k = t.hand(p.id).length - 1; k >= 0; k--) { // reveal by the seat
         t.playFromHand(p.id, k, {
           x: g.cx + Math.cos(rad) * (g.r - 250) + tx * (k * 72 - 36) - 50,
           y: g.cy + Math.sin(rad) * (g.r - 250) + ty * (k * 72 - 36) - 70,
           up: true, rot: ((p.seat - 90) % 360 + 360) % 360,
         });
       }
-      const score = this.best7(t, hole.concat(d.comm));
-      return { p, score };
+      scores[p.id] = this.best7(t, hole.concat(d.comm));
+    }
+    const pots = this.buildPots(d.paid, players.map((p) => p.id));
+    const total = pots.reduce((s, x) => s + x.amt, 0);
+    if (total < d.pot && pots.length) pots[pots.length - 1].amt += d.pot - total;
+    const winnersAll = new Set(), parts = [];
+    pots.forEach((pot, i) => {
+      let best = pot.elig[0];
+      for (const p of pot.elig) if (this.cmp(scores[p], scores[best]) > 0) best = p;
+      const tied = pot.elig.filter((p) => this.cmp(scores[p], scores[best]) === 0);
+      const share = Math.floor(pot.amt / tied.length);
+      let odd = pot.amt - share * tied.length;
+      for (const p of tied) { d.stacks[p] += share + (odd-- > 0 ? 1 : 0); winnersAll.add(p); }
+      const names = tied.map((p) => this.nameOf(t, p)).join(' & ');
+      parts.push(names + (tied.length > 1 ? ' split ' : ' wins ') + pot.amt
+        + (pots.length > 1 ? (i === 0 ? ' (main)' : ' (side)') : '') + ' with ' + this.HANDS[scores[best][0]]);
     });
-    let best = results[0];
-    for (const r of results.slice(1)) if (this.cmp(r.score, best.score) > 0) best = r;
-    const winners = results.filter((r) => this.cmp(r.score, best.score) === 0);
-    const handName = this.HANDS[best.score[0]];
+    this.badges(t);
     d.stage = 'done';
-    if (winners.length === 1) {
-      t.win([best.p.id], best.p.name + ' wins with ' + handName + '! 🏆');
-    } else {
-      t.win(winners.map((r) => r.p.id), 'Split pot — ' + winners.map((r) => r.p.name).join(' & ') + ' tie with ' + handName);
+    d.turn = null;
+    t.public.turn = null;
+    t.win([...winnersAll], parts.join(' · '));
+  },
+  validate(t, a) {
+    const d = t.data;
+    if (d.stage !== 'hand') {
+      if (a.t === 'draw' || a.t === 'deal') return 'Use the New hand button';
+      return;
+    }
+    if (['play', 'handPile', 'toHand', 'draw', 'deal', 'addDeck'].includes(a.t)) {
+      return 'Hand in progress — act with the buttons or chat (!bet, !fold, ...)';
+    }
+    // community & burn cards stay put
+    const isComm = (id) => {
+      const it = t.items().find((x) => x.id === id);
+      return it && it.k === 'c' && d.comm.some((c) => c.d === it.d && c.i === it.i);
+    };
+    if (['toPile', 'stack', 'del', 'flip'].includes(a.t) && ((a.id && isComm(a.id)) || (a.onto && isComm(a.onto)))) {
+      return 'Community cards stay on the board';
     }
   },
 })`,
