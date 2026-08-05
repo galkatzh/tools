@@ -585,6 +585,25 @@ const tApi = {
     delete host.items[id];
     return true;
   },
+  /** Registers a script-defined deck of image-less cards ({name, text, color,
+   *  bg, meta} each) and returns its deckId — it creates NO pile, so scripts
+   *  can keep big decks off the table (small piles via t.newPile([{d,i,up}])
+   *  keep the broadcast state light). `back` may be a solid color ("#111"). */
+  newDeck(def) {
+    const cards = (def.cards || []).slice(0, 5000).map((c) => ({
+      ...(c.name ? { n: String(c.name).slice(0, 60) } : {}),
+      ...(c.text ? { txt: String(c.text).slice(0, 300) } : {}),
+      ...(c.color ? { col: String(c.color).slice(0, 24) } : {}),
+      ...(c.bg ? { b: String(c.bg).slice(0, 24) } : {}),
+      ...(c.meta !== undefined ? { meta: c.meta } : {}),
+    }));
+    if (!cards.length) throw new Error('newDeck needs a cards array');
+    const deckId = uid();
+    decks[deckId] = { name: String(def.name || 'Deck').slice(0, 24), back: typeof def.back === 'string' ? def.back : null, cards };
+    dirtyDecks.add(deckId);
+    logEvent(RULES, `defined deck "${decks[deckId].name}" (${cards.length} cards)`);
+    return deckId;
+  },
   addStandardDeck(o = {}) {
     const deck = standardDeck(!!o.jokers);
     const deckId = uid();
@@ -865,6 +884,12 @@ const itemEls = new Map();
 let sel = null, drag = null, handDrag = null, facedown = false;
 let scale = 1;
 
+/** Black or white text for a hex background (naive luminance split). */
+function contrastFor(hex) {
+  const h = hex.replace('#', '');
+  const n = parseInt(h.length === 3 ? h.replace(/./g, '$&$&') : h, 16);
+  return 0.299 * (n >> 16 & 255) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255) < 140 ? '#f8fafc' : '#1e293b';
+}
 function faceHTML(d, i) {
   const deck = decks[d], c = deck?.cards[i];
   if (!c) return '<div class="face loading">🂠</div>'; // deck data not yet received
@@ -872,12 +897,15 @@ function faceHTML(d, i) {
   if (img) return `<img class="face" src="${img}" alt="">`;
   if (c.r === 'JOKER') return `<div class="face std ${c.c}"><div class="corner">★</div><div class="mid joker">🃏</div><div class="corner br">★</div></div>`;
   if (c.r) return `<div class="face std ${c.c}"><div class="corner">${c.r}\n${c.s}</div><div class="mid"><div class="mr">${c.r}</div><div class="ms">${c.s}</div></div><div class="corner br">${c.r}\n${c.s}</div></div>`;
-  // Image-less custom card: rendered from its manifest name/text/color.
-  return `<div class="face txt" style="border-color:${esc(c.col || '#64748b')}"><div class="tn">${esc(c.n || '')}</div>${c.txt ? `<div class="tt">${esc(c.txt)}</div>` : ''}</div>`;
+  // Image-less custom card: rendered from its manifest name/text/colors.
+  const style = `border-color:${esc(c.col || c.b || '#64748b')}${c.b ? `;background:${esc(c.b)};color:${contrastFor(c.b)}` : ''}`;
+  return `<div class="face txt" style="${style}"><div class="tn">${esc(c.n || '')}</div>${c.txt ? `<div class="tt">${esc(c.txt)}</div>` : ''}</div>`;
 }
 function backHTML(d) {
   const b = decks[d]?.back;
-  return b ? `<img class="back" src="${b}" alt="">` : '<div class="back"></div>';
+  if (!b) return '<div class="back"></div>';
+  if (b.startsWith('#')) return `<div class="back" style="background:${esc(b)}"></div>`; // solid-color back
+  return `<img class="back" src="${b}" alt="">`;
 }
 
 function contentFor(it) {
@@ -2043,6 +2071,194 @@ const RULES_TEMPLATES = {
     }
   },
 })`,
+  cah: `({
+  name: 'Cards Against Humanity',
+  // The printed rules, automated. Everyone holds 10 white cards. Each round
+  // the Card Czar (⏳👑) flips a black prompt; everyone else answers it by
+  // playing the required number of white cards FACE DOWN (toggle 🂠 in the
+  // hand bar). Once everyone has answered, the columns shuffle and reveal,
+  // and the Czar presses 👉 1/2/3… to crown the funniest — the winner takes
+  // an Awesome Point (⭐), everyone draws back to 10, and the Czar rotates.
+  // First to the goal wins ("!goal N" changes it, default 5). The Czar can
+  // press "Judge now" to skip stragglers. PICK 2 prompts take two cards (in
+  // the order you play them); PICK 3 prompts deal everyone 2 extra first.
+  // Card texts load from cah-cards.js (CC BY-NC-SA, Cards Against Humanity
+  // LLC). Only the draw piles sit on the table; the rest of the ~1300-card
+  // deck waits in script state to keep the shared state small.
+  HAND: 10,
+  CHUNK: 40,
+  setup(t) {
+    if (!window.CAH_CARDS) throw new Error('cah-cards.js is missing');
+    const d = t.data;
+    d.goal = d.goal || 5;
+    d.scores = d.scores || {};
+    if (!d.wd) {
+      d.wd = t.newDeck({ name: 'CAH White', back: '#f1f5f9',
+        cards: window.CAH_CARDS.white.map((s) => ({ text: s })) });
+      d.bd = t.newDeck({ name: 'CAH Black', back: '#0a0a0a',
+        cards: window.CAH_CARDS.black.map((c) => ({ text: c[0], bg: '#0a0a0a', meta: { pick: c[1] } })) });
+      d.wleft = this.shuf(window.CAH_CARDS.white.map((s, i) => i));
+      d.bleft = this.shuf(window.CAH_CARDS.black.map((c, i) => i));
+      d.wdisc = []; d.bdisc = [];
+    }
+    if (t.players().length < 3) t.say('CAH plays best with 3+ players — you can still try it.');
+    d.czar = t.players()[0].id;
+    this.startRound(t);
+  },
+  shuf(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const x = a[i]; a[i] = a[j]; a[j] = x; } return a; },
+  nameOf(t, p) { return (t.players().find((x) => x.id === p) || {}).name || '?'; },
+  // Draw piles hold only a small window of the shuffled deck; refills come
+  // from index lists in t.data, and discards reshuffle in when a list runs dry.
+  stock(t, kind, need) {
+    const d = t.data, deckId = kind === 'w' ? d.wd : d.bd;
+    let pile = t.piles().find((p) => p.id === d[kind + 'pile']);
+    while ((pile ? pile.cards.length : 0) < need) {
+      if (!d[kind + 'left'].length) {
+        if (!d[kind + 'disc'].length) throw new Error('the ' + (kind === 'w' ? 'white' : 'black') + ' deck ran dry');
+        d[kind + 'left'] = this.shuf(d[kind + 'disc']); d[kind + 'disc'] = [];
+        t.say('reshuffled the ' + (kind === 'w' ? 'white' : 'black') + ' discards back in');
+      }
+      const idxs = d[kind + 'left'].splice(0, this.CHUNK);
+      const g = t.geom();
+      const nid = t.newPile(idxs.map((i) => ({ d: deckId, i, up: false })),
+        { x: kind === 'w' ? g.cx - 280 : g.cx + 180, y: g.cy - 40, name: kind === 'w' ? 'White deck' : 'Black deck' });
+      if (pile) t.merge(nid, pile.id); else d[kind + 'pile'] = nid;
+      pile = t.piles().find((p) => p.id === d[kind + 'pile']);
+    }
+    return pile;
+  },
+  dealWhite(t, p, n) {
+    const pile = this.stock(t, 'w', n);
+    for (let k = 0; k < n; k++) t.deal(pile.id, { to: p });
+  },
+  refill(t) {
+    for (const p of t.players()) {
+      if (p.online && p.handCount < this.HAND) this.dealWhite(t, p.id, this.HAND - p.handCount);
+    }
+  },
+  badges(t) {
+    const d = t.data;
+    t.public.badges = Object.fromEntries(t.players().map((p) =>
+      [p.id, '⭐' + (d.scores[p.id] || 0) + (p.id === d.czar && d.phase !== 'over' ? ' 👑' : '')]));
+  },
+  startRound(t) {
+    const d = t.data;
+    d.subs = {}; d.order = null; d.phase = 'submit';
+    this.refill(t);
+    const g = t.geom();
+    const r = t.deal(this.stock(t, 'b', 1).id, { up: true, x: g.cx - 50, y: g.cy - 230 });
+    d.black = r;
+    d.pick = ((t.card(r) || {}).meta || {}).pick || 1;
+    d.roundPlayers = t.players().filter((p) => p.online && p.id !== d.czar).map((p) => p.id);
+    if (d.pick === 3) for (const p of d.roundPlayers) this.dealWhite(t, p, 2); // the printed rule: draw 2 for PICK 3
+    t.public.turn = d.czar;
+    t.public.winners = [];
+    this.badges(t);
+    t.announce(this.nameOf(t, d.czar) + ' is the Card Czar — answer with ' + d.pick + ' card' + (d.pick > 1 ? 's' : '') + ', FACE DOWN (🂠)');
+  },
+  validate(t, a) {
+    const d = t.data;
+    if (!d.phase || d.phase === 'over') return;
+    if (a.t === 'move' || a.t === 'rot') return; // arranging the table stays free
+    if (a.t !== 'play') return 'The game runs the cards here';
+    if (d.phase !== 'submit') return 'Wait for the next black card';
+    if (a.p === d.czar) return 'The Card Czar does not answer';
+    if (!d.roundPlayers.includes(a.p)) return 'You deal in next round';
+    if (a.d !== d.wd) return 'Answer with a white card';
+    if (a.up) return 'Submit FACE DOWN — toggle 🂠 in the hand bar';
+    if ((d.subs[a.p] || []).length >= d.pick) return 'You already submitted';
+  },
+  onAction(t, a) {
+    const d = t.data;
+    if (a.t !== 'play' || d.phase !== 'submit') return;
+    const it = t.items().find((x) => x.k === 'c' && x.d === a.d && x.i === a.i);
+    if (!it) return;
+    (d.subs[a.p] = d.subs[a.p] || []).push({ id: it.id, d: a.d, i: a.i });
+    const waiting = d.roundPlayers.filter((p) => (d.subs[p] || []).length < d.pick);
+    if (!waiting.length) this.judge(t);
+    else t.say('answers in: ' + (d.roundPlayers.length - waiting.length) + '/' + d.roundPlayers.length);
+  },
+  judge(t) {
+    const d = t.data;
+    // shuffled columns so the Czar cannot tell who played what
+    d.order = this.shuf(Object.keys(d.subs).filter((p) => d.subs[p].length === d.pick));
+    if (!d.order.length) { t.announce('No answers came in — new prompt'); return this.endRound(t, null); }
+    d.phase = 'judge';
+    const g = t.geom();
+    const x0 = g.cx - 50 - ((d.order.length - 1) * 130) / 2;
+    d.order.forEach((p, gi) => {
+      d.subs[p].forEach((c, k) => {
+        t.move(c.id, x0 + gi * 130, g.cy + 170 + k * 42);
+        t.flip(c.id);
+      });
+    });
+    t.announce(this.nameOf(t, d.czar) + ' judges — press 👉 for the funniest answer');
+  },
+  onButton(t, id, by) {
+    const d = t.data;
+    if (id === 'newgame' && d.phase === 'over') {
+      d.scores = {}; t.public.winners = []; d.czar = t.nextSeat(d.czar);
+      return this.startRound(t);
+    }
+    if (id === 'force' && by === d.czar && d.phase === 'submit') return this.judge(t);
+    if (d.phase === 'judge' && by === d.czar && id.indexOf('pick') === 0) {
+      const winner = d.order[+id.slice(4)];
+      if (!winner) return;
+      d.scores[winner] = (d.scores[winner] || 0) + 1;
+      const texts = d.subs[winner].map((c) => (t.card(c) || {}).text).join(' / ');
+      t.announce(this.nameOf(t, winner) + ' wins the round: "' + texts + '" (⭐' + d.scores[winner] + ')');
+      this.endRound(t, winner);
+    }
+  },
+  endRound(t, winner) {
+    const d = t.data;
+    for (const p of Object.keys(d.subs)) for (const c of d.subs[p]) { d.wdisc.push(c.i); t.remove(c.id); }
+    if (d.black) { d.bdisc.push(d.black.i); t.remove(d.black.id); }
+    d.subs = {}; d.black = null;
+    if (winner && d.scores[winner] >= d.goal) {
+      d.phase = 'over'; t.public.turn = null; this.badges(t);
+      return t.win([winner], this.nameOf(t, winner) + ' wins the game with ⭐' + d.scores[winner] + '!');
+    }
+    d.czar = t.nextSeat(d.czar);
+    this.startRound(t);
+  },
+  buttons(t) {
+    const d = t.data;
+    if (d.phase === 'over') return [{ id: 'newgame', label: '🔄 New game' }];
+    if (d.phase === 'submit') return [{ id: 'force', label: '⚖️ Judge now', pid: d.czar }];
+    if (d.phase === 'judge') return (d.order || []).map((p, gi) => ({ id: 'pick' + gi, label: '👉 ' + (gi + 1), pid: d.czar }));
+    return [];
+  },
+  onChat(t, msg, p) {
+    const m = msg.trim().toLowerCase();
+    if (m.indexOf('!goal ') === 0) {
+      const n = parseInt(m.slice(6), 10);
+      if (n > 0) { t.data.goal = n; t.say('the goal is now ⭐' + n); }
+    }
+  },
+  onJoin(t, p) {
+    const d = t.data;
+    if (!d.phase || d.phase === 'over') return;
+    const pl = t.players().find((x) => x.id === p);
+    if (pl && pl.handCount < this.HAND) this.dealWhite(t, p, this.HAND - pl.handCount);
+    t.tell(p, 'You deal in next round');
+  },
+  onLeave(t, p) {
+    const d = t.data;
+    if (d.phase !== 'submit' && d.phase !== 'judge') return;
+    if (p === d.czar) {
+      t.announce('The Card Czar left — new prompt, next Czar');
+      return this.endRound(t, null);
+    }
+    if (d.phase === 'submit' && d.roundPlayers.includes(p)) {
+      d.roundPlayers = d.roundPlayers.filter((x) => x !== p);
+      for (const c of d.subs[p] || []) { d.wdisc.push(c.i); t.remove(c.id); }
+      delete d.subs[p];
+      const waiting = d.roundPlayers.filter((x) => (d.subs[x] || []).length < d.pick);
+      if (d.roundPlayers.length && !waiting.length) this.judge(t);
+    }
+  },
+})`,
   dealer: `({
   name: 'Simple dealer',
   buttons: () => [{ id: 'deal1', label: 'Deal 1 to all' }],
@@ -2168,13 +2384,15 @@ async function manifestDeck(m, images) {
       ...(e.file ? { g: await imgIdx(String(e.file)) } : {}),
       ...(e.text ? { txt: String(e.text).slice(0, 300) } : {}),
       ...(e.color ? { col: String(e.color).slice(0, 24) } : {}),
+      ...(e.bg ? { b: String(e.bg).slice(0, 24) } : {}),
       ...(e.meta !== undefined ? { meta: e.meta } : {}),
     };
     const count = Math.min(Math.max(1, e.count | 0 || 1), 500);
     for (let k = 0; k < count; k++) cards.push(card); // copies share the object; card defs are never mutated
   }
   const deck = { name: String(m.name || 'Deck').slice(0, 24), back: null, imgs, cards };
-  if (m.back != null) deck.back = imgs[await imgIdx(String(m.back))];
+  // back: an uploaded image's filename, or a solid color like "#111"
+  if (m.back != null) deck.back = String(m.back).startsWith('#') ? String(m.back).slice(0, 24) : imgs[await imgIdx(String(m.back))];
   // Uploaded images the manifest didn't mention still join, filename-named.
   for (const f of images) {
     if (gOf.has(f.name)) continue;

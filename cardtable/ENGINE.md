@@ -85,8 +85,13 @@ A thin wrapper over existing internals in `app.js`:
   `t.draw(pid, pileId, n)`, `t.playFromHand(pid, idx, …)`,
   `t.toHand(pid, cardId)`, `t.shuffle`, `t.flip`, `t.move`, `t.rot`,
   `t.toPile`, `t.stack`, `t.merge`, `t.newPile(cards, {x,y,name})`,
-  `t.remove`, and `t.addStandardDeck({jokers, x, y})` so a script can set
-  up its own material from scratch. Anything a human can do, a script can
+  `t.remove`, `t.addStandardDeck({jokers, x, y})`, and
+  `t.newDeck({name, cards, back})` — registering a script-defined deck of
+  image-less cards (`{name, text, color, bg, meta}` each; `back` may be a
+  solid color like `"#111"`) without creating a pile, so a script can hold
+  a huge deck and only materialize small piles from it via
+  `t.newPile([{d, i, up}])`, keeping the broadcast state light — so a
+  script can set up its own material from scratch. Anything a human can do, a script can
   do — that is the operational definition of "can run arbitrary games".
   Ops performed by scripts act as a synthetic **"📜 Rules"** actor: they go
   through `logEvent`/`mark`, so automations are visible in the table log
@@ -155,7 +160,15 @@ the default.
    best eligible hand — ties split, odd chips forward. `!rebuy` and
    `!blinds a b` between hands. Proves a complete money game runs as pure
    script.
-3. **War / simple dealer** — deal N to all, flip top on a button; the
+3. **Cards Against Humanity** — the printed rules end to end: 10-card
+   hands, a rotating Card Czar (⏳👑), black prompts flipped from a draw
+   pile, face-down submissions (validated: the Czar can't answer, answers
+   must be white cards, face down, at most PICK of them), anonymous
+   shuffled reveal columns, Czar-only 👉 judging buttons, ⭐ scores as
+   badges, PICK 2/3 handling, discard reshuffling, join/leave handling,
+   and a win at the goal (`!goal N`). Demonstrates `t.newDeck` +
+   windowed draw piles for a ~1600-card game.
+4. **War / simple dealer** — deal N to all, flip top on a button; the
    minimal-script example.
 
 ## What it deliberately does NOT do

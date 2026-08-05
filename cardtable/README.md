@@ -134,8 +134,17 @@ the right hands), **Bridge** (a real chat auction — `!bid 1H`,
 `!pass`, `!double`, dealer rotation, insufficiency checks — then enforced
 turns and follow-suit, the dummy laid face-up and played by the declarer,
 trump-aware trick resolution, sweeping, scoring, and a 🏆 for the winning
-side), and a simple dealer — all plain scripts on the public API, demos of
-the engine rather than features of it. The generic engine primitives behind
+side), **Cards Against Humanity** (the printed rules automated: a rotating
+Card Czar flips a black prompt, everyone else answers face down, the columns
+shuffle and reveal anonymously, the Czar crowns the funniest with 👉
+buttons, ⭐ Awesome Points on the seat labels, PICK 2/3 prompts, discard
+reshuffling, and first-to-the-goal wins — card texts ship in
+`cah-cards.js`, CC BY-NC-SA from Cards Against Humanity LLC's free
+print-and-play PDF), and a simple dealer — all plain scripts on the public
+API, demos of the engine rather than features of it. The CAH template also
+shows how a script keeps a ~1600-card game light on the wire: the full deck
+is registered once via `t.newDeck` (script-defined text decks), while only
+small draw piles sit on the table — the rest waits as indices in `t.data`. The generic engine primitives behind
 winners and bidding are `onChat` (scripts parse any chat command),
 `t.announce` (banner to all), and `t.win` (🏆 seat markers via
 `public.winners`).

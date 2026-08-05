@@ -119,7 +119,7 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 /* Image-less custom cards (manifest-only decks): name + rule text on a plain face. */
 .face.txt { display: flex; flex-direction: column; gap: 3px; padding: 8% 7%; background: #fdfcf7; color: #1e293b; border: 3px solid #64748b; border-radius: 6px; overflow: hidden; }
 .face.txt .tn { font-weight: 700; font-size: 12px; line-height: 1.15; }
-.face.txt .tt { font-size: 9px; line-height: 1.3; color: #475569; white-space: pre-wrap; }
+.face.txt .tt { font-size: 9px; line-height: 1.3; color: inherit; opacity: 0.85; white-space: pre-wrap; }
 .std { background: #fff; color: #1e293b; font-weight: 600; }
 .std.r { color: #dc2626; }
 .corner { position: absolute; top: 5px; left: 7px; font-size: 17px; line-height: 1.1; text-align: center; white-space: pre-line; }
