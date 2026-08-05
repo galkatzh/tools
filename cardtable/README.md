@@ -149,6 +149,38 @@ winners and bidding are `onChat` (scripts parse any chat command),
 `t.announce` (banner to all), and `t.win` (🏆 seat markers via
 `public.winners`).
 
+## Terminal bridge & bots (cli.js / cli.py)
+
+Play from a terminal — or script a player. A browser tab can't listen on a
+port, but it can happily connect out to one: `node cli.js <invite-url>` (or
+`python3 cli.py <invite-url>`, both dependency-free) starts a tiny bridge
+server on `127.0.0.1` and prints a URL. Open it in a tab and the tab pairs
+with your terminal: it mirrors its view over (hand with indices, table,
+players, live log) and executes commands it gets back — `hand`, `play 2
+--down`, `draw`, `chat !bid 1H`, `btn pick0`, … Every command goes through
+the exact same `act()` path as a click, so rules validation, the table log
+and the anti-cheat record all apply unchanged. Two modes:
+
+- **Controller** (default): the URL keeps your identity — the terminal
+  drives *your* seat while the tab keeps rendering.
+- **Separate player** (`--as BotName`): the URL carries `~as~Name`, so the
+  tab joins as a brand-new player with its own identity slot (it never
+  hijacks the room save, even in the host's browser). That tab is a bot's
+  body; your script is its brain.
+
+Scripting: `require('./cli.js')` / `from cli import Bridge` exposes the
+bridge as a small API (`state`, `send`, `wait`, `on`). `cah-bot.py` is a
+complete example — a Cards Against Humanity player that answers prompts
+with random white cards and, when it's the Card Czar, judges on its own.
+
+Security shape: the bridge binds localhost only and every request carries a
+token minted by the CLI — without it, any website you have open could drive
+your table through that local port (requests without the token get a 403).
+Invite links and QR codes are rebuilt from the room id, so the private
+bridge fragment in your URL never leaks to other players. Localhost is
+exempt from HTTPS mixed-content blocking in Chrome and Firefox; Safari may
+refuse the `https → http://127.0.0.1` fetch.
+
 ## Honest limits
 
 - The game lives in the host's open tab. Host offline = table frozen for
