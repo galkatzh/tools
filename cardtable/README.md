@@ -76,6 +76,79 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   as per-deck deltas (guests merge), so each player downloads a deck once and
   adding a second deck never re-ships the first.
 
+## Custom decks for custom games
+
+Uploaded cards are **named after their files** — `dragon_rider.png` becomes
+"dragon rider" — so the log can say *played dragon rider* instead of
+"MyDeck #7". For full control, include a **`deck.json`** manifest in the
+same file picker as the images:
+
+```json
+{ "name": "My Game", "back": "back.png",
+  "cards": [
+    { "file": "dragon.png", "name": "Ancient Dragon", "count": 2,
+      "meta": { "cost": 5, "type": "creature", "power": 7 } },
+    { "name": "Gold", "text": "Worth 1 coin", "color": "#eab308", "count": 20 }
+  ] }
+```
+
+- `name`/`count` control display and copies; each image is stored **once**
+  (cards reference a shared image table), so 20 copies cost the bytes of one.
+- A card without a `file` renders as a **text card** — name, rule text, and
+  an accent color drawn in DOM/CSS like the standard deck. A manifest-only
+  deck needs no art at all and weighs a few KB, the fastest way to prototype
+  a game.
+- `meta` is free-form JSON the app never interprets: rules scripts read it
+  via `t.card(ref)` (→ `{name, rank, suit, text, meta, deck}`), so a script
+  can enforce `meta.cost` or `meta.type` instead of parsing card names.
+- `back` names an uploaded image to use as the card back (the separate back
+  picker still works and wins if both are given).
+- Fail-loudly validation: bad JSON, a `file` that matches no uploaded image,
+  or an entry with neither `file` nor `name` abort the upload with a visible
+  error. Uploaded images the manifest doesn't mention still join the deck,
+  filename-named.
+
+## Scriptable rules (📜)
+
+The host can write JavaScript that turns the free-form simulator into an
+enforced, automated game — see [`ENGINE.md`](ENGINE.md) for the full design.
+The engine is game-agnostic: a script object with optional hooks
+(`setup` / `validate` / `onAction` / `onButton` / `onJoin` / `onLeave` /
+`onTimer`) plus a facade `t` exposing every table primitive (deal, draw,
+shuffle, flip, piles, hands, …), persistent scratch state (`t.data`),
+broadcast UI state (`t.public`, e.g. the ⏳ turn marker), scripted buttons,
+timers, and player messaging. `validate` can veto any gameplay action with a
+reason (the actor gets a toast; the block goes in the log); everything a
+script does is logged and bulb-marked as the "📜 Rules" actor.
+
+Scripts run **on the host only** — guests receive data, never code — and
+everyone can read the exact script being enforced (read-only view in the
+Rules dialog). A script error disables the rules loudly rather than wedging
+the game; rules, their state, and pending timers survive host reloads.
+Templates ship for turn order, full **no-limit Hold'em with chips** (stacks
+on the seat labels, automatic blinds with a rotating button, turn-enforced
+betting via buttons and chat — `!bet 50`, `!allin`, `!rebuy` — streets that
+deal themselves when a round closes, all-in run-outs, and an automatic
+showdown that evaluates best-5-of-7, builds side pots, and pays each pot to
+the right hands), **Bridge** (a real chat auction — `!bid 1H`,
+`!pass`, `!double`, dealer rotation, insufficiency checks — then enforced
+turns and follow-suit, the dummy laid face-up and played by the declarer,
+trump-aware trick resolution, sweeping, scoring, and a 🏆 for the winning
+side), **Cards Against Humanity** (the printed rules automated: a rotating
+Card Czar flips a black prompt, everyone else answers face down, the columns
+shuffle and reveal anonymously, the Czar crowns the funniest with 👉
+buttons, ⭐ Awesome Points on the seat labels, PICK 2/3 prompts, discard
+reshuffling, and first-to-the-goal wins — card texts ship in
+`cah-cards.js`, CC BY-NC-SA from Cards Against Humanity LLC's free
+print-and-play PDF), and a simple dealer — all plain scripts on the public
+API, demos of the engine rather than features of it. The CAH template also
+shows how a script keeps a ~1600-card game light on the wire: the full deck
+is registered once via `t.newDeck` (script-defined text decks), while only
+small draw piles sit on the table — the rest waits as indices in `t.data`. The generic engine primitives behind
+winners and bidding are `onChat` (scripts parse any chat command),
+`t.announce` (banner to all), and `t.win` (🏆 seat markers via
+`public.winners`).
+
 ## Honest limits
 
 - The game lives in the host's open tab. Host offline = table frozen for
@@ -86,6 +159,10 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   cheat. Fine for friendly play (§3.3: "no secrets" tier).
 - The table always starts fitted to the smaller screen dimension; zoom and
   pan are per-player remedies, not persisted between reloads.
+- Rules scripts are trusted code on the host's machine: a runaway loop can
+  freeze the host's tab (refresh recovers via the save), and a dishonest
+  host could run different code than displayed — the same trust tier as the
+  host already holding all hands.
 
 ## Testing
 

@@ -50,6 +50,7 @@ A rules script is a JS object literal the host writes in a dialog:
   },
   buttons: (t) => [{ id: 'flop', label: 'Deal flop' }],
   onButton(t, id, byPid) { ... },   // scripted UI buttons
+  onChat(t, text, byPid) { ... },   // chat commands: bids, raises, votes, ...
   onJoin(t, pid) { ... },           // player joins/rejoins mid-game
   onLeave(t, pid) { ... },          // player disconnects
   onTimer(t, tag) { ... },          // fired by t.schedule(seconds, tag)
@@ -84,19 +85,31 @@ A thin wrapper over existing internals in `app.js`:
   `t.draw(pid, pileId, n)`, `t.playFromHand(pid, idx, …)`,
   `t.toHand(pid, cardId)`, `t.shuffle`, `t.flip`, `t.move`, `t.rot`,
   `t.toPile`, `t.stack`, `t.merge`, `t.newPile(cards, {x,y,name})`,
-  `t.remove`, and `t.addStandardDeck({jokers, x, y})` so a script can set
-  up its own material from scratch. Anything a human can do, a script can
+  `t.remove`, `t.addStandardDeck({jokers, x, y})`, and
+  `t.newDeck({name, cards, back})` — registering a script-defined deck of
+  image-less cards (`{name, text, color, bg, meta}` each; `back` may be a
+  solid color like `"#111"`) without creating a pile, so a script can hold
+  a huge deck and only materialize small piles from it via
+  `t.newPile([{d, i, up}])`, keeping the broadcast state light — so a
+  script can set up its own material from scratch. Anything a human can do, a script can
   do — that is the operational definition of "can run arbitrary games".
   Ops performed by scripts act as a synthetic **"📜 Rules"** actor: they go
   through `logEvent`/`mark`, so automations are visible in the table log
   and as name bulbs — the same anti-cheat property as human actions.
 - **Player interaction**: `t.say(msg)` (log line as Rules),
-  `t.tell(pid, msg)` (targeted toast), scripted `buttons` (global,
-  per-player, or host-only), and `t.schedule(seconds, tag)` → `onTimer`
-  for turn clocks and reveal delays (timers persist in `t.data`).
+  `t.tell(pid, msg)` (targeted toast), `t.announce(msg)` (a big banner on
+  every screen, also logged), `t.win(winners, msg)` (sets
+  `public.winners`, rendered by the engine as 🏆 on the winners' seat
+  labels — the generic way any game declares its outcome), scripted
+  `buttons` (global, per-player, or host-only), and
+  `t.schedule(seconds, tag)` → `onTimer` for turn clocks and reveal
+  delays (timers persist in `t.data`).
 - **Convenience utils** (pure functions, no engine state):
-  `t.nextSeat(pid)` (next occupied seat clockwise), `t.cardName(ref)`.
-  Scripts own all actual game logic.
+  `t.nextSeat(pid)` (next occupied seat clockwise), `t.cardName(ref)`, and
+  `t.card(ref)` → `{name, rank, suit, text, meta, deck}` — `meta` being the
+  free-form JSON a custom deck's `deck.json` manifest attached to the card,
+  so scripts key game logic on `meta.cost`/`meta.type` instead of parsing
+  names. Scripts own all actual game logic.
 
 ## 3. Enforcement path (the one structural change)
 
@@ -117,9 +130,11 @@ actions.
   exact code being enforced** in a read-only view — the same
   everything-on-the-record philosophy as the table log.
 - `public` is script-controlled JSON for UI: `{ turn: pid }` highlights
-  that player's **seat label** (⏳ + glow) on every screen; `buttons`
-  renders a scripted-button row (visibility per button), and clicks route
-  back to `onButton` via a `rulesBtn` action.
+  that player's **seat label** (⏳ + glow) on every screen; `winners`
+  renders 🏆; `badges` ({pid: text}) appends per-player text to seat
+  labels (chip stacks, scores, tricks won — any game's counters);
+  `buttons` renders a scripted-button row (visibility per button), and
+  clicks route back to `onButton` via a `rulesBtn` action.
 - Host UI: a "📜 Rules" toolbar button → dialog with name, a monospace
   `<textarea>` editor, an examples dropdown, Enable / Disable, and a live
   error line. Guests: the same dialog, read-only.
@@ -134,11 +149,26 @@ the default.
 
 1. **Turn order** — locks play/deal/draw to the current turn, advances on
    `play`, shows ⏳ on the active seat. A composable base for any game.
-2. **Poker dealer (Hold'em)** — buttons: *New hand* (collect all cards
-   into the deck, shuffle, deal 2 to each hand), *Flop* (burn 1, deal 3
-   face up), *Turn*, *River*. Proves a full game loop runs on the engine.
-   No chips/betting arithmetic (chips can be a custom deck).
-3. **War / simple dealer** — deal N to all, flip top on a button; the
+2. **No-limit Hold'em with chips** — stacks tracked per player and shown
+   on seat labels (via the generic `public.badges`), automatic blinds with
+   a rotating dealer button, turn-enforced betting rounds (Check/Call/Fold
+   buttons for the actor; `!bet N` / `!raise N` / `!allin` in chat, with
+   min-raise validation), streets that deal themselves when a round
+   closes, automatic all-in run-outs, and a showdown that evaluates each
+   contender's best 5 of 7 (all standard rankings, wheel included), builds
+   main + side pots from the contribution ledger, and pays each pot to the
+   best eligible hand — ties split, odd chips forward. `!rebuy` and
+   `!blinds a b` between hands. Proves a complete money game runs as pure
+   script.
+3. **Cards Against Humanity** — the printed rules end to end: 10-card
+   hands, a rotating Card Czar (⏳👑), black prompts flipped from a draw
+   pile, face-down submissions (validated: the Czar can't answer, answers
+   must be white cards, face down, at most PICK of them), anonymous
+   shuffled reveal columns, Czar-only 👉 judging buttons, ⭐ scores as
+   badges, PICK 2/3 handling, discard reshuffling, join/leave handling,
+   and a win at the goal (`!goal N`). Demonstrates `t.newDeck` +
+   windowed draw piles for a ~1600-card game.
+4. **War / simple dealer** — deal N to all, flip top on a button; the
    minimal-script example.
 
 ## What it deliberately does NOT do

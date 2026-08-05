@@ -19,7 +19,8 @@
     <button id="add-deck-btn">+ Deck</button>
     <button id="invite-btn">Copy invite</button>
     <button id="qr-btn" title="Show the invite link as a QR code">QR</button>
-    <button id="view-btn" title="Rotate the table back to your seat (view is yours alone — spin it by dragging empty felt)">🧭</button>
+    <button id="rules-btn" title="Game rules script">📜</button>
+    <button id="view-btn" title="Reset your view to your seat">🧭</button>
     <button id="log-btn" title="Table log & chat">💬</button>
     <button id="help-btn" title="Help">?</button>
     <span id="net-status" title="Peers connected">●</span>
@@ -31,6 +32,7 @@
         <div id="table-hint" class="hidden"></div>
       </div>
       <div id="action-bar" class="hidden"></div>
+      <div id="rules-btns" class="hidden"></div>
     </div>
     <aside id="side">
       <div id="side-head">Table log</div>
@@ -47,6 +49,28 @@
     <button id="facedown-toggle" title="When on, cards dragged from your hand land face down">🂠<br>face-down</button>
     <div id="hand"></div>
   </footer>
+
+  <dialog id="rules-dialog">
+    <form id="rules-form" method="dialog">
+      <h3>📜 Rules script <span id="rules-status"></span></h3>
+      <select id="rules-tpl">
+        <option value="">Load a template…</option>
+        <option value="blank">Blank skeleton</option>
+        <option value="turns">Turn order</option>
+        <option value="holdem">Hold'em dealer</option>
+        <option value="bridge">Bridge (play phase)</option>
+        <option value="cah">Cards Against Humanity</option>
+        <option value="dealer">Simple dealer</option>
+      </select>
+      <textarea id="rules-code" spellcheck="false"></textarea>
+      <div id="rules-err"></div>
+      <menu>
+        <button value="cancel" formnovalidate>Close</button>
+        <button id="rules-disable" type="button">Disable</button>
+        <button id="rules-enable" value="enable">Enable</button>
+      </menu>
+    </form>
+  </dialog>
 
   <dialog id="qr-dialog">
     <h3>Scan to join this table</h3>
@@ -74,7 +98,8 @@
       </label>
       <label class="radio"><input type="radio" name="deck-kind" value="img"> Custom images</label>
       <div id="img-fields">
-        <label>Card faces (one image per card) <input type="file" id="deck-files" multiple accept="image/*"></label>
+        <label>Card faces (one image per card, plus an optional <code>deck.json</code> naming the cards — see Help)
+          <input type="file" id="deck-files" multiple accept="image/*,.json"></label>
         <label>Card back (optional) <input type="file" id="deck-back" accept="image/*"></label>
       </div>
       <menu>
@@ -97,15 +122,27 @@
       <li>Everyone gets a <b>seat</b> around the table, and the table auto-turns so your seat is at the bottom. Cards you play land facing you.</li>
       <li><b>Scroll</b> to zoom, <b>drag empty felt</b> to pan; on touch screens, <b>pinch with two fingers</b> to zoom, rotate and pan at once. Your view is yours alone — <b>🧭</b> resets it to your seat.</li>
       <li>The <b>host</b> can enlarge the table (Table: small / medium / large) when more players join.</li>
+      <li><b>📜 Rules</b>: the host can write a script that enforces rules (turn order, legal moves) and automates play (auto-dealing, a poker dealer). Everyone can read the active script; everything it does appears in the log as "📜 Rules".</li>
       <li>Drag from your hand to the table to play it — toggle <b>🂠 face-down</b> to play cards face down.</li>
+      <li><b>Custom decks</b>: upload one image per card — each card is named after its file ("dragon_rider.png" → "dragon rider"). Include a <code>deck.json</code> in the same upload for full control:
+        <pre>{ "name": "My Game", "back": "back.png",
+  "cards": [
+    { "file": "dragon.png", "name": "Ancient Dragon", "count": 2,
+      "meta": { "cost": 5, "power": 7 } },
+    { "name": "Gold", "text": "Worth 1 coin", "color": "#eab308", "count": 20 }
+  ] }</pre>
+        Cards without a <code>file</code> render as text cards (no art needed). <code>meta</code> is free-form data that 📜 Rules scripts can read via <code>t.card(ref)</code>. Extra images not listed in the manifest still join, filename-named.</li>
       <li><b>Copy invite</b> and send the link to friends — or tap <b>QR</b> so they can scan it with a phone. Everyone sees the table live over WebRTC (no server).</li>
       <li>The game lives in the host's browser tab — if the host closes it, reopening the same link on the host's browser resumes the game.</li>
     </ul>
     <form method="dialog"><menu><button>Close</button></menu></form>
   </dialog>
 
+  <div id="announce" class="hidden"></div>
   <div id="peek" class="hidden"><div id="peek-inner"></div><div id="peek-cap"></div></div>
   <div id="toast" class="hidden"></div>
+  <!-- Card texts for the CAH rules template (CC BY-NC-SA, Cards Against Humanity LLC). -->
+  <script src="cah-cards.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

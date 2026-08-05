@@ -77,7 +77,7 @@ let myName = localStorage.getItem('ct-name') || `Player-${pid.slice(0, 4)}`;
 // host:   authoritative state (host only): {seq, items, players:{pid:{name,color,online,hand:[{d,i}]}}}
 // view:   what render() consumes — on guests this arrives from the host.
 let role = null, roomId, password, room = null;
-let sendAct, sendState, sendDecks, sendLog;
+let sendAct, sendState, sendDecks, sendLog, sendNote, sendRules;
 let decks = {};
 let host = null;
 let view = { seq: 0, items: {}, players: {} };
@@ -128,9 +128,10 @@ function ensurePlayer(p, name) {
 function cardName(d, i) {
   const deck = decks[d], c = deck?.cards[i];
   if (!c) return 'a card';
-  if (c.img) return `${deck.name} #${i + 1}`;
+  if (c.n) return c.n; // custom decks carry per-card names (manifest or filename)
   if (c.r === 'JOKER') return 'Joker 🃏';
-  return c.r + c.s;
+  if (c.r) return c.r + c.s;
+  return `${deck.name} #${i + 1}`;
 }
 function itemLabel(it) {
   if (it.k === 'c') return it.up ? cardName(it.d, it.i) : 'a face-down card';
@@ -163,10 +164,116 @@ function handIdx(pl, a) {
   return pl.hand.findIndex((c) => c.d === a.d && c.i === a.i);
 }
 
+/** State changed: renumber, re-render, sync, save. (host only) */
+function bump() {
+  host.seq++;
+  refreshView();
+  renderAll();
+  scheduleBroadcast();
+  persist();
+}
+
+// --- core table ops ---------------------------------------------------------
+// Shared between apply() and the rules-script facade, so scripted automations
+// mutate state through exactly the same audited path as human actions.
+// `actor` is a player id or RULES; every op logs and marks as that actor.
+
+/** Deals the top card of a pile — to a player's hand ({to}) or onto the table. */
+function opDealTop(actor, pileId, o = {}) {
+  const pile = host.items[pileId];
+  const c = pile?.k === 'p' && pile.cards.pop();
+  if (!c) { console.warn('opDealTop: no card to deal', pileId); return false; }
+  let nid = null;
+  if (o.to) {
+    const pl = host.players[o.to];
+    if (!pl) { pile.cards.push(c); console.warn('opDealTop: unknown player', o.to); return false; }
+    pl.hand.push({ d: c.d, i: c.i });
+    logEvent(actor, `dealt a card from ${itemLabel(pile)} to ${pl.name || 'a player'}`);
+  } else {
+    const at = clampToFelt(o.x ?? pile.x + CARD_W + 18, o.y ?? pile.y);
+    nid = uid();
+    host.items[nid] = { k: 'c', x: at.x, y: at.y, rot: ((o.rot || 0) % 360 + 360) % 360, z: zTop(), d: c.d, i: c.i, up: !!o.up };
+    logEvent(actor, `dealt ${o.up ? cardName(c.d, c.i) : 'a card face down'} from ${itemLabel(pile)}`);
+    mark(actor, nid);
+  }
+  mark(actor, pileId);
+  dropIfEmpty(pileId);
+  // the dealt card's identity, so scripts can track what they dealt
+  return o.to ? { d: c.d, i: c.i } : { id: nid, d: c.d, i: c.i };
+}
+
+function opShuffle(actor, pileId) {
+  const pile = host.items[pileId];
+  if (pile?.k !== 'p') return false;
+  for (let i = pile.cards.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pile.cards[i], pile.cards[j]] = [pile.cards[j], pile.cards[i]];
+  }
+  logEvent(actor, `shuffled ${itemLabel(pile)} (${pile.cards.length} cards)`);
+  mark(actor, pileId);
+  return true;
+}
+
+function opFlip(actor, id) {
+  const it = host.items[id];
+  if (!it) return false;
+  if (it.k === 'c') {
+    it.up = !it.up;
+    logEvent(actor, `flipped ${cardName(it.d, it.i)} face ${it.up ? 'up' : 'down'}`);
+  } else {
+    it.cards.reverse();
+    for (const c of it.cards) c.up = !c.up;
+    logEvent(actor, `flipped ${itemLabel(it)}`);
+  }
+  mark(actor, id);
+  return true;
+}
+
+function opToPile(actor, cardId, pileId) {
+  const it = host.items[cardId], pile = host.items[pileId];
+  if (it?.k !== 'c' || pile?.k !== 'p') return false;
+  logEvent(actor, `put ${itemLabel(it)} onto ${itemLabel(pile)}`);
+  mark(actor, pileId);
+  pile.cards.push({ d: it.d, i: it.i, up: it.up });
+  delete host.items[cardId];
+  return true;
+}
+
+function opNewPile(actor, cards, o = {}) {
+  const at = clampToFelt(o.x ?? TABLE_W / 2 - CARD_W / 2, o.y ?? TABLE_H / 2 - CARD_H / 2);
+  const nid = uid();
+  host.items[nid] = { k: 'p', x: at.x, y: at.y, rot: 0, z: zTop(), name: String(o.name || '').slice(0, 24), cards: cards.map((c) => ({ d: c.d, i: c.i, up: !!c.up })) };
+  logEvent(actor, `made a pile of ${cards.length} cards`);
+  mark(actor, nid);
+  return nid;
+}
+
+/** Moves every card of a player's hand onto a pile, face down. */
+function opTakeHand(actor, p, pileId) {
+  const pl = host.players[p], pile = host.items[pileId];
+  if (!pl || pile?.k !== 'p') return false;
+  if (pl.hand.length) {
+    logEvent(actor, `returned ${pl.name || 'a player'}'s hand (${pl.hand.length}) to ${itemLabel(pile)}`);
+    mark(actor, pileId);
+    for (const c of pl.hand.splice(0)) pile.cards.push({ d: c.d, i: c.i, up: false });
+  }
+  return true;
+}
+
 /** Applies one action from player `p` to the authoritative state (host only). */
 function apply(p, a) {
   const items = host.items, pl = host.players[p];
   const it = a.id != null ? items[a.id] : null;
+  // Rules veto: an enabled script may block gameplay actions with a reason.
+  if (RULED_ACTIONS.has(a.t) && host.rules?.enabled) {
+    const reason = runHook('validate', { ...a, p });
+    if (typeof reason === 'string' && reason) {
+      logEvent(RULES, `blocked ${pl?.name || 'a player'}: ${reason}`);
+      notify(p, `🚫 ${reason}`);
+      bump(); // the fresh broadcast reverts the actor's optimistic UI
+      return;
+    }
+  }
   switch (a.t) {
     case 'hello': break; // registration + join logging happen in the action handler
     case 'name':
@@ -193,29 +300,8 @@ function apply(p, a) {
       }
       break;
     case 'rot': if (it) { it.rot = ((a.rot % 360) + 360) % 360; logEvent(p, `rotated ${itemLabel(it)}`); mark(p, a.id); } break;
-    case 'flip':
-      if (it?.k === 'c') {
-        it.up = !it.up;
-        // Either way the identity is public: it was face up a moment ago or is now.
-        logEvent(p, `flipped ${cardName(it.d, it.i)} face ${it.up ? 'up' : 'down'}`);
-        mark(p, a.id);
-      } else if (it?.k === 'p') {
-        it.cards.reverse();
-        for (const c of it.cards) c.up = !c.up;
-        logEvent(p, `flipped ${itemLabel(it)}`);
-        mark(p, a.id);
-      }
-      break;
-    case 'shuffle':
-      if (it?.k === 'p') {
-        for (let i = it.cards.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [it.cards[i], it.cards[j]] = [it.cards[j], it.cards[i]];
-        }
-        logEvent(p, `shuffled ${itemLabel(it)} (${it.cards.length} cards)`);
-        mark(p, a.id);
-      }
-      break;
+    case 'flip': if (it) opFlip(p, a.id); break;
+    case 'shuffle': if (it?.k === 'p') opShuffle(p, a.id); break;
     case 'draw': {
       const c = it?.k === 'p' && it.cards.pop();
       if (c && pl) {
@@ -226,17 +312,7 @@ function apply(p, a) {
       }
       break;
     }
-    case 'deal': {
-      const c = it?.k === 'p' && it.cards.pop();
-      if (c) {
-        const nid = uid(), at = clampToFelt(a.x, a.y);
-        items[nid] = { k: 'c', x: at.x, y: at.y, rot: ((a.rot || 0) % 360 + 360) % 360, z: zTop(), d: c.d, i: c.i, up: a.up };
-        logEvent(p, `dealt ${a.up ? cardName(c.d, c.i) : 'a card face down'} from ${itemLabel(it)}`);
-        mark(p, nid);
-        dropIfEmpty(a.id);
-      }
-      break;
-    }
+    case 'deal': if (it?.k === 'p') opDealTop(p, a.id, { x: a.x, y: a.y, up: a.up, rot: a.rot }); break;
     case 'play': {
       const idx = pl && handIdx(pl, a);
       if (pl && idx >= 0) {
@@ -270,16 +346,7 @@ function apply(p, a) {
         delete items[a.id];
       }
       break;
-    case 'toPile': {
-      const pile = items[a.pile];
-      if (it?.k === 'c' && pile?.k === 'p') {
-        logEvent(p, `put ${itemLabel(it)} onto ${itemLabel(pile)}`);
-        mark(p, a.pile);
-        pile.cards.push({ d: it.d, i: it.i, up: it.up });
-        delete items[a.id];
-      }
-      break;
-    }
+    case 'toPile': opToPile(p, a.id, a.pile); break;
     case 'stack': {
       const b = items[a.onto];
       if (it?.k === 'c' && b?.k === 'c') {
@@ -331,13 +398,42 @@ function apply(p, a) {
       break;
     }
     case 'chat': if (pl && a.msg) logEvent(p, String(a.msg).slice(0, 300), true); break;
+    case 'setRules': {
+      if (p !== pid) break; // only the host configures rules
+      if (a.enabled) {
+        try {
+          const s = evalRules(a.code);
+          if (!s || typeof s !== 'object') throw new Error('script must evaluate to an ({...}) object');
+          script = s;
+          host.rules = { code: a.code, name: String(s.name || 'Rules').slice(0, 40), enabled: true, data: {}, public: {} };
+          rulesCodeDirty = true;
+          lastRulesError = '';
+          logEvent(RULES, `«${host.rules.name}» enabled by ${pl?.name || 'the host'}`);
+          runHook('setup');
+          refreshButtons();
+        } catch (err) {
+          console.error('rules script failed to load', err);
+          lastRulesError = err.message;
+          toast(`Rules error: ${err.message}`);
+          script = null;
+          if (host.rules) host.rules.enabled = false;
+        }
+      } else if (host.rules?.enabled) {
+        host.rules.enabled = false;
+        rulesCodeDirty = true;
+        logEvent(RULES, `rules disabled by ${pl?.name || 'the host'}`);
+      }
+      break;
+    }
+    case 'rulesBtn': if (host.rules?.enabled) runHook('onButton', String(a.id), p); break;
     default: console.warn('unknown action', a);
   }
-  host.seq++;
-  refreshView();
-  renderAll();
-  scheduleBroadcast();
-  persist();
+  if (host.rules?.enabled && (RULED_ACTIONS.has(a.t) || a.t === 'chat' || a.t === 'rulesBtn')) {
+    if (a.t === 'chat') runHook('onChat', String(a.msg || ''), p);
+    runHook('onAction', { ...a, p });
+    refreshButtons();
+  }
+  bump();
 }
 
 /** Routes a local UI action: hosts apply directly, guests send to the room.
@@ -353,9 +449,222 @@ function act(a) {
     .catch((err) => { console.error('send failed', err); toast('Failed to reach the room'); });
 }
 
+// --- rules engine (see ENGINE.md) ------------------------------------------
+// Host-only execution of a host-written script that can veto actions
+// (validate) and drive automations (setup/onAction/onButton/onJoin/onLeave/
+// onTimer) through the same audited ops as human actions. The engine knows
+// no game concepts — all game semantics live in the script.
+const RULES = 'RULES'; // synthetic actor id for script-performed ops
+const RULED_ACTIONS = new Set(['move', 'rot', 'flip', 'shuffle', 'draw', 'deal', 'play', 'handPile', 'toHand', 'toPile', 'stack', 'merge', 'del', 'addDeck']);
+let script = null;          // evaluated script object (host only)
+let lastRulesError = '';    // shown in the rules dialog
+let rulesCodeDirty = false; // code changed -> resend on next broadcast
+let guestRules = { code: '', name: '' }; // guests: the script text, for reading
+
+function evalRules(code) {
+  return new Function(`"use strict"; return (${code});`)();
+}
+
+/** Runs one script hook; any throw disables the rules loudly. */
+function runHook(name, ...args) {
+  if (role !== 'host' || !host.rules?.enabled || typeof script?.[name] !== 'function') return undefined;
+  try {
+    return script[name](tApi, ...args);
+  } catch (err) {
+    console.error(`rules hook ${name}() failed`, err);
+    lastRulesError = `${name}(): ${err.message}`;
+    host.rules.enabled = false;
+    rulesCodeDirty = true;
+    logEvent(RULES, `rules disabled — script error in ${name}()`);
+    toast(`Rules disabled — error in ${name}(): ${err.message}`);
+    return undefined;
+  }
+}
+
+/** Sends a private text notice to a player (toast on their screen). */
+function notify(p, msg) {
+  if (p === pid) { toast(msg); return; }
+  for (const [peer, mapped] of Object.entries(peerPid)) {
+    if (mapped === p) sendNote({ msg: String(msg).slice(0, 200) }, peer).catch((e) => console.error('note failed', e));
+  }
+}
+
+/** Refreshes the script-declared button row into the broadcast public data. */
+function refreshButtons() {
+  if (role !== 'host' || !host.rules?.enabled || typeof script?.buttons !== 'function') return;
+  try {
+    const btns = script.buttons(tApi) || [];
+    host.rules.public.buttons = btns.map((b) => ({ id: String(b.id), label: String(b.label).slice(0, 30), ...(b.pid ? { pid: b.pid } : {}) }));
+  } catch (err) {
+    console.error('rules buttons() failed', err);
+    lastRulesError = `buttons(): ${err.message}`;
+    host.rules.enabled = false;
+    rulesCodeDirty = true;
+    toast(`Rules disabled — error in buttons(): ${err.message}`);
+  }
+}
+
+// The script's window onto the table: full read access, the complete op set
+// (audited as the "📜 Rules" actor), scratch state, and player interaction.
+const tApi = {
+  get data() { return host.rules.data; },
+  get public() { return host.rules.public; },
+  set public(v) { host.rules.public = v || {}; },
+  players: () => Object.entries(host.players)
+    .filter(([, pl]) => pl.seat != null)
+    .map(([id, pl]) => ({ id, name: pl.name, seat: pl.seat, online: pl.online, handCount: pl.hand.length }))
+    .sort((a, b) => a.seat - b.seat),
+  hand: (p) => (host.players[p]?.hand || []).map((c) => ({ ...c })),
+  items: () => Object.entries(host.items).map(([id, it]) => structuredClone({ id, ...it })),
+  piles() { return this.items().filter((it) => it.k === 'p'); },
+  deal: (pileId, o) => opDealTop(RULES, pileId, o),
+  dealToAll(pileId, n = 1, o = {}) {
+    for (let i = 0; i < n; i++) {
+      for (const p of this.players()) {
+        if (o.onlineOnly !== false && !host.players[p.id].online) continue;
+        opDealTop(RULES, pileId, { ...o, to: p.id });
+      }
+    }
+  },
+  draw(p, pileId, n = 1) { for (let i = 0; i < n; i++) opDealTop(RULES, pileId, { to: p }); },
+  takeHand: (p, pileId) => opTakeHand(RULES, p, pileId),
+  playFromHand(p, idx, o = {}) {
+    const pl = host.players[p];
+    const c = pl?.hand.splice(idx, 1)[0];
+    if (!c) return false;
+    const at = clampToFelt(o.x ?? TABLE_W / 2 - CARD_W / 2, o.y ?? TABLE_H / 2 - CARD_H / 2);
+    const nid = uid();
+    host.items[nid] = { k: 'c', x: at.x, y: at.y, rot: ((o.rot || 0) % 360 + 360) % 360, z: zTop(), d: c.d, i: c.i, up: o.up !== false };
+    logEvent(RULES, `played ${o.up !== false ? cardName(c.d, c.i) : 'a card face down'} from ${pl.name || 'a player'}'s hand`);
+    mark(RULES, nid);
+    return nid;
+  },
+  toHand(p, cardId) {
+    const it = host.items[cardId], pl = host.players[p];
+    if (it?.k !== 'c' || !pl) return false;
+    logEvent(RULES, `gave ${itemLabel(it)} to ${pl.name || 'a player'}`);
+    mark(RULES, cardId);
+    pl.hand.push({ d: it.d, i: it.i });
+    delete host.items[cardId];
+    return true;
+  },
+  shuffle: (id) => opShuffle(RULES, id),
+  flip: (id) => opFlip(RULES, id),
+  toPile: (cardId, pileId) => opToPile(RULES, cardId, pileId),
+  newPile: (cards, o) => opNewPile(RULES, cards, o),
+  merge(fromId, toId) {
+    const from = host.items[fromId], to = host.items[toId];
+    if (from?.k !== 'p' || to?.k !== 'p' || from === to) return false;
+    logEvent(RULES, `merged ${itemLabel(from)} (${from.cards.length} cards) into ${itemLabel(to)}`);
+    mark(RULES, toId);
+    to.cards.push(...from.cards);
+    delete host.items[fromId];
+    return true;
+  },
+  move(id, x, y) {
+    const it = host.items[id];
+    if (!it) return false;
+    ({ x: it.x, y: it.y } = clampToFelt(x, y));
+    it.z = zTop();
+    logEvent(RULES, `moved ${itemLabel(it)}`);
+    mark(RULES, id);
+    return true;
+  },
+  rot(id, deg) {
+    const it = host.items[id];
+    if (!it) return false;
+    it.rot = ((deg % 360) + 360) % 360;
+    mark(RULES, id);
+    return true;
+  },
+  remove(id) {
+    const it = host.items[id];
+    if (!it) return false;
+    logEvent(RULES, `removed ${itemLabel(it)}${it.k === 'p' ? ` (${it.cards.length} cards)` : ''}`);
+    mark(RULES, id);
+    delete host.items[id];
+    return true;
+  },
+  /** Registers a script-defined deck of image-less cards ({name, text, color,
+   *  bg, meta} each) and returns its deckId — it creates NO pile, so scripts
+   *  can keep big decks off the table (small piles via t.newPile([{d,i,up}])
+   *  keep the broadcast state light). `back` may be a solid color ("#111"). */
+  newDeck(def) {
+    const cards = (def.cards || []).slice(0, 5000).map((c) => ({
+      ...(c.name ? { n: String(c.name).slice(0, 60) } : {}),
+      ...(c.text ? { txt: String(c.text).slice(0, 300) } : {}),
+      ...(c.color ? { col: String(c.color).slice(0, 24) } : {}),
+      ...(c.bg ? { b: String(c.bg).slice(0, 24) } : {}),
+      ...(c.meta !== undefined ? { meta: c.meta } : {}),
+    }));
+    if (!cards.length) throw new Error('newDeck needs a cards array');
+    const deckId = uid();
+    decks[deckId] = { name: String(def.name || 'Deck').slice(0, 24), back: typeof def.back === 'string' ? def.back : null, cards };
+    dirtyDecks.add(deckId);
+    logEvent(RULES, `defined deck "${decks[deckId].name}" (${cards.length} cards)`);
+    return deckId;
+  },
+  addStandardDeck(o = {}) {
+    const deck = standardDeck(!!o.jokers);
+    const deckId = uid();
+    decks[deckId] = deck;
+    dirtyDecks.add(deckId);
+    const nid = opNewPile(RULES, deck.cards.map((_, i) => ({ d: deckId, i, up: false })), { x: o.x, y: o.y, name: deck.name });
+    host.items[nid].name = deck.name;
+    return nid;
+  },
+  geom: () => ({ size: TABLE_W, cx: TABLE_W / 2, cy: TABLE_H / 2, r: PLAY_R }),
+  say: (msg) => logEvent(RULES, String(msg).slice(0, 300)),
+  /** Big banner on every screen (also logged). For "Flop!", "You win", ... */
+  announce(msg) {
+    const text = String(msg).slice(0, 200);
+    logEvent(RULES, `📣 ${text}`);
+    annQueue.push(text);
+    showAnnounce(text); // the host is a viewer too
+  },
+  /** Declares winner(s): 🏆 on their seats (public.winners) + an announcement. */
+  win(winners, msg) {
+    host.rules.public.winners = (Array.isArray(winners) ? winners : [winners]).filter(Boolean);
+    this.announce(msg || 'Game over!');
+  },
+  tell: (p, msg) => notify(p, String(msg)),
+  schedule(sec, tag) { (host.rules.data._timers ||= []).push({ at: Date.now() + sec * 1000, tag: String(tag) }); },
+  nextSeat(p) {
+    const ps = this.players().filter((x) => x.online || x.id === p);
+    const i = ps.findIndex((x) => x.id === p);
+    return ps.length ? ps[(i + 1) % ps.length].id : p;
+  },
+  cardName: (ref) => cardName(ref.d, ref.i),
+  /** Full card identity for game logic: {name, rank, suit, text, meta, deck}.
+   *  `meta` is the free-form JSON from a custom deck's manifest. */
+  card(ref) {
+    const deck = decks[ref.d], c = deck?.cards[ref.i];
+    if (!c) return null;
+    return structuredClone({
+      name: cardName(ref.d, ref.i), rank: c.r, suit: c.s, text: c.txt,
+      meta: c.meta, deck: deck.name,
+    });
+  },
+};
+
+// Fire due script timers (t.schedule). They live in rules.data, so they
+// survive a host reload along with everything else.
+setInterval(() => {
+  if (role !== 'host' || !host?.rules?.enabled) return;
+  const timers = host.rules.data._timers;
+  if (!timers?.length) return;
+  const due = timers.filter((x) => x.at <= Date.now());
+  if (!due.length) return;
+  host.rules.data._timers = timers.filter((x) => x.at > Date.now());
+  for (const x of due) runHook('onTimer', x.tag);
+  refreshButtons();
+  bump();
+}, 700);
+
 // --- host <-> guest sync --------------------------------------------------
 let dirtyDecks = new Set(), logDirty = false, bcastT = 0; // deck ids not yet broadcast
-let fxQueue = []; // action markers accumulated since the last broadcast
+let fxQueue = [];  // action markers accumulated since the last broadcast
+let annQueue = []; // script announcements (banners) since the last broadcast
 
 function publicPlayers() {
   return Object.fromEntries(Object.entries(host.players).map(([p, pl]) => [
@@ -365,7 +674,10 @@ function publicPlayers() {
 
 function refreshView() {
   if (role !== 'host') return;
-  view = { seq: host.seq, items: host.items, players: publicPlayers() };
+  view = {
+    seq: host.seq, items: host.items, players: publicPlayers(),
+    rules: host.rules ? { name: host.rules.name, enabled: host.rules.enabled, public: host.rules.public } : null,
+  };
   myHand = host.players[pid]?.hand || [];
   gameLog = host.log;
 }
@@ -384,8 +696,14 @@ function broadcast() {
     sendDecks(delta).catch((e) => console.error('decks send failed', e));
   }
   if (logDirty) { logDirty = false; sendLog(host.log).catch((e) => console.error('log send failed', e)); }
-  const pub = { seq: host.seq, size: host.size, items: host.items, players: publicPlayers(), fx: fxQueue };
+  if (rulesCodeDirty) {
+    rulesCodeDirty = false;
+    sendRules({ code: host.rules?.code || '', name: host.rules?.name || '' }).catch((e) => console.error('rules send failed', e));
+  }
+  const rules = host.rules ? { name: host.rules.name, enabled: host.rules.enabled, public: host.rules.public } : null;
+  const pub = { seq: host.seq, size: host.size, rules, items: host.items, players: publicPlayers(), fx: fxQueue, ann: annQueue };
   fxQueue = [];
+  annQueue = [];
   for (const peer of Object.keys(room.getPeers())) {
     sendState({ ...pub, hand: host.players[peerPid[peer]]?.hand || [] }, peer)
       .catch((e) => console.error('state send failed', e));
@@ -407,9 +725,10 @@ function handleState(s, peer) {
   if (s.seq < view.seq) return; // stale reordering
   hostPeer = peer;
   if (s.size && s.size !== TABLE_W) setTableSize(s.size);
-  view = { seq: s.seq, items: s.items, players: s.players };
+  view = { seq: s.seq, items: s.items, players: s.players, rules: s.rules };
   myHand = s.hand || [];
   for (const f of s.fx || []) if (f.p !== pid) showFx(f);
+  for (const msg of s.ann || []) showAnnounce(msg);
   renderAll();
 }
 
@@ -425,10 +744,16 @@ function connect() {
   const stateA = room.makeAction('state');
   const decksA = room.makeAction('decks');
   const logA = room.makeAction('log');
+  const noteA = room.makeAction('note');
+  const rulesA = room.makeAction('rules');
   sendAct = (data) => actA.send(data, {});
   sendState = (data, target) => stateA.send(data, { target });
   sendDecks = (data, target) => decksA.send(data, target ? { target } : {});
   sendLog = (data, target) => logA.send(data, target ? { target } : {});
+  sendNote = (data, target) => noteA.send(data, { target });
+  sendRules = (data, target) => rulesA.send(data, target ? { target } : {});
+  noteA.onMessage = (n) => { if (role !== 'host' && n?.msg) toast(String(n.msg)); };
+  rulesA.onMessage = (r) => { if (role !== 'host') { guestRules = { code: String(r.code || ''), name: String(r.name || '') }; } };
 
   actA.onMessage = (a, { peerId: peer }) => {
     if (role !== 'host') return; // actions are broadcast; only the host adjudicates
@@ -441,11 +766,13 @@ function connect() {
     ensurePlayer(a._pid, a._name);
     if (!known?.online) logEvent(a._pid, known ? 'is back at the table' : 'joined the table');
     if (newConn) {
-      // Fresh connection: hand over the (possibly large) deck images and the
-      // log targeted, so regular broadcasts stay light.
+      // Fresh connection: hand over the (possibly large) deck images, the
+      // log, and the rules code targeted, so regular broadcasts stay light.
       sendDecks(decks, peer).catch((e) => console.error('decks send failed', e));
       sendLog(host.log, peer).catch((e) => console.error('log send failed', e));
+      if (host.rules) sendRules({ code: host.rules.code, name: host.rules.name }, peer).catch((e) => console.error('rules send failed', e));
     }
+    if (!known?.online && host.rules?.enabled) { runHook('onJoin', a._pid); refreshButtons(); }
     apply(a._pid, a); // apply() schedules a broadcast, which catches joiners up
   };
   stateA.onMessage = (s, { peerId: peer }) => handleState(s, peer);
@@ -473,8 +800,8 @@ function connect() {
     if (p && host.players[p] && !Object.values(peerPid).includes(p)) {
       host.players[p].online = false;
       logEvent(p, 'left the table');
-      host.seq++;
-      refreshView(); renderAll(); scheduleBroadcast(); persist();
+      if (host.rules?.enabled) { runHook('onLeave', p); refreshButtons(); }
+      bump();
     }
   };
 }
@@ -557,16 +884,28 @@ const itemEls = new Map();
 let sel = null, drag = null, handDrag = null, facedown = false;
 let scale = 1;
 
+/** Black or white text for a hex background (naive luminance split). */
+function contrastFor(hex) {
+  const h = hex.replace('#', '');
+  const n = parseInt(h.length === 3 ? h.replace(/./g, '$&$&') : h, 16);
+  return 0.299 * (n >> 16 & 255) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255) < 140 ? '#f8fafc' : '#1e293b';
+}
 function faceHTML(d, i) {
   const deck = decks[d], c = deck?.cards[i];
   if (!c) return '<div class="face loading">🂠</div>'; // deck data not yet received
-  if (c.img) return `<img class="face" src="${c.img}" alt="">`;
+  const img = c.img ?? (c.g != null ? deck.imgs?.[c.g] : null); // g: shared-image index (copies ship the image once)
+  if (img) return `<img class="face" src="${img}" alt="">`;
   if (c.r === 'JOKER') return `<div class="face std ${c.c}"><div class="corner">★</div><div class="mid joker">🃏</div><div class="corner br">★</div></div>`;
-  return `<div class="face std ${c.c}"><div class="corner">${c.r}\n${c.s}</div><div class="mid"><div class="mr">${c.r}</div><div class="ms">${c.s}</div></div><div class="corner br">${c.r}\n${c.s}</div></div>`;
+  if (c.r) return `<div class="face std ${c.c}"><div class="corner">${c.r}\n${c.s}</div><div class="mid"><div class="mr">${c.r}</div><div class="ms">${c.s}</div></div><div class="corner br">${c.r}\n${c.s}</div></div>`;
+  // Image-less custom card: rendered from its manifest name/text/colors.
+  const style = `border-color:${esc(c.col || c.b || '#64748b')}${c.b ? `;background:${esc(c.b)};color:${contrastFor(c.b)}` : ''}`;
+  return `<div class="face txt" style="${style}"><div class="tn">${esc(c.n || '')}</div>${c.txt ? `<div class="tt">${esc(c.txt)}</div>` : ''}</div>`;
 }
 function backHTML(d) {
   const b = decks[d]?.back;
-  return b ? `<img class="back" src="${b}" alt="">` : '<div class="back"></div>';
+  if (!b) return '<div class="back"></div>';
+  if (b.startsWith('#')) return `<div class="back" style="background:${esc(b)}"></div>`; // solid-color back
+  return `<img class="back" src="${b}" alt="">`;
 }
 
 function contentFor(it) {
@@ -610,7 +949,10 @@ function renderItems() {
 // Seat labels: everyone sees the same seating, each from their own rotation.
 let seatSig = '';
 function renderPlayers() {
-  const sig = `${JSON.stringify(view.players)}|${viewAngle.toFixed(1)}|${scale.toFixed(4)}|${panX | 0},${panY | 0}|${wrapEl.clientWidth}`;
+  const turn = view.rules?.enabled ? view.rules.public?.turn : null;
+  const winners = (view.rules?.enabled && view.rules.public?.winners) || [];
+  const badges = (view.rules?.enabled && view.rules.public?.badges) || {};
+  const sig = `${JSON.stringify(view.players)}|${turn}|${winners.join()}|${JSON.stringify(badges)}|${viewAngle.toFixed(1)}|${scale.toFixed(4)}|${panX | 0},${panY | 0}|${wrapEl.clientWidth}`;
   if (sig === seatSig) return;
   seatSig = sig;
   for (const el of wrapEl.querySelectorAll('.seat')) el.remove();
@@ -619,11 +961,11 @@ function renderPlayers() {
     const rad = (pl.seat * Math.PI) / 180;
     const [sx, sy] = tableToScreen(TABLE_W / 2 + SEAT_R * Math.cos(rad), TABLE_H / 2 + SEAT_R * Math.sin(rad));
     const el = document.createElement('div');
-    el.className = `seat${pl.online ? '' : ' offline'}${p === pid ? ' me' : ''}`;
+    el.className = `seat${pl.online ? '' : ' offline'}${p === pid ? ' me' : ''}${p === turn ? ' turn' : ''}${winners.includes(p) ? ' winner' : ''}`;
     el.style.borderColor = pl.color;
     el.style.left = `${sx}px`;
     el.style.top = `${sy}px`;
-    el.textContent = `${pl.name || 'Player'} 🂠${pl.handCount}`;
+    el.textContent = `${winners.includes(p) ? '🏆 ' : ''}${p === turn ? '⏳ ' : ''}${pl.name || 'Player'} 🂠${pl.handCount}${badges[p] ? ` ${badges[p]}` : ''}`;
     wrapEl.appendChild(el);
   }
 }
@@ -643,6 +985,13 @@ function renderHand() {
   });
 }
 
+/** Display identity for a log/bulb actor (players or the Rules script). */
+function actorInfo(p) {
+  if (p === RULES) return { name: '📜 Rules', color: '#a78bfa' };
+  const pl = view.players[p];
+  return { name: pl?.name || 'Player', color: pl?.color || '#94a3b8' };
+}
+
 let logSig = '';
 function renderLog() {
   const last = gameLog.at(-1);
@@ -651,8 +1000,8 @@ function renderLog() {
   logSig = sig;
   const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 60;
   logEl.innerHTML = gameLog.map((e) => {
-    const pl = view.players[e.p];
-    const name = `<b style="color:${pl?.color || '#94a3b8'}">${esc(pl?.name || 'Player')}</b>`;
+    const who = actorInfo(e.p);
+    const name = `<b style="color:${who.color}">${esc(who.name)}</b>`;
     const time = `<span class="lt">${new Date(e.ts).toTimeString().slice(0, 5)}</span>`;
     return e.c
       ? `<div class="lg chat">${time}${name}: ${esc(e.txt)}</div>`
@@ -661,12 +1010,31 @@ function renderLog() {
   if (atBottom) logEl.scrollTop = logEl.scrollHeight;
 }
 
+let rbSig = '';
+function renderRulesBtns() {
+  const rules = role === 'host' ? host?.rules : view.rules;
+  const btns = (rules?.enabled && (rules.public?.buttons || []).filter((b) => !b.pid || b.pid === pid)) || [];
+  const sig = JSON.stringify(btns) + (rules?.enabled ? rules.name : '');
+  if (sig === rbSig) return;
+  rbSig = sig;
+  const row = $('rules-btns');
+  row.classList.toggle('hidden', !btns.length);
+  row.innerHTML = btns.map((b) => `<button data-rbtn="${esc(b.id)}">${esc(b.label)}</button>`).join('');
+  $('rules-btn').classList.toggle('on', !!rules?.enabled);
+  $('rules-btn').title = rules?.enabled ? `Rules active: ${rules.name}` : 'Game rules script';
+}
+$('rules-btns').addEventListener('click', (e) => {
+  const id = e.target.dataset.rbtn;
+  if (id) act({ t: 'rulesBtn', id });
+});
+
 function renderAll() {
   applySeatView();
   renderItems();
   renderPlayers();
   renderHand();
   renderLog();
+  renderRulesBtns();
   updateNet();
 }
 
@@ -769,10 +1137,23 @@ function placeBar() {
   barEl.style.top = `${yAbove >= 4 ? yAbove : sy + half + 8}px`;
 }
 
+// --- announcement banner (t.announce / t.win) -------------------------------
+let annT = 0;
+function showAnnounce(msg) {
+  const el = $('announce');
+  el.textContent = String(msg);
+  el.classList.remove('hidden', 'fade');
+  clearTimeout(annT);
+  annT = setTimeout(() => {
+    el.classList.add('fade');
+    annT = setTimeout(() => el.classList.add('hidden'), 700);
+  }, 3800);
+}
+
 // --- transient "who did that" bulbs ----------------------------------------
 const bulbs = new Map(); // "pid|itemId" -> {el, timer}
 function showFx(f) {
-  const pl = view.players[f.p];
+  const who = actorInfo(f.p);
   const it = f.id && view.items[f.id];
   const [sx, sy] = tableToScreen((it ? it.x : f.x) + CARD_W / 2, (it ? it.y : f.y) + CARD_H / 2);
   const key = `${f.p}|${f.id}`;
@@ -784,8 +1165,8 @@ function showFx(f) {
     b = { el, timer: 0 };
     bulbs.set(key, b);
   }
-  b.el.textContent = pl?.name || 'Player';
-  b.el.style.borderColor = pl?.color || '#94a3b8';
+  b.el.textContent = who.name;
+  b.el.style.borderColor = who.color;
   b.el.style.left = `${clamp(sx, 30, wrapEl.clientWidth - 30)}px`;
   b.el.style.top = `${Math.max(20, sy - CARD_H * 0.55 * scale)}px`;
   b.el.classList.remove('fade');
@@ -1088,6 +1469,847 @@ $('qr-btn').addEventListener('click', async () => {
 
 $('help-btn').addEventListener('click', () => $('help-dialog').showModal());
 $('add-deck-btn').addEventListener('click', () => $('deck-dialog').showModal());
+
+// --- rules dialog -----------------------------------------------------------
+const RULES_TEMPLATES = {
+  blank: `({
+  name: 'My game',
+  // Runs once when you enable the rules.
+  setup(t) { t.say('Rules are on.'); },
+  // Return a string to BLOCK a player's action. a = {t, p, ...}; a.p is the
+  // acting player's id, a.t the action type ('play', 'draw', 'move', ...).
+  validate(t, a) { },
+  // React AFTER an action applies — automations go here.
+  onAction(t, a) { },
+  // Buttons shown under the table ({pid: playerId} restricts who sees one).
+  buttons: (t) => [],
+  onButton(t, id, byPid) { },
+  onJoin(t, p) { }, onLeave(t, p) { },
+  // t.schedule(seconds, tag) later fires onTimer(t, tag).
+  onTimer(t, tag) { },
+})`,
+  turns: `({
+  name: 'Turn order',
+  setup(t) {
+    const ps = t.players();
+    t.data.turn = ps[0]?.id;
+    t.public.turn = t.data.turn;
+    t.say('Turn order: ' + ps.map((p) => p.name).join(' → '));
+  },
+  validate(t, a) {
+    const guarded = ['play', 'handPile', 'deal', 'draw', 'toHand'];
+    if (guarded.includes(a.t) && a.p !== t.data.turn) return "It's not your turn";
+  },
+  onAction(t, a) {
+    if (a.t === 'play' || a.t === 'handPile') {
+      t.data.turn = t.nextSeat(t.data.turn);
+      t.public.turn = t.data.turn;
+    }
+  },
+})`,
+  holdem: `({
+  name: "Hold'em (chips)",
+  // Full no-limit Hold'em with chip tracking: stacks live on the seat labels
+  // (💰), blinds post automatically (dealer button rotates), betting rounds
+  // are turn-enforced — buttons for Check/Call/Fold, chat for sizing:
+  // "!bet 50" / "!raise 50" (raise TO 50), "!allin", "!check", "!call",
+  // "!fold". Streets deal themselves when a round closes, all-ins run out
+  // automatically, and the showdown evaluates best-5-of-7, builds side pots,
+  // and pays every pot to the right hands (ties split). Between hands:
+  // "!rebuy" tops a busted stack up, "!blinds 5 10" changes the blinds.
+  BUYIN: 1000,
+  setup(t) {
+    t.data.stacks ||= {};
+    t.data.blinds ||= { sb: 5, bb: 10 };
+    for (const p of t.players()) t.data.stacks[p.id] ??= this.BUYIN;
+    this.badges(t);
+    t.say("Hold'em: everyone starts with 💰" + this.BUYIN + '. Press New hand.');
+  },
+  onJoin(t, p) { t.data.stacks ||= {}; t.data.stacks[p] ??= this.BUYIN; this.badges(t); },
+  badges(t) {
+    t.public.badges = Object.fromEntries(t.players().map((p) => [p.id, '💰' + (t.data.stacks[p.id] ?? 0)]));
+  },
+  nameOf(t, p) { return (t.players().find((x) => x.id === p) || {}).name || '?'; },
+  deck(t) { return t.piles().filter((x) => x.id !== t.data.muckId).sort((a, b) => b.cards.length - a.cards.length)[0]; },
+  funded(t) { return t.players().filter((p) => (t.data.stacks[p.id] || 0) > 0 || p.handCount === 2); },
+  contenders(t) { return t.players().filter((p) => p.handCount === 2 && !t.data.folded.includes(p.id)); },
+  active(t) { return this.contenders(t).filter((p) => t.data.stacks[p.id] > 0); },
+  nextFrom(t, p, list) {
+    let q = p;
+    for (let i = 0; i < 16; i++) { q = t.nextSeat(q); if (list.some((x) => x.id === q)) return q; }
+    return null;
+  },
+  put(t, p, amt) {
+    const d = t.data;
+    amt = Math.max(0, Math.min(amt, d.stacks[p]));
+    d.stacks[p] -= amt;
+    d.paid[p] = (d.paid[p] || 0) + amt;
+    d.bet[p] = (d.bet[p] || 0) + amt;
+    d.pot += amt;
+    this.badges(t);
+    return amt;
+  },
+  buttons(t) {
+    const d = t.data, btns = [{ id: 'new', label: '🂠 New hand' }];
+    if (d.stage === 'hand' && d.turn) {
+      const owed = d.curBet - (d.bet[d.turn] || 0);
+      btns.push(owed > 0
+        ? { id: 'call', label: 'Call ' + Math.min(owed, d.stacks[d.turn]), pid: d.turn }
+        : { id: 'check', label: 'Check', pid: d.turn });
+      btns.push({ id: 'fold', label: 'Fold', pid: d.turn });
+    }
+    return btns;
+  },
+  onButton(t, id, byPid) {
+    if (id === 'new') return this.startHand(t);
+    this.doAction(t, byPid, id);
+  },
+  onChat(t, msg, p) {
+    const d = t.data;
+    let m;
+    if ((m = /^!(check|call|fold|allin)$/i.exec(msg))) return this.doAction(t, p, m[1].toLowerCase());
+    if ((m = /^!(?:bet|raise)\\s+(\\d+)$/i.exec(msg))) return this.doAction(t, p, 'bet', +m[1]);
+    if (/^!rebuy$/i.test(msg)) {
+      if (d.stage === 'hand' && this.contenders(t).some((x) => x.id === p)) return t.tell(p, 'After this hand');
+      d.stacks[p] = (d.stacks[p] || 0) + this.BUYIN;
+      this.badges(t);
+      return t.say(this.nameOf(t, p) + ' rebuys for ' + this.BUYIN);
+    }
+    if ((m = /^!blinds\\s+(\\d+)\\s+(\\d+)$/i.exec(msg))) {
+      if (d.stage === 'hand') return t.tell(p, 'After this hand');
+      d.blinds = { sb: +m[1], bb: +m[2] };
+      return t.say('Blinds set to ' + m[1] + '/' + m[2]);
+    }
+  },
+  startHand(t) {
+    const d = t.data, deckP = this.deck(t);
+    if (!deckP) return t.say('No deck on the table!');
+    if (d.stage === 'hand') { // abandon the current hand: refund every bet
+      for (const [p, amt] of Object.entries(d.paid || {})) d.stacks[p] += amt;
+      t.say('Hand abandoned — bets refunded.');
+    }
+    const funded = t.players().filter((p) => (d.stacks[p.id] || 0) > 0);
+    if (funded.length < 2) return t.say('Need 2+ players with chips ("!rebuy" if busted).');
+    for (const it of t.items()) if (it.k === 'c') t.toPile(it.id, deckP.id);
+    if (d.muckId && t.items().some((x) => x.id === d.muckId)) t.merge(d.muckId, deckP.id);
+    for (const p of t.players()) t.takeHand(p.id, deckP.id);
+    t.shuffle(deckP.id);
+    for (const p of funded) { t.deal(deckP.id, { to: p.id }); t.deal(deckP.id, { to: p.id }); }
+    Object.assign(d, { stage: 'hand', comm: [], folded: [], muckId: null, paid: {}, bet: {}, pot: 0 });
+    t.public.winners = null;
+    d.dealer = d.dealer && funded.some((x) => x.id !== d.dealer) ? this.nextFrom(t, d.dealer, funded) : funded[0].id;
+    const sb = funded.length === 2 ? d.dealer : this.nextFrom(t, d.dealer, funded);
+    const bb = this.nextFrom(t, sb, funded);
+    this.put(t, sb, d.blinds.sb);
+    this.put(t, bb, d.blinds.bb);
+    d.curBet = d.blinds.bb;
+    d.minRaise = d.blinds.bb;
+    const act = this.active(t);
+    d.pending = act.map((x) => x.id);
+    d.turn = this.nextFrom(t, bb, act);
+    t.public.turn = d.turn;
+    t.announce('New hand — blinds ' + d.blinds.sb + '/' + d.blinds.bb + ' (' + this.nameOf(t, sb) + '/' + this.nameOf(t, bb) + '), ' + this.nameOf(t, d.turn) + ' to act');
+  },
+  doAction(t, p, kind, amt) {
+    const d = t.data;
+    if (d.stage !== 'hand' || !d.turn) return t.tell(p, 'No betting right now');
+    if (p !== d.turn) return t.tell(p, 'Not your turn');
+    const name = this.nameOf(t, p);
+    const owed = d.curBet - (d.bet[p] || 0);
+    if (kind === 'check') {
+      if (owed > 0) return t.tell(p, 'You must call ' + owed + ' (or raise / fold)');
+      t.say(name + ' checks');
+    } else if (kind === 'call') {
+      if (owed <= 0) return this.doAction(t, p, 'check');
+      const paid = this.put(t, p, owed);
+      t.say(name + ' calls ' + paid + (d.stacks[p] === 0 ? ' (all-in)' : ''));
+    } else if (kind === 'fold') {
+      d.folded.push(p);
+      if (!d.muckId || !t.items().some((x) => x.id === d.muckId)) {
+        const g = t.geom();
+        d.muckId = t.newPile([], { x: g.cx - 480, y: g.cy - 400, name: 'muck' });
+      }
+      t.takeHand(p, d.muckId);
+      t.say(name + ' folds');
+    } else if (kind === 'bet') {
+      if (!(amt > 0)) return t.tell(p, 'Say "!bet 50" (the round total to raise to)');
+      const maxTotal = (d.bet[p] || 0) + d.stacks[p];
+      if (amt >= maxTotal) return this.doAction(t, p, 'allin');
+      const delta = amt - d.curBet;
+      if (delta < d.minRaise) return t.tell(p, 'Min raise to ' + (d.curBet + d.minRaise));
+      this.put(t, p, amt - (d.bet[p] || 0));
+      d.minRaise = delta;
+      d.curBet = amt;
+      t.say(name + ' raises to ' + amt);
+      return this.afterAction(t, p, true);
+    } else if (kind === 'allin') {
+      const total = (d.bet[p] || 0) + d.stacks[p];
+      if (total <= 0) return t.tell(p, 'No chips left — "!rebuy" after the hand');
+      this.put(t, p, d.stacks[p]);
+      const raised = total > d.curBet;
+      if (raised) { d.minRaise = Math.max(d.minRaise, total - d.curBet); d.curBet = total; }
+      t.say(name + ' is ALL-IN for ' + total);
+      return this.afterAction(t, p, raised);
+    }
+    this.afterAction(t, p, false);
+  },
+  afterAction(t, p, raised) {
+    const d = t.data;
+    if (raised) d.pending = this.active(t).map((x) => x.id).filter((id) => id !== p);
+    else d.pending = d.pending.filter((id) => id !== p);
+    const live = this.contenders(t);
+    if (live.length === 1) {
+      d.stacks[live[0].id] += d.pot;
+      this.badges(t);
+      d.stage = 'done';
+      d.turn = null;
+      t.public.turn = null;
+      return t.win([live[0].id], live[0].name + ' takes the pot (' + d.pot + ') — everyone else folded');
+    }
+    if (!d.pending.length) return this.nextStreet(t);
+    const waiting = this.active(t).filter((x) => d.pending.includes(x.id));
+    d.turn = this.nextFrom(t, p, waiting);
+    t.public.turn = d.turn;
+  },
+  nextStreet(t) {
+    const d = t.data, g = t.geom();
+    d.bet = {};
+    d.curBet = 0;
+    d.minRaise = d.blinds.bb;
+    d.turn = null;
+    t.public.turn = null;
+    if (d.comm.length === 5) return this.showdown(t);
+    const deckP = this.deck(t);
+    t.deal(deckP.id, { x: g.cx - 480, y: g.cy - 220, up: false }); // burn
+    const n = d.comm.length === 0 ? 3 : 1;
+    for (let i = 0; i < n; i++) {
+      const c = t.deal(deckP.id, { x: g.cx - 330 + d.comm.length * 115, y: g.cy - 220, up: true });
+      if (c) d.comm.push({ d: c.d, i: c.i });
+    }
+    t.announce((n === 3 ? 'Flop' : d.comm.length === 4 ? 'Turn' : 'River') + ' — pot ' + d.pot);
+    const act = this.active(t);
+    if (act.length <= 1) return this.nextStreet(t); // all-in run-out
+    d.pending = act.map((x) => x.id);
+    d.turn = this.nextFrom(t, d.dealer, act);
+    t.public.turn = d.turn;
+  },
+  // --- hand evaluation (best 5 of 7) ---
+  HANDS: ['High card', 'Pair', 'Two pair', 'Three of a kind', 'Straight', 'Flush', 'Full house', 'Four of a kind', 'Straight flush'],
+  parsed(t, ref) {
+    const n = t.cardName(ref), r = n.slice(0, -1);
+    return { v: { A: 14, K: 13, Q: 12, J: 11 }[r] || parseInt(r, 10) || 0, s: n.slice(-1) };
+  },
+  score5(cs) {
+    const vs = cs.map((c) => c.v).sort((a, b) => b - a);
+    const flush = cs.every((c) => c.s === cs[0].s);
+    const u = [...new Set(vs)];
+    let straight = 0;
+    if (u.length === 5) {
+      if (u[0] - u[4] === 4) straight = u[0];
+      else if (u[0] === 14 && u[1] === 5 && u[4] === 2) straight = 5; // the wheel
+    }
+    const cnt = {};
+    for (const v of vs) cnt[v] = (cnt[v] || 0) + 1;
+    const groups = Object.entries(cnt).map(([v, c]) => [+v, c]).sort((a, b) => b[1] - a[1] || b[0] - a[0]);
+    const kick = groups.flatMap(([v, c]) => Array(c).fill(v));
+    if (flush && straight) return [8, straight];
+    if (groups[0][1] === 4) return [7, ...kick];
+    if (groups[0][1] === 3 && groups[1][1] === 2) return [6, ...kick];
+    if (flush) return [5, ...vs];
+    if (straight) return [4, straight];
+    if (groups[0][1] === 3) return [3, ...kick];
+    if (groups[0][1] === 2 && groups[1][1] === 2) return [2, ...kick];
+    if (groups[0][1] === 2) return [1, ...kick];
+    return [0, ...vs];
+  },
+  cmp(a, b) {
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const d = (a[i] || 0) - (b[i] || 0);
+      if (d) return d;
+    }
+    return 0;
+  },
+  best7(t, refs) {
+    const cs = refs.map((r) => this.parsed(t, r));
+    let best = null;
+    for (let i = 0; i < 7; i++) {
+      for (let j = i + 1; j < 7; j++) {
+        const s = this.score5(cs.filter((_, k) => k !== i && k !== j));
+        if (!best || this.cmp(s, best) > 0) best = s;
+      }
+    }
+    return best;
+  },
+  /** Main + side pots from per-player contributions. Pure data -> data. */
+  buildPots(paid, contenderIds) {
+    const lvls = [...new Set(contenderIds.map((p) => paid[p] || 0))].sort((a, b) => a - b);
+    const pots = [];
+    let prev = 0;
+    for (const lvl of lvls) {
+      let amt = 0;
+      for (const v of Object.values(paid)) amt += Math.max(0, Math.min(v, lvl) - prev);
+      const elig = contenderIds.filter((p) => (paid[p] || 0) >= lvl);
+      if (amt > 0) pots.push({ amt, elig });
+      prev = lvl;
+    }
+    return pots;
+  },
+  showdown(t) {
+    const d = t.data, g = t.geom();
+    const players = this.contenders(t);
+    const scores = {};
+    for (const p of players) {
+      const hole = t.hand(p.id);
+      const rad = (p.seat * Math.PI) / 180, tx = -Math.sin(rad), ty = Math.cos(rad);
+      for (let k = t.hand(p.id).length - 1; k >= 0; k--) { // reveal by the seat
+        t.playFromHand(p.id, k, {
+          x: g.cx + Math.cos(rad) * (g.r - 250) + tx * (k * 72 - 36) - 50,
+          y: g.cy + Math.sin(rad) * (g.r - 250) + ty * (k * 72 - 36) - 70,
+          up: true, rot: ((p.seat - 90) % 360 + 360) % 360,
+        });
+      }
+      scores[p.id] = this.best7(t, hole.concat(d.comm));
+    }
+    const pots = this.buildPots(d.paid, players.map((p) => p.id));
+    const total = pots.reduce((s, x) => s + x.amt, 0);
+    if (total < d.pot && pots.length) pots[pots.length - 1].amt += d.pot - total;
+    const winnersAll = new Set(), parts = [];
+    pots.forEach((pot, i) => {
+      let best = pot.elig[0];
+      for (const p of pot.elig) if (this.cmp(scores[p], scores[best]) > 0) best = p;
+      const tied = pot.elig.filter((p) => this.cmp(scores[p], scores[best]) === 0);
+      const share = Math.floor(pot.amt / tied.length);
+      let odd = pot.amt - share * tied.length;
+      for (const p of tied) { d.stacks[p] += share + (odd-- > 0 ? 1 : 0); winnersAll.add(p); }
+      const names = tied.map((p) => this.nameOf(t, p)).join(' & ');
+      parts.push(names + (tied.length > 1 ? ' split ' : ' wins ') + pot.amt
+        + (pots.length > 1 ? (i === 0 ? ' (main)' : ' (side)') : '') + ' with ' + this.HANDS[scores[best][0]]);
+    });
+    this.badges(t);
+    d.stage = 'done';
+    d.turn = null;
+    t.public.turn = null;
+    t.win([...winnersAll], parts.join(' · '));
+  },
+  validate(t, a) {
+    const d = t.data;
+    if (d.stage !== 'hand') {
+      if (a.t === 'draw' || a.t === 'deal') return 'Use the New hand button';
+      return;
+    }
+    if (['play', 'handPile', 'toHand', 'draw', 'deal', 'addDeck'].includes(a.t)) {
+      return 'Hand in progress — act with the buttons or chat (!bet, !fold, ...)';
+    }
+    // community & burn cards stay put
+    const isComm = (id) => {
+      const it = t.items().find((x) => x.id === id);
+      return it && it.k === 'c' && d.comm.some((c) => c.d === it.d && c.i === it.i);
+    };
+    if (['toPile', 'stack', 'del', 'flip'].includes(a.t) && ((a.id && isComm(a.id)) || (a.onto && isComm(a.onto)))) {
+      return 'Community cards stay on the board';
+    }
+  },
+})`,
+  bridge: `({
+  name: 'Bridge',
+  // Full flow: Deal -> AUCTION IN CHAT -> play. Bidding commands (in turn,
+  // dealer first, rotating each deal): "!bid 1H" (or "!1H"; strains C D H S NT),
+  // "!pass", "!double", "!redouble". Three passes after a bid fix the
+  // contract (declarer = first of the winning side to name the strain);
+  // four passes throw the hand in. "!contract 4H <name>" skips the auction
+  // if you bid out loud instead. Then: left of declarer leads, the dummy is
+  // laid face up and played by the DECLARER (slide a dummy card to an empty
+  // spot in the middle), turns and following suit are enforced, tricks are
+  // resolved trump-aware and swept, and the winning side takes the trophy.
+  STRAINS: ['C', 'D', 'H', 'S', 'NT'],
+  SYMS: { C: '♣', D: '♦', H: '♥', S: '♠', NT: 'NT' },
+  setup(t) {
+    t.say(t.players().length === 4
+      ? 'Bridge: press Deal, then bid in chat ("!bid 1H", "!pass", ...).'
+      : 'Bridge needs exactly 4 players (' + t.players().length + ' seated).');
+  },
+  buttons: (t) => (t.data.phase === 'play' || t.data.phase === 'bid' ? [] : [{ id: 'deal', label: '🂠 Deal (13 each)' }]),
+  deck(t) { return t.piles().sort((a, b) => b.cards.length - a.cards.length)[0]; },
+  suitOf(t, c) { return t.cardName(c).slice(-1); },
+  rankOf(t, c) {
+    const r = t.cardName(c).slice(0, -1);
+    return { A: 14, K: 13, Q: 12, J: 11 }[r] || parseInt(r, 10) || 0;
+  },
+  seats(t) { return t.players().map((p) => p.id); },
+  sideOf(t, p) { return this.seats(t).indexOf(p) % 2; },
+  sideName(t, s) { const ps = t.players(); return ps[s].name + '–' + ps[s + 2].name; },
+  sidePids(t, s) { return this.seats(t).filter((_, i) => i % 2 === s); },
+  nameOf(t, p) { return (t.players().find((x) => x.id === p) || {}).name || '?'; },
+  inCenter(t, x, y) { const g = t.geom(); return Math.hypot(x + 50 - g.cx, y + 70 - g.cy) < g.r * 0.4; },
+  dummyRef(t, id) {
+    const it = t.items().find((x) => x.id === id);
+    return it && it.k === 'c' && (t.data.dummyCards || []).find((c) => c.d === it.d && c.i === it.i);
+  },
+  onButton(t, id) {
+    if (id !== 'deal') return;
+    if (t.data.phase === 'play' || t.data.phase === 'bid') return t.say('Finish the hand first.');
+    const ps = t.players();
+    if (ps.length !== 4) return t.say('Bridge needs exactly 4 players.');
+    const deck = this.deck(t);
+    if (!deck) return t.say('No deck on the table!');
+    for (const it of t.items()) if (it.k === 'c') t.toPile(it.id, deck.id);
+    for (const p of ps) t.takeHand(p.id, deck.id);
+    t.shuffle(deck.id);
+    t.dealToAll(deck.id, 13);
+    const dealerIdx = ((t.data.dealerIdx ?? -1) + 1) % 4; // rotates every deal
+    Object.assign(t.data, {
+      phase: 'bid', dealerIdx, trump: null, level: null, declarer: null, dummy: null,
+      trick: [], tricks: [0, 0], sidePiles: {}, firstLead: false, dummyCards: [],
+      auction: { passes: 0, best: null, first: {}, dbl: '' },
+      turn: this.seats(t)[dealerIdx],
+    });
+    t.public = { turn: t.data.turn };
+    t.say('Dealt 13 to each (' + this.sideName(t, 0) + ' vs ' + this.sideName(t, 1) + ').');
+    t.announce('Auction: ' + this.nameOf(t, t.data.turn) + ' bids first — "!bid 1H", "!pass", ...');
+  },
+  onChat(t, msg, p) {
+    if (t.data.phase === 'bid') return this.onBid(t, msg.trim(), p);
+    // manual override for tables that bid out loud: "!contract 4H Alice"
+    const m = /^!contract\\s*(\\d)?\\s*(NT|[SHDC])\\s+(.+)$/i.exec(msg);
+    if (!m) return;
+    const decl = t.players().find((x) => x.name.toLowerCase().startsWith(m[3].trim().toLowerCase()));
+    if (!decl) return t.say('No player named "' + m[3].trim() + '"');
+    this.startPlay(t, m[1] ? +m[1] : null, m[2].toUpperCase(), decl.id, '');
+  },
+  onBid(t, msg, p) {
+    const a = t.data.auction;
+    const bid = /^!(?:bid\\s+)?([1-7])\\s*(NT|[SHDC])$/i.exec(msg);
+    const pass = /^!p(?:ass)?$/i.exec(msg);
+    const dbl = /^!double$/i.exec(msg) || /^!x$/i.exec(msg);
+    const rdbl = /^!redouble$/i.exec(msg) || /^!xx$/i.exec(msg);
+    const contract = /^!contract\\s/i.test(msg);
+    if (contract) { t.data.phase = 'done'; return this.onChat(t, msg, p); }
+    if (!bid && !pass && !dbl && !rdbl) return; // ordinary chatter
+    if (p !== t.data.turn) return t.tell(p, "It's not your turn to bid");
+    const side = this.sideOf(t, p);
+    if (bid) {
+      const level = +bid[1], s = this.STRAINS.indexOf(bid[2].toUpperCase());
+      const b = a.best;
+      if (b && (level < b.level || (level === b.level && s <= b.s))) {
+        return t.tell(p, 'Insufficient — you must outbid ' + b.level + this.SYMS[this.STRAINS[b.s]]);
+      }
+      a.best = { level, s, side, by: p };
+      a.first[side + ':' + s] ??= p;
+      a.passes = 0;
+      a.dbl = '';
+      t.say(this.nameOf(t, p) + ' bids ' + level + this.SYMS[this.STRAINS[s]]);
+    } else if (dbl) {
+      if (!a.best || a.best.side === side || a.dbl) return t.tell(p, 'Nothing to double');
+      a.dbl = 'X';
+      a.passes = 0;
+      t.say(this.nameOf(t, p) + ' doubles');
+    } else if (rdbl) {
+      if (a.dbl !== 'X' || !a.best || a.best.side !== side) return t.tell(p, 'Nothing to redouble');
+      a.dbl = 'XX';
+      a.passes = 0;
+      t.say(this.nameOf(t, p) + ' redoubles');
+    } else {
+      a.passes++;
+      t.say(this.nameOf(t, p) + ' passes');
+    }
+    if (a.best && a.passes === 3) {
+      const declarer = a.first[a.best.side + ':' + a.best.s] || a.best.by;
+      return this.startPlay(t, a.best.level, this.STRAINS[a.best.s], declarer, a.dbl);
+    }
+    if (!a.best && a.passes === 4) {
+      t.data.phase = 'done';
+      t.public.turn = null;
+      return t.announce('Passed out — press Deal for a new hand');
+    }
+    t.data.turn = t.nextSeat(p);
+    t.public.turn = t.data.turn;
+  },
+  startPlay(t, level, strain, declarer, dbl) {
+    const ps = t.players();
+    t.data.level = level;
+    t.data.trump = strain === 'NT' ? null : this.SYMS[strain];
+    t.data.declarer = declarer;
+    t.data.dummy = ps[(ps.findIndex((x) => x.id === declarer) + 2) % 4].id;
+    t.data.phase = 'play';
+    t.data.firstLead = true;
+    t.data.trick = [];
+    t.data.turn = t.nextSeat(declarer);
+    t.public.turn = t.data.turn;
+    t.announce('Contract: ' + (level || '') + this.SYMS[strain] + (dbl ? ' ' + dbl : '') + ' by '
+      + this.nameOf(t, declarer) + ' — ' + this.nameOf(t, t.data.turn) + ' leads');
+  },
+  // Lays the dummy's whole hand face up in two sorted rows by their seat,
+  // oriented to face them; the declarer plays these by sliding to the middle.
+  showDummy(t) {
+    const dummy = t.players().find((p) => p.id === t.data.dummy);
+    if (!dummy) return;
+    const order = { '♠': 0, '♥': 1, '♦': 2, '♣': 3 };
+    const refs = t.hand(dummy.id).sort((a, b) =>
+      (order[this.suitOf(t, a)] - order[this.suitOf(t, b)]) || (this.rankOf(t, b) - this.rankOf(t, a)));
+    t.data.dummyCards = refs.map((c) => ({ d: c.d, i: c.i }));
+    const g = t.geom(), rad = (dummy.seat * Math.PI) / 180;
+    const tx = -Math.sin(rad), ty = Math.cos(rad); // tangent along the rim
+    const rot = ((dummy.seat - 90) % 360 + 360) % 360; // upright for the dummy
+    refs.forEach((c, k) => {
+      const row = k < 7 ? 0 : 1, off = ((k < 7 ? k : k - 7) - 3) * 68;
+      const rr = g.r - 260 + row * 155; // both rows clear of the r*0.4 'played' center zone
+      const idx = t.hand(dummy.id).findIndex((h) => h.d === c.d && h.i === c.i);
+      t.playFromHand(dummy.id, idx, {
+        x: g.cx + Math.cos(rad) * rr + tx * off - 50,
+        y: g.cy + Math.sin(rad) * rr + ty * off - 70,
+        up: true, rot,
+      });
+    });
+    t.say('Dummy (' + dummy.name + ') is on the table — the DECLARER slides dummy cards to an empty spot in the middle to play them.');
+  },
+  validate(t, a) {
+    if (t.data.phase === 'bid') {
+      // While bidding, all 52 cards stay where they are — hands in hands.
+      if (['play', 'handPile', 'draw', 'deal', 'toHand', 'flip', 'addDeck'].includes(a.t)) {
+        return 'Bidding — cards stay in hand ("!bid 1H", "!pass", ...)';
+      }
+      return;
+    }
+    if (t.data.phase !== 'play') {
+      if (a.t === 'draw' || a.t === 'deal') return 'Use the Deal button';
+      return;
+    }
+    if (['draw', 'deal', 'handPile', 'toHand', 'addDeck'].includes(a.t)) return 'The hand is in progress';
+    // cards of the current trick must stay loose so the sweep can collect them
+    const inTrick = (id) => {
+      const it = t.items().find((x) => x.id === id);
+      return it && it.k === 'c' && t.data.trick.some((c) => c.d === it.d && c.i === it.i);
+    };
+    if (['toPile', 'stack', 'del', 'flip'].includes(a.t) && ((a.id && inTrick(a.id)) || (a.onto && inTrick(a.onto)))) {
+      return 'Those cards are mid-trick';
+    }
+    // the dummy's exposed cards: only the declarer touches them
+    if (a.id && ['toPile', 'stack', 'del', 'flip'].includes(a.t) && this.dummyRef(t, a.id)) {
+      return 'Slide dummy cards to an EMPTY spot in the middle to play them';
+    }
+    if (a.t === 'move' && a.id && this.dummyRef(t, a.id)) {
+      if (a.p !== t.data.declarer) return 'Only the declarer plays the dummy';
+      if (this.inCenter(t, a.x, a.y)) {
+        if (t.data.turn !== t.data.dummy) return "Not dummy's turn yet";
+        const it = t.items().find((x) => x.id === a.id);
+        const led = t.data.trick[0] && this.suitOf(t, t.data.trick[0]);
+        if (led && this.suitOf(t, it) !== led && (t.data.dummyCards || []).some((c) => this.suitOf(t, c) === led)) {
+          return 'Dummy must follow ' + led;
+        }
+      }
+      return;
+    }
+    if (a.t !== 'play') return; // arranging the table is otherwise free
+    if (a.p !== t.data.turn) return "It's not your turn";
+    if (!a.up) return 'Play your card face up';
+    const led = t.data.trick[0] && this.suitOf(t, t.data.trick[0]);
+    if (led && this.suitOf(t, a) !== led && t.hand(a.p).some((c) => this.suitOf(t, c) === led)) {
+      return 'You must follow ' + led;
+    }
+  },
+  recordPlay(t, card) {
+    if (t.data.firstLead) { t.data.firstLead = false; this.showDummy(t); }
+    t.data.trick.push(card);
+    if (t.data.trick.length === 4) {
+      t.public.turn = null;
+      t.schedule(2.5, 'sweep'); // let everyone look at the trick first
+    } else {
+      t.data.turn = t.nextSeat(card.p);
+      t.public.turn = t.data.turn;
+    }
+  },
+  onAction(t, a) {
+    if (t.data.phase !== 'play') return;
+    if (a.t === 'play') return this.recordPlay(t, { p: a.p, d: a.d, i: a.i });
+    // declarer sliding a dummy card into the middle = the dummy's play
+    if (a.t === 'move' && a.p === t.data.declarer && t.data.turn === t.data.dummy) {
+      const ref = this.dummyRef(t, a.id);
+      const it = ref && t.items().find((x) => x.id === a.id);
+      if (ref && this.inCenter(t, it.x, it.y)) {
+        t.data.dummyCards = t.data.dummyCards.filter((c) => c !== ref);
+        this.recordPlay(t, { p: t.data.dummy, d: ref.d, i: ref.i });
+      }
+    }
+  },
+  onTimer(t, tag) {
+    if (tag !== 'sweep' || t.data.trick.length !== 4) return;
+    const trick = t.data.trick;
+    let win = trick[0];
+    for (const c of trick.slice(1)) {
+      const s = this.suitOf(t, c), ws = this.suitOf(t, win), tr = t.data.trump;
+      if ((s === ws && this.rankOf(t, c) > this.rankOf(t, win)) || (tr && s === tr && ws !== tr)) win = c;
+    }
+    const side = this.sideOf(t, win.p);
+    t.data.tricks[side]++;
+    const winner = t.players().find((p) => p.id === win.p);
+    // sweep the four cards into the winning side's face-down trick pile
+    let pileId = t.data.sidePiles[side];
+    if (!pileId || !t.items().some((it) => it.id === pileId)) {
+      const g = t.geom(), rad = (winner.seat * Math.PI) / 180;
+      pileId = t.newPile([], { x: g.cx + Math.cos(rad) * (g.r - 40) - 50, y: g.cy + Math.sin(rad) * (g.r - 40) - 70, name: this.sideName(t, side) + ' tricks' });
+      t.data.sidePiles[side] = pileId;
+    }
+    for (const it of t.items()) {
+      if (it.k === 'c' && trick.some((c) => c.d === it.d && c.i === it.i)) t.toPile(it.id, pileId);
+    }
+    t.data.trick = [];
+    t.say('Trick to ' + winner.name + ' — ' + this.sideName(t, 0) + ' ' + t.data.tricks[0] + ' : ' + t.data.tricks[1] + ' ' + this.sideName(t, 1));
+    if (t.data.tricks[0] + t.data.tricks[1] === 13) {
+      const dSide = this.sideOf(t, t.data.declarer);
+      const made = t.data.tricks[dSide];
+      const target = t.data.level ? 6 + t.data.level : null;
+      const success = target === null || made >= target;
+      const winSide = success ? dSide : 1 - dSide;
+      let msg = this.sideName(t, winSide) + ' win — declarer took ' + made + ' tricks';
+      if (target) msg += success ? ' (contract MADE)' : ' (DOWN ' + (target - made) + ')';
+      t.win(this.sidePids(t, winSide), msg + ' 🏆');
+      t.data.phase = 'done';
+      t.public.turn = null;
+    } else {
+      t.data.turn = win.p;
+      t.public.turn = win.p;
+    }
+  },
+})`,
+  cah: `({
+  name: 'Cards Against Humanity',
+  // The printed rules, automated. Everyone holds 10 white cards. Each round
+  // the Card Czar (⏳👑) flips a black prompt; everyone else answers it by
+  // playing the required number of white cards FACE DOWN (toggle 🂠 in the
+  // hand bar). Once everyone has answered, the columns shuffle and reveal,
+  // and the Czar presses 👉 1/2/3… to crown the funniest — the winner takes
+  // an Awesome Point (⭐), everyone draws back to 10, and the Czar rotates.
+  // First to the goal wins ("!goal N" changes it, default 5). The Czar can
+  // press "Judge now" to skip stragglers. PICK 2 prompts take two cards (in
+  // the order you play them); PICK 3 prompts deal everyone 2 extra first.
+  // Card texts load from cah-cards.js (CC BY-NC-SA, Cards Against Humanity
+  // LLC). Only the draw piles sit on the table; the rest of the ~1300-card
+  // deck waits in script state to keep the shared state small.
+  HAND: 10,
+  CHUNK: 40,
+  setup(t) {
+    if (!window.CAH_CARDS) throw new Error('cah-cards.js is missing');
+    const d = t.data;
+    d.goal = d.goal || 5;
+    d.scores = d.scores || {};
+    if (!d.wd) {
+      d.wd = t.newDeck({ name: 'CAH White', back: '#f1f5f9',
+        cards: window.CAH_CARDS.white.map((s) => ({ text: s })) });
+      d.bd = t.newDeck({ name: 'CAH Black', back: '#0a0a0a',
+        cards: window.CAH_CARDS.black.map((c) => ({ text: c[0], bg: '#0a0a0a', meta: { pick: c[1] } })) });
+      d.wleft = this.shuf(window.CAH_CARDS.white.map((s, i) => i));
+      d.bleft = this.shuf(window.CAH_CARDS.black.map((c, i) => i));
+      d.wdisc = []; d.bdisc = [];
+    }
+    if (t.players().length < 3) t.say('CAH plays best with 3+ players — you can still try it.');
+    d.czar = t.players()[0].id;
+    this.startRound(t);
+  },
+  shuf(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const x = a[i]; a[i] = a[j]; a[j] = x; } return a; },
+  nameOf(t, p) { return (t.players().find((x) => x.id === p) || {}).name || '?'; },
+  // Draw piles hold only a small window of the shuffled deck; refills come
+  // from index lists in t.data, and discards reshuffle in when a list runs dry.
+  stock(t, kind, need) {
+    const d = t.data, deckId = kind === 'w' ? d.wd : d.bd;
+    let pile = t.piles().find((p) => p.id === d[kind + 'pile']);
+    while ((pile ? pile.cards.length : 0) < need) {
+      if (!d[kind + 'left'].length) {
+        if (!d[kind + 'disc'].length) throw new Error('the ' + (kind === 'w' ? 'white' : 'black') + ' deck ran dry');
+        d[kind + 'left'] = this.shuf(d[kind + 'disc']); d[kind + 'disc'] = [];
+        t.say('reshuffled the ' + (kind === 'w' ? 'white' : 'black') + ' discards back in');
+      }
+      const idxs = d[kind + 'left'].splice(0, this.CHUNK);
+      const g = t.geom();
+      const nid = t.newPile(idxs.map((i) => ({ d: deckId, i, up: false })),
+        { x: kind === 'w' ? g.cx - 280 : g.cx + 180, y: g.cy - 40, name: kind === 'w' ? 'White deck' : 'Black deck' });
+      if (pile) t.merge(nid, pile.id); else d[kind + 'pile'] = nid;
+      pile = t.piles().find((p) => p.id === d[kind + 'pile']);
+    }
+    return pile;
+  },
+  dealWhite(t, p, n) {
+    const pile = this.stock(t, 'w', n);
+    for (let k = 0; k < n; k++) t.deal(pile.id, { to: p });
+  },
+  refill(t) {
+    for (const p of t.players()) {
+      if (p.online && p.handCount < this.HAND) this.dealWhite(t, p.id, this.HAND - p.handCount);
+    }
+  },
+  badges(t) {
+    const d = t.data;
+    t.public.badges = Object.fromEntries(t.players().map((p) =>
+      [p.id, '⭐' + (d.scores[p.id] || 0) + (p.id === d.czar && d.phase !== 'over' ? ' 👑' : '')]));
+  },
+  startRound(t) {
+    const d = t.data;
+    d.subs = {}; d.order = null; d.phase = 'submit';
+    this.refill(t);
+    const g = t.geom();
+    const r = t.deal(this.stock(t, 'b', 1).id, { up: true, x: g.cx - 50, y: g.cy - 230 });
+    d.black = r;
+    d.pick = ((t.card(r) || {}).meta || {}).pick || 1;
+    d.roundPlayers = t.players().filter((p) => p.online && p.id !== d.czar).map((p) => p.id);
+    if (d.pick === 3) for (const p of d.roundPlayers) this.dealWhite(t, p, 2); // the printed rule: draw 2 for PICK 3
+    t.public.turn = d.czar;
+    t.public.winners = [];
+    this.badges(t);
+    t.announce(this.nameOf(t, d.czar) + ' is the Card Czar — answer with ' + d.pick + ' card' + (d.pick > 1 ? 's' : '') + ', FACE DOWN (🂠)');
+  },
+  validate(t, a) {
+    const d = t.data;
+    if (!d.phase || d.phase === 'over') return;
+    if (a.t === 'move' || a.t === 'rot') return; // arranging the table stays free
+    if (a.t !== 'play') return 'The game runs the cards here';
+    if (d.phase !== 'submit') return 'Wait for the next black card';
+    if (a.p === d.czar) return 'The Card Czar does not answer';
+    if (!d.roundPlayers.includes(a.p)) return 'You deal in next round';
+    if (a.d !== d.wd) return 'Answer with a white card';
+    if (a.up) return 'Submit FACE DOWN — toggle 🂠 in the hand bar';
+    if ((d.subs[a.p] || []).length >= d.pick) return 'You already submitted';
+  },
+  onAction(t, a) {
+    const d = t.data;
+    if (a.t !== 'play' || d.phase !== 'submit') return;
+    const it = t.items().find((x) => x.k === 'c' && x.d === a.d && x.i === a.i);
+    if (!it) return;
+    (d.subs[a.p] = d.subs[a.p] || []).push({ id: it.id, d: a.d, i: a.i });
+    const waiting = d.roundPlayers.filter((p) => (d.subs[p] || []).length < d.pick);
+    if (!waiting.length) this.judge(t);
+    else t.say('answers in: ' + (d.roundPlayers.length - waiting.length) + '/' + d.roundPlayers.length);
+  },
+  judge(t) {
+    const d = t.data;
+    // shuffled columns so the Czar cannot tell who played what
+    d.order = this.shuf(Object.keys(d.subs).filter((p) => d.subs[p].length === d.pick));
+    if (!d.order.length) { t.announce('No answers came in — new prompt'); return this.endRound(t, null); }
+    d.phase = 'judge';
+    const g = t.geom();
+    const x0 = g.cx - 50 - ((d.order.length - 1) * 130) / 2;
+    d.order.forEach((p, gi) => {
+      d.subs[p].forEach((c, k) => {
+        t.move(c.id, x0 + gi * 130, g.cy + 170 + k * 42);
+        t.flip(c.id);
+      });
+    });
+    t.announce(this.nameOf(t, d.czar) + ' judges — press 👉 for the funniest answer');
+  },
+  onButton(t, id, by) {
+    const d = t.data;
+    if (id === 'newgame' && d.phase === 'over') {
+      d.scores = {}; t.public.winners = []; d.czar = t.nextSeat(d.czar);
+      return this.startRound(t);
+    }
+    if (id === 'force' && by === d.czar && d.phase === 'submit') return this.judge(t);
+    if (d.phase === 'judge' && by === d.czar && id.indexOf('pick') === 0) {
+      const winner = d.order[+id.slice(4)];
+      if (!winner) return;
+      d.scores[winner] = (d.scores[winner] || 0) + 1;
+      const texts = d.subs[winner].map((c) => (t.card(c) || {}).text).join(' / ');
+      t.announce(this.nameOf(t, winner) + ' wins the round: "' + texts + '" (⭐' + d.scores[winner] + ')');
+      this.endRound(t, winner);
+    }
+  },
+  endRound(t, winner) {
+    const d = t.data;
+    for (const p of Object.keys(d.subs)) for (const c of d.subs[p]) { d.wdisc.push(c.i); t.remove(c.id); }
+    if (d.black) { d.bdisc.push(d.black.i); t.remove(d.black.id); }
+    d.subs = {}; d.black = null;
+    if (winner && d.scores[winner] >= d.goal) {
+      d.phase = 'over'; t.public.turn = null; this.badges(t);
+      return t.win([winner], this.nameOf(t, winner) + ' wins the game with ⭐' + d.scores[winner] + '!');
+    }
+    d.czar = t.nextSeat(d.czar);
+    this.startRound(t);
+  },
+  buttons(t) {
+    const d = t.data;
+    if (d.phase === 'over') return [{ id: 'newgame', label: '🔄 New game' }];
+    if (d.phase === 'submit') return [{ id: 'force', label: '⚖️ Judge now', pid: d.czar }];
+    if (d.phase === 'judge') return (d.order || []).map((p, gi) => ({ id: 'pick' + gi, label: '👉 ' + (gi + 1), pid: d.czar }));
+    return [];
+  },
+  onChat(t, msg, p) {
+    const m = msg.trim().toLowerCase();
+    if (m.indexOf('!goal ') === 0) {
+      const n = parseInt(m.slice(6), 10);
+      if (n > 0) { t.data.goal = n; t.say('the goal is now ⭐' + n); }
+    }
+  },
+  onJoin(t, p) {
+    const d = t.data;
+    if (!d.phase || d.phase === 'over') return;
+    const pl = t.players().find((x) => x.id === p);
+    if (pl && pl.handCount < this.HAND) this.dealWhite(t, p, this.HAND - pl.handCount);
+    t.tell(p, 'You deal in next round');
+  },
+  onLeave(t, p) {
+    const d = t.data;
+    if (d.phase !== 'submit' && d.phase !== 'judge') return;
+    if (p === d.czar) {
+      t.announce('The Card Czar left — new prompt, next Czar');
+      return this.endRound(t, null);
+    }
+    if (d.phase === 'submit' && d.roundPlayers.includes(p)) {
+      d.roundPlayers = d.roundPlayers.filter((x) => x !== p);
+      for (const c of d.subs[p] || []) { d.wdisc.push(c.i); t.remove(c.id); }
+      delete d.subs[p];
+      const waiting = d.roundPlayers.filter((x) => (d.subs[x] || []).length < d.pick);
+      if (d.roundPlayers.length && !waiting.length) this.judge(t);
+    }
+  },
+})`,
+  dealer: `({
+  name: 'Simple dealer',
+  buttons: () => [{ id: 'deal1', label: 'Deal 1 to all' }],
+  onButton(t, id) {
+    const deck = t.piles().sort((a, b) => b.cards.length - a.cards.length)[0];
+    if (deck) t.dealToAll(deck.id, 1);
+  },
+})`,
+};
+
+function updateRulesDialog() {
+  const isHost = role === 'host';
+  const meta = isHost ? host?.rules : view.rules;
+  $('rules-status').textContent = meta?.enabled ? `active: ${meta.name}` : 'inactive';
+  $('rules-tpl').classList.toggle('hidden', !isHost);
+  $('rules-enable').classList.toggle('hidden', !isHost);
+  $('rules-disable').classList.toggle('hidden', !isHost || !meta?.enabled);
+  $('rules-code').readOnly = !isHost;
+  $('rules-err').textContent = lastRulesError;
+}
+
+$('rules-btn').addEventListener('click', () => {
+  const ta = $('rules-code');
+  if (role === 'host') {
+    if (!ta.value.trim()) ta.value = host?.rules?.code || RULES_TEMPLATES.blank;
+  } else {
+    ta.value = guestRules.code || '// The host has not written a rules script yet.';
+  }
+  updateRulesDialog();
+  $('rules-dialog').showModal();
+});
+
+$('rules-tpl').addEventListener('change', () => {
+  const k = $('rules-tpl').value;
+  if (RULES_TEMPLATES[k]) $('rules-code').value = RULES_TEMPLATES[k];
+  $('rules-tpl').value = '';
+});
+
+$('rules-form').addEventListener('submit', (e) => {
+  if (e.submitter?.id !== 'rules-enable') return; // Close button
+  e.preventDefault();
+  lastRulesError = '';
+  act({ t: 'setRules', code: $('rules-code').value, enabled: true });
+  if (host?.rules?.enabled) $('rules-dialog').close();
+  else updateRulesDialog(); // keep it open and show the error
+});
+
+$('rules-disable').addEventListener('click', () => {
+  act({ t: 'setRules', enabled: false });
+  updateRulesDialog();
+});
 $('view-btn').addEventListener('click', () => {
   // Full view reset: zoom, pan, and rotation back to "my seat at the bottom".
   manualView = false;
@@ -1124,6 +2346,62 @@ async function fileToDataURL(file, max = 560) {
   return canvas.toDataURL('image/webp', 0.8);
 }
 
+/** Card name from an image filename: "dragon_rider.png" → "dragon rider". */
+const nameFromFile = (fn) => fn.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim().slice(0, 60);
+
+/** Custom deck without a manifest: one card per image, named after its file. */
+async function filenameDeck(images) {
+  const imgs = [], cards = [];
+  for (const f of images) {
+    cards.push({ g: imgs.length, n: nameFromFile(f.name) });
+    imgs.push(await fileToDataURL(f));
+  }
+  return { name: 'Deck', back: null, imgs, cards };
+}
+
+/** Custom deck from a deck.json manifest plus its images. Entries:
+ *  { file?, name?, count?, text?, color?, meta? } — `file`-less entries render
+ *  as text cards; `meta` is free-form JSON for rules scripts (t.card).
+ *  Each image is stored once in deck.imgs and shared by all its copies. */
+async function manifestDeck(m, images) {
+  if (!Array.isArray(m.cards) || !m.cards.length) throw new Error('deck.json needs a non-empty "cards" array');
+  const byName = new Map(images.map((f) => [f.name, f]));
+  const imgs = [], gOf = new Map(); // filename → index into imgs
+  const imgIdx = async (fn) => {
+    if (!gOf.has(fn)) {
+      const f = byName.get(fn);
+      if (!f) throw new Error(`deck.json references "${fn}" but no such image was uploaded`);
+      gOf.set(fn, imgs.length);
+      imgs.push(await fileToDataURL(f));
+    }
+    return gOf.get(fn);
+  };
+  const cards = [];
+  for (const e of m.cards) {
+    if (!e.file && !e.name) throw new Error('every deck.json card needs a "file" or a "name"');
+    const card = {
+      n: String(e.name ?? nameFromFile(e.file)).slice(0, 60),
+      ...(e.file ? { g: await imgIdx(String(e.file)) } : {}),
+      ...(e.text ? { txt: String(e.text).slice(0, 300) } : {}),
+      ...(e.color ? { col: String(e.color).slice(0, 24) } : {}),
+      ...(e.bg ? { b: String(e.bg).slice(0, 24) } : {}),
+      ...(e.meta !== undefined ? { meta: e.meta } : {}),
+    };
+    const count = Math.min(Math.max(1, e.count | 0 || 1), 500);
+    for (let k = 0; k < count; k++) cards.push(card); // copies share the object; card defs are never mutated
+  }
+  const deck = { name: String(m.name || 'Deck').slice(0, 24), back: null, imgs, cards };
+  // back: an uploaded image's filename, or a solid color like "#111"
+  if (m.back != null) deck.back = String(m.back).startsWith('#') ? String(m.back).slice(0, 24) : imgs[await imgIdx(String(m.back))];
+  // Uploaded images the manifest didn't mention still join, filename-named.
+  for (const f of images) {
+    if (gOf.has(f.name)) continue;
+    cards.push({ g: imgs.length, n: nameFromFile(f.name) });
+    imgs.push(await fileToDataURL(f));
+  }
+  return deck;
+}
+
 $('deck-form').addEventListener('submit', async (e) => {
   if (e.submitter?.value !== 'add') return;
   e.preventDefault();
@@ -1136,11 +2414,19 @@ $('deck-form').addEventListener('submit', async (e) => {
       if (name) deck.name = name;
     } else {
       const files = [...$('deck-files').files];
-      if (!files.length) { toast('Pick at least one card image'); return; }
-      const cards = [];
-      for (const f of files) cards.push({ img: await fileToDataURL(f) });
+      const mf = files.find((f) => /\.json$/i.test(f.name));
+      const images = files.filter((f) => f !== mf);
+      if (!mf && !images.length) { toast('Pick card images and/or a deck.json'); return; }
+      if (mf) {
+        let m;
+        try { m = JSON.parse(await mf.text()); } catch (err) { throw new Error(`${mf.name} is not valid JSON: ${err.message}`); }
+        deck = await manifestDeck(m, images);
+      } else {
+        deck = await filenameDeck(images);
+      }
       const backFile = $('deck-back').files[0];
-      deck = { name: name || 'Deck', back: backFile ? await fileToDataURL(backFile) : null, cards };
+      if (backFile) deck.back = await fileToDataURL(backFile);
+      if (name) deck.name = name;
     }
     act({ t: 'addDeck', deckId: uid(), deck, x: TABLE_W / 2 - CARD_W / 2, y: TABLE_H / 2 - CARD_H / 2 });
     $('deck-dialog').close();
@@ -1160,6 +2446,19 @@ function becomeHost(saved) {
     host = saved.state;
     host.log ||= []; // saves from before the log existed
     host.size ||= 1300;
+    // Re-evaluate a saved rules script; a save that no longer parses
+    // disables the rules loudly rather than wedging the resume.
+    if (host.rules?.code) {
+      try {
+        script = evalRules(host.rules.code);
+        rulesCodeDirty = true;
+      } catch (err) {
+        console.error('saved rules script failed to load', err);
+        lastRulesError = err.message;
+        host.rules.enabled = false;
+        toast(`Saved rules failed to load: ${err.message}`);
+      }
+    }
     setTableSize(host.size);
     $('size-sel').value = String(host.size);
     for (const pl of Object.values(host.players)) pl.online = false;
