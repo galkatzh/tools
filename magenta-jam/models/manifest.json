@@ -1,0 +1,43 @@
+{
+  "temporal": {
+    "chunks": [
+      "temporal.tflite.00",
+      "temporal.tflite.01",
+      "temporal.tflite.02",
+      "temporal.tflite.03",
+      "temporal.tflite.04",
+      "temporal.tflite.05",
+      "temporal.tflite.06",
+      "temporal.tflite.07",
+      "temporal.tflite.08"
+    ],
+    "bytes": 225168368,
+    "sha256": "76fab53bf897c8ee8ead8062ff7ea0ce9d95f85f138d348e709653a614edbffc",
+    "source": "temporal_w8.tflite"
+  },
+  "depth": {
+    "chunks": [
+      "depth.tflite.00",
+      "depth.tflite.01",
+      "depth.tflite.02",
+      "depth.tflite.03"
+    ],
+    "bytes": 76285776,
+    "sha256": "6f26dd92b96faf46810f2cee62fc0d90a0639658c33f57cae2a2b00470dc6bfe",
+    "source": "depth_w8.tflite"
+  },
+  "decoder": {
+    "chunks": [
+      "decoder.tflite.00",
+      "decoder.tflite.01",
+      "decoder.tflite.02",
+      "decoder.tflite.03",
+      "decoder.tflite.04",
+      "decoder.tflite.05",
+      "decoder.tflite.06"
+    ],
+    "bytes": 159096340,
+    "sha256": "619715529accb8a9f0b3d4a6bb4fb1d3bde7dc61a4d74d223845920659e418f2",
+    "source": "decoder4_fp32.tflite"
+  }
+}

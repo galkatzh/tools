@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="AI jam instrument: a text style prompt and a piano keyboard steer Magenta RealTime 2, generated live in your browser with LiteRT.js.">
+  <meta name="theme-color" content="#12131a">
+  <title>Magenta Jam</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Magenta Jam</h1>
+    <p class="subtitle">Play a style prompt and a keyboard into Magenta RealTime 2, generated live in your browser
+      with LiteRT.js. Model: <a href="https://huggingface.co/google/magenta-realtime-2" target="_blank"
+        rel="noopener">google/magenta-realtime-2</a></p>
+  </header>
+
+  <main>
+    <section id="prompt-section" aria-label="Style prompt">
+      <div class="row">
+        <input id="prompt" type="text" value="warm lo-fi hip hop with mellow piano"
+          placeholder="style prompt, e.g. disco funk" autocomplete="off">
+        <button id="apply" type="button">Apply</button>
+      </div>
+      <div id="presets" class="chips">
+        <button class="preset" type="button" data-prompt="disco funk">disco funk</button>
+        <button class="preset" type="button" data-prompt="lo-fi hip hop">lo-fi hip hop</button>
+        <button class="preset" type="button" data-prompt="ambient pads">ambient pads</button>
+        <button class="preset" type="button" data-prompt="drum and bass">drum and bass</button>
+        <button class="preset" type="button" data-prompt="jazz piano trio">jazz piano trio</button>
+        <button class="preset" type="button" data-prompt="techno">techno</button>
+        <button class="preset" type="button" data-prompt="cinematic strings">cinematic strings</button>
+        <button class="preset" type="button" data-prompt="synthwave">synthwave</button>
+      </div>
+    </section>
+
+    <section id="transport-section" aria-label="Transport">
+      <div class="row">
+        <button id="start" type="button" class="primary">Start</button>
+        <button id="stop" type="button" disabled>Stop</button>
+        <label class="volume-label">Volume
+          <input id="volume" type="range" min="0" max="1" step="0.01" value="0.8">
+        </label>
+        <select id="backend" aria-label="Compute backend">
+          <option value="auto" selected>Auto</option>
+          <option value="webgpu">WebGPU</option>
+          <option value="wasm">CPU (WASM)</option>
+        </select>
+      </div>
+    </section>
+
+    <section id="status-section" aria-label="Status">
+      <div id="status" aria-live="polite">Idle</div>
+      <progress id="progress" max="1" value="0" hidden></progress>
+      <div id="stats"></div>
+    </section>
+
+    <section id="controls" aria-label="Generation controls">
+      <label>
+        <span class="control-label">Style strength</span>
+        <input id="style-strength" type="range" min="0" max="7" step="0.1" value="3">
+        <output id="style-strength-val" for="style-strength">3</output>
+      </label>
+      <label>
+        <span class="control-label">Note strength</span>
+        <input id="note-strength" type="range" min="0" max="7" step="0.1" value="2.4">
+        <output id="note-strength-val" for="note-strength">2.4</output>
+      </label>
+      <label>
+        <span class="control-label">Temperature</span>
+        <input id="temperature" type="range" min="0.5" max="2" step="0.05" value="1.3">
+        <output id="temperature-val" for="temperature">1.3</output>
+      </label>
+      <label>
+        <span class="control-label">Top-k</span>
+        <input id="topk" type="range" min="1" max="200" step="1" value="40">
+        <output id="topk-val" for="topk">40</output>
+      </label>
+    </section>
+
+    <section id="keyboard-section" aria-label="Keyboard">
+      <div id="octave-row">
+        <button id="octave-down" type="button" aria-label="Octave down">&minus;</button>
+        <span id="octave">C3&ndash;C5</span>
+        <button id="octave-up" type="button" aria-label="Octave up">+</button>
+      </div>
+      <div id="keyboard"></div>
+      <p class="hint">Keys: A W S E D F T G Y H U J K play C&hellip;C, Z/X shift octave. Touch or drag on the
+        keys.</p>
+    </section>
+
+    <details id="log-details">
+      <summary>Log</summary>
+      <pre id="log"></pre>
+    </details>
+  </main>
+
+  <footer>
+    <p>Model weights &copy; Google DeepMind, licensed <a href="https://huggingface.co/google/magenta-realtime-2"
+        target="_blank" rel="noopener">CC-BY-4.0</a>. First run downloads roughly 600&nbsp;MB of model files
+      (cached afterwards).</p>
+  </footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
