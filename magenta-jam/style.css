@@ -1,0 +1,360 @@
+:root {
+  --bg: #12131a;
+  --panel: #1c1e29;
+  --border: #2c2f40;
+  --text: #eceef5;
+  --text-dim: #8c8fa3;
+  --accent: #ff4fa3;
+  --accent-dim: #ff4fa355;
+  --radius: 10px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 1.5rem 1rem 3rem;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+main, header, footer {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+header h1 {
+  margin: 0 0 0.35rem;
+  font-size: 1.6rem;
+}
+
+.subtitle {
+  margin: 0 0 1.5rem;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.subtitle a {
+  color: var(--accent);
+}
+
+section {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+label {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+input[type="text"] {
+  flex: 1 1 200px;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
+input[type="text"]:focus, select:focus, button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button {
+  padding: 0.55rem 1rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a0812;
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+select {
+  padding: 0.55rem 0.6rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.volume-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+.volume-label input[type="range"] {
+  width: 100px;
+}
+
+/* Preset chips */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.7rem;
+}
+
+.preset {
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  background: var(--bg);
+}
+
+/* Status */
+#status {
+  font-size: 0.95rem;
+}
+
+#progress {
+  width: 100%;
+  margin-top: 0.6rem;
+  accent-color: var(--accent);
+}
+
+#stats {
+  margin-top: 0.5rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+}
+
+/* Controls grid */
+#controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.9rem 1.2rem;
+}
+
+#controls label {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.2rem 0.6rem;
+}
+
+.control-label {
+  grid-column: 1 / -1;
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+#controls output {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  color: var(--accent);
+  text-align: right;
+  min-width: 2.5em;
+}
+
+/* Keyboard */
+#octave-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.8rem;
+  margin-bottom: 0.7rem;
+}
+
+#octave-row button {
+  padding: 0.35rem 0.8rem;
+}
+
+#octave {
+  min-width: 5em;
+  text-align: center;
+  color: var(--text-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+#keyboard {
+  height: 160px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-radius: 6px;
+  background: #0a0a10;
+  user-select: none;
+  touch-action: none;
+}
+
+/* The actual flex row + positioning context for black keys. Its width is
+   set inline by keyboard.js to max(100%, numWhite * 44px) — see the comment
+   on Keyboard#_render — so it always matches its own scrollable content
+   width, keeping black-key percentages aligned with the white keys under
+   them whether the keyboard fits or scrolls. */
+.keys-track {
+  position: relative;
+  display: flex;
+  height: 100%;
+}
+
+.key {
+  border: 1px solid #000;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 6px;
+  box-sizing: border-box;
+}
+
+.key .label {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  pointer-events: none;
+  user-select: none;
+}
+
+.key.white {
+  flex: 1 0 44px;
+  background: #eceef0;
+  border-color: #0a0a10;
+  border-radius: 0 0 4px 4px;
+}
+
+.key.white .label {
+  color: #6a6a78;
+}
+
+.key.white.active {
+  background: var(--accent-dim);
+  background-color: #ff9dc6;
+}
+
+.key.black {
+  position: absolute;
+  top: 0;
+  height: 62%;
+  background: #16161f;
+  border: 1px solid #000;
+  border-radius: 0 0 4px 4px;
+  z-index: 2;
+}
+
+.key.black.active {
+  background: var(--accent);
+}
+
+.key.black .label {
+  color: var(--text-dim);
+}
+
+.hint {
+  margin: 0.6rem 0 0;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+/* Log */
+#log-details summary {
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+}
+
+#log {
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin: 0.6rem 0 0;
+}
+
+footer p {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+footer a {
+  color: var(--accent);
+}
+
+@media (max-width: 480px) {
+  header h1 {
+    font-size: 1.35rem;
+  }
+
+  section {
+    padding: 0.8rem;
+  }
+}
+
+#status.error {
+  color: #ff6b6b;
+}
