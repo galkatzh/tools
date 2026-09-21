@@ -48,7 +48,7 @@
     .btn-upload { background: #313244; color: #cba6f7; }
     .btn-export { background: #cba6f7; color: #1e1e2e; font-weight: 700; }
 
-    /* ── Export size setting ─────────────────── */
+    /* ── Export name + size settings ─────────── */
     .setting {
       display: flex;
       align-items: center;
@@ -56,7 +56,7 @@
       font-size: 0.8rem;
       color: #a6adc8;
     }
-    .setting select {
+    .setting select, .setting input[type=text] {
       padding: 6px 8px;
       border-radius: 7px;
       border: 1px solid #45475a;
@@ -66,6 +66,9 @@
       font-family: inherit;
       cursor: pointer;
     }
+    .setting input[type=text] { width: 18ch; cursor: text; }
+    .setting input[type=text]:focus { outline: none; border-color: #cba6f7; }
+    .setting .ext { margin-left: -3px; color: #6c7086; }
 
     /* ── Batch bar ───────────────────────────── */
     #batch-bar {
@@ -410,6 +413,11 @@
 <div class="toolbar">
   <h1>PDF Editor</h1>
   <button class="btn-upload" id="btnUpload">+ Add PDFs</button>
+  <label class="setting" title="Name of the exported file. Split files get a number appended.">
+    Name
+    <input type="text" id="fileName" placeholder="export" spellcheck="false">
+    <span class="ext">.pdf</span>
+  </label>
   <label class="setting" title="Re-encode pages as images at the chosen resolution. Lower DPI = smaller file, but text stops being selectable. Best for scans and photo-heavy PDFs; text/vector PDFs may grow instead.">
     Size
     <select id="quality">
@@ -583,11 +591,17 @@ async function loadFile(file) {
   return pages;
 }
 
+/** Strip a .pdf extension, if present. */
+const stripExt = n => n.replace(/\.pdf$/i, '');
+
 async function addFiles(files) {
   setProgress('Loading PDFs…');
   try {
     for (const file of files) {
       const pages = await loadFile(file);
+      // The export name defaults to the first PDF loaded, until the user sets one.
+      const nameInput = document.getElementById('fileName');
+      if (!nameInput.value) nameInput.value = stripExt(file.name) + '_edit';
       state.items.push(...pages);
     }
     render();
@@ -726,8 +740,12 @@ function drawAnnots(page, annots, font) {
   }
 }
 
+/** Turn the typed name into a file-name stem browsers and file systems accept. */
+const nameStem = s => stripExt(s.trim()).replace(/[\\/:*?"<>|]+/g, '-').slice(0, 100).trim() || 'export';
+
 async function exportPDFs() {
   const preset = SIZE_PRESETS[document.getElementById('quality').value];
+  const stem = nameStem(document.getElementById('fileName').value);
   setProgress('Exporting…');
   try {
     const { PDFDocument } = PDFLib;
@@ -770,7 +788,7 @@ async function exportPDFs() {
         if (p.annots.length) drawAnnots(page, p.annots, font);
       }
       const bytes = await out.save();
-      const name = nonempty.length === 1 ? 'merged.pdf' : `output-${i + 1}.pdf`;
+      const name = nonempty.length === 1 ? `${stem}.pdf` : `${stem}-${i + 1}.pdf`;
       downloadBlob(bytes, name);
       written.push(`${name} (${fmtSize(bytes.length)})`);
     }
@@ -1257,10 +1275,12 @@ function render() {
   document.getElementById('drop-zone').style.display = hasPages ? 'none' : '';
   document.getElementById('btnExport').disabled = !hasPages;
 
-  // Hide batch bar when no pages exist (selection is implicitly empty)
+  // With no pages left there is nothing selected, and the next PDF loaded
+  // should get to set the export name again.
   if (!hasPages) {
     state.selection.clear();
     document.getElementById('batch-bar').hidden = true;
+    document.getElementById('fileName').value = '';
   }
 
   let splitsSeen = 0;
@@ -1470,7 +1490,8 @@ document.addEventListener('mousedown', e => {
   if (e.button !== 0) return;
   if (e.target.closest('.page-card, .split-item, .toolbar, #batch-bar, #drop-zone, #progress, #editor'))
     return;
-  e.preventDefault(); // suppress native text selection while dragging
+  e.preventDefault();             // suppress native text selection while dragging
+  document.activeElement?.blur(); // …but still let a click take focus out of the name field
   const el = document.createElement('div');
   el.id = 'marquee';
   marquee = {
@@ -1567,11 +1588,11 @@ document.addEventListener('keydown', e => {
   if (ed) {                                   // page shortcuts stay out of the editor
     if (e.key === 'Escape') edCancel();
     if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); edDelete(); }
-    if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); edUndo(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); edUndo(); }
     return;
   }
 
-  if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {   // 'A' with caps lock on
     e.preventDefault();
     state.items.filter(i => i.type === 'page').forEach(i => state.selection.add(i.id));
     syncSelectionUI();
