@@ -48,6 +48,25 @@
     .btn-upload { background: #313244; color: #cba6f7; }
     .btn-export { background: #cba6f7; color: #1e1e2e; font-weight: 700; }
 
+    /* ── Export size setting ─────────────────── */
+    .setting {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      color: #a6adc8;
+    }
+    .setting select {
+      padding: 6px 8px;
+      border-radius: 7px;
+      border: 1px solid #45475a;
+      background: #313244;
+      color: #cdd6f4;
+      font-size: 0.82rem;
+      font-family: inherit;
+      cursor: pointer;
+    }
+
     /* ── Batch bar ───────────────────────────── */
     #batch-bar {
       display: flex;
@@ -242,6 +261,35 @@
     }
     .btn-unsplit:hover { background: #1e3a5f; }
 
+    /* ── Marquee (rubber-band) selection ─────── */
+    #marquee {
+      position: absolute;
+      border: 1px solid #cba6f7;
+      background: rgba(203, 166, 247, 0.15);
+      border-radius: 3px;
+      pointer-events: none;
+      z-index: 150; /* above the cards, below the sticky toolbar */
+    }
+
+    /* ── Toast ───────────────────────────────── */
+    #toast {
+      position: fixed;
+      bottom: 22px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1e1e2e;
+      border: 1px solid #45475a;
+      border-radius: 10px;
+      padding: 10px 18px;
+      font-size: 0.85rem;
+      color: #a6adc8;
+      z-index: 1100;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+    }
+    #toast.show { opacity: 1; }
+
     /* ── Progress overlay ────────────────────── */
     #progress {
       display: none;
@@ -282,6 +330,15 @@
 <div class="toolbar">
   <h1>PDF Editor</h1>
   <button class="btn-upload" id="btnUpload">+ Add PDFs</button>
+  <label class="setting" title="Re-encode pages as images at the chosen resolution. Lower DPI = smaller file, but text stops being selectable. Best for scans and photo-heavy PDFs; text/vector PDFs may grow instead.">
+    Size
+    <select id="quality">
+      <option value="original" selected>Original — no re-encode</option>
+      <option value="high">High — 150 DPI</option>
+      <option value="medium">Medium — 110 DPI</option>
+      <option value="low">Low — 72 DPI</option>
+    </select>
+  </label>
   <button class="btn-export" id="btnExport" disabled>⬇ Export</button>
 </div>
 
@@ -305,6 +362,8 @@
 <div id="canvas"></div>
 
 <input type="file" id="fileInput" accept=".pdf" multiple hidden>
+
+<div id="toast"></div>
 
 <div id="progress">
   <div class="progress-box">
@@ -342,16 +401,36 @@ const state = {
 
 // ── PDF loading ───────────────────────────────────────────────────────────────
 
-/** Render one page of a PDF to a JPEG data-URL thumbnail. */
-async function renderThumb(bytes, pageIdx) {
-  const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+/** fileId → Promise<PDFDocumentProxy>, shared by thumbnailing and rasterised export. */
+const pdfjsDocs = new Map();
+
+/**
+ * Get (and cache) the PDF.js document for a source file.
+ * The bytes are sliced because PDF.js detaches the buffer it is handed.
+ */
+function getPdfjsDoc(fileId) {
+  if (!pdfjsDocs.has(fileId))
+    pdfjsDocs.set(fileId,
+      pdfjsLib.getDocument({ data: state.pdfBytes.get(fileId).slice() }).promise);
+  return pdfjsDocs.get(fileId);
+}
+
+/**
+ * Render one page to a canvas at the given scale (1 = 72 DPI).
+ * The canvas is pre-filled white because JPEG has no alpha channel —
+ * without it, transparent regions encode as black.
+ */
+async function renderPage(pdf, pageIdx, scale) {
   const page = await pdf.getPage(pageIdx + 1);
-  const vp = page.getViewport({ scale: 1.2 });
+  const vp = page.getViewport({ scale });
   const canvas = document.createElement('canvas');
-  canvas.width = vp.width;
-  canvas.height = vp.height;
-  await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
-  return canvas.toDataURL('image/jpeg', 0.75);
+  canvas.width = Math.max(1, Math.round(vp.width));
+  canvas.height = Math.max(1, Math.round(vp.height));
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  return canvas;
 }
 
 async function loadFile(file) {
@@ -359,12 +438,13 @@ async function loadFile(file) {
   const fileId = uid();
   state.pdfBytes.set(fileId, bytes);
 
-  const pdfInfo = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+  const pdf = await getPdfjsDoc(fileId);
   const pages = [];
-  for (let i = 0; i < pdfInfo.numPages; i++) {
-    const thumb = await renderThumb(bytes, i);
+  for (let i = 0; i < pdf.numPages; i++) {
+    const canvas = await renderPage(pdf, i, 1.2);
     pages.push({ type: 'page', id: uid(), fileId, pageIdx: i,
-                 label: `${file.name}  p.${i + 1}`, thumb });
+                 label: `${file.name}  p.${i + 1}`,
+                 thumb: canvas.toDataURL('image/jpeg', 0.75) });
   }
   return pages;
 }
@@ -387,7 +467,30 @@ async function addFiles(files) {
 
 // ── Export ────────────────────────────────────────────────────────────────────
 
+/**
+ * Export size presets. `null` copies the original page objects untouched;
+ * anything else re-renders each page to a JPEG at `dpi` and embeds that, which
+ * shrinks image-heavy/scanned PDFs a lot but drops text, links and annotations.
+ */
+const SIZE_PRESETS = {
+  original: null,
+  high:   { dpi: 150, jpeg: 0.85 },
+  medium: { dpi: 110, jpeg: 0.7 },
+  low:    { dpi: 72,  jpeg: 0.55 },
+};
+
+/** Re-render one page as a JPEG and append it to `out` at its original size. */
+async function addRasterPage(out, item, preset) {
+  const pdf = await getPdfjsDoc(item.fileId);
+  // Viewport at scale 1 gives the page size in points, with rotation applied.
+  const { width, height } = (await pdf.getPage(item.pageIdx + 1)).getViewport({ scale: 1 });
+  const canvas = await renderPage(pdf, item.pageIdx, preset.dpi / 72);
+  const img = await out.embedJpg(canvas.toDataURL('image/jpeg', preset.jpeg));
+  out.addPage([width, height]).drawImage(img, { x: 0, y: 0, width, height });
+}
+
 async function exportPDFs() {
+  const preset = SIZE_PRESETS[document.getElementById('quality').value];
   setProgress('Exporting…');
   try {
     const { PDFDocument } = PDFLib;
@@ -407,17 +510,28 @@ async function exportPDFs() {
       else groups[groups.length - 1].push(item);
     }
     const nonempty = groups.filter(g => g.length > 0);
+    const total = nonempty.reduce((n, g) => n + g.length, 0);
+    let done = 0;
+    const written = [];
 
     for (let i = 0; i < nonempty.length; i++) {
       const out = await PDFDocument.create();
       for (const p of nonempty[i]) {
-        const src = await getSrcDoc(p.fileId);
-        const [copied] = await out.copyPages(src, [p.pageIdx]);
-        out.addPage(copied);
+        setProgress(`Exporting… page ${++done} / ${total}`);
+        if (preset) {
+          await addRasterPage(out, p, preset);
+        } else {
+          const src = await getSrcDoc(p.fileId);
+          const [copied] = await out.copyPages(src, [p.pageIdx]);
+          out.addPage(copied);
+        }
       }
       const bytes = await out.save();
-      downloadBlob(bytes, nonempty.length === 1 ? 'merged.pdf' : `output-${i + 1}.pdf`);
+      const name = nonempty.length === 1 ? 'merged.pdf' : `output-${i + 1}.pdf`;
+      downloadBlob(bytes, name);
+      written.push(`${name} (${fmtSize(bytes.length)})`);
     }
+    toast('Exported ' + written.join(', '));
   } catch (err) {
     console.error('Export error:', err);
     alert('Export failed: ' + err.message);
@@ -425,6 +539,8 @@ async function exportPDFs() {
     setProgress(null);
   }
 }
+
+const fmtSize = b => b < 1e6 ? `${Math.round(b / 1024)} KB` : `${(b / 1048576).toFixed(1)} MB`;
 
 function downloadBlob(bytes, name) {
   const a = Object.assign(document.createElement('a'), {
@@ -748,7 +864,88 @@ function setProgress(msg) {
   if (msg) document.getElementById('progressMsg').textContent = msg;
 }
 
+let toastTimer;
+/** Briefly show a status line at the bottom of the screen. */
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 5000);
+}
+
+// ── Marquee (rubber-band) selection ───────────────────────────────────────────
+
+/** Active marquee drag, or null. Coordinates are page (document) coordinates. */
+let marquee = null;
+
+/** Movement (px) before a drag on empty space counts as a marquee, not a click. */
+const MARQUEE_THRESHOLD = 4;
+
+/** True when the page card intersects the page-coordinate box. */
+function cardInBox(card, box) {
+  const r = card.getBoundingClientRect();
+  const left = r.left + scrollX, top = r.top + scrollY;
+  return left < box.right && left + r.width > box.left &&
+         top < box.bottom && top + r.height > box.top;
+}
+
+// Start a marquee when the drag begins on empty space (not on a card or chrome).
+document.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  if (e.target.closest('.page-card, .split-item, .toolbar, #batch-bar, #drop-zone, #progress'))
+    return;
+  e.preventDefault(); // suppress native text selection while dragging
+  const el = document.createElement('div');
+  el.id = 'marquee';
+  marquee = {
+    el, x0: e.pageX, y0: e.pageY, moved: false,
+    // Shift/Ctrl/Cmd adds to the current selection; a plain drag replaces it.
+    base: (e.shiftKey || e.ctrlKey || e.metaKey) ? new Set(state.selection) : new Set(),
+  };
+});
+
+document.addEventListener('mousemove', e => {
+  if (!marquee) return;
+  const { x0, y0 } = marquee;
+  if (!marquee.moved) {
+    if (Math.hypot(e.pageX - x0, e.pageY - y0) < MARQUEE_THRESHOLD) return;
+    marquee.moved = true;
+    document.body.appendChild(marquee.el);
+  }
+
+  const box = {
+    left:  Math.min(e.pageX, x0), right:  Math.max(e.pageX, x0),
+    top:   Math.min(e.pageY, y0), bottom: Math.max(e.pageY, y0),
+  };
+  Object.assign(marquee.el.style, {
+    left: `${box.left}px`, top: `${box.top}px`,
+    width: `${box.right - box.left}px`, height: `${box.bottom - box.top}px`,
+  });
+
+  state.selection = new Set(marquee.base);
+  document.querySelectorAll('.page-card[data-id]').forEach(card => {
+    if (cardInBox(card, box)) state.selection.add(card.dataset.id);
+  });
+  syncSelectionUI();
+});
+
+document.addEventListener('mouseup', () => {
+  if (!marquee) return;
+  marquee.el.remove();
+  // A drag that never moved is just a click on empty space → deselect all.
+  if (marquee.moved) lastClickedId = null;
+  else clearSelection();
+  marquee = null;
+});
+
 // ── Event wiring ──────────────────────────────────────────────────────────────
+
+// Nothing may fail silently: surface anything that escapes a try/catch.
+addEventListener('error', e =>
+  console.error('Uncaught error:', e.error || e.message));
+addEventListener('unhandledrejection', e =>
+  console.error('Unhandled promise rejection:', e.reason));
 
 document.getElementById('btnUpload').onclick  = () => document.getElementById('fileInput').click();
 document.getElementById('btnExport').onclick  = exportPDFs;
@@ -760,11 +957,6 @@ document.getElementById('fileInput').onchange = e => {
   e.target.value = '';
   if (files.length) addFiles(files);
 };
-
-// Click on empty canvas area → deselect all
-document.getElementById('canvas').addEventListener('click', e => {
-  if (e.target === e.currentTarget) clearSelection();
-});
 
 // Keyboard shortcuts
 document.addEventListener('keydown', e => {
