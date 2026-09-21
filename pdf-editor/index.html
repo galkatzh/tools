@@ -48,6 +48,28 @@
     .btn-upload { background: #313244; color: #cba6f7; }
     .btn-export { background: #cba6f7; color: #1e1e2e; font-weight: 700; }
 
+    /* ── Export name + size settings ─────────── */
+    .setting {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      color: #a6adc8;
+    }
+    .setting select, .setting input[type=text] {
+      padding: 6px 8px;
+      border-radius: 7px;
+      border: 1px solid #45475a;
+      background: #313244;
+      color: #cdd6f4;
+      font-size: 0.82rem;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .setting input[type=text] { width: 18ch; cursor: text; }
+    .setting input[type=text]:focus { outline: none; border-color: #cba6f7; }
+    .setting .ext { margin-left: -3px; color: #6c7086; }
+
     /* ── Batch bar ───────────────────────────── */
     #batch-bar {
       display: flex;
@@ -205,7 +227,8 @@
     .card-row button { flex: 1; }
     .btn-delete { background: rgba(243,139,168,0.9); color: #1e1e2e; }
     .btn-dup    { background: rgba(166,227,161,0.9); color: #1e1e2e; }
-    .btn-split  { background: rgba(137,180,250,0.9); color: #1e1e2e; width: 100%; }
+    .btn-split  { background: rgba(137,180,250,0.9); color: #1e1e2e; }
+    .btn-edit   { background: rgba(250,227,176,0.9); color: #1e1e2e; }
 
     /* ── Split divider ───────────────────────── */
     .split-item {
@@ -241,6 +264,114 @@
       border-radius: 4px;
     }
     .btn-unsplit:hover { background: #1e3a5f; }
+
+    /* ── Page editor ─────────────────────────── */
+    #editor {
+      position: fixed;
+      inset: 0;
+      z-index: 900;
+      background: #11111b;
+      display: flex;
+      flex-direction: column;
+    }
+    #editor[hidden] { display: none; }
+    .ed-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 10px 16px;
+      background: #1e1e2e;
+      border-bottom: 1px solid #313244;
+    }
+    .ed-title {
+      font-size: 0.85rem;
+      color: #a6adc8;
+      margin-right: auto;
+      max-width: 26ch;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .ed-tool { background: #313244; color: #cdd6f4; }
+    .ed-tool.active { background: #cba6f7; color: #1e1e2e; font-weight: 700; }
+    .ed-bar input[type=color] {
+      width: 34px; height: 31px;
+      padding: 2px;
+      border: 1px solid #45475a;
+      border-radius: 7px;
+      background: #313244;
+      cursor: pointer;
+    }
+    .ed-bar input[type=range] { width: 100px; accent-color: #cba6f7; cursor: pointer; }
+    .ed-hint {
+      padding: 0 16px 9px;
+      background: #1e1e2e;
+      border-bottom: 1px solid #313244;
+      font-size: 0.74rem;
+      color: #6c7086;
+    }
+    .ed-stage {
+      flex: 1;
+      overflow: auto;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 20px;
+    }
+    .ed-paper { position: relative; box-shadow: 0 6px 40px rgba(0,0,0,0.6); }
+    .ed-paper canvas { display: block; }
+    /* The overlay carries annotations in page coordinates (viewBox = page size). */
+    .ed-paper svg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+    }
+    .ed-paper svg.drawing { cursor: crosshair; }
+    .ed-handle { cursor: nwse-resize; }
+    .ed-text-input {
+      position: absolute;
+      z-index: 10;
+      padding: 0 3px;
+      border: 1px solid #cba6f7;
+      border-radius: 3px;
+      background: rgba(30,30,46,0.9);
+      font-family: Helvetica, Arial, sans-serif;
+      line-height: 1.1;
+      outline: none;
+      min-width: 90px;
+    }
+
+    /* ── Marquee (rubber-band) selection ─────── */
+    #marquee {
+      position: absolute;
+      border: 1px solid #cba6f7;
+      background: rgba(203, 166, 247, 0.15);
+      border-radius: 3px;
+      pointer-events: none;
+      z-index: 150; /* above the cards, below the sticky toolbar */
+    }
+
+    /* ── Toast ───────────────────────────────── */
+    #toast {
+      position: fixed;
+      bottom: 22px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1e1e2e;
+      border: 1px solid #45475a;
+      border-radius: 10px;
+      padding: 10px 18px;
+      font-size: 0.85rem;
+      color: #a6adc8;
+      z-index: 1100;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+    }
+    #toast.show { opacity: 1; }
 
     /* ── Progress overlay ────────────────────── */
     #progress {
@@ -282,6 +413,20 @@
 <div class="toolbar">
   <h1>PDF Editor</h1>
   <button class="btn-upload" id="btnUpload">+ Add PDFs</button>
+  <label class="setting" title="Name of the exported file. Split files get a number appended.">
+    Name
+    <input type="text" id="fileName" placeholder="export" spellcheck="false">
+    <span class="ext">.pdf</span>
+  </label>
+  <label class="setting" title="Re-encode pages as images at the chosen resolution. Lower DPI = smaller file, but text stops being selectable. Best for scans and photo-heavy PDFs; text/vector PDFs may grow instead.">
+    Size
+    <select id="quality">
+      <option value="original" selected>Original — no re-encode</option>
+      <option value="high">High — 150 DPI</option>
+      <option value="medium">Medium — 110 DPI</option>
+      <option value="low">Low — 72 DPI</option>
+    </select>
+  </label>
   <button class="btn-export" id="btnExport" disabled>⬇ Export</button>
 </div>
 
@@ -306,6 +451,25 @@
 
 <input type="file" id="fileInput" accept=".pdf" multiple hidden>
 
+<div id="editor" hidden>
+  <div class="ed-bar">
+    <span class="ed-title" id="edTitle"></span>
+    <button class="ed-tool" data-tool="select" title="Select, move and resize annotations">↖ Select</button>
+    <button class="ed-tool" data-tool="text"   title="Click the page to place text">T Text</button>
+    <button class="ed-tool" data-tool="ink"    title="Drag on the page to scribble">✎ Scribble</button>
+    <input type="color" id="edColor" value="#e64553" title="Colour">
+    <label class="setting" title="Font size / stroke width">Size <input type="range" id="edSize"></label>
+    <button class="btn-clr-sel" id="edUndo">↺ Undo</button>
+    <button class="btn-del-sel" id="edDelete">✕ Delete</button>
+    <button class="btn-upload"  id="edCancel">Cancel</button>
+    <button class="btn-export"  id="edApply">✓ Apply</button>
+  </div>
+  <div class="ed-hint" id="edHint"></div>
+  <div class="ed-stage" id="edStage"></div>
+</div>
+
+<div id="toast"></div>
+
 <div id="progress">
   <div class="progress-box">
     <div class="spinner"></div>
@@ -329,10 +493,15 @@ const uid = () => 's' + _nextId++;
 
 /**
  * items: Array<PageItem | SplitItem>
- *   PageItem  = { type:'page',  id, fileId, pageIdx, label, thumb }
+ *   PageItem  = { type:'page',  id, fileId, pageIdx, label, thumb, annots }
  *   SplitItem = { type:'split', id }
  * pdfBytes: Map<fileId, Uint8Array>  (source bytes, kept for export)
  * selection: Set<id>  (selected page IDs)
+ *
+ * Annotations live in page space: the page *as displayed* (PDF.js has already
+ * applied /Rotate), y-down, origin at its top-left corner, units = PDF points.
+ *   InkAnnot  = { type:'ink',  id, color, width, points:[[x,y],…] }
+ *   TextAnnot = { type:'text', id, color, size, x, y, text }  (x,y = baseline start)
  */
 const state = {
   items: [],
@@ -342,16 +511,68 @@ const state = {
 
 // ── PDF loading ───────────────────────────────────────────────────────────────
 
-/** Render one page of a PDF to a JPEG data-URL thumbnail. */
-async function renderThumb(bytes, pageIdx) {
-  const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+/** fileId → Promise<PDFDocumentProxy>, shared by thumbnailing and rasterised export. */
+const pdfjsDocs = new Map();
+
+/**
+ * Get (and cache) the PDF.js document for a source file.
+ * The bytes are sliced because PDF.js detaches the buffer it is handed.
+ */
+function getPdfjsDoc(fileId) {
+  if (!pdfjsDocs.has(fileId))
+    pdfjsDocs.set(fileId,
+      pdfjsLib.getDocument({ data: state.pdfBytes.get(fileId).slice() }).promise);
+  return pdfjsDocs.get(fileId);
+}
+
+/**
+ * Render one page to a canvas at the given scale (1 = 72 DPI).
+ * The canvas is pre-filled white because JPEG has no alpha channel —
+ * without it, transparent regions encode as black.
+ */
+async function renderPage(pdf, pageIdx, scale) {
   const page = await pdf.getPage(pageIdx + 1);
-  const vp = page.getViewport({ scale: 1.2 });
+  const vp = page.getViewport({ scale });
   const canvas = document.createElement('canvas');
-  canvas.width = vp.width;
-  canvas.height = vp.height;
-  await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
-  return canvas.toDataURL('image/jpeg', 0.75);
+  canvas.width = Math.max(1, Math.round(vp.width));
+  canvas.height = Math.max(1, Math.round(vp.height));
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  return canvas;
+}
+
+const THUMB_SCALE = 1.2;
+const FONT_STACK = 'Helvetica, Arial, sans-serif';
+const clone = o => JSON.parse(JSON.stringify(o));
+
+/** Paint annotations onto a 2D context whose scale maps page points → pixels. */
+function paintAnnots(ctx, annots, scale) {
+  ctx.save();
+  ctx.scale(scale, scale);
+  ctx.lineCap = ctx.lineJoin = 'round';
+  for (const a of annots) {
+    if (a.type === 'ink') {
+      ctx.strokeStyle = a.color;
+      ctx.lineWidth = a.width;
+      ctx.beginPath();
+      a.points.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = a.color;
+      ctx.font = `${a.size}px ${FONT_STACK}`;
+      ctx.fillText(a.text, a.x, a.y);   // canvas y is the baseline, like our model
+    }
+  }
+  ctx.restore();
+}
+
+/** Re-render a page's thumbnail so it shows its current annotations. */
+async function refreshThumb(item) {
+  const canvas = await renderPage(await getPdfjsDoc(item.fileId), item.pageIdx, THUMB_SCALE);
+  paintAnnots(canvas.getContext('2d'), item.annots, THUMB_SCALE);
+  item.thumb = canvas.toDataURL('image/jpeg', 0.75);
 }
 
 async function loadFile(file) {
@@ -359,21 +580,28 @@ async function loadFile(file) {
   const fileId = uid();
   state.pdfBytes.set(fileId, bytes);
 
-  const pdfInfo = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+  const pdf = await getPdfjsDoc(fileId);
   const pages = [];
-  for (let i = 0; i < pdfInfo.numPages; i++) {
-    const thumb = await renderThumb(bytes, i);
-    pages.push({ type: 'page', id: uid(), fileId, pageIdx: i,
-                 label: `${file.name}  p.${i + 1}`, thumb });
+  for (let i = 0; i < pdf.numPages; i++) {
+    const canvas = await renderPage(pdf, i, THUMB_SCALE);
+    pages.push({ type: 'page', id: uid(), fileId, pageIdx: i, annots: [],
+                 label: `${file.name}  p.${i + 1}`,
+                 thumb: canvas.toDataURL('image/jpeg', 0.75) });
   }
   return pages;
 }
+
+/** Strip a .pdf extension, if present. */
+const stripExt = n => n.replace(/\.pdf$/i, '');
 
 async function addFiles(files) {
   setProgress('Loading PDFs…');
   try {
     for (const file of files) {
       const pages = await loadFile(file);
+      // The export name defaults to the first PDF loaded, until the user sets one.
+      const nameInput = document.getElementById('fileName');
+      if (!nameInput.value) nameInput.value = stripExt(file.name) + '_edit';
       state.items.push(...pages);
     }
     render();
@@ -387,7 +615,137 @@ async function addFiles(files) {
 
 // ── Export ────────────────────────────────────────────────────────────────────
 
+/**
+ * Export size presets. `null` copies the original page objects untouched;
+ * anything else re-renders each page to a JPEG at `dpi` and embeds that, which
+ * shrinks image-heavy/scanned PDFs a lot but drops text, links and annotations.
+ */
+const SIZE_PRESETS = {
+  original: null,
+  high:   { dpi: 150, jpeg: 0.85 },
+  medium: { dpi: 110, jpeg: 0.7 },
+  low:    { dpi: 72,  jpeg: 0.55 },
+};
+
+/** Re-render one page as a JPEG and append it to `out` at its original size. */
+async function addRasterPage(out, item, preset) {
+  const pdf = await getPdfjsDoc(item.fileId);
+  // Viewport at scale 1 gives the page size in points, with rotation applied.
+  const { width, height } = (await pdf.getPage(item.pageIdx + 1)).getViewport({ scale: 1 });
+  const canvas = await renderPage(pdf, item.pageIdx, preset.dpi / 72);
+  const img = await out.embedJpg(canvas.toDataURL('image/jpeg', preset.jpeg));
+  const page = out.addPage([width, height]);
+  page.drawImage(img, { x: 0, y: 0, width, height });
+  return page;
+}
+
+// ── Annotations on export ─────────────────────────────────────────────────────
+
+const FONTKIT_URL = 'https://unpkg.com/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js';
+const UNICODE_FONT_URL = 'https://cdn.jsdelivr.net/npm/dejavu-fonts-ttf@2.37/ttf/DejaVuSans.ttf';
+const RTL_RE = /[֐-ࣿיִ-﷿ﹰ-﻿]/;
+const RTL_RUNS_RE = /[֐-ࣿיִ-﷿ﹰ-﻿\s]+|[^֐-ࣿיִ-﷿ﹰ-﻿]+/g;
+
+/** Helvetica only covers WinAnsi; anything else needs a Unicode font embedded. */
+const needsUnicodeFont = t => /[^\x20-\x7E\xA0-\xFF]/.test(t);
+
+const scripts = new Map();
+/** Inject a script once, resolving when it has run. */
+function loadScript(src) {
+  if (!scripts.has(src))
+    scripts.set(src, new Promise((resolve, reject) => {
+      document.head.appendChild(Object.assign(document.createElement('script'), {
+        src, onload: resolve, onerror: () => reject(new Error('Could not load ' + src)),
+      }));
+    }));
+  return scripts.get(src);
+}
+
+let unicodeFontBytes = null;
+/** Fetch + embed the Unicode fallback font (Hebrew, Cyrillic, Greek…), on demand. */
+async function embedUnicodeFont(doc) {
+  await loadScript(FONTKIT_URL);
+  if (!unicodeFontBytes) {
+    const res = await fetch(UNICODE_FONT_URL);
+    if (!res.ok) throw new Error(`Could not download the Unicode font (HTTP ${res.status})`);
+    unicodeFontBytes = new Uint8Array(await res.arrayBuffer());
+  }
+  doc.registerFontkit(fontkit);
+  return doc.embedFont(unicodeFontBytes, { subset: true });
+}
+
+/** Embed only the fonts this document's text annotations actually need. */
+async function makeFontPicker(doc, texts) {
+  const std = texts.some(t => !needsUnicodeFont(t))
+    ? await doc.embedFont(PDFLib.StandardFonts.Helvetica) : null;
+  const uni = texts.some(needsUnicodeFont) ? await embedUnicodeFont(doc) : null;
+  return t => needsUnicodeFont(t) ? uni : std;
+}
+
+/**
+ * pdf-lib emits glyphs in logical order, so right-to-left text would come out
+ * backwards. Reversing RTL runs (and their order) stands in for a real bidi
+ * pass: correct for plain Hebrew, approximate for mixed-direction lines, and
+ * it does not do Arabic letter joining.
+ */
+function bidiForPdf(text) {
+  if (!RTL_RE.test(text)) return text;
+  const runs = text.match(RTL_RUNS_RE) ?? [];
+  return runs.reverse().map(r => RTL_RE.test(r) ? [...r].reverse().join('') : r).join('');
+}
+
+const hexRgb = h => PDFLib.rgb(parseInt(h.slice(1, 3), 16) / 255,
+                               parseInt(h.slice(3, 5), 16) / 255,
+                               parseInt(h.slice(5, 7), 16) / 255);
+
+/**
+ * Draw a page's annotations onto the exported page.
+ * Annotations are in page space (as displayed), so they are mapped into PDF
+ * user space — y-up, from the crop box origin — honouring the page's /Rotate.
+ */
+function drawAnnots(page, annots, font) {
+  const { pushGraphicsState, popGraphicsState, moveTo, lineTo, stroke, setStrokingColor,
+          setLineWidth, setLineCap, setLineJoin, LineCapStyle, LineJoinStyle, degrees } = PDFLib;
+  const { x: ox, y: oy, width: pw, height: ph } = page.getCropBox();
+  const rot = ((page.getRotation().angle % 360) + 360) % 360;
+  const map = (x, y) => {
+    const [ux, uy] = rot === 90  ? [y, x]
+                   : rot === 180 ? [pw - x, y]
+                   : rot === 270 ? [pw - y, ph - x]
+                   :               [x, ph - y];
+    return { x: ux + ox, y: uy + oy };
+  };
+
+  for (const a of annots) {
+    if (a.type === 'ink') {
+      const pts = a.points.map(([x, y]) => map(x, y));
+      page.pushOperators(
+        pushGraphicsState(),
+        setStrokingColor(hexRgb(a.color)),
+        setLineWidth(a.width),
+        setLineCap(LineCapStyle.Round),
+        setLineJoin(LineJoinStyle.Round),
+        moveTo(pts[0].x, pts[0].y),
+        ...pts.slice(1).map(p => lineTo(p.x, p.y)),
+        stroke(),
+        popGraphicsState(),
+      );
+    } else {
+      // Glyphs need the same rotation as the page so they read upright.
+      const { x, y } = map(a.x, a.y);
+      page.drawText(bidiForPdf(a.text), {
+        x, y, size: a.size, font: font(a.text), color: hexRgb(a.color), rotate: degrees(rot),
+      });
+    }
+  }
+}
+
+/** Turn the typed name into a file-name stem browsers and file systems accept. */
+const nameStem = s => stripExt(s.trim()).replace(/[\\/:*?"<>|]+/g, '-').slice(0, 100).trim() || 'export';
+
 async function exportPDFs() {
+  const preset = SIZE_PRESETS[document.getElementById('quality').value];
+  const stem = nameStem(document.getElementById('fileName').value);
   setProgress('Exporting…');
   try {
     const { PDFDocument } = PDFLib;
@@ -407,17 +765,34 @@ async function exportPDFs() {
       else groups[groups.length - 1].push(item);
     }
     const nonempty = groups.filter(g => g.length > 0);
+    const total = nonempty.reduce((n, g) => n + g.length, 0);
+    let done = 0;
+    const written = [];
 
     for (let i = 0; i < nonempty.length; i++) {
       const out = await PDFDocument.create();
+
+      const texts = nonempty[i].flatMap(p => p.annots.filter(a => a.type === 'text').map(a => a.text));
+      const font = texts.length ? await makeFontPicker(out, texts) : null;
+
       for (const p of nonempty[i]) {
-        const src = await getSrcDoc(p.fileId);
-        const [copied] = await out.copyPages(src, [p.pageIdx]);
-        out.addPage(copied);
+        setProgress(`Exporting… page ${++done} / ${total}`);
+        let page;
+        if (preset) {
+          page = await addRasterPage(out, p, preset);
+        } else {
+          const src = await getSrcDoc(p.fileId);
+          const [copied] = await out.copyPages(src, [p.pageIdx]);
+          page = out.addPage(copied);
+        }
+        if (p.annots.length) drawAnnots(page, p.annots, font);
       }
       const bytes = await out.save();
-      downloadBlob(bytes, nonempty.length === 1 ? 'merged.pdf' : `output-${i + 1}.pdf`);
+      const name = nonempty.length === 1 ? `${stem}.pdf` : `${stem}-${i + 1}.pdf`;
+      downloadBlob(bytes, name);
+      written.push(`${name} (${fmtSize(bytes.length)})`);
     }
+    toast('Exported ' + written.join(', '));
   } catch (err) {
     console.error('Export error:', err);
     alert('Export failed: ' + err.message);
@@ -425,6 +800,8 @@ async function exportPDFs() {
     setProgress(null);
   }
 }
+
+const fmtSize = b => b < 1e6 ? `${Math.round(b / 1024)} KB` : `${(b / 1048576).toFixed(1)} MB`;
 
 function downloadBlob(bytes, name) {
   const a = Object.assign(document.createElement('a'), {
@@ -501,7 +878,8 @@ function deleteSelected() {
 function duplicatePage(id) {
   const idx = state.items.findIndex(i => i.id === id);
   const orig = state.items[idx];
-  state.items.splice(idx + 1, 0, { ...orig, id: uid(), label: orig.label + ' (copy)' });
+  state.items.splice(idx + 1, 0,
+    { ...orig, id: uid(), annots: clone(orig.annots), label: orig.label + ' (copy)' });
   render();
   syncSelectionUI();
 }
@@ -568,6 +946,326 @@ function clearDropStyles() {
     .forEach(el => el.classList.remove('drop-before', 'drop-after'));
 }
 
+// ── Page editor ───────────────────────────────────────────────────────────────
+
+const TOOL_SIZE  = { text: 18, ink: 3 };            // current font size / stroke width (pt)
+const SIZE_RANGE = { text: [8, 96], ink: [1, 24] };
+const HINTS = {
+  select: 'Click an annotation to select it · drag to move · drag the corner handle to resize · double-click text to retype · Delete removes it',
+  text:   'Click anywhere on the page to place text',
+  ink:    'Drag on the page to scribble',
+};
+
+/**
+ * Open editor session, or null.
+ * { item, fit (screen px per page point), svg, paper, els: Map<id, SVGElement>,
+ *   annots, undo, sel, tool, drag, editing, lastDown }
+ */
+let ed = null;
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
+const edSelected = () => ed.annots.find(a => a.id === ed.sel) ?? null;
+/** Bounding box of a rendered annotation, in page units. */
+const edBox = id => ed.els.get(id).getBBox();
+const edPts = pts => pts.map(p => p.join(',')).join(' ');
+const clamp = (v, [lo, hi]) => Math.min(hi, Math.max(lo, v));
+
+/** Open the annotation editor for a page. */
+async function openEditor(id) {
+  const item = state.items.find(i => i.id === id);
+  setProgress('Opening editor…');
+  try {
+    const pdf = await getPdfjsDoc(item.fileId);
+    const { width, height } = (await pdf.getPage(item.pageIdx + 1)).getViewport({ scale: 1 });
+    // Fit the page into the stage, but render at device resolution to stay crisp.
+    const fit = Math.min((innerWidth - 60) / width, (innerHeight - 190) / height, 2);
+    const canvas = await renderPage(pdf, item.pageIdx, fit * (devicePixelRatio || 1));
+    canvas.style.width  = `${width * fit}px`;
+    canvas.style.height = `${height * fit}px`;
+
+    const svg = svgEl('svg', { viewBox: `0 0 ${width} ${height}` });
+    const paper = document.createElement('div');
+    paper.className = 'ed-paper';
+    paper.append(canvas, svg);
+    const stage = document.getElementById('edStage');
+    stage.innerHTML = '';
+    stage.appendChild(paper);
+
+    ed = { item, fit, svg, paper, els: new Map(), annots: clone(item.annots),
+           undo: [], sel: null, tool: 'text', drag: null, editing: null, lastDown: null };
+
+    svg.addEventListener('pointerdown', edPointerDown);
+    svg.addEventListener('pointermove', edPointerMove);
+    svg.addEventListener('pointerup', edPointerUp);
+
+    document.getElementById('edTitle').textContent = item.label;
+    document.getElementById('editor').hidden = false;
+    edSetTool('text');
+  } catch (err) {
+    console.error('Editor open failed:', err);
+    alert('Could not open the page editor: ' + err.message);
+  } finally {
+    setProgress(null);
+  }
+}
+
+function closeEditor() {
+  document.getElementById('editor').hidden = true;
+  document.getElementById('edStage').innerHTML = '';
+  ed = null;
+}
+
+/** Close without applying, asking first if there is anything to lose. */
+function edCancel() {
+  if (JSON.stringify(ed.annots) !== JSON.stringify(ed.item.annots) &&
+      !confirm('Discard the changes to this page?')) return;
+  closeEditor();
+}
+
+function edSetTool(tool) {
+  ed.tool = tool;
+  if (tool !== 'select') ed.sel = null;
+  document.querySelectorAll('.ed-tool')
+    .forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
+  ed.svg.classList.toggle('drawing', tool !== 'select');
+  document.getElementById('edHint').textContent = HINTS[tool];
+  edSyncInputs();
+  edRender();
+}
+
+/** Point the colour/size inputs at the selected annotation, or at the tool defaults. */
+function edSyncInputs() {
+  const a = edSelected();
+  const kind = a ? a.type : (ed.tool === 'select' ? 'text' : ed.tool);
+  const [min, max] = SIZE_RANGE[kind];
+  Object.assign(document.getElementById('edSize'),
+    { min, max, step: 1, value: Math.round(a ? (a.size ?? a.width) : TOOL_SIZE[kind]) });
+  if (a) document.getElementById('edColor').value = a.color;
+}
+
+/** Snapshot the annotations so the change about to be made can be undone. */
+function edPushUndo() {
+  ed.undo.push(clone(ed.annots));
+  if (ed.undo.length > 50) ed.undo.shift();
+}
+
+/** Rebuild the SVG overlay from the annotation list. */
+function edRender() {
+  ed.svg.replaceChildren();
+  ed.els.clear();
+  for (const a of ed.annots) {
+    if (a.id === ed.editing) continue;              // currently typed in the inline input
+    const el = a.type === 'ink'
+      ? svgEl('polyline', { points: edPts(a.points), fill: 'none', stroke: a.color,
+          'stroke-width': a.width, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })
+      : svgEl('text', { x: a.x, y: a.y, fill: a.color, 'font-size': a.size,
+          'font-family': FONT_STACK, 'xml:space': 'preserve' });
+    if (a.type === 'text') el.textContent = a.text;
+    ed.svg.appendChild(el);
+    ed.els.set(a.id, el);
+  }
+
+  if (!ed.els.has(ed.sel)) return;
+  const b = edBox(ed.sel), u = 1 / ed.fit;          // u = one screen pixel in page units
+  ed.svg.append(
+    svgEl('rect', { x: b.x - 3 * u, y: b.y - 3 * u,
+      width: b.width + 6 * u, height: b.height + 6 * u, fill: 'none',
+      stroke: '#cba6f7', 'stroke-width': u, 'stroke-dasharray': `${4 * u} ${3 * u}` }),
+    svgEl('rect', { class: 'ed-handle', x: b.x + b.width - 2 * u, y: b.y + b.height - 2 * u,
+      width: 10 * u, height: 10 * u, fill: '#cba6f7', stroke: '#1e1e2e', 'stroke-width': u }),
+  );
+}
+
+/** Pointer position in page coordinates. */
+function edPoint(e) {
+  const r = ed.svg.getBoundingClientRect();
+  return { x: (e.clientX - r.left) / ed.fit, y: (e.clientY - r.top) / ed.fit };
+}
+
+/** True when the point is inside an annotation's box (padded for thin strokes). */
+function edHit(a, pt) {
+  const b = edBox(a.id), pad = (a.width ?? 0) / 2 + 3 / ed.fit;
+  return pt.x >= b.x - pad && pt.x <= b.x + b.width + pad &&
+         pt.y >= b.y - pad && pt.y <= b.y + b.height + pad;
+}
+
+function edPointerDown(e) {
+  if (e.button !== 0) return;
+  // Suppress the browser's default focus/selection handling: it would blur the
+  // inline text input away the moment it is created.
+  e.preventDefault();
+  const pt = edPoint(e);
+  const color = document.getElementById('edColor').value;
+  ed.svg.setPointerCapture(e.pointerId);
+
+  // Own double-click detection: capturing the pointer suppresses `dblclick`.
+  const now = performance.now();
+  const isDouble = ed.lastDown && now - ed.lastDown.t < 400 &&
+                   Math.hypot(pt.x - ed.lastDown.x, pt.y - ed.lastDown.y) < 6 / ed.fit;
+  ed.lastDown = { t: now, x: pt.x, y: pt.y };
+
+  if (e.target.classList.contains('ed-handle')) {          // resize the selection
+    edPushUndo();
+    ed.drag = { mode: 'resize', pt, box: edBox(ed.sel), orig: clone(edSelected()) };
+    return;
+  }
+  if (ed.tool === 'ink') {
+    edPushUndo();
+    const a = { type: 'ink', id: uid(), color, width: TOOL_SIZE.ink, points: [[pt.x, pt.y]] };
+    ed.annots.push(a);
+    ed.drag = { mode: 'draw', annot: a };
+    edRender();
+    return;
+  }
+  if (ed.tool === 'text') {
+    edPushUndo();
+    const a = { type: 'text', id: uid(), color, size: TOOL_SIZE.text, x: pt.x, y: pt.y, text: '' };
+    ed.annots.push(a);
+    ed.sel = a.id;
+    edEditText(a);
+    return;
+  }
+  const hit = [...ed.annots].reverse().find(a => edHit(a, pt));   // topmost under the pointer
+  ed.sel = hit?.id ?? null;
+  if (hit && isDouble && hit.type === 'text') {                   // double-click to retype
+    edSyncInputs();
+    edEditText(hit);
+    return;
+  }
+  if (hit) {
+    edPushUndo();
+    ed.drag = { mode: 'move', pt, orig: clone(hit) };
+  }
+  edSyncInputs();
+  edRender();
+}
+
+function edPointerMove(e) {
+  if (!ed.drag) return;
+  const pt = edPoint(e);
+  const d = ed.drag;
+
+  if (d.mode === 'draw') {
+    const pts = d.annot.points, [lx, ly] = pts[pts.length - 1];
+    // Decimate: skip points closer than a point, keeping strokes light in the PDF.
+    if (Math.hypot(pt.x - lx, pt.y - ly) < 1) return;
+    pts.push([pt.x, pt.y]);
+    ed.els.get(d.annot.id).setAttribute('points', edPts(pts));
+    return;
+  }
+
+  const a = edSelected();
+  if (!a) return;
+  if (d.mode === 'move') {
+    const dx = pt.x - d.pt.x, dy = pt.y - d.pt.y;
+    if (a.type === 'ink') a.points = d.orig.points.map(([x, y]) => [x + dx, y + dy]);
+    else Object.assign(a, { x: d.orig.x + dx, y: d.orig.y + dy });
+  } else {                                          // resize about the box's top-left corner
+    const { x: bx, y: by } = d.box;
+    const k = Math.max(0.05, Math.hypot(pt.x - bx, pt.y - by) /
+                             Math.max(1e-3, Math.hypot(d.pt.x - bx, d.pt.y - by)));
+    if (a.type === 'ink') {
+      a.points = d.orig.points.map(([x, y]) => [bx + (x - bx) * k, by + (y - by) * k]);
+      a.width = clamp(d.orig.width * k, SIZE_RANGE.ink);
+    } else {
+      a.size = clamp(d.orig.size * k, SIZE_RANGE.text);
+      a.y = by + (d.orig.y - by) * (a.size / d.orig.size);   // keep the box's top edge put
+    }
+  }
+  edRender();
+}
+
+function edPointerUp(e) {
+  if (!ed.drag) return;
+  ed.svg.releasePointerCapture(e.pointerId);
+  const { mode, annot } = ed.drag;
+  // A tap with the scribble tool makes a dot: a lone point draws nothing.
+  if (mode === 'draw' && annot.points.length === 1) annot.points.push([...annot.points[0]]);
+  ed.drag = null;
+  edSyncInputs();
+  edRender();
+}
+
+/** Inline input for typing a text annotation, laid over the page. */
+function edEditText(a) {
+  ed.editing = a.id;
+  edRender();
+
+  const inp = document.createElement('input');
+  inp.className = 'ed-text-input';
+  inp.value = a.text;
+  Object.assign(inp.style, {
+    left: `${a.x * ed.fit}px`,
+    top:  `${(a.y - a.size * 0.82) * ed.fit}px`,   // line up the input with the text's cap height
+    fontSize: `${a.size * ed.fit}px`,
+    color: a.color,
+  });
+  ed.paper.appendChild(inp);
+  inp.focus();
+  inp.select();
+
+  let done = false;
+  const finish = (commit) => {
+    if (done) return;
+    done = true;
+    inp.remove();
+    ed.editing = null;
+    if (commit) a.text = inp.value;
+    if (!a.text.trim()) {                          // never keep an empty annotation
+      ed.annots = ed.annots.filter(x => x !== a);
+      if (ed.sel === a.id) ed.sel = null;
+    }
+    edSyncInputs();
+    edRender();
+  };
+  inp.addEventListener('blur', () => finish(true));
+  inp.addEventListener('keydown', e => {
+    e.stopPropagation();                           // typing must not fire app shortcuts
+    if (e.key === 'Enter') finish(true);
+    else if (e.key === 'Escape') finish(false);
+  });
+}
+
+function edDelete() {
+  if (!ed.sel) return;
+  edPushUndo();
+  ed.annots = ed.annots.filter(a => a.id !== ed.sel);
+  ed.sel = null;
+  edSyncInputs();
+  edRender();
+}
+
+function edUndo() {
+  if (!ed.undo.length) return;
+  ed.annots = ed.undo.pop();
+  ed.sel = null;
+  edSyncInputs();
+  edRender();
+}
+
+/** Commit the edits to the page and refresh its thumbnail. */
+async function edApply() {
+  const { item, annots } = ed;
+  closeEditor();
+  setProgress('Applying…');
+  try {
+    item.annots = annots;
+    await refreshThumb(item);
+    render();
+  } catch (err) {
+    console.error('Applying annotations failed:', err);
+    alert('Could not update the page: ' + err.message);
+  } finally {
+    setProgress(null);
+  }
+}
+
 // ── Render ────────────────────────────────────────────────────────────────────
 
 function render() {
@@ -577,10 +1275,12 @@ function render() {
   document.getElementById('drop-zone').style.display = hasPages ? 'none' : '';
   document.getElementById('btnExport').disabled = !hasPages;
 
-  // Hide batch bar when no pages exist (selection is implicitly empty)
+  // With no pages left there is nothing selected, and the next PDF loaded
+  // should get to set the export name again.
   if (!hasPages) {
     state.selection.clear();
     document.getElementById('batch-bar').hidden = true;
+    document.getElementById('fileName').value = '';
   }
 
   let splitsSeen = 0;
@@ -662,14 +1362,25 @@ function makePageCard(item, itemIdx) {
   dupBtn.onclick = e => { e.stopPropagation(); duplicatePage(item.id); };
   row.appendChild(dupBtn);
 
-  // Row 2: Split after (full width)
+  // Row 2: Edit | Split after
+  const row2 = document.createElement('div');
+  row2.className = 'card-row';
+
+  const editBtn = document.createElement('button');
+  editBtn.className = 'btn-edit';
+  editBtn.title = 'Add text and scribbles to this page';
+  editBtn.textContent = '✎ Edit';
+  editBtn.onclick = e => { e.stopPropagation(); openEditor(item.id); };
+  row2.appendChild(editBtn);
+
   const splitBtn = document.createElement('button');
   splitBtn.className = 'btn-split';
   splitBtn.title = 'Start a new output file after this page';
-  splitBtn.textContent = '÷ Split after';
+  splitBtn.textContent = '÷ Split';
   splitBtn.onclick = e => { e.stopPropagation(); addSplitAfter(itemIdx); };
+  row2.appendChild(splitBtn);
 
-  actions.append(row, splitBtn);
+  actions.append(row, row2);
   card.appendChild(actions);
 
   // ── Click to select ───────────────────────────
@@ -748,12 +1459,120 @@ function setProgress(msg) {
   if (msg) document.getElementById('progressMsg').textContent = msg;
 }
 
+let toastTimer;
+/** Briefly show a status line at the bottom of the screen. */
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 5000);
+}
+
+// ── Marquee (rubber-band) selection ───────────────────────────────────────────
+
+/** Active marquee drag, or null. Coordinates are page (document) coordinates. */
+let marquee = null;
+
+/** Movement (px) before a drag on empty space counts as a marquee, not a click. */
+const MARQUEE_THRESHOLD = 4;
+
+/** True when the page card intersects the page-coordinate box. */
+function cardInBox(card, box) {
+  const r = card.getBoundingClientRect();
+  const left = r.left + scrollX, top = r.top + scrollY;
+  return left < box.right && left + r.width > box.left &&
+         top < box.bottom && top + r.height > box.top;
+}
+
+// Start a marquee when the drag begins on empty space (not on a card or chrome).
+document.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  if (e.target.closest('.page-card, .split-item, .toolbar, #batch-bar, #drop-zone, #progress, #editor'))
+    return;
+  e.preventDefault();             // suppress native text selection while dragging
+  document.activeElement?.blur(); // …but still let a click take focus out of the name field
+  const el = document.createElement('div');
+  el.id = 'marquee';
+  marquee = {
+    el, x0: e.pageX, y0: e.pageY, moved: false,
+    // Shift/Ctrl/Cmd adds to the current selection; a plain drag replaces it.
+    base: (e.shiftKey || e.ctrlKey || e.metaKey) ? new Set(state.selection) : new Set(),
+  };
+});
+
+document.addEventListener('mousemove', e => {
+  if (!marquee) return;
+  const { x0, y0 } = marquee;
+  if (!marquee.moved) {
+    if (Math.hypot(e.pageX - x0, e.pageY - y0) < MARQUEE_THRESHOLD) return;
+    marquee.moved = true;
+    document.body.appendChild(marquee.el);
+  }
+
+  const box = {
+    left:  Math.min(e.pageX, x0), right:  Math.max(e.pageX, x0),
+    top:   Math.min(e.pageY, y0), bottom: Math.max(e.pageY, y0),
+  };
+  Object.assign(marquee.el.style, {
+    left: `${box.left}px`, top: `${box.top}px`,
+    width: `${box.right - box.left}px`, height: `${box.bottom - box.top}px`,
+  });
+
+  state.selection = new Set(marquee.base);
+  document.querySelectorAll('.page-card[data-id]').forEach(card => {
+    if (cardInBox(card, box)) state.selection.add(card.dataset.id);
+  });
+  syncSelectionUI();
+});
+
+document.addEventListener('mouseup', () => {
+  if (!marquee) return;
+  marquee.el.remove();
+  // A drag that never moved is just a click on empty space → deselect all.
+  if (marquee.moved) lastClickedId = null;
+  else clearSelection();
+  marquee = null;
+});
+
 // ── Event wiring ──────────────────────────────────────────────────────────────
+
+// Nothing may fail silently: surface anything that escapes a try/catch.
+addEventListener('error', e =>
+  console.error('Uncaught error:', e.error || e.message));
+addEventListener('unhandledrejection', e =>
+  console.error('Unhandled promise rejection:', e.reason));
 
 document.getElementById('btnUpload').onclick  = () => document.getElementById('fileInput').click();
 document.getElementById('btnExport').onclick  = exportPDFs;
 document.getElementById('btnDeleteSel').onclick = deleteSelected;
 document.getElementById('btnClearSel').onclick  = clearSelection;
+
+// ── Editor controls ──
+document.querySelectorAll('.ed-tool').forEach(b => b.onclick = () => edSetTool(b.dataset.tool));
+document.getElementById('edUndo').onclick   = edUndo;
+document.getElementById('edDelete').onclick = edDelete;
+document.getElementById('edCancel').onclick = edCancel;
+document.getElementById('edApply').onclick  = edApply;
+
+document.getElementById('edColor').onchange = e => {
+  const a = edSelected();
+  if (!a) return;
+  edPushUndo();
+  a.color = e.target.value;
+  edRender();
+};
+
+// Snapshot before the slider starts moving so the whole drag is one undo step.
+document.getElementById('edSize').onpointerdown = () => { if (edSelected()) edPushUndo(); };
+document.getElementById('edSize').oninput = e => {
+  const v = +e.target.value;
+  const a = edSelected();
+  if (!a) TOOL_SIZE[ed.tool === 'select' ? 'text' : ed.tool] = v;
+  else if (a.type === 'text') a.size = v;
+  else a.width = v;
+  if (a) edRender();
+};
 
 document.getElementById('fileInput').onchange = e => {
   const files = [...e.target.files];
@@ -761,17 +1580,19 @@ document.getElementById('fileInput').onchange = e => {
   if (files.length) addFiles(files);
 };
 
-// Click on empty canvas area → deselect all
-document.getElementById('canvas').addEventListener('click', e => {
-  if (e.target === e.currentTarget) clearSelection();
-});
-
 // Keyboard shortcuts
 document.addEventListener('keydown', e => {
   const tag = document.activeElement.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
-  if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+  if (ed) {                                   // page shortcuts stay out of the editor
+    if (e.key === 'Escape') edCancel();
+    if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); edDelete(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); edUndo(); }
+    return;
+  }
+
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {   // 'A' with caps lock on
     e.preventDefault();
     state.items.filter(i => i.type === 'page').forEach(i => state.selection.add(i.id));
     syncSelectionUI();
@@ -803,7 +1624,7 @@ document.addEventListener('dragover', e => {
   if ([...e.dataTransfer.types].includes('Files')) e.preventDefault();
 });
 document.addEventListener('drop', e => {
-  if (![...e.dataTransfer.types].includes('Files')) return;
+  if (ed || ![...e.dataTransfer.types].includes('Files')) return;
   e.preventDefault();
   const pdfs = [...e.dataTransfer.files]
     .filter(f => f.type === 'application/pdf' || f.name.endsWith('.pdf'));
