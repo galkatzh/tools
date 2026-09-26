@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fighter — pose recogniser spike</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>🥊 Fighter <small>pose recogniser spike</small></h1>
+    <div class="bar">
+      <button id="start">Start camera</button>
+      <button id="calibrate" disabled title="C">Calibrate</button>
+      <button id="drill" disabled title="D">Record drill ▶</button>
+      <button id="negatives" disabled title="N">Record negatives ▶</button>
+      <button id="stop" disabled title="S">Stop &amp; save ■</button>
+      <label class="file">Evaluate recordings… <input id="eval" type="file" accept=".json" multiple></label>
+    </div>
+  </header>
+  <div id="error" hidden></div>
+
+  <main>
+    <div id="stage">
+      <video id="video" playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div id="prompt"></div>
+      <div id="flash"></div>
+    </div>
+
+    <aside>
+      <table id="stats">
+        <tr><th>Backend</th><td id="backend">—</td></tr>
+        <tr><th>Camera fps</th><td id="camFps">—</td></tr>
+        <tr><th>Processed fps</th><td id="procFps">—</td></tr>
+        <tr><th>Inference</th><td id="infer">—</td></tr>
+        <tr><th id="latLabel">Latency</th><td id="latency">—</td></tr>
+        <tr><th>Calibration</th><td id="calib">not calibrated (duck off)</td></tr>
+        <tr><th>Recording</th><td id="recStatus">—</td></tr>
+      </table>
+
+      <div class="meters">
+        <div><span>Guard</span><i id="guard" class="lamp"></i></div>
+        <div><span>Duck</span><b class="meter"><i id="duck"></i></b></div>
+        <div><span>Lean</span><b class="meter center"><i id="lean"></i></b></div>
+      </div>
+
+      <h2>Events</h2>
+      <ol id="events"></ol>
+    </aside>
+  </main>
+
+  <section id="report"></section>
+
+  <footer>
+    Stand back until your hips are in frame. <b>Record drill</b> calibrates, then prompts random moves
+    (left/right = your own body side) and saves the landmarks with the prompts as labels;
+    <b>Record negatives</b> captures you moving without attacking, to measure false fires.
+    Load recordings into <b>Evaluate</b> to score the recogniser. Tune live from the console via
+    <code>fighter.cfg</code>. <code>?model=full</code> uses the larger pose model.
+  </footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
