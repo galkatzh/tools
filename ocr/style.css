@@ -1,0 +1,146 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f6f6f4;
+  --card: #fff;
+  --fg: #1d1d1f;
+  --muted: #6b6b70;
+  --line: #d9d9de;
+  --accent: #2f6fdf;
+  --hl: rgb(255 200 0 / 0.35);
+  --hl-active: rgb(255 90 0 / 0.45);
+  --err: #c62828;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161618;
+    --card: #222226;
+    --fg: #ececf0;
+    --muted: #9a9aa2;
+    --line: #3a3a40;
+    --accent: #6c9cff;
+    --err: #ff6b6b;
+  }
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); }
+button, input, select { font: inherit; color: inherit; }
+button, select {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: center;
+  padding: 0.75rem 1rem;
+}
+h1 { margin: 0; font-size: 1.3rem; }
+.drop {
+  flex: 1 1 260px;
+  padding: 0.9rem;
+  border: 2px dashed var(--line);
+  border-radius: 10px;
+  text-align: center;
+  color: var(--muted);
+  cursor: pointer;
+}
+.drop.over, .drop:hover { border-color: var(--accent); color: var(--fg); }
+
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.9rem;
+  align-items: center;
+  padding: 0.5rem 1rem;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+#query {
+  flex: 1 1 220px;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+}
+.tol { display: flex; gap: 0.4rem; align-items: center; color: var(--muted); }
+.tol output { min-width: 2.5em; }
+.nav { display: flex; gap: 0.3rem; align-items: center; }
+#count { min-width: 4.5em; text-align: center; font-variant-numeric: tabular-nums; }
+.seg { display: inline-flex; }
+.seg button { border-radius: 0; }
+.seg button:first-child { border-radius: 6px 0 0 6px; }
+.seg button:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
+.seg button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.actions { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+
+.status { padding: 0.4rem 1rem; color: var(--muted); font-size: 0.9rem; }
+.status.error { color: var(--err); }
+
+main {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 1rem;
+  padding: 0 1rem 2rem;
+  align-items: start;
+}
+aside {
+  position: sticky;
+  top: 3.5rem;
+  max-height: calc(100vh - 4.5rem);
+  overflow: auto;
+}
+#results { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
+#results li {
+  padding: 0.5rem 0.6rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+#results li.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.meta { color: var(--muted); font-size: 0.8rem; margin-bottom: 0.2rem; }
+.snippet mark { background: var(--hl-active); color: inherit; border-radius: 2px; }
+
+#pages { display: grid; gap: 1.2rem; }
+.page {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.6rem;
+}
+.page.failed { border-color: var(--err); }
+.page.failed .state { color: var(--err); }
+.page h2 { margin: 0 0 0.5rem; font-size: 0.95rem; font-weight: 600; overflow-wrap: anywhere; }
+.page h2 .state { color: var(--muted); font-weight: 400; }
+
+.img-wrap { position: relative; }
+.img-wrap img { display: block; width: 100%; height: auto; }
+.overlay { position: absolute; inset: 0; pointer-events: none; }
+.hl { position: absolute; background: var(--hl); border-radius: 2px; }
+.hl.active { background: var(--hl-active); outline: 2px solid rgb(255 90 0); outline-offset: 1px; }
+
+.text { display: none; line-height: 1.6; white-space: normal; overflow-wrap: anywhere; }
+.text p { margin: 0 0 1em; }
+.text mark { background: var(--hl); color: inherit; border-radius: 2px; }
+.text mark.active { background: var(--hl-active); }
+.text-mode .img-wrap { display: none; }
+.text-mode .text { display: block; }
+
+@media (max-width: 760px) {
+  main { grid-template-columns: 1fr; }
+  aside { position: static; max-height: 30vh; }
+  .toolbar { position: static; padding-inline: 0.75rem; }
+  header, main { padding-inline: 0.75rem; }
+}
