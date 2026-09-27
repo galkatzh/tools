@@ -5,8 +5,8 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
   'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs';
 
 const $ = (s) => document.querySelector(s);
-const [filesInput, drop, langSel, queryInput, tolInput, tolOut, countEl, statusEl, resultsEl, pagesEl] =
-  ['#files', '#drop', '#lang', '#query', '#tol', '#tol-out', '#count', '#status', '#results', '#pages'].map($);
+const [filesInput, drop, engineSel, langSel, queryInput, tolInput, tolOut, countEl, statusEl, resultsEl, pagesEl] =
+  ['#files', '#drop', '#engine', '#lang', '#query', '#tol', '#tol-out', '#count', '#status', '#results', '#pages'].map($);
 
 /** Long side (px) PDF pages are rendered at before OCR — roughly 250 dpi for A4/Letter. */
 const PDF_RENDER_PX = 2800;
@@ -19,18 +19,25 @@ const PDF_RENDER_PX = 2800;
 const pages = [];
 let matches = [];     // [{page, words: [wordIdx], dist, start}]
 let current = -1;     // index into matches
-let worker = null;
-let workerLang = null;
+let ocr = null;        // current engine instance: {id, run(blob), dispose()}
 let activePage = null; // page being recognized, for progress reports
 let queue = Promise.resolve();
 
 window.addEventListener('error', (e) => report('Unexpected error', e.error ?? e.message));
 window.addEventListener('unhandledrejection', (e) => report('Unhandled promise rejection', e.reason));
 
-try { langSel.value = localStorage.getItem('ocr-lang') || 'eng'; } catch (err) { console.error(err); }
-langSel.addEventListener('change', () => {
-  try { localStorage.setItem('ocr-lang', langSel.value); } catch (err) { console.error(err); }
-});
+const store = (k, v) => {
+  try { return v === undefined ? localStorage.getItem(k) : localStorage.setItem(k, v); } catch (err) { console.error(err); }
+};
+
+/** Populate the language/model picker for the selected engine, restoring the last choice. */
+function fillLangs() {
+  const engine = ENGINES[engineSel.value];
+  $('#lang-label').textContent = engine.optionLabel;
+  langSel.replaceChildren(...Object.entries(engine.options).map(([value, o]) => new Option(o.label ?? o, value)));
+  const saved = store(`ocr-lang-${engineSel.value}`);
+  langSel.value = saved in engine.options ? saved : langSel.options[0].value;
+}
 
 filesInput.addEventListener('change', () => { addFiles([...filesInput.files]); filesInput.value = ''; });
 drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
@@ -142,7 +149,7 @@ async function addPage(label, canvas) {
 
 // ---------- OCR ----------
 
-/** OCR runs one page at a time on a single Tesseract worker. */
+/** OCR runs one page at a time on a single engine instance. */
 function enqueue(page) {
   page.stateEl.textContent = 'queued';
   queue = queue.then(() => recognize(page));
@@ -153,10 +160,11 @@ async function recognize(page) {
   try {
     activePage = page;
     page.stateEl.textContent = 'loading OCR…';
-    const w = await getWorker(langSel.value);
-    const { data } = await w.recognize(page.blob, {}, { blocks: true, text: true });
-    setWords(page, data.blocks ?? []);
-    page.stateEl.textContent = `${workerLang} · ${Math.round(data.confidence)}% confidence`;
+    const engine = await getOcr(engineSel.value, langSel.value);
+    page.stateEl.textContent = 'recognizing…';
+    const { paras, confidence } = await engine.run(page.blob);
+    setWords(page, paras);
+    page.stateEl.textContent = `${engine.id} · ${Math.round(confidence)}% confidence`;
     page.failed = false;
   } catch (err) {
     console.error(`OCR failed for ${page.label}`, err);
@@ -173,24 +181,117 @@ async function recognize(page) {
   search();
 }
 
-/** Lazily create the worker, switching its language if the selection changed. */
-async function getWorker(lang) {
-  if (!worker) {
-    worker = await Tesseract.createWorker(lang, 1, {
-      logger: (m) => {
-        if (m.status === 'recognizing text') {
-          if (activePage) activePage.stateEl.textContent = `recognizing ${Math.round(m.progress * 100)}%`;
-        } else {
-          setStatus(`${m.status}${m.progress ? ` ${Math.round(m.progress * 100)}%` : ''}`);
-        }
-      },
-      errorHandler: (err) => report('Tesseract worker error', err),
-    });
-  } else if (workerLang !== lang) {
-    await worker.reinitialize(lang, 1);
+/** Return the engine instance for engine+option, replacing (and freeing) the previous one if it differs. */
+async function getOcr(engine, option) {
+  const id = `${ENGINES[engine].name} ${option}`;
+  if (ocr?.id !== id) {
+    const old = ocr;
+    ocr = null;
+    await old?.dispose();
+    ocr = { id, ...(await ENGINES[engine].create(option)) };
   }
-  workerLang = lang;
-  return worker;
+  return ocr;
+}
+
+const PADDLE_SDK = 'https://cdn.jsdelivr.net/npm/@paddleocr/paddleocr-js@0.4.2';
+const ORT_WASM = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/'; // the ORT version bundled in the SDK worker
+
+/**
+ * OCR engines. `create(option)` resolves to {run(blob), dispose()}, where run
+ * resolves to {paras, confidence}: paras is paragraphs → lines → words, each
+ * word {text, bbox: {x0, y0, x1, y1}} in image pixels.
+ */
+const ENGINES = {
+  tesseract: {
+    name: 'Tesseract',
+    optionLabel: 'Language',
+    options: {
+      eng: 'English', heb: 'Hebrew', 'eng+heb': 'English + Hebrew', ara: 'Arabic', rus: 'Russian',
+      fra: 'French', deu: 'German', spa: 'Spanish', ita: 'Italian', chi_sim: 'Chinese (simplified)', jpn: 'Japanese',
+    },
+    async create(lang) {
+      const worker = await Tesseract.createWorker(lang, 1, {
+        logger: (m) => {
+          if (m.status === 'recognizing text') {
+            if (activePage) activePage.stateEl.textContent = `recognizing ${Math.round(m.progress * 100)}%`;
+          } else {
+            setStatus(`${m.status}${m.progress ? ` ${Math.round(m.progress * 100)}%` : ''}`);
+          }
+        },
+        errorHandler: (err) => report('Tesseract worker error', err),
+      });
+      return {
+        async run(blob) {
+          const { data } = await worker.recognize(blob, {}, { blocks: true, text: true });
+          return {
+            paras: (data.blocks ?? []).flatMap((b) => b.paragraphs.map((p) =>
+              p.lines.map((l) => l.words.map(({ text, bbox }) => ({ text, bbox }))))),
+            confidence: data.confidence,
+          };
+        },
+        dispose: () => worker.terminate(),
+      };
+    },
+  },
+
+  paddle: {
+    name: 'PaddleOCR',
+    optionLabel: 'Model',
+    options: {
+      'PP-OCRv6': { label: 'PP-OCRv6 small (Chinese, Japanese, Latin scripts)', config: { ocrVersion: 'PP-OCRv6', lang: 'en' } },
+      'PP-OCRv6-tiny': {
+        label: 'PP-OCRv6 tiny (faster)',
+        config: { textDetectionModelName: 'PP-OCRv6_tiny_det', textRecognitionModelName: 'PP-OCRv6_tiny_rec' },
+      },
+      'PP-OCRv5': { label: 'PP-OCRv5 mobile (Chinese, Japanese, English)', config: { ocrVersion: 'PP-OCRv5', lang: 'en' } },
+    },
+    async create(model) {
+      setStatus('Loading PaddleOCR… (the first run downloads ~40 MB)');
+      const { PaddleOCR } = await import(`${PADDLE_SDK}/+esm`);
+      const paddle = await PaddleOCR.create({
+        ...this.options[model].config,
+        // Workers must be same-origin, so wrap the SDK's (self-contained) worker bundle in a blob module.
+        worker: {
+          createWorker: () => new Worker(URL.createObjectURL(new Blob(
+            [`import "${PADDLE_SDK}/dist/assets/worker-entry-C9UNuyOJ.js";`], { type: 'text/javascript' })), { type: 'module' }),
+        },
+        ortOptions: { backend: 'auto', wasmPaths: ORT_WASM },
+      });
+      return {
+        async run(blob) {
+          const [{ items }] = await paddle.predict(blob);
+          return {
+            // PaddleOCR has no paragraph structure: each detected text line becomes a line of one paragraph.
+            paras: items.length ? [items.map(lineWords)] : [],
+            confidence: items.length ? (100 * items.reduce((a, it) => a + it.score, 0)) / items.length : 0,
+          };
+        },
+        dispose: () => paddle.dispose(),
+      };
+    },
+  },
+};
+
+const measureCtx = new OffscreenCanvas(1, 1).getContext('2d');
+measureCtx.font = '100px sans-serif';
+
+/**
+ * PaddleOCR only returns a polygon per text line ([tl, tr, br, bl]). Split the
+ * line into words and estimate each word's box from where it falls in the
+ * line, measured as rendered text width (so narrow spaces and letters like "i"
+ * don't skew it), interpolating along the top and bottom edges so slanted
+ * lines work too.
+ */
+function lineWords({ poly: [tl, tr, br, bl], text }) {
+  const width = measureCtx.measureText(text).width || 1;
+  const at = (i) => measureCtx.measureText(text.slice(0, i)).width / width;
+  const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  return [...text.matchAll(/\S+/g)].map((m) => {
+    const [t0, t1] = [at(m.index), at(m.index + m[0].length)];
+    const pts = [lerp(tl, tr, t0), lerp(tl, tr, t1), lerp(bl, br, t0), lerp(bl, br, t1)];
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    return { text: m[0], bbox: { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) } };
+  });
 }
 
 /**
@@ -198,21 +299,20 @@ async function getWorker(lang) {
  * lines are separated by <br>, and each word is a <span data-w=idx> so search
  * hits can be marked in the text as well as on the image.
  */
-function setWords(page, blocks) {
+function setWords(page, paras) {
   page.words = [];
-  const paras = blocks.flatMap((b) => b.paragraphs);
-  page.text = paras.map((p) => p.lines.map((l) => l.words.map((w) => w.text).join(' ')).join('\n')).join('\n\n');
+  page.text = paras.map((p) => p.map((l) => l.map((w) => w.text).join(' ')).join('\n')).join('\n\n');
   page.textEl.replaceChildren(...paras.map((p) => {
     const pEl = document.createElement('p');
     pEl.dir = 'auto';
-    p.lines.forEach((line, li) => {
+    p.forEach((line, li) => {
       if (li) pEl.append(document.createElement('br'));
-      line.words.forEach((w, wi) => {
+      line.forEach((w, wi) => {
         const span = document.createElement('span');
         span.textContent = w.text;
         span.dataset.w = page.words.length;
         pEl.append(...(wi ? [' ', span] : [span]));
-        page.words.push({ text: w.text, bbox: w.bbox });
+        page.words.push(w);
       });
     });
     return pEl;
@@ -369,3 +469,10 @@ function report(msg, err) {
   console.error(msg, err);
   setStatus(`${msg}: ${err?.message ?? err}`, true);
 }
+
+// ---------- Init (after ENGINES is defined) ----------
+
+engineSel.value = store('ocr-engine') in ENGINES ? store('ocr-engine') : 'tesseract';
+fillLangs();
+engineSel.addEventListener('change', () => { store('ocr-engine', engineSel.value); fillLangs(); });
+langSel.addEventListener('change', () => store(`ocr-lang-${engineSel.value}`, langSel.value));
