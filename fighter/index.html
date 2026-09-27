@@ -57,7 +57,8 @@
     (left/right = your own body side) and saves the landmarks with the prompts as labels;
     <b>Record negatives</b> captures you moving without attacking, to measure false fires.
     Load recordings into <b>Evaluate</b> to score the recogniser. Tune live from the console via
-    <code>fighter.cfg</code>. <code>?model=full</code> uses the larger pose model.
+    <code>fighter.cfg</code>. While recording, press <b>J</b> whenever the skeleton jitters.
+    If it jitters a lot, try <code>?model=full</code>: the larger pose model is steadier but slower (see Inference).
   </footer>
 
   <script type="module" src="app.js"></script>

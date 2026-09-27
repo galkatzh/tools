@@ -5,20 +5,20 @@
 // MediaPipe runs on the main thread for now: there is no game loop to block yet,
 // and tasks-vision's loader is unreliable in module workers. Move it to a worker
 // before the physics lands.
-import { Recogniser, evaluate, pack, DEFAULTS, DISCRETE, CONTINUOUS, SCORING } from './pose.js';
+import { Recogniser, evaluate, pack, DEFAULTS, DISCRETE, CONTINUOUS, PEAK, SCORING } from './pose.js';
 
 const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21';
 const MODEL = (v) => `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${v}/float16/1/pose_landmarker_${v}.task`;
 const PRETTY = {
   hook_L: 'LEFT HOOK', hook_R: 'RIGHT HOOK', uppercut_L: 'LEFT UPPERCUT', uppercut_R: 'RIGHT UPPERCUT',
-  guard: 'GUARD UP (hold)', duck: 'DUCK (hold)', lean_L: 'LEAN LEFT (hold)', lean_R: 'LEAN RIGHT (hold)',
+  guard: 'GUARD UP (hold)', duck: 'DUCK!', lean_L: 'LEAN LEFT (hold)', lean_R: 'LEAN RIGHT (hold)',
 };
 // How to perform each move, shown under the drill prompt. A straight punch at the
 // camera is foreshortened into "fist rises", which is why there is no jab.
 const HOW = {
   hook: 'elbow up, swing sideways across at head height — not straight at the camera',
   uppercut: 'dip, then drive the fist straight up in front of your chin',
-  guard: 'both fists up by your cheeks', duck: 'drop your head fast, bending the knees',
+  guard: 'both fists up by your cheeks', duck: 'quick dodge: drop your head fast, then come back up',
   lean: 'shift your shoulders sideways over your hips',
 };
 const $ = (id) => /** @type {any} */ (document.getElementById(id));
@@ -42,6 +42,8 @@ const video = $('video'), canvas = $('overlay'), ctx = canvas.getContext('2d');
 let landmarker, PoseLandmarker, drawer, aspect = 4 / 3;
 /** @type {import('./pose.js').Session & {start:number, mode:string}|null} */
 let session = null;
+/** When the recogniser last saw the guard go up (null while it's down or no pose). */
+let guardSince = null;
 
 // Rolling stats, refreshed in the HUD a few times a second.
 const lat = [], inf = [];
@@ -98,17 +100,17 @@ function onFrame(now, meta) {
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   const lm = res.landmarks[0], world = res.worldLandmarks[0];
-  if (!lm) return;
+  if (!lm) { guardSince = null; return; }
   drawer.drawConnectors(lm, PoseLandmarker.POSE_CONNECTIONS, { color: '#3ccf7a', lineWidth: 3 });
   drawer.drawLandmarks(lm, { color: '#ffd23c', radius: 2 });
 
   if (session) session.frames.push({ t: captured - session.start, w: pack(world), i: pack(lm) });
   const { events, posture } = rec.update(world, lm, captured, aspect);
+  guardSince = posture.guard ? (guardSince ?? performance.now()) : null;
   for (const e of events) {
     const label = PRETTY[`${e.type}_${e.side}`], ms = Math.round(done - captured);
     console.log('ActionEvent', e, `${ms} ms after capture`);
-    $('flash').textContent = label;
-    $('flash').classList.remove('show'); void $('flash').offsetWidth; $('flash').classList.add('show');
+    flash(label);
     $('events').insertAdjacentHTML('afterbegin', `<li>${label} · power ${e.power.toFixed(2)} · ${ms} ms</li>`);
     $('events').children[30]?.remove();
   }
@@ -176,15 +178,27 @@ async function record(mode) {
   while (session === s) {
     if (!deck.length) deck = [...DISCRETE, ...CONTINUOUS].sort(() => Math.random() - 0.5);
     const label = deck.pop(), attack = DISCRETE.includes(label), how = HOW[label.split('_')[0]];
-    // Attacks start from guard, as they would in a fight; from hands-down every
-    // attack begins with the same big rise, which hid the difference between moves.
-    showPrompt(attack ? `Guard up… next: ${PRETTY[label]}` : `Get ready: ${PRETTY[label]}`, false, how);
-    await sleep(SCORING.readyMs);
-    if (session !== s) return;
+    const ready = { t: performance.now() - s.start, label: 'ready', end: 0 };
+    s.prompts.push(ready);
+    if (attack) {
+      // Attacks start from guard, as they would in a fight: from hands-down every
+      // attack begins with the same hip-to-head rise, which hid the difference between
+      // moves. GO waits until the recogniser has seen the guard held — never skipped.
+      for (const t0 = performance.now(); !(guardSince && performance.now() - guardSince >= 300);) {
+        showPrompt(`Fists up to your face${performance.now() - t0 > 3000 ? ' — waiting for guard…' : ''}`, false, `next: ${PRETTY[label]} — ${how}`);
+        await sleep(100);
+        if (session !== s) return;
+      }
+    } else {
+      showPrompt(`Get ready: ${PRETTY[label]}`, false, how);
+      await sleep(SCORING.readyMs);
+      if (session !== s) return;
+    }
     showPrompt(PRETTY[label], true, how);
-    s.prompts.push({ t: performance.now() - s.start, label });
-    await sleep(attack ? 1500 : SCORING.hold[1]);
-    showPrompt('Relax, move around');
+    ready.end = performance.now() - s.start;
+    s.prompts.push({ t: ready.end, label });
+    await sleep(attack || PEAK.includes(label) ? 1500 : SCORING.hold[1]);
+    showPrompt('Relax — hands down is fine');
     await sleep(2500 + Math.random() * 1500);
   }
 }
@@ -232,7 +246,18 @@ $('drill').onclick = run(() => record('drill'));
 $('negatives').onclick = run(() => record('negatives'));
 $('stop').onclick = stop;
 $('eval').onchange = run(async (e) => { await evaluateFiles(e.target.files); e.target.value = ''; });
+/** Flash a short message where recognised events appear. */
+function flash(text) {
+  $('flash').textContent = text;
+  $('flash').classList.remove('show'); void $('flash').offsetWidth; $('flash').classList.add('show');
+}
+
 window.addEventListener('keydown', (e) => {
+  if (e.key.toLowerCase() === 'j' && session) {
+    // Mark a moment the skeleton looked jittery, to correlate with fps/visibility later.
+    session.prompts.push({ t: performance.now() - session.start, label: 'jitter' });
+    return flash('jitter marked');
+  }
   const id = { c: 'calibrate', d: 'drill', n: 'negatives', s: 'stop' }[e.key.toLowerCase()];
   if (id && !$(id).disabled && !e.metaKey && !e.ctrlKey) $(id).click();
 });

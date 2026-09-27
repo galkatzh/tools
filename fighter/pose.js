@@ -11,13 +11,16 @@
  *  lean: -1 (player's left) .. 1 (player's right); duck: 0..1.
  *  @typedef {{guard:boolean, duck:number, lean:number}} Posture */
 /** @typedef {{t:number, w:number[], i:number[]}} Frame  flat [x,y,z,visibility]×33, world then image */
-/** @typedef {{version:number, aspect:number, frames:Frame[], prompts:{t:number, label:string}[]}} Session */
+/** @typedef {{version:number, aspect:number, frames:Frame[], prompts:{t:number, label:string, end?:number}[]}} Session */
 /** Prompts are scored over these spans after GO (ms). Reactions take 0.6–1.7 s, so
  *  anything much shorter turns late-but-correct attacks into misses + false fires. */
 export const SCORING = { attackMs: 2500, hold: [800, 3000], readyMs: 1500 };
 
 export const DISCRETE = ['hook_L', 'hook_R', 'uppercut_L', 'uppercut_R'];
 export const CONTINUOUS = ['guard', 'duck', 'lean_L', 'lean_R'];
+/** Continuous states that are quick moves in a fight (a duck is a dodge, not a stance):
+ *  prompted without a hold and scored like attacks, by whether they happen at all. */
+export const PEAK = ['duck'];
 
 /** Tunables. Distances are in torso lengths, speeds in torso lengths per second. */
 export const DEFAULTS = {
@@ -211,8 +214,10 @@ const postureMatches = (label, p) => ({ guard: p.guard, duck: p.duck > 0.5, lean
  * the prompts (spans in SCORING). A discrete prompt owns the events in
  * [GO, GO+attackMs] (the latest prompt wins where windows overlap); any event
  * outside every discrete window is a false fire.
- * Continuous prompts are scored on the fraction of frames in the `hold` span where
- * the posture matches, versus how often it is active when idle (no prompt near).
+ * Held continuous prompts are scored on the fraction of frames in the `hold` span
+ * where the posture matches; PEAK ones on the fraction of prompts where it matches at
+ * any point in [GO, GO+attackMs]. Both are compared with how often the posture is
+ * active when idle (no prompt near; `ready` lead-ins span until their recorded `end`).
  * @param {Session[]} sessions
  */
 export function evaluate(sessions, cfg = { ...DEFAULTS }) {
@@ -224,10 +229,12 @@ export function evaluate(sessions, cfg = { ...DEFAULTS }) {
   for (const s of sessions) {
     const rec = new Recogniser(cfg), calibs = s.prompts.filter((p) => p.label === 'calibrate');
     const disc = s.prompts.filter((p) => DISCRETE.includes(p.label)).map((p) => ({ ...p, hits: [] }));
-    const conts = s.prompts.filter((p) => CONTINUOUS.includes(p.label));
+    const conts = s.prompts.filter((p) => CONTINUOUS.includes(p.label) && !PEAK.includes(p.label));
+    const peaks = s.prompts.filter((p) => PEAK.includes(p.label)).map((p) => ({ ...p, hit: false }));
     // "Idle" = away from any prompt, including the get-ready / guard-up lead-in before GO.
-    const busy = s.prompts.filter((p) => p.label !== 'calibrate')
-      .map((p) => [p.t - readyMs, p.t + (DISCRETE.includes(p.label) ? attackMs : hold[1])]);
+    const quick = [...DISCRETE, ...PEAK];
+    const busy = s.prompts.filter((p) => !['calibrate', 'jitter'].includes(p.label))
+      .map((p) => [p.t - readyMs, p.end ?? p.t + (quick.includes(p.label) ? attackMs : hold[1])]);
     for (const fr of s.frames) {
       while (calibs.length && calibs[0].t <= fr.t) rec.startCalibration(calibs.shift().t);
       const { events, posture } = rec.update(unpack(fr.w), unpack(fr.i), fr.t, s.aspect);
@@ -235,6 +242,7 @@ export function evaluate(sessions, cfg = { ...DEFAULTS }) {
         const label = `${e.type}_${e.side}`, owner = disc.findLast((p) => e.time >= p.t && e.time <= p.t + attackMs);
         owner ? owner.hits.push(label) : bump(falseFires, label);
       }
+      for (const p of peaks) if (fr.t >= p.t && fr.t <= p.t + attackMs && postureMatches(p.label, posture)) p.hit = true;
       const active = conts.find((p) => fr.t >= p.t + hold[0] && fr.t <= p.t + hold[1]);
       const idle = !busy.some(([a, b]) => fr.t >= a && fr.t <= b);
       for (const l of CONTINUOUS) {
@@ -242,6 +250,7 @@ export function evaluate(sessions, cfg = { ...DEFAULTS }) {
         if (active?.label === l) { c.in++; c.inHit += hit; } else if (idle) { c.out++; c.outHit += hit; }
       }
     }
+    for (const p of peaks) { cont[p.label].in++; cont[p.label].inHit += p.hit ? 1 : 0; }
     for (const p of disc) {
       bump(confusion[p.label], p.hits[0] ?? 'miss');
       p.hits.slice(1).forEach(() => bump(confusion[p.label], 'extra'));
