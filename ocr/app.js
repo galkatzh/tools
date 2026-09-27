@@ -13,7 +13,9 @@ const PDF_RENDER_PX = 2800;
 
 /**
  * Every uploaded image / PDF page. Fields:
- * label, blob (PNG fed to OCR), w/h (its pixel size), el/img/overlay/textEl/stateEl (DOM),
+ * label, blob (PNG fed to OCR), w/h (its pixel size), file + pdfIndex (source file; page index if it's a PDF),
+ * nativeChars (non-space characters in a PDF page's own text layer),
+ * el/img/overlay/textEl/stateEl (DOM), textPdf (Tesseract's text-only PDF of the page, for export),
  * words [{text, bbox}], text, index {norm, spans} (search index), done (has OCR words), failed (last OCR errored).
  */
 const pages = [];
@@ -63,14 +65,8 @@ $('#view-pages').addEventListener('click', () => setView(false));
 $('#view-text').addEventListener('click', () => setView(true));
 $('#copy').addEventListener('click', () => navigator.clipboard.writeText(allText())
   .then(() => setStatus('Text copied to clipboard.'), (err) => report('Copy failed', err)));
-$('#download').addEventListener('click', () => {
-  const a = Object.assign(document.createElement('a'), {
-    href: URL.createObjectURL(new Blob([allText()], { type: 'text/plain' })),
-    download: 'ocr.txt',
-  });
-  a.click();
-  URL.revokeObjectURL(a.href);
-});
+$('#download').addEventListener('click', () => saveBlob(new Blob([allText()], { type: 'text/plain' }), 'ocr.txt'));
+$('#export-pdf').addEventListener('click', () => exportPdf().catch((err) => report('PDF export failed', err)));
 $('#rerun').addEventListener('click', () => pages.forEach(enqueue));
 $('#clear').addEventListener('click', () => {
   pages.forEach((p) => URL.revokeObjectURL(p.img.src));
@@ -87,7 +83,7 @@ async function addFiles(files) {
   for (const file of files) {
     try {
       if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) await addPdf(file);
-      else if (file.type.startsWith('image/')) await addPage(file.name, await imageToCanvas(file));
+      else if (file.type.startsWith('image/')) await addPage(file.name, await imageToCanvas(file), file);
       else throw new Error(`unsupported file type "${file.type || file.name}"`);
     } catch (err) {
       report(`Failed to load ${file.name}`, err);
@@ -121,13 +117,15 @@ async function addPdf(file) {
     ctx.fillStyle = '#fff'; // transparent PDFs would otherwise OCR as black-on-black
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     await page.render({ canvasContext: ctx, viewport }).promise;
-    await addPage(`${file.name} — p. ${i}`, canvas);
+    const { items } = await page.getTextContent();
+    const p = await addPage(`${file.name} — p. ${i}`, canvas, file, i - 1);
+    p.nativeChars = items.reduce((n, it) => n + (it.str?.replace(/\s/g, '').length ?? 0), 0);
   }
   pdf.destroy();
 }
 
-/** Create the page card and queue the page for OCR. */
-async function addPage(label, canvas) {
+/** Create the page card and queue the page for OCR. `pdfIndex` is set when the page comes from a PDF file. */
+async function addPage(label, canvas, file, pdfIndex = null) {
   const blob = await new Promise((res, rej) =>
     canvas.toBlob((b) => (b ? res(b) : rej(new Error('canvas.toBlob returned null'))), 'image/png'));
   const el = document.createElement('article');
@@ -137,7 +135,8 @@ async function addPage(label, canvas) {
     <div class="text"></div>`;
   el.querySelector('h2 span').textContent = label;
   const page = {
-    label, blob, el, w: canvas.width, h: canvas.height, words: [], text: '', index: null, done: false, failed: false,
+    label, blob, file, pdfIndex, el, w: canvas.width, h: canvas.height,
+    words: [], text: '', index: null, textPdf: null, nativeChars: 0, done: false, failed: false,
     img: el.querySelector('img'), overlay: el.querySelector('.overlay'),
     textEl: el.querySelector('.text'), stateEl: el.querySelector('.state'),
   };
@@ -145,6 +144,7 @@ async function addPage(label, canvas) {
   pages.push(page);
   pagesEl.append(el);
   enqueue(page);
+  return page;
 }
 
 // ---------- OCR ----------
@@ -162,8 +162,9 @@ async function recognize(page) {
     page.stateEl.textContent = 'loading OCR…';
     const engine = await getOcr(engineSel.value, langSel.value);
     page.stateEl.textContent = 'recognizing…';
-    const { paras, confidence } = await engine.run(page.blob);
+    const { paras, confidence, textPdf } = await engine.run(page.blob);
     setWords(page, paras);
+    page.textPdf = textPdf ?? null;
     page.stateEl.textContent = `${engine.id} · ${Math.round(confidence)}% confidence`;
     page.failed = false;
   } catch (err) {
@@ -198,8 +199,9 @@ const ORT_WASM = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/'; //
 
 /**
  * OCR engines. `create(option)` resolves to {run(blob), dispose()}, where run
- * resolves to {paras, confidence}: paras is paragraphs → lines → words, each
- * word {text, bbox: {x0, y0, x1, y1}} in image pixels.
+ * resolves to {paras, confidence, textPdf?}: paras is paragraphs → lines → words,
+ * each word {text, bbox: {x0, y0, x1, y1}} in image pixels; textPdf (Tesseract
+ * only) is a one-page PDF holding just the invisible text layer.
  */
 const ENGINES = {
   tesseract: {
@@ -222,8 +224,9 @@ const ENGINES = {
       });
       return {
         async run(blob) {
-          const { data } = await worker.recognize(blob, {}, { blocks: true, text: true });
+          const { data } = await worker.recognize(blob, { pdfTextOnly: true }, { blocks: true, text: true, pdf: true });
           return {
+            textPdf: Uint8Array.from(data.pdf),
             paras: (data.blocks ?? []).flatMap((b) => b.paragraphs.map((p) =>
               p.lines.map((l) => l.words.map(({ text, bbox }) => ({ text, bbox }))))),
             confidence: data.confidence,
@@ -454,6 +457,83 @@ function setView(text) {
   $('#view-pages').classList.toggle('on', !text);
   $('#view-text').classList.toggle('on', text);
   if (current >= 0) go(current);
+}
+
+const PDF_LIB = 'https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.esm.min.js';
+const A4_LONG_SIDE = 842; // pt — uploaded images become pages this size on their long side
+
+/**
+ * Export a searchable PDF, the way OCRmyPDF does: each page is the original
+ * (PDF pages are copied untouched; images are embedded as JPEG) with
+ * Tesseract's own invisible text layer drawn over it. That layer writes
+ * right-to-left words the way natively typed PDFs do, so viewers treat OCR'd
+ * Hebrew like any other Hebrew PDF (same search and copy behaviour).
+ */
+async function exportPdf() {
+  const ready = pages.filter((p) => p.textPdf);
+  if (!ready.length) throw new Error('no pages recognized with Tesseract yet (the PDF text layer comes from Tesseract)');
+  setStatus(`Exporting ${ready.length} page(s) to PDF…`);
+  const { PDFDocument, degrees } = await import(PDF_LIB);
+  const out = await PDFDocument.create();
+  // Copy each source PDF's pages in one call, so resources they share (fonts, images) are copied once.
+  const copied = new Map(); // app page → copied PDF page
+  for (const file of new Set(ready.filter((p) => p.pdfIndex !== null).map((p) => p.file))) {
+    const ps = ready.filter((p) => p.file === file && p.pdfIndex !== null);
+    const src = await PDFDocument.load(await file.arrayBuffer());
+    (await out.copyPages(src, ps.map((p) => p.pdfIndex))).forEach((pg, i) => copied.set(ps[i], pg));
+  }
+  let kept = 0;
+  for (const p of ready) {
+    let page = copied.get(p);
+    if (page) out.addPage(page);
+    else {
+      const s = A4_LONG_SIDE / Math.max(p.w, p.h);
+      page = out.addPage([p.w * s, p.h * s]);
+      page.drawImage(await out.embedJpg(await toJpeg(p.blob)), { x: 0, y: 0, width: p.w * s, height: p.h * s });
+    }
+    // A born-digital page already has its own text; adding OCR text would duplicate every word
+    // (like OCRmyPDF's --skip-text). Half the OCR'd length tolerates stray text such as page-number stamps.
+    if (p.nativeChars > 0 && p.nativeChars >= 0.5 * p.text.replace(/\s/g, '').length) { kept++; continue; }
+    const [layer] = await out.embedPdf(p.textPdf);
+    page.drawPage(layer, layerPlacement(page, degrees));
+  }
+  const base = ready[0].file.name.replace(/\.[^.]+$/, '');
+  saveBlob(new Blob([await out.save()], { type: 'application/pdf' }), `${base}-ocr.pdf`);
+  const skipped = pages.length - ready.length;
+  setStatus(`Exported ${ready.length} page(s) to PDF` +
+    (kept ? ` · ${kept} already had their own text, kept as is` : '') +
+    (skipped ? ` · ${skipped} page(s) left out (not recognized with Tesseract)` : '') + '.', skipped > 0);
+}
+
+/**
+ * Where to draw the text layer so it covers the page as displayed. The OCR'd
+ * image is the page's crop box after its /Rotate (clockwise), so the layer is
+ * rotated the opposite way in unrotated page space and anchored at the corner
+ * of the crop box that ends up bottom-left on screen.
+ */
+function layerPlacement(page, degrees) {
+  const { x, y, width: w, height: h } = page.getCropBox();
+  const rot = ((page.getRotation().angle % 360) + 360) % 360;
+  const [dw, dh] = rot % 180 ? [h, w] : [w, h];
+  const anchor = { 0: [x, y], 90: [x + w, y], 180: [x + w, y + h], 270: [x, y + h] }[rot];
+  return { x: anchor[0], y: anchor[1], width: dw, height: dh, rotate: degrees(rot) };
+}
+
+/** Re-encode a page image as JPEG (much smaller than PNG for scans and photos). */
+async function toJpeg(blob) {
+  const bmp = await createImageBitmap(blob);
+  const canvas = Object.assign(document.createElement('canvas'), { width: bmp.width, height: bmp.height });
+  canvas.getContext('2d').drawImage(bmp, 0, 0);
+  bmp.close();
+  const jpg = await new Promise((res, rej) =>
+    canvas.toBlob((b) => (b ? res(b) : rej(new Error('canvas.toBlob returned null'))), 'image/jpeg', 0.85));
+  return jpg.arrayBuffer();
+}
+
+function saveBlob(blob, name) {
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 0);
 }
 
 function allText() {
