@@ -18,6 +18,7 @@ main { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
 #prompt, #flash { position: absolute; left: 0; right: 0; text-align: center; font-weight: 800; text-shadow: 0 2px 8px #000; pointer-events: none; }
 #prompt { top: 12px; font-size: 28px; }
 #prompt.go { color: var(--accent); font-size: 44px; }
+#prompt small { display: block; font-size: 16px; font-weight: 600; color: var(--fg); }
 #flash { bottom: 16px; font-size: 48px; color: #ffd23c; opacity: 0; }
 #flash.show { animation: flash .6s ease-out; }
 @keyframes flash { from { opacity: 1; transform: scale(1.3); } to { opacity: 0; transform: scale(1); } }

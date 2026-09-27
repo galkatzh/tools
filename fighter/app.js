@@ -5,13 +5,21 @@
 // MediaPipe runs on the main thread for now: there is no game loop to block yet,
 // and tasks-vision's loader is unreliable in module workers. Move it to a worker
 // before the physics lands.
-import { Recogniser, evaluate, pack, DEFAULTS, DISCRETE, CONTINUOUS } from './pose.js';
+import { Recogniser, evaluate, pack, DEFAULTS, DISCRETE, CONTINUOUS, SCORING } from './pose.js';
 
 const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21';
 const MODEL = (v) => `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${v}/float16/1/pose_landmarker_${v}.task`;
 const PRETTY = {
   hook_L: 'LEFT HOOK', hook_R: 'RIGHT HOOK', uppercut_L: 'LEFT UPPERCUT', uppercut_R: 'RIGHT UPPERCUT',
   guard: 'GUARD UP (hold)', duck: 'DUCK (hold)', lean_L: 'LEAN LEFT (hold)', lean_R: 'LEAN RIGHT (hold)',
+};
+// How to perform each move, shown under the drill prompt. A straight punch at the
+// camera is foreshortened into "fist rises", which is why there is no jab.
+const HOW = {
+  hook: 'elbow up, swing sideways across at head height — not straight at the camera',
+  uppercut: 'dip, then drive the fist straight up in front of your chin',
+  guard: 'both fists up by your cheeks', duck: 'drop your head fast, bending the knees',
+  lean: 'shift your shoulders sideways over your hips',
 };
 const $ = (id) => /** @type {any} */ (document.getElementById(id));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -131,11 +139,11 @@ function updateHud(now, meta) {
 /** 3-2-1 countdown, then collect a neutral-stance baseline. Returns false if cancelled. */
 async function calibrate(owner = session) {
   for (const n of [3, 2, 1]) {
-    $('prompt').textContent = `Stand naturally, facing the camera — calibrating in ${n}…`;
+    showPrompt(`Stand naturally, facing the camera — calibrating in ${n}…`);
     await sleep(1000);
     if (session !== owner) return false;
   }
-  $('prompt').textContent = 'Hold still…';
+  showPrompt('Hold still…');
   $('calib').textContent = 'calibrating…';
   const t = performance.now();
   session?.prompts.push({ t: t - session.start, label: 'calibrate' });
@@ -144,10 +152,17 @@ async function calibrate(owner = session) {
   // arrives a pipeline-latency later than the wall clock says, so wait for that.
   await sleep(cfg.calibMs);
   while (rec.calib) await sleep(50);
-  $('prompt').textContent = '';
+  showPrompt('');
   // A failed calibration throws inside onFrame, which the error handler reports.
-  $('calib').textContent = rec.base ? `✓ ${new Date().toLocaleTimeString()}` : '✗ failed (duck off)';
+  $('calib').textContent = rec.base ? `✓ ${new Date().toLocaleTimeString()}` : '✗ failed (lean uncentred)';
   return session === owner;
+}
+
+/** Show a drill prompt, optionally as the big GO cue with a how-to line under it. */
+function showPrompt(text, go = false, how = '') {
+  $('prompt').className = go ? 'go' : '';
+  $('prompt').textContent = text;
+  if (how) $('prompt').insertAdjacentHTML('beforeend', `<small>${how}</small>`);
 }
 
 /** Record a session. `drill` prompts random moves; `negatives` records non-attack movement only. */
@@ -156,19 +171,21 @@ async function record(mode) {
   for (const id of ['calibrate', 'drill', 'negatives']) $(id).disabled = true;
   $('stop').disabled = false;
   if (!(await calibrate(s))) return;
-  if (mode === 'negatives') { $('prompt').textContent = 'Move around, talk, stretch, reset your stance — just don\'t attack'; return; }
+  if (mode === 'negatives') return showPrompt('Move around, talk, stretch, reset your stance — just don\'t attack');
   let deck = [];
   while (session === s) {
     if (!deck.length) deck = [...DISCRETE, ...CONTINUOUS].sort(() => Math.random() - 0.5);
-    const label = deck.pop();
-    $('prompt').className = ''; $('prompt').textContent = `Get ready: ${PRETTY[label]}`;
-    await sleep(1200);
+    const label = deck.pop(), attack = DISCRETE.includes(label), how = HOW[label.split('_')[0]];
+    // Attacks start from guard, as they would in a fight; from hands-down every
+    // attack begins with the same big rise, which hid the difference between moves.
+    showPrompt(attack ? `Guard up… next: ${PRETTY[label]}` : `Get ready: ${PRETTY[label]}`, false, how);
+    await sleep(SCORING.readyMs);
     if (session !== s) return;
-    $('prompt').className = 'go'; $('prompt').textContent = PRETTY[label];
+    showPrompt(PRETTY[label], true, how);
     s.prompts.push({ t: performance.now() - s.start, label });
-    await sleep(CONTINUOUS.includes(label) ? 2000 : 800);
-    $('prompt').className = ''; $('prompt').textContent = 'Relax, move around';
-    await sleep(2000 + Math.random() * 2000);
+    await sleep(attack ? 1500 : SCORING.hold[1]);
+    showPrompt('Relax, move around');
+    await sleep(2500 + Math.random() * 1500);
   }
 }
 
@@ -183,7 +200,7 @@ function stop() {
   a.download = `fighter_${s.mode}_${s.startedAt.replace(/[:.]/g, '-')}.json`;
   a.click();
   URL.revokeObjectURL(a.href);
-  $('prompt').className = ''; $('prompt').textContent = '';
+  showPrompt('');
   $('recStatus').textContent = `saved ${s.frames.length} frames`;
   for (const id of ['calibrate', 'drill', 'negatives']) $(id).disabled = false;
   $('stop').disabled = true;

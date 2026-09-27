@@ -12,6 +12,9 @@
  *  @typedef {{guard:boolean, duck:number, lean:number}} Posture */
 /** @typedef {{t:number, w:number[], i:number[]}} Frame  flat [x,y,z,visibility]×33, world then image */
 /** @typedef {{version:number, aspect:number, frames:Frame[], prompts:{t:number, label:string}[]}} Session */
+/** Prompts are scored over these spans after GO (ms). Reactions take 0.6–1.7 s, so
+ *  anything much shorter turns late-but-correct attacks into misses + false fires. */
+export const SCORING = { attackMs: 2500, hold: [800, 3000], readyMs: 1500 };
 
 export const DISCRETE = ['hook_L', 'hook_R', 'uppercut_L', 'uppercut_R'];
 export const CONTINUOUS = ['guard', 'duck', 'lean_L', 'lean_R'];
@@ -26,8 +29,9 @@ export const DEFAULTS = {
   hookSpeed: 4, hookMinY: 0.4, hookElbowMax: 150,
   uppercutSpeed: 4, upperStartY: 0.75, upperLookMs: 300, bothHandsRatio: 0.5,
   guardOn: 1.0, guardOff: 0.85, guardX: 0.5,
-  duckDepth: 0.5,             // head drop, in baseline shoulder widths, for duck = 1
-  leanFull: 0.25, leanDead: 0.25,
+  duckDepth: 0.6,             // head drop below recent standing height, in shoulder widths, for duck = 1
+  duckRelax: 0.3,             // how fast standing height follows a lower stance, shoulder widths/s
+  leanFull: 0.4, leanDead: 0.3, // shoulder-over-hip offset (shoulder widths) for lean = 1; dead zone (fraction)
   calibMs: 2000,
 };
 
@@ -70,7 +74,8 @@ export class OneEuro {
  * a hook's wind-up, and a frame that rotated with the shoulders would cancel it out.
  * Shoulders therefore sit near y≈1, and the left arm at x<0.
  * Lean and duck can't use that frame (it tilts and crouches with the player), so
- * they come from the hip→shoulder tilt and from the head's height in the image.
+ * they come from the image: lean is the shoulder centre's sideways offset from the
+ * hip centre, and duck the head's height; both in shoulder widths (`shW`).
  * @param {Landmark[]} w worldLandmarks (metres, hip-origin)
  * @param {Landmark[]} img image landmarks (0..1)
  * @param {number} aspect video width / height, to measure image distances in one unit
@@ -82,8 +87,11 @@ export function features(w, img, aspect) {
   const right = unit(sub(hipLine, scale(up, dot(hipLine, up))));
   const fwd = cross(up, right);
   const local = (i) => { const d = sub(v(i), hip); return [dot(d, right), dot(d, up), dot(d, fwd)].map((c) => c / len); };
-  const f = /** @type {Record<string, number[]>} */ ({ lean: [dot(up, hipLine)], nose: [img[NOSE].y] });
-  f.shW = [Math.hypot((img[SH.L].x - img[SH.R].x) * aspect, img[SH.L].y - img[SH.R].y)];
+  const shW = Math.hypot((img[SH.L].x - img[SH.R].x) * aspect, img[SH.L].y - img[SH.R].y);
+  const cx = (a, b) => (img[a].x + img[b].x) / 2;
+  // The feed is unmirrored, so the player's right is image left: negate to make +lean = player's right.
+  const lean = -(cx(SH.L, SH.R) - cx(HIP.L, HIP.R)) * aspect / shW;
+  const f = /** @type {Record<string, number[]>} */ ({ lean: [lean], nose: [img[NOSE].y], shW: [shW] });
   for (const s of /** @type {const} */ (['L', 'R'])) {
     f['sh' + s] = local(SH[s]); f['el' + s] = local(EL[s]); f['wr' + s] = local(WR[s]);
   }
@@ -105,11 +113,13 @@ export class Recogniser {
     this.hist = [];
     this.lastFire = { L: -Infinity, R: -Infinity };
     this.guard = false;
-    /** @type {{lean:number, nose:number, shW:number}|null} */ this.base = null;
+    /** @type {{lean:number}|null} */ this.base = null;
+    /** Recent standing height: the highest nose y seen, sinking slowly (see #posture). */
+    this.top = Infinity;
     /** @type {{until:number, samples:Record<string, number>[]}|null} */ this.calib = null;
   }
 
-  /** Collect a neutral-stance baseline (for lean and duck) from frames in [t, t+calibMs].
+  /** Collect a neutral-stance baseline (for lean) from frames in [t, t+calibMs].
    *  The old baseline is dropped, so a failed calibration can't leave a stale one in use. */
   startCalibration(t) { this.base = null; this.calib = { until: t + this.cfg.calibMs, samples: [] }; }
 
@@ -155,25 +165,33 @@ export class Recogniser {
         events.push({ type, side: s, power: clamp(speed / (2 * cfg[type + 'Speed']), 0, 1), time: t });
       }
     }
-    return { events, posture: this.#posture(f), feats: f };
+    return { events, posture: this.#posture(f, dt), feats: f };
   }
 
   #calibrate(t, f) {
     const c = this.calib;
     if (!c) return;
-    if (t <= c.until) { c.samples.push({ lean: f.lean[0], nose: f.nose[0], shW: f.shW[0] }); return; }
+    if (t <= c.until) { c.samples.push(f.lean[0]); return; }
     this.calib = null;
     if (c.samples.length < 10) throw new Error(`Calibration failed: only ${c.samples.length} pose frames in ${this.cfg.calibMs} ms — is your upper body in view?`);
-    this.base = { lean: median(c.samples.map((s) => s.lean)), nose: median(c.samples.map((s) => s.nose)), shW: median(c.samples.map((s) => s.shW)) };
+    this.base = { lean: median(c.samples) };
   }
 
   /** @returns {Posture} */
-  #posture(f) {
+  #posture(f, dt) {
     const { cfg, base } = this, [l, r] = [f.wrL, f.wrR];
     const high = Math.min(l[1], r[1]);
     // Hysteresis so the guard doesn't flicker at the threshold.
     this.guard = this.guard ? high > cfg.guardOff : high > cfg.guardOn && Math.max(Math.abs(l[0]), Math.abs(r[0])) < cfg.guardX;
-    const duck = base ? clamp((f.nose[0] - base.nose) / base.shW / cfg.duckDepth, 0, 1) : 0;
+    // Duck = head drop below recent standing height. That height snaps up to the
+    // highest head position and sinks at duckRelax, so settling into a lower stance
+    // is absorbed within seconds, while a duck (fast, well under a second or two) isn't.
+    // A fixed calibrated baseline drifted: players relax lower after calibrating.
+    // (Slowing the sink while ducking was tried: the baseline then sticks low and
+    // idle false-ducks tripled on real recordings.)
+    const [nose, shW] = [f.nose[0], f.shW[0]];
+    this.top = Math.min(nose, this.top + cfg.duckRelax * shW * dt);
+    const duck = clamp((nose - this.top) / shW / cfg.duckDepth, 0, 1);
     const lean = clamp((f.lean[0] - (base?.lean ?? 0)) / cfg.leanFull, -1, 1);
     const dead = Math.max(0, Math.abs(lean) - cfg.leanDead) / (1 - cfg.leanDead);
     return { guard: this.guard, duck, lean: Math.sign(lean) * dead };
@@ -190,32 +208,38 @@ const postureMatches = (label, p) => ({ guard: p.guard, duck: p.duck > 0.5, lean
 
 /**
  * Replay recorded drill sessions through a fresh recogniser and score it against
- * the prompts. A discrete prompt owns the events in [GO, GO+1.5 s]; any event
- * outside every discrete window is a false fire. Continuous prompts are scored on
- * the fraction of frames in [GO+0.5 s, GO+2 s] where the posture matches, versus
- * how often it is active when nothing was prompted.
+ * the prompts (spans in SCORING). A discrete prompt owns the events in
+ * [GO, GO+attackMs] (the latest prompt wins where windows overlap); any event
+ * outside every discrete window is a false fire.
+ * Continuous prompts are scored on the fraction of frames in the `hold` span where
+ * the posture matches, versus how often it is active when idle (no prompt near).
  * @param {Session[]} sessions
  */
 export function evaluate(sessions, cfg = { ...DEFAULTS }) {
   const confusion = Object.fromEntries(DISCRETE.map((l) => [l, {}]));
   const falseFires = {}, cont = Object.fromEntries(CONTINUOUS.map((l) => [l, { in: 0, inHit: 0, out: 0, outHit: 0 }]));
+  const { attackMs, hold, readyMs } = SCORING;
   let ms = 0;
   const bump = (o, k) => (o[k] = (o[k] || 0) + 1);
   for (const s of sessions) {
     const rec = new Recogniser(cfg), calibs = s.prompts.filter((p) => p.label === 'calibrate');
     const disc = s.prompts.filter((p) => DISCRETE.includes(p.label)).map((p) => ({ ...p, hits: [] }));
     const conts = s.prompts.filter((p) => CONTINUOUS.includes(p.label));
+    // "Idle" = away from any prompt, including the get-ready / guard-up lead-in before GO.
+    const busy = s.prompts.filter((p) => p.label !== 'calibrate')
+      .map((p) => [p.t - readyMs, p.t + (DISCRETE.includes(p.label) ? attackMs : hold[1])]);
     for (const fr of s.frames) {
       while (calibs.length && calibs[0].t <= fr.t) rec.startCalibration(calibs.shift().t);
       const { events, posture } = rec.update(unpack(fr.w), unpack(fr.i), fr.t, s.aspect);
       for (const e of events) {
-        const label = `${e.type}_${e.side}`, owner = disc.find((p) => e.time >= p.t && e.time <= p.t + 1500);
+        const label = `${e.type}_${e.side}`, owner = disc.findLast((p) => e.time >= p.t && e.time <= p.t + attackMs);
         owner ? owner.hits.push(label) : bump(falseFires, label);
       }
-      const active = conts.find((p) => fr.t >= p.t + 500 && fr.t <= p.t + 2000);
+      const active = conts.find((p) => fr.t >= p.t + hold[0] && fr.t <= p.t + hold[1]);
+      const idle = !busy.some(([a, b]) => fr.t >= a && fr.t <= b);
       for (const l of CONTINUOUS) {
         const hit = postureMatches(l, posture) ? 1 : 0, c = cont[l];
-        if (active?.label === l) { c.in++; c.inHit += hit; } else if (!active) { c.out++; c.outHit += hit; }
+        if (active?.label === l) { c.in++; c.inHit += hit; } else if (idle) { c.out++; c.outHit += hit; }
       }
     }
     for (const p of disc) {
