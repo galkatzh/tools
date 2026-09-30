@@ -28,8 +28,9 @@ export const DEFAULTS = {
   minVis: 0.5,                // ignore an arm whose wrist/elbow MediaPipe is unsure of
   velMs: 30,                  // velocity baseline: newest frame at least this old (1 frame at 30 fps)
   refractoryMs: 400,          // per-hand dead time after firing
-  dirRatio: 1.5,              // dominant axis must beat the other by this factor
-  hookSpeed: 4, hookMinY: 0.4, hookElbowMax: 150,
+  lockoutMs: 250,             // dead time for both hands after any attack (torso rotation drags the other hand)
+  dirRatio: 1.5,              // uppercut: upward speed must beat sideways speed by this factor
+  hookSpeed: 3, hookMinY: 0.9, hookHighMs: 300, hookMaxDown: 0.3,
   uppercutSpeed: 4, upperStartY: 0.75, upperLookMs: 300, bothHandsRatio: 0.5,
   guardOn: 1.0, guardOff: 0.85, guardX: 0.5,
   duckDepth: 0.6,             // head drop below recent standing height, in shoulder widths, for duck = 1
@@ -101,12 +102,6 @@ export function features(w, img, aspect) {
   return f;
 }
 
-/** Elbow angle in degrees (180 = straight arm). */
-const elbowAngle = (sh, el, wr) => {
-  const a = unit(sub(sh, el)), b = unit(sub(wr, el));
-  return (Math.acos(clamp(dot(a, b), -1, 1)) * 180) / Math.PI;
-};
-
 /** Stateful recogniser: feed it one pose per video frame, get events + posture back. */
 export class Recogniser {
   constructor(cfg = { ...DEFAULTS }) {
@@ -115,6 +110,7 @@ export class Recogniser {
     /** @type {{t:number, f:Record<string, number[]>}[]} filtered features, last ~0.5 s */
     this.hist = [];
     this.lastFire = { L: -Infinity, R: -Infinity };
+    this.lastAny = -Infinity;
     this.guard = false;
     /** @type {{lean:number}|null} */ this.base = null;
     /** Recent standing height: the highest nose y seen, sinking slowly (see #posture). */
@@ -149,14 +145,20 @@ export class Recogniser {
     const vel = (k) => (past ? scale(sub(f[k], past.f[k]), 1000 / (t - past.t)) : [0, 0, 0]);
     const vL = vel('wrL'), vR = vel('wrR');
     /** @type {ActionEvent[]} */ const events = [];
-    for (const [s, v, vOther, inward] of /** @type {const} */ ([['L', vL, vR, 1], ['R', vR, vL, -1]])) {
-      if (!past || t - this.lastFire[s] < cfg.refractoryMs) continue;
+    for (const [s, v, vOther] of /** @type {const} */ ([['L', vL, vR], ['R', vR, vL]])) {
+      if (!past || t - this.lastFire[s] < cfg.refractoryMs || t - this.lastAny < cfg.lockoutMs) continue;
       if (Math.min(img[WR[s]].visibility ?? 1, img[EL[s]].visibility ?? 1) < cfg.minVis) continue;
-      const wr = f['wr' + s], vin = inward * v[0], vy = v[1];
+      const vy = v[1], speed3 = norm(v);
       let type = null, speed = 0;
-      if (vin > cfg.hookSpeed && vin > cfg.dirRatio * Math.abs(vy) && wr[1] > cfg.hookMinY
-          && elbowAngle(f['sh' + s], f['el' + s], wr) < cfg.hookElbowMax) {
-        type = 'hook'; speed = vin;
+      // A hook's strike swings mostly toward the camera, i.e. in depth, so its visible
+      // sideways component is tiny (on recordings: one or two frames). What the camera
+      // does see is the path: from guard the fist loads out and up and strikes while
+      // staying at head height. So: fast, not mostly downward (that's an uppercut's dip
+      // or dropping the guard), with the wrist high throughout. Uppercuts must start low,
+      // so the two rules can't both match.
+      if (speed3 > cfg.hookSpeed && vy > -cfg.hookMaxDown * speed3
+          && this.hist.every((h) => h.t < t - cfg.hookHighMs || h.f['wr' + s][1] > cfg.hookMinY)) {
+        type = 'hook'; speed = speed3;
       } else if (vy > cfg.uppercutSpeed && vy > cfg.dirRatio * Math.abs(v[0])
           // An uppercut starts low; both hands rising together is a guard being raised.
           && this.hist.some((h) => h.t >= t - cfg.upperLookMs && h.f['wr' + s][1] < cfg.upperStartY)
@@ -164,7 +166,7 @@ export class Recogniser {
         type = 'uppercut'; speed = vy;
       }
       if (type) {
-        this.lastFire[s] = t;
+        this.lastFire[s] = this.lastAny = t;
         events.push({ type, side: s, power: clamp(speed / (2 * cfg[type + 'Speed']), 0, 1), time: t });
       }
     }
