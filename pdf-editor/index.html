@@ -708,6 +708,10 @@ function drawAnnots(page, annots, font) {
           setLineWidth, setLineCap, setLineJoin, LineCapStyle, LineJoinStyle, degrees } = PDFLib;
   const { x: ox, y: oy, width: pw, height: ph } = page.getCropBox();
   const rot = ((page.getRotation().angle % 360) + 360) % 360;
+  // Duplicates of one source page, copied in the same call, share its
+  // /Contents array; drawing appends to that array, so give this page its own.
+  const contents = page.node.Contents();
+  if (contents instanceof PDFLib.PDFArray) page.node.set(PDFLib.PDFName.of('Contents'), contents.clone());
   const map = (x, y) => {
     const [ux, uy] = rot === 90  ? [y, x]
                    : rot === 180 ? [pw - x, y]
@@ -775,16 +779,20 @@ async function exportPDFs() {
       const texts = nonempty[i].flatMap(p => p.annots.filter(a => a.type === 'text').map(a => a.text));
       const font = texts.length ? await makeFontPicker(out, texts) : null;
 
+      // Copy all of a source's pages in ONE copyPages call: pdf-lib only
+      // de-duplicates objects within a call, so copying page by page embeds
+      // every shared font and image once per page (a 2 MB file grew to 155 MB).
+      const copies = new Map();   // item → copied PDFPage
+      if (!preset) {
+        for (const [fileId, ps] of Map.groupBy(nonempty[i], p => p.fileId)) {
+          const pages = await out.copyPages(await getSrcDoc(fileId), ps.map(p => p.pageIdx));
+          ps.forEach((p, j) => copies.set(p, pages[j]));
+        }
+      }
+
       for (const p of nonempty[i]) {
         setProgress(`Exporting… page ${++done} / ${total}`);
-        let page;
-        if (preset) {
-          page = await addRasterPage(out, p, preset);
-        } else {
-          const src = await getSrcDoc(p.fileId);
-          const [copied] = await out.copyPages(src, [p.pageIdx]);
-          page = out.addPage(copied);
-        }
+        const page = preset ? await addRasterPage(out, p, preset) : out.addPage(copies.get(p));
         if (p.annots.length) drawAnnots(page, p.annots, font);
       }
       const bytes = await out.save();
