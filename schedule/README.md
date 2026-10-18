@@ -39,7 +39,7 @@ ciphertext into an event signed by someone else fails to decrypt. **Relays see o
 ciphertext, the opaque tags, random pubkeys and timestamps.** Decrypted payloads are
 validated and HTML-escaped before rendering, because anyone with the link can write.
 
-**Relays.** Six public relays (`RELAYS` in `app.js`; `window.DOODLE_RELAYS` overrides them
+**Relays.** Six public relays (`RELAYS` in `app.js`; `window.SCHEDULE_RELAYS` overrides them
 for tests or self-hosting). A single live subscription streams the poll and all answers.
 Saving finishes as soon as one relay stores the event and reports how many have so far
 (errors per relay are logged). The header dot shows how many relays are connected and turns

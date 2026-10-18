@@ -15,13 +15,13 @@
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'https://cdn.jsdelivr.net/npm/nostr-tools@2.25.2/pure/+esm';
 import { SimplePool } from 'https://cdn.jsdelivr.net/npm/nostr-tools@2.25.2/pool/+esm';
 
-// window.DOODLE_RELAYS overrides the public relays (tests, self-hosting).
-const RELAYS = window.DOODLE_RELAYS || ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net',
+// window.SCHEDULE_RELAYS overrides the public relays (tests, self-hosting).
+const RELAYS = window.SCHEDULE_RELAYS || ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net',
   'wss://nostr.mom', 'wss://offchain.pub', 'wss://relay.nostr.net'];
 const KIND = 30078;
 const MIN = 60e3;
 const HH = 48; // calendar pixels per hour (exported to CSS as --hh)
-const STORE = 'doodle:', NAME = 'doodle.name'; // localStorage: one entry per poll opened; last name used
+const STORE = 'schedule:', NAME = 'schedule.name'; // localStorage: one entry per poll opened; last name used
 const NEXT = { '': 'y', y: 'm', m: 'n', n: 'y' }; // what a tap on an answer turns it into
 const MARK = { '': '', y: '✓', m: '(✓)', n: '✗' };
 const ID = /^\w{1,16}$/;
@@ -88,7 +88,7 @@ addEventListener('beforeunload', (e) => P?.dirty && e.preventDefault());
 /** Derive the poll's AES key and its two relay tags from the link secret. */
 async function derive(secret) {
   const base = await crypto.subtle.importKey('raw', secret, 'HKDF', false, ['deriveKey', 'deriveBits']);
-  const hkdf = (info) => ({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: te.encode(`doodle/${info}`) });
+  const hkdf = (info) => ({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: te.encode(`schedule/${info}`) });
   const tag = async (info) => hex(new Uint8Array(await crypto.subtle.deriveBits(hkdf(info), base, 256)));
   return {
     key: await crypto.subtle.deriveKey(hkdf('key'), base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']),
