@@ -2,23 +2,27 @@
 //
 // A poll link is `#<token>`, token = base64url(orgPub ‖ secret [‖ sk]):
 //   orgPub 32 B  the organizer's Nostr pubkey: only their poll event is trusted.
-//   secret 16 B  HKDF → the AES-GCM key and the two opaque `d` tags relays filter on.
+//   secret 16 B  HKDF → the poll's NIP-44 key and the two opaque `d` tags relays filter on.
 //   sk     32 B  optional ("private link"): your signing key, to answer as yourself from
 //                another device. The organizer's sk also unlocks editing the poll.
-// The fragment never leaves the browser, so relays only ever see ciphertext, opaque tags
-// and random per-poll pubkeys.
+// The fragment never leaves the browser, so relays only ever see ciphertext, opaque tags,
+// random per-poll pubkeys and timestamps.
 //
-// Everything is NIP-78 app data (kind 30078). It's addressable, so relays keep only the
-// latest event per (pubkey, d): the organizer's poll under dPoll and one answer per
-// participant under dVote. Editing an answer replaces it.
+// Events use a dedicated addressable kind (NIP-01: relays keep only the latest event per
+// kind, pubkey and d): the organizer's poll under dPoll and one answer per participant under
+// dVote, so editing an answer replaces it. Not NIP-78's kind 30078: that one is for data
+// private to its author, which relays may serve to the author alone.
+// An optional NIP-40 `expiration` tag on every event makes relays delete the whole poll.
 
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'https://cdn.jsdelivr.net/npm/nostr-tools@2.25.2/pure/+esm';
 import { SimplePool } from 'https://cdn.jsdelivr.net/npm/nostr-tools@2.25.2/pool/+esm';
+import * as nip44 from 'https://cdn.jsdelivr.net/npm/nostr-tools@2.25.2/nip44/+esm';
 
 // window.SCHEDULE_RELAYS overrides the public relays (tests, self-hosting).
 const RELAYS = window.SCHEDULE_RELAYS || ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net',
   'wss://nostr.mom', 'wss://offchain.pub', 'wss://relay.nostr.net'];
-const KIND = 30078;
+const KIND = 30827; // unregistered addressable kind (30000–39999) for this app's encrypted poll data
+const EXPIRE = [0, 1, 7, 30]; // auto-delete options: days after the last time (0 = never)
 const MIN = 60e3;
 const HH = 48; // calendar pixels per hour (exported to CSS as --hh)
 const STORE = 'schedule:', NAME = 'schedule.name'; // localStorage: one entry per poll opened; last name used
@@ -36,7 +40,7 @@ document.documentElement.style.setProperty('--hh', `${HH}px`);
 
 // --- bytes & time -------------------------------------------------------------------------
 
-const te = new TextEncoder(), td = new TextDecoder();
+const te = new TextEncoder();
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 const unhex = (h) => Uint8Array.from(h.match(/../g), (x) => parseInt(x, 16));
 const b64u = (b) => btoa(Array.from(b, (x) => String.fromCharCode(x)).join('')).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -85,29 +89,24 @@ addEventListener('beforeunload', (e) => P?.dirty && e.preventDefault());
 
 // --- crypto -------------------------------------------------------------------------------
 
-/** Derive the poll's AES key and its two relay tags from the link secret. */
+/** Derive the poll's NIP-44 conversation key and its two relay tags from the link secret. */
 async function derive(secret) {
-  const base = await crypto.subtle.importKey('raw', secret, 'HKDF', false, ['deriveKey', 'deriveBits']);
-  const hkdf = (info) => ({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: te.encode(`schedule/${info}`) });
-  const tag = async (info) => hex(new Uint8Array(await crypto.subtle.deriveBits(hkdf(info), base, 256)));
-  return {
-    key: await crypto.subtle.deriveKey(hkdf('key'), base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']),
-    dPoll: await tag('poll'),
-    dVote: await tag('vote'),
-  };
+  const base = await crypto.subtle.importKey('raw', secret, 'HKDF', false, ['deriveBits']);
+  const bits = async (info) => new Uint8Array(await crypto.subtle.deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: te.encode(`schedule/${info}`) }, base, 256));
+  // NIP-44 v2 to the poll's own keypair, the way NIP-51 encrypts private items to oneself
+  const pollSk = await bits('key');
+  return { conv: nip44.getConversationKey(pollSk, getPublicKey(pollSk)), dPoll: hex(await bits('poll')), dVote: hex(await bits('vote')) };
 }
 
-// The author's pubkey is the AES-GCM associated data: a ciphertext copied into an event
-// signed by someone else fails to decrypt, so nobody can clone another person's answer.
-async function seal(p, obj) {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: te.encode(p.me) }, p.key, te.encode(JSON.stringify(obj)));
-  return b64u(new Uint8Array([...iv, ...new Uint8Array(ct)]));
-}
-async function unseal(p, content, pubkey) {
-  const b = unb64u(content);
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b.subarray(0, 12), additionalData: te.encode(pubkey) }, p.key, b.subarray(12));
-  return JSON.parse(td.decode(pt));
+// NIP-44 has no associated data, so the author's pubkey travels inside the plaintext and must
+// match the signer: nobody can re-sign someone else's ciphertext as their own answer.
+const seal = (p, obj) => nip44.encrypt(JSON.stringify({ ...obj, by: p.me }), p.conv);
+function unseal(p, ev) {
+  if (ev.content.length > 256e3) throw new Error('payload too large'); // nip44.decrypt leaves size checks to callers
+  const x = JSON.parse(nip44.decrypt(ev.content, p.conv));
+  if (x.by !== ev.pubkey) throw new Error('payload was sealed by a different key than the one that signed it');
+  return x;
 }
 
 // Decrypted payloads come from anyone holding the link: keep only well-formed fields.
@@ -117,7 +116,8 @@ function cleanPoll(x) {
     .slice(0, 500).map(({ id, s, e }) => ({ id, s, e }));
   if (!slots.length) throw new Error('poll has no valid times');
   return { title: String(x.title ?? '').slice(0, 120), notes: String(x.notes ?? '').slice(0, 2000),
-    tz: String(x.tz ?? '').slice(0, 64), slots, final: slots.some((s) => s.id === x.final) ? x.final : null };
+    tz: String(x.tz ?? '').slice(0, 64), slots, final: slots.some((s) => s.id === x.final) ? x.final : null,
+    expire: EXPIRE.includes(x.expire) ? x.expire : 0 };
 }
 function cleanVote(x) {
   return { name: String(x.name ?? '').slice(0, 60) || 'Anonymous',
@@ -132,7 +132,7 @@ pool.trackRelays = true; // pool.seenOn: which relays returned each event (see h
 
 let mode = 'home';  // which <section> shows: 'home' | 'editor' | 'poll'
 let P = null;       // the open poll, see initPoll
-let draft = null;   // poll being created or edited: {title, notes, tz, slots: [{id, s, e}], final}
+let draft = null;   // poll being created or edited: {title, notes, tz, slots: [{id, s, e}], final, expire}
 let view = dayOf(Date.now()); // first day the calendar shows
 let drag = null;    // calendar gesture in progress (editor)
 
@@ -157,8 +157,10 @@ function subscribe(p) {
     onevent: (ev) => receive(p, ev),
     oneose: () => {
       if (P !== p) return;
-      if (!p.poll) p.error = 'This poll wasn’t found on any reachable relay. The link may be incomplete, or the relays dropped it.';
+      p.synced = true;
+      if (!p.poll) p.error = 'This poll wasn’t found on any reachable relay. It may have expired, the link may be incomplete, or the relays dropped it.';
       heal(p);
+      syncAnswerExpiry(p);
       render();
     },
     onclose: (reasons) => { // only once every relay has closed: nothing is reachable
@@ -171,24 +173,32 @@ function subscribe(p) {
 }
 
 const dTag = (ev) => ev.tags.find((t) => t[0] === 'd')?.[1];
+const expOf = (ev) => +ev.tags.find((t) => t[0] === 'expiration')?.[1] || null; // NIP-40, unix seconds
+const expired = (ev) => expOf(ev) !== null && expOf(ev) * 1000 <= Date.now();
+// NIP-01: of two versions of an addressable event, the later one wins; on a tie, the lowest id.
+const supersedes = (a, b) => !b || a.created_at > b.created_at || (a.created_at === b.created_at && a.id < b.id);
 
-/** Apply one signature-checked event, from a relay or from our own publish. */
+/** Apply one signature-checked event, from a relay or from our own publish. Async on purpose:
+ *  a throw then reaches the unhandledrejection toast instead of the pool's quiet console.warn. */
 async function receive(p, ev) {
   const d = dTag(ev), key = ev.pubkey + d;
   if (d === p.dPoll && ev.pubkey !== p.org) return console.warn('ignoring a poll event not signed by the organizer', ev);
-  const isNewer = () => !(p.events.get(key)?.created_at >= ev.created_at);
-  if (!isNewer()) return;
+  if (expired(ev) || !supersedes(ev, p.events.get(key))) return; // NIP-40: clients ignore expired events
   let data;
   try {
-    data = (d === p.dPoll ? cleanPoll : cleanVote)(await unseal(p, ev.content, ev.pubkey));
+    data = (d === p.dPoll ? cleanPoll : cleanVote)(unseal(p, ev));
   } catch (err) {
     return console.error('dropping an event that failed to decrypt or validate', ev, err);
   }
-  if (!isNewer() || P !== p) return; // a newer version won the race while we decrypted, or we left
+  if (P !== p) return; // we navigated away
   p.events.set(key, ev);
   const first = d === p.dPoll && !p.poll;
-  if (d === p.dPoll) [p.poll, p.error] = [data, null];
-  else {
+  if (d === p.dPoll) {
+    [p.poll, p.error, p.exp] = [data, null, expOf(ev)];
+    clearTimeout(p.expTimer); // drop the poll from view when it expires (setTimeout can't wait past ~24.8 days)
+    if (p.exp && p.exp * 1000 - Date.now() < 2 ** 31 - 1) p.expTimer = setTimeout(() => expire(p), p.exp * 1000 - Date.now());
+    syncAnswerExpiry(p);
+  } else {
     p.votes.set(ev.pubkey, data);
     if (ev.pubkey === p.me && !p.dirty) { // our saved answers (from this or another device)
       p.mine = structuredClone(data);
@@ -200,37 +210,90 @@ async function receive(p, ev) {
   if (first && mode === 'poll') goto((data.slots.find((s) => s.e > Date.now()) ?? data.slots[0]).s);
 }
 
-/** Every signed event we know: what relays sent this session, plus what we saw before. */
+/** Answers expire with the poll. If the organizer changed the expiry since we answered,
+ *  re-sign our answer to match (only its author can). */
+function syncAnswerExpiry(p) {
+  const ev = p.events.get(p.me + p.dVote);
+  if (!p.synced || !p.poll || !ev || expOf(ev) === p.exp || p.resyncing || P !== p) return;
+  p.resyncing = true;
+  publish(p.dVote, p.votes.get(p.me))
+    .catch((err) => { console.error('couldn’t update the expiry of our answer', err); toast(`Couldn’t update your answer’s expiry: ${err.message}`, true); })
+    .finally(() => (p.resyncing = false));
+}
+
+/** The poll's time is up: forget it here too, keys included. */
+function expire(p) {
+  try { localStorage.removeItem(STORE + p.share); } catch (err) { console.error('localStorage unavailable', err); }
+  clearTimeout(p.persistTimer);
+  Object.assign(p, { poll: null, votes: new Map(), events: new Map(), cache: [], dirty: false, error: 'This poll has expired and was deleted.' });
+  if (mode === 'editor' && P === p) mode = 'poll';
+  render();
+}
+
+/** Drop polls past their expiry from this browser's storage. */
+function purgeExpired() {
+  try {
+    for (const k of Object.keys(localStorage)) if (k.startsWith(STORE) && load(k).exp && load(k).exp * 1000 <= Date.now()) localStorage.removeItem(k);
+  } catch (err) { console.error('localStorage unavailable', err); }
+}
+
+/** Every unexpired signed event we know: what relays sent this session, plus what we saw before. */
 function known(p) {
-  const m = new Map(p.cache.map((ev) => [ev.pubkey + dTag(ev), ev]));
-  for (const [k, ev] of p.events) if (!(m.get(k)?.created_at > ev.created_at)) m.set(k, ev);
+  const m = new Map();
+  for (const ev of [...p.cache, ...p.events.values()]) if (!expired(ev) && supersedes(ev, m.get(ev.pubkey + dTag(ev)))) m.set(ev.pubkey + dTag(ev), ev);
   return [...m.values()];
 }
 function persist(p) {
   clearTimeout(p.persistTimer);
-  p.persistTimer = setTimeout(() => store(STORE + p.share, { ...load(STORE + p.share), title: p.poll?.title, events: known(p) }), 500);
+  p.persistTimer = setTimeout(() => store(STORE + p.share, { ...load(STORE + p.share), title: p.poll?.title, exp: p.exp, events: known(p) }), 500);
+}
+
+// NIP-11 relay information documents, fetched once per relay (a failure is retried next time).
+const nip11 = new Map();
+function relayInfo(url) {
+  const key = new URL(url).href; // the pool normalizes `wss://host` to `wss://host/`
+  if (!nip11.has(key)) {
+    nip11.set(key, fetch(key.replace(/^ws/, 'http'), { headers: { Accept: 'application/nostr+json' } })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .catch((err) => {
+        console.error(`no NIP-11 information from ${url}`, err);
+        nip11.delete(key);
+        return null;
+      }));
+  }
+  return nip11.get(key);
+}
+/** The relays that may receive ev: NIP-40 says to send expiring events only to relays that
+ *  list NIP-40 in their NIP-11 `supported_nips`. */
+async function targets(ev, relays = RELAYS) {
+  if (!expOf(ev)) return relays;
+  const ok = await Promise.all(relays.map(async (url) => (await relayInfo(url))?.supported_nips?.includes(40)));
+  return relays.filter((_, i) => ok[i]);
 }
 
 /** Public relays prune and miss events. Signed events can be relayed by anyone, so after the
  *  initial sync hand each event we know to every connected relay that didn't return it. */
-function heal(p) {
+async function heal(p) {
   const live = [...pool.listConnectionStatus()].filter(([, ok]) => ok).map(([url]) => url);
   for (const ev of known(p)) {
     const has = new Set([...(pool.seenOn.get(ev.id) ?? [])].map((r) => r.url));
-    const missing = live.filter((url) => !has.has(url));
+    const missing = (await targets(ev, live)).filter((url) => !has.has(url));
     pool.publish(missing, ev).forEach((pr, i) => pr.catch((err) => console.error(`re-seeding ${missing[i]} failed`, err)));
   }
 }
 
-/** Encrypt, sign and publish our event under tag d. Resolves once a relay has stored it, to how
- *  many have so far: slow relays get a short grace period, but a dead one isn't waited out. */
-async function publish(d, data) {
+/** Encrypt, sign and publish our event under tag d, expiring at `exp` (unix seconds, or null).
+ *  Resolves once a relay has stored it, to "stored/targeted" relay counts: slow relays get a
+ *  short grace period, but a dead one isn't waited out. */
+async function publish(d, data, exp = P.exp) {
   const p = P, prev = p.events.get(p.me + d)?.created_at ?? 0;
   const ev = finalizeEvent({ kind: KIND, created_at: Math.max(Math.floor(Date.now() / 1000), prev + 1),
-    tags: [['d', d]], content: await seal(p, data) }, p.sk);
+    tags: [['d', d], ...(exp ? [['expiration', String(exp)]] : [])], content: seal(p, data) }, p.sk);
+  const to = await targets(ev);
+  if (!to.length) throw new Error('None of the relays supports expiring events (NIP-40), so this can’t be saved with automatic deletion.');
   let ok = 0;
-  const acks = pool.publish(RELAYS, ev).map((pr, i) => pr.then(() => ok++, (err) => {
-    console.error(`${RELAYS[i]} rejected the update`, err);
+  const acks = pool.publish(to, ev).map((pr, i) => pr.then(() => ok++, (err) => {
+    console.error(`${to[i]} rejected the update`, err);
     throw err?.message ?? err;
   }));
   try {
@@ -240,7 +303,7 @@ async function publish(d, data) {
   }
   await Promise.race([Promise.allSettled(acks), new Promise((r) => setTimeout(r, 1500))]);
   await receive(p, ev);
-  return ok;
+  return `${ok}/${to.length}`;
 }
 
 function updateNet() {
@@ -299,7 +362,8 @@ function renderHead() {
   document.title = `${poll.title} · Find a time`;
   $('#title').textContent = poll.title;
   $('#notes').textContent = poll.notes;
-  $('#tz').textContent = `Times are in your time zone, ${TZ}${poll.tz && poll.tz !== TZ ? ` (the organizer is in ${poll.tz})` : ''}.`;
+  $('#tz').textContent = `Times are in your time zone, ${TZ}${poll.tz && poll.tz !== TZ ? ` (the organizer is in ${poll.tz})` : ''}.`
+    + (p.exp ? ` The poll and all answers are deleted automatically on ${fFull.format(p.exp * 1000)}.` : '');
   $('#editBtn').hidden = p.me !== p.org;
   const f = poll.slots.find((s) => s.id === poll.final);
   $('#final').hidden = !f;
@@ -434,9 +498,10 @@ async function route() {
 }
 
 function startEdit(poll) {
-  draft = structuredClone(poll ?? { title: '', notes: '', slots: [], final: null });
+  draft = structuredClone(poll ?? { title: '', notes: '', slots: [], final: null, expire: 0 });
   $('#eTitle').value = draft.title;
   $('#eNotes').value = draft.notes;
+  $('#expire').value = draft.expire;
   $('#publish').textContent = poll ? 'Save changes' : 'Create poll';
   mode = 'editor';
   render();
@@ -461,11 +526,14 @@ function copyDays(src, to, span) {
 }
 
 async function savePoll() {
-  Object.assign(draft, { title: $('#eTitle').value.trim(), notes: $('#eNotes').value.trim(), tz: TZ });
+  Object.assign(draft, { title: $('#eTitle').value.trim(), notes: $('#eNotes').value.trim(), tz: TZ, expire: +$('#expire').value });
   if (!draft.title) { $('#eTitle').focus(); return toast('Give the poll a title first', true); }
   if (!draft.slots.length) return toast('Add at least one time', true);
   draft.slots.sort((a, b) => a.s - b.s);
   if (!draft.slots.some((s) => s.id === draft.final)) draft.final = null;
+  // the expiry follows the last time, so editing the times moves it
+  const exp = draft.expire ? Math.ceil(shift(Math.max(...draft.slots.map((s) => s.e)), draft.expire) / 1000) : null;
+  if (exp && exp * 1000 <= Date.now()) return toast('Every time is long past, so the poll would be deleted at once: add a later time or choose “never”.', true);
   const btn = $('#publish');
   btn.disabled = true;
   try {
@@ -473,11 +541,11 @@ async function savePoll() {
       const sk = generateSecretKey();
       await initPoll(b64u(new Uint8Array([...unhex(getPublicKey(sk)), ...crypto.getRandomValues(new Uint8Array(16)), ...sk])));
     }
-    const isNew = !P.poll, n = await publish(P.dPoll, draft);
+    const isNew = !P.poll, n = await publish(P.dPoll, draft, exp);
     if (!P.sub) subscribe(P);
     [mode, draft] = ['poll', null];
     render();
-    toast(`Poll saved to ${n}/${RELAYS.length} relays`);
+    toast(`Poll saved to ${n} relays`);
     if (isNew) openShare();
   } finally {
     btn.disabled = false;
@@ -494,7 +562,7 @@ async function saveAnswers() {
   try {
     const n = await publish(P.dVote, { ...P.mine, name });
     P.dirty = JSON.stringify(P.mine) !== sent; // still dirty if they kept tapping while it saved
-    toast(`Saved to ${n}/${RELAYS.length} relays`);
+    toast(`Saved to ${n} relays`);
   } finally {
     render();
   }
@@ -503,7 +571,7 @@ async function saveAnswers() {
 async function setFinal(id) {
   const final = P.poll.final === id ? null : id;
   const n = await publish(P.dPoll, { ...P.poll, final });
-  toast(`${final ? 'Final time picked' : 'Final time cleared'} (saved to ${n}/${RELAYS.length} relays)`);
+  toast(`${final ? 'Final time picked' : 'Final time cleared'} (saved to ${n} relays)`);
 }
 
 function openShare() {
@@ -656,4 +724,5 @@ const endDrag = (e) => {
 cal.addEventListener('pointerup', endDrag);
 cal.addEventListener('pointercancel', endDrag);
 
+purgeExpired();
 route();

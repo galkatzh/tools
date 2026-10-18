@@ -39,6 +39,15 @@
         <span class="muted">Click or drag on the calendar to add times; drag a time's bottom edge to resize it.</span>
       </div>
       <div class="bar">
+        <label>Delete automatically <select id="expire">
+          <option value="0">never</option>
+          <option value="1">1 day after the last time</option>
+          <option value="7">1 week after the last time</option>
+          <option value="30">1 month after the last time</option>
+        </select></label>
+        <span class="muted">Relays drop the poll and every answer then (NIP-40), and this browser forgets it.</span>
+      </div>
+      <div class="bar">
         <button id="publish" class="primary">Create poll</button>
         <button id="cancel">Cancel</button>
       </div>
