@@ -46,7 +46,7 @@ const newId = () => Math.random().toString(36).slice(2, 10);
 const fmt = (o) => new Intl.DateTimeFormat(undefined, o);
 const fTime = fmt({ hour: 'numeric', minute: '2-digit' }), fHour = fmt({ hour: 'numeric' });
 const fHead = fmt({ weekday: 'short', day: 'numeric' }), fDay = fmt({ weekday: 'long', month: 'long', day: 'numeric' });
-const fRange = fmt({ month: 'short', day: 'numeric', year: 'numeric' });
+const fRange = fmt({ month: 'short', day: 'numeric', year: 'numeric' }), fDate = fmt({ month: 'short', day: 'numeric' });
 const fFull = fmt({ weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 const dayOf = (t) => new Date(t).setHours(0, 0, 0, 0);
 const shift = (t, days) => { const d = new Date(t); return d.setDate(d.getDate() + days); }; // same wall-clock time
@@ -334,8 +334,18 @@ function renderCal() {
   const cols = Array.from({ length: n }, (_, i) => dayOf(shift(view, i)));
   $('#range').textContent = fRange.formatRange(cols[0], cols[n - 1]);
   const all = slots(), t = mode === 'poll' && tallies(), today = dayOf(Date.now());
-  let html = `<div class="cal-grid" style="--days:${n}"><div class="corner"></div>`
-    + cols.map((d) => `<div class="dh${d === today ? ' today' : ''}">${fHead.format(d)}</div>`).join('')
+  // editor: an empty day / week offers to copy the latest earlier day / week that has times
+  const copyFrom = (t0, unit, span) => mode === 'editor' && !all.some((s) => s.s >= t0 && s.s < dayOf(shift(t0, span)))
+    && Math.max(...all.map((s) => unit(s.s)).filter((u) => u < t0));
+  const week = weekOf(view), srcWeek = copyFrom(week, weekOf, 7), weekBtn = $('#copyWeek');
+  weekBtn.hidden = !Number.isFinite(srcWeek);
+  if (!weekBtn.hidden) {
+    weekBtn.textContent = `⧉ Copy week of ${fDate.format(srcWeek)}`;
+    Object.assign(weekBtn.dataset, { src: srcWeek, to: week });
+  }
+  const head = (d, src = copyFrom(d, dayOf, 1)) => `<div class="dh${d === today ? ' today' : ''}">${fHead.format(d)}${Number.isFinite(src)
+    ? `<button class="copy" data-src="${src}" data-to="${d}" data-span="1" title="Copy the times of ${fDay.format(src)}">⧉ ${fHead.format(src)}</button>` : ''}</div>`;
+  let html = `<div class="cal-grid" style="--days:${n}"><div class="corner"></div>${cols.map((d) => head(d)).join('')}`
     + `<div class="gutter">${Array.from({ length: 23 }, (_, h) => `<span style="top:${(h + 1) * HH}px">${fHour.format(new Date(view).setHours(h + 1))}</span>`).join('')}</div>`;
   for (const day of cols) {
     const next = dayOf(shift(day, 1));
@@ -440,6 +450,14 @@ function addSlot() {
   draft.slots.push({ id: newId(), s, e: s + (last ? last.e - last.s : $('#dur').value * MIN) });
   render();
   goto(s);
+}
+
+/** Duplicate the times starting in the `span` days from `src` onto the days from `to`, at the
+ *  same wall-clock hours (so a copy across a DST change keeps 10:00 at 10:00). */
+function copyDays(src, to, span) {
+  const k = Math.round((to - src) / (1440 * MIN)), end = dayOf(shift(src, span));
+  for (const s of draft.slots.filter((x) => x.s >= src && x.s < end)) draft.slots.push({ id: newId(), s: shift(s.s, k), e: shift(s.e, k) });
+  render();
 }
 
 async function savePoll() {
@@ -548,11 +566,12 @@ $('#share').addEventListener('click', async (e) => {
   }
 });
 
-// One click handler for both views: answers, slot removal, final pick, navigation.
+// One click handler for both views: answers, slot removal, copying, final pick, navigation.
 $('#board').addEventListener('click', (e) => {
-  const el = e.target.closest('[data-vote], [data-del], [data-final], [data-goto], [data-nav], #addSlot');
+  const el = e.target.closest('[data-vote], [data-del], [data-src], [data-final], [data-goto], [data-nav], #addSlot');
   const d = el?.dataset ?? {};
-  if (d.vote) {
+  if (d.src) copyDays(+d.src, +d.to, +d.span);
+  else if (d.vote) {
     P.mine.votes[d.vote] = NEXT[P.mine.votes[d.vote] ?? ''];
     P.dirty = true;
     render();

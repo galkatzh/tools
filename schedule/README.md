@@ -7,7 +7,9 @@ A Doodle-style scheduling poll with no server and no accounts. Polls live on pub
   the default length, drag to draw a range, drag a block's bottom edge to resize, × to remove)
   or in the **list** next to it (date / start / end inputs, ＋ Add time). Both views edit the
   same slots, so a change in one shows up in the other immediately. Hovering a time highlights
-  it in both. **Create poll** publishes it and shows the invite link.
+  it in both. An empty day's header offers **⧉ copy** of the latest earlier day with times,
+  and an empty week offers **⧉ Copy week of …** in the toolbar. Copies keep the wall-clock
+  hours, even across a DST change. **Create poll** publishes it and shows the invite link.
 - **Participants**: open the link, type a name, and tap times in the calendar *or* the
   Doodle-style table to cycle ✓ yes → (✓) if need be → ✗ no. **Save answers** publishes
   them. Everyone's answers, the per-time totals and the ★ leading time update live.
