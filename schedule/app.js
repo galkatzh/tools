@@ -498,7 +498,7 @@ async function route() {
 }
 
 function startEdit(poll) {
-  draft = structuredClone(poll ?? { title: '', notes: '', slots: [], final: null, expire: 0 });
+  draft = structuredClone(poll ?? { title: '', notes: '', slots: [], final: null, expire: 30 }); // new polls: delete a month after
   $('#eTitle').value = draft.title;
   $('#eNotes').value = draft.notes;
   $('#expire').value = draft.expire;

@@ -15,7 +15,7 @@ A Doodle-style scheduling poll with no server and no accounts. Polls live on pub
   them. Everyone's answers, the per-time totals and the ★ leading time update live.
 - The organizer can **edit the poll** and **📌 pick the final time**. Everyone then sees a
   banner with an `.ics` download and a Google Calendar link.
-- **Delete automatically**: never (default), or 1 day / 1 week / 1 month after the last time.
+- **Delete automatically**: 1 month after the last time (default), 1 day, 1 week, or never.
   The poll and every answer then carry a NIP-40 expiration, relays drop them, open pages
   close the poll, and each browser forgets it (title and keys included).
 - Times are stored as UTC instants and shown in each viewer's own time zone, with a note when
