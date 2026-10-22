@@ -159,6 +159,13 @@ h2 select { text-transform: none; letter-spacing: 0; color: var(--text); }
 
 /* ── Players (mixer) ── */
 
+#unreachable {
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
 #alone {
   display: grid;
   gap: 10px;

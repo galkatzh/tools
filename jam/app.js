@@ -57,6 +57,7 @@ const players = new Map() // id → { id, name, since, hue, color, gain, wet, li
  */
 let timeline = []
 const told = new Map() // peer id → how long we had been here when we greeted them
+const unreachable = new Map() // peer id → timer forgetting it: found through signaling, but not connected
 let clockOffset = 0 // ms to add to Date.now() to read the shared clock
 let leaderId = selfId
 let queue = [] // events waiting for their turn: { at: shared ms on session `from`'s grid, from, id, e }
@@ -161,7 +162,7 @@ function join(name, roomId) {
   $('#keys').style.setProperty('--me', me.color)
   buildSynthUI()
 
-  const room = joinRoom({ appId: APP_ID, maxReceiveBytes: 1 << 16 }, roomId) // real messages are ~2 KB
+  const room = joinRoom({ appId: APP_ID, maxReceiveBytes: 1 << 16 }, roomId, { onJoinError }) // real messages are ~2 KB
   net = {
     hello: room.makeAction('hello'),
     session: room.makeAction('session'),
@@ -169,6 +170,7 @@ function join(name, roomId) {
     clock: room.makeAction('clock', { kind: 'request', onRequest: () => now() }),
   }
   room.onPeerJoin = id => {
+    if (unreachable.has(id)) forgetUnreachable(id)
     const cur = sessionAt(now()), next = timeline.at(-1), age = Date.now() - since
     told.set(id, age)
     net.hello.send({
@@ -300,10 +302,33 @@ function onHello(msg, { peerId }) {
   updateStatus()
 }
 
-/** Shows how many are here; alone, you get the invite card and, unless switched off, your own echo. */
+/**
+ * Trystero found a peer through signaling but couldn't connect to it, typically because a network
+ * between us blocks direct connections. It retries about every minute; a peer that stops failing
+ * for longer than that has left. Names only travel once connected, so these are counted, not named.
+ */
+function onJoinError({ peerId, error }) {
+  console.error(error)
+  if (!peerId) return
+  if (!unreachable.has(peerId)) toast("Someone is trying to join, but can't connect", 'var(--danger)')
+  clearTimeout(unreachable.get(peerId))
+  unreachable.set(peerId, setTimeout(() => forgetUnreachable(peerId), 150000))
+  updateStatus()
+}
+
+function forgetUnreachable(id) {
+  clearTimeout(unreachable.get(id))
+  unreachable.delete(id)
+  updateStatus()
+}
+
+/** Shows how many are here (and can't connect); alone, you get the invite card and, unless switched off, your own echo. */
 function updateStatus() {
-  const alone = players.size === 1
+  const alone = players.size === 1, n = unreachable.size
   $('#status').textContent = `${players.size} player${alone ? '' : 's'}`
+  $('#unreachable').hidden = !n
+  $('#unreachable').textContent = `${n === 1 ? 'Someone is' : `${n} people are`} in this room but can't connect to you: ` +
+    'a network between you blocks direct connections. Trying again every minute.'
   $('#alone').hidden = !alone
   const on = alone && $('#echo').checked
   if (echo.on === on) return
@@ -801,7 +826,8 @@ $('#echo').onchange = () => {
   updateStatus()
 }
 $('#share').onclick = () => navigator.share
-  ? navigator.share({ title: 'Jam', text: 'Come jam with me', url: location.href }).catch(err => {
+  // The link alone: given text as well, iOS share targets (Copy among them) tend to keep only the text
+  ? navigator.share({ title: 'Come jam with me', url: location.href }).catch(err => {
     console.error('not shared', err)
     if (err.name !== 'AbortError') copyLink($('#share')) // not just closed: offer the link another way
   })
