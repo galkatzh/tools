@@ -49,15 +49,29 @@ input[type=range] { width: 100%; margin: 0; accent-color: var(--accent); }
 #lobby input { padding: 10px 12px; font-size: 16px; } /* 16px keeps iOS from zooming in on focus */
 #lobby button { background: var(--accent); border: 0; color: #0b0b12; font-weight: 600; padding: 12px; }
 
-/* ── App: header and transport on top, scrolling panels, keyboard pinned to the bottom ── */
+/* ── App: header and transport on top, the mixer and the synth side by side (each scrolling),
+   the keyboard at the bottom. On a phone, see the end: the keys, with the rest in side panes. ── */
 
-#app { height: 100dvh; display: flex; flex-direction: column; }
+#app {
+  height: 100dvh;
+  display: grid;
+  grid-template: auto auto minmax(0, 1fr) auto / minmax(236px, 296px) minmax(0, 1fr); /* with #mixer's gutter */
+  column-gap: 16px;
+}
+#session { display: contents; } /* its parts take their own places */
+header, #transport { grid-column: 1 / -1; }
+#mixer, #synth { grid-row: 3; overflow-y: auto; padding-block: 16px; }
+#mixer { grid-column: 1; }
+#synth { grid-column: 2; }
+footer { grid-row: 4; grid-column: 1 / -1; }
 
-header, #transport, main, #kb-bar {
+header, #transport, #kb-bar {
   /* clear of the notch and rounded corners in landscape */
   padding-left: max(var(--gutter), env(safe-area-inset-left));
   padding-right: max(var(--gutter), env(safe-area-inset-right));
 }
+#mixer { padding-left: max(var(--gutter), env(safe-area-inset-left)); }
+#synth { padding-right: max(var(--gutter), env(safe-area-inset-right)); }
 header, #transport {
   display: flex;
   flex-wrap: wrap;
@@ -73,8 +87,10 @@ header h1 { font-size: 1.15rem; }
 #transport label { display: flex; align-items: center; gap: 6px; color: var(--dim); }
 #transport input[type=number] { width: 4.2em; padding: 4px 6px; }
 /* A tempo change waiting for its downbeat */
-#transport.pending input[type=number] { border-color: var(--accent); animation: pending 0.8s ease-in-out infinite alternate; }
+#app.pending #transport input[type=number] { border-color: var(--accent); animation: pending 0.8s ease-in-out infinite alternate; }
 @keyframes pending { to { border-color: var(--line); } }
+#app.pending #count { color: var(--accent); animation: pending-count 0.8s ease-in-out infinite alternate; }
+@keyframes pending-count { to { color: var(--text); } }
 
 #progress {
   --step: calc(100% / var(--bpi, 16));
@@ -107,6 +123,7 @@ header h1 { font-size: 1.15rem; }
   pointer-events: none;
 }
 #beat { min-width: 3.2em; text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
+#midi { margin-left: auto; }
 
 #toasts {
   position: fixed;
@@ -135,15 +152,6 @@ header h1 { font-size: 1.15rem; }
 #toasts div::before { content: ''; flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--color); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } }
 
-main {
-  flex: 1;
-  overflow-y: auto;
-  display: grid;
-  grid-template-columns: minmax(220px, 280px) 1fr;
-  align-items: start;
-  gap: 16px;
-  padding-block: 16px;
-}
 h2 {
   display: flex;
   flex-wrap: wrap;
@@ -257,11 +265,27 @@ footer { position: relative; border-top: 1px solid var(--line); background: #0b0
 #octave { min-width: 2.2em; text-align: center; font-variant-numeric: tabular-nums; }
 #sustain[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #0b0b12; }
 .hint { color: var(--dim); font-size: 12px; }
-#midi { margin-left: auto; }
+/* A phone's: the panes' buttons, the navigator strip and the beat */
+.icon, #nav, #count, #rotate { display: none; }
+.icon { width: 44px; padding: 0; place-items: center; }
+.icon svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+.icon circle { fill: var(--panel); }
+.icon[aria-expanded=true] { background: var(--accent); border-color: var(--accent); color: #0b0b12; }
+.icon[aria-expanded=true] circle { fill: var(--accent); }
+#nav { position: relative; flex: 1; min-width: 60px; height: 30px; margin-inline: 6px; /* clear of the buttons, which touch screens snap nearby taps to */ touch-action: none; user-select: none; -webkit-user-select: none; }
+#nav svg { display: block; width: 100%; height: 100%; clip-path: inset(0 round 4px); }
+#nav .w { fill: #d6d6de; stroke: #0b0b10; stroke-width: 1; vector-effect: non-scaling-stroke; }
+#nav .w.c4 { fill: #b9c6ff; } /* middle C, to find your way */
+#nav .b { fill: #26262f; }
+#nav .box { position: absolute; inset-block: -2px; border: 2px solid var(--accent); border-radius: 5px; background: #8aa4ff2e; pointer-events: none; }
+#nav .box::before, #nav .box::after { content: ''; position: absolute; top: 50%; width: 5px; height: 14px; margin-top: -7px; border-radius: 3px; background: var(--accent); }
+#nav .box::before { left: -4px; } /* grips: drag an edge to resize */
+#nav .box::after { right: -4px; }
+#count { min-width: 3.4em; text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
 
 #keys {
   position: relative;
-  display: flex;
+  overflow: hidden;
   height: clamp(110px, 28dvh, 220px);
   margin: 0 max(var(--gutter), env(safe-area-inset-right)) 10px max(var(--gutter), env(safe-area-inset-left));
   touch-action: none;
@@ -269,6 +293,7 @@ footer { position: relative; border-top: 1px solid var(--line); background: #0b0
   -webkit-user-select: none;
   -webkit-touch-callout: none;
 }
+#keys .row { position: relative; display: flex; height: 100%; } /* the whole piano, slid and scaled to the window */
 .key {
   display: flex;
   flex-direction: column;
@@ -280,6 +305,8 @@ footer { position: relative; border-top: 1px solid var(--line); background: #0b0
 }
 .key.white {
   flex: 1;
+  min-width: 0; /* zoomed out, narrower than its label */
+  overflow: hidden;
   background: linear-gradient(#f4f4f7, #dcdce4);
   border: 1px solid #0b0b10;
   border-top: 0;
@@ -309,7 +336,7 @@ footer { position: relative; border-top: 1px solid var(--line); background: #0b0
 #resume {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: 6; /* over the panes, under the toasts */
   border: 0;
   border-radius: 0;
   background: #101016e6;
@@ -332,22 +359,117 @@ footer { position: relative; border-top: 1px solid var(--line); background: #0b0
   header, #transport { padding-block: 6px; }
   #progress, #beat { order: 1; }
   #progress { flex-basis: 70%; }
-  main { grid-template-columns: 1fr; padding-block: 12px; }
+  /* One column scrolling as a whole, the keys pinned to the bottom (and kept clear of Tab's focus) */
+  #app { grid-template: auto auto auto 1fr auto / minmax(0, 1fr); overflow-y: auto; scroll-padding-bottom: calc(clamp(110px, 28dvh, 220px) + 72px); }
+  #mixer, #synth { grid-column: 1; overflow: visible; padding-inline: max(var(--gutter), env(safe-area-inset-left)) max(var(--gutter), env(safe-area-inset-right)); }
+  #mixer { padding-bottom: 0; }
+  #synth { grid-row: 4; padding-top: 12px; }
+  footer { grid-row: 5; position: sticky; bottom: 0; }
+  #keys { margin-inline: max(4px, env(safe-area-inset-left)) max(4px, env(safe-area-inset-right)); margin-bottom: 6px; }
+}
+
+/* A narrow synth panel: in a narrow window, or a phone's pane */
+@media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
   #params { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   #algs { grid-template-columns: repeat(4, 1fr); }
   #params[data-engine=fm] #ops { display: flex; }
   fieldset.off { display: none; } /* one operator at a time */
   fieldset[data-op] { grid-column: 1 / -1; grid-template-columns: 1fr 1fr; column-gap: 16px; }
-  #keys { margin-inline: max(4px, env(safe-area-inset-left)) max(4px, env(safe-area-inset-right)); margin-bottom: 6px; }
 }
 
-/* A phone on its side: play mode, with the keys taking most of the height */
-@media (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
-  header { display: none; }
-  #transport { flex-wrap: nowrap; padding-block: 4px; }
-  #keys { height: 50dvh; }
+/* A phone, either way up: the keys fill the screen under a thin bar. Its outer buttons slide in the
+   synth (left) and the session (right) over the keys; the keys left uncovered still play. */
+@media (pointer: coarse) and (max-height: 500px), (pointer: coarse) and (max-width: 500px) {
+  :root {
+    --bar-h: calc(48px + env(safe-area-inset-top));
+    --synth-w: min(100vw, clamp(300px, 60vw, 560px));
+    --session-w: min(100vw, clamp(280px, 42vw, 400px));
+  }
+  #app { display: flex; flex-direction: column; }
+  footer { flex: 1; display: flex; flex-direction: column; position: relative; min-height: 0; padding-bottom: 0; border-top: 0; }
+  #kb-bar {
+    flex: none;
+    height: var(--bar-h);
+    padding-block: env(safe-area-inset-top) 0;
+    padding-inline: max(6px, env(safe-area-inset-left)) max(6px, env(safe-area-inset-right));
+    gap: 6px;
+    border-bottom: 1px solid var(--line);
+    touch-action: none; /* a pinch that misses the strip must not zoom the page */
+  }
+  #nav::before { content: ''; position: absolute; inset: -9px 0; } /* the strip takes touches the bar's whole height */
+  #oct-down, #octave, #oct-up, #progress, #beat { display: none; }
+  .icon { display: grid; }
+  #nav, #count { display: block; }
+  #sustain { padding-inline: 10px; }
+  #keys {
+    flex: 1;
+    height: auto;
+    margin: 4px max(4px, env(safe-area-inset-right)) max(4px, env(safe-area-inset-bottom)) max(4px, env(safe-area-inset-left));
+  }
+  #toasts { top: calc(var(--bar-h) + 6px); }
+
+  #synth, #session {
+    display: block;
+    position: fixed;
+    z-index: 5;
+    top: var(--bar-h);
+    bottom: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 12px;
+    background: var(--bg);
+    box-shadow: 0 0 32px #000c;
+    visibility: hidden; /* closed: out of reach of Tab and screen readers */
+    transition: transform 0.2s ease, visibility 0s 0.2s;
+  }
+  #synth {
+    left: 0;
+    width: var(--synth-w);
+    padding-left: max(12px, env(safe-area-inset-left));
+    border-right: 1px solid var(--line);
+    transform: translateX(-105%);
+  }
+  #session {
+    right: 0;
+    width: var(--session-w);
+    padding-right: max(12px, env(safe-area-inset-right));
+    border-left: 1px solid var(--line);
+    transform: translateX(105%);
+  }
+  #app[data-pane=synth] #synth, #app[data-pane=session] #session { visibility: visible; transform: none; transition: transform 0.2s ease; }
+  #session header, #session #transport { padding: 0 0 10px; margin-bottom: 10px; }
+  #mixer { padding: 0; overflow: visible; }
+}
+
+/* A phone on its side: the keys move out of the way of an open pane, so all the keys shown play */
+@media (pointer: coarse) and (max-height: 500px) and (orientation: landscape) {
+  #app[data-pane=synth] #keys { margin-left: var(--synth-w); }
+  #app[data-pane=session] #keys { margin-right: var(--session-w); }
+}
+
+/* A phone held upright suggests turning it */
+@media (pointer: coarse) and (max-width: 500px) and (orientation: portrait) {
+  #rotate {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    position: absolute;
+    z-index: 2;
+    top: calc(var(--bar-h) + 14px);
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: calc(100% - 24px);
+    padding: 6px 6px 6px 14px;
+    background: #23232e;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    box-shadow: 0 6px 24px #0008;
+  }
+  #rotate button { border: 0; background: none; padding: 4px 8px; }
+  body:has(#toasts div) #rotate { visibility: hidden; } /* a toast shows in its place for a moment */
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; }
+  *, *::before, *::after { animation: none !important; transition: none !important; }
 }

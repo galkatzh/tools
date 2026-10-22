@@ -26,23 +26,25 @@
   </form>
 
   <div id="app" hidden>
-    <header>
-      <h1>Jam</h1>
-      <span id="room-name"></span>
-      <button id="share">Invite</button>
-      <span id="status"></span>
-    </header>
+    <!-- On a phone, the session and the synth are side panes over the keys -->
+    <div id="session" class="pane">
+      <header>
+        <h1>Jam</h1>
+        <span id="room-name"></span>
+        <button id="share">Invite</button>
+        <span id="status"></span>
+      </header>
 
-    <section id="transport">
-      <label>BPM <input id="bpm" type="number" min="30" max="300" inputmode="numeric"></label>
-      <label>Beats <input id="bpi" type="number" min="1" max="64" inputmode="numeric" title="Beats per interval"></label>
-      <label><input id="metronome" type="checkbox" checked> Click</label>
-      <div id="progress" title="The interval: what you play now, the others hear during the next one"><div id="fill"></div></div>
-      <span id="beat"></span>
-    </section>
+      <section id="transport">
+        <label>BPM <input id="bpm" type="number" min="30" max="300" inputmode="numeric"></label>
+        <label>Beats <input id="bpi" type="number" min="1" max="64" inputmode="numeric" title="Beats per interval"></label>
+        <label><input id="metronome" type="checkbox" checked> Click</label>
+        <div id="progress" title="The interval: what you play now, the others hear during the next one"><div id="fill"></div></div>
+        <span id="beat" class="beat"></span>
+        <button id="midi">Connect MIDI</button>
+      </section>
 
-    <main>
-      <section>
+      <section id="mixer">
         <h2>Players</h2>
         <p id="unreachable" role="status" hidden></p>
         <div id="alone" hidden>
@@ -52,29 +54,41 @@
         </div>
         <ul id="players"></ul>
       </section>
-      <section>
-        <h2>
-          Sound
-          <span id="engine" class="segmented" role="radiogroup" aria-label="Engine">
-            <label><input type="radio" name="engine" value="sub"><span>Analog</span></label>
-            <label><input type="radio" name="engine" value="fm"><span>FM</span></label>
-          </span>
-          <select id="preset" aria-label="Preset"></select>
-        </h2>
-        <div id="params"></div>
-      </section>
-    </main>
+    </div>
+
+    <section id="synth" class="pane">
+      <h2>
+        Sound
+        <span id="engine" class="segmented" role="radiogroup" aria-label="Engine">
+          <label><input type="radio" name="engine" value="sub"><span>Analog</span></label>
+          <label><input type="radio" name="engine" value="fm"><span>FM</span></label>
+        </span>
+        <select id="preset" aria-label="Preset"></select>
+      </h2>
+      <div id="params"></div>
+    </section>
 
     <footer>
       <div id="kb-bar">
+        <button id="synth-toggle" class="icon" aria-controls="synth" aria-expanded="false" aria-label="Sound">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3v14M10 3v14M16 3v14"/><circle cx="4" cy="12" r="2"/><circle cx="10" cy="6" r="2"/><circle cx="16" cy="13" r="2"/></svg>
+        </button>
         <button id="oct-down" aria-label="Octave down">−</button>
         <span id="octave"></span>
         <button id="oct-up" aria-label="Octave up">+</button>
+        <div id="nav" role="img"></div>
+        <span id="count" class="beat" title="Beat of the interval"></span>
         <button id="sustain" aria-pressed="false" title="Sustain pedal (Space)">Sustain</button>
         <span class="hint">Play with A–' and W–P · Z/X: octave −/+ · Space: sustain</span>
-        <button id="midi">Connect MIDI</button>
+        <button id="session-toggle" class="icon" aria-controls="session" aria-expanded="false" aria-label="Session: tempo, players and invite">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="7" r="3"/><path d="M1.5 17c.5-3.5 2.6-5 5.5-5s5 1.5 5.5 5"/><circle cx="14.5" cy="7.5" r="2.3"/><path d="M14 12c2.6 0 4.1 1.4 4.5 4.5"/></svg>
+        </button>
       </div>
       <div id="keys"></div>
+      <p id="rotate">
+        <span aria-hidden="true">⟲</span> Turn your phone sideways for more keys
+        <button aria-label="Dismiss">✕</button>
+      </p>
       <button id="resume" hidden>Sound is paused. Tap to resume</button>
     </footer>
   </div>

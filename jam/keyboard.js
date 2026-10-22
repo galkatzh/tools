@@ -3,6 +3,10 @@
  * keys plays them), the computer keyboard, and Web MIDI devices. Presses are reference-counted
  * per note, so a note held by two sources at once only starts and stops once.
  *
+ * The on-screen keys are a whole piano seen through a window. It fits the width by default; a
+ * navigator strip, the piano in miniature with a box around the keys on screen, moves the window
+ * and sets the key size.
+ *
  * Computer keys use physical positions (KeyboardEvent.code), so they work on any layout:
  *   white  A S D F G H J K L ; '   →  C D E F G A B C D E F
  *   black  W E   T Y U   O P       →  C# D#  F# G# A#  C# D#
@@ -17,24 +21,40 @@ const KEYMAP = {
 const LABELS = Object.fromEntries(Object.entries(KEYMAP).map(([code, i]) =>
   [i, { Semicolon: ';', Quote: "'" }[code] ?? code.slice(3)]))
 const BLACK = new Set([1, 3, 6, 8, 10])
-const MIN_KEY_WIDTH = 34 // px of a white key; decides how many octaves fit
+const NOTES = Array.from({ length: 88 }, (_, i) => 21 + i) // A0 to C8
+const WHITE_NOTES = NOTES.filter(n => !BLACK.has(n % 12))
+const WHITES = WHITE_NOTES.length // 52
+/** How many white keys lie below note n: where its key starts (or, for a black key, its middle). */
+const whitesBelow = n => WHITE_NOTES.filter(w => w < n).length
+const noteName = n => `${['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'][n % 12]}${Math.floor(n / 12) - 1}`
+const MIN_WHITES = 5 // white keys on screen when zoomed in all the way
+const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x))
 // Fields that need letter keys; selects, sliders and checkboxes leave them to the piano
 const TYPING = 'input:not([type=range], [type=checkbox], [type=radio]), textarea'
 
 /**
- * @param {HTMLElement} el container for the keys
- * @param {HTMLElement} octaveLabel shows the octave the computer keys play
- * @param {{onNoteOn(note: number, vel: number): void, onNoteOff(note: number): void, onPedal(down: boolean): void}} handlers
+ * @param {{keys: HTMLElement, octave: HTMLElement, nav?: HTMLElement, view?: {zoom: number, center: number}}} els
+ *   the container for the keys, the label showing the octave the computer keys play, the container
+ *   for the navigator strip, and a view the strip set before (from onView)
+ * @param {{onNoteOn(note: number, vel: number): void, onNoteOff(note: number): void,
+ *   onPedal(down: boolean): void, onView?(view: {zoom: number, center: number}): void}} handlers
  */
-export function createKeyboard(el, octaveLabel, { onNoteOn, onNoteOff, onPedal }) {
+export function createKeyboard({ keys: el, octave: octaveLabel, nav, view }, { onNoteOn, onNoteOff, onPedal, onView }) {
   let octave = 4
   const held = new Map() // note → number of sources holding it
   const sustained = new Set() // notes let go of while the pedal is down, still sounding
   const pedal = new Set() // what holds the pedal down: 'space', 'latch', 'midi'
   const marks = new Map() // note → Map(player id → color) of other players' sounding notes
   const codes = new Map() // KeyboardEvent.code → note it started
-  const pointers = new Map() // pointerId → note under it (or null between keys)
+  const pointers = new Map() // pointerId → { note under it (or null between keys), x, y where it took it }
+  const miniKeys = new Map() // note → its key on the strip
   const base = () => 12 * (octave + 1) // MIDI note the A key plays
+  // The window, in white keys: `count` of them around `center`. Until the strip sets a key width
+  // (zoom, in px), as many keys fit as are comfortable to hit, around the computer keys.
+  let zoom = Number.isFinite(view?.zoom) && view.zoom > 0 ? view.zoom : null
+  let center = Number.isFinite(view?.center) ? view.center : 0, count = 0
+  const minKeyWidth = matchMedia('(pointer: coarse)').matches ? 48 : 34 // px of a white key when fitting
+  const fitting = () => zoom === null || !nav?.clientWidth // a chosen key size applies only where the strip is
 
   const press = (note, vel) => {
     const n = held.get(note) ?? 0
@@ -79,36 +99,140 @@ export function createKeyboard(el, octaveLabel, { onNoteOn, onNoteOff, onPedal }
     key.classList.toggle('sus', sustained.has(note))
     key.classList.toggle('mark', colors.length > 0)
     if (colors.length) key.style.setProperty('--mark', colors.at(-1))
+    // The strip shows the same, so notes off screen are seen too: yours first, else the latest player's
+    const mini = miniKeys.get(note)
+    if (mini) mini.style.fill = held.has(note) || sustained.has(note) ? 'var(--me)' : colors.at(-1) ?? ''
   }
 
-  /** Rebuilds the keys to fill the width, keeping the computer-key octaves roughly centered. */
-  function render() {
-    const whites = Math.max(7, Math.min(36, Math.floor(el.clientWidth / MIN_KEY_WIDTH)))
-    const spareOctaves = Math.max(0, Math.floor((whites - 11) / 7)) // 11 white keys are mapped
-    el.style.setProperty('--whites', whites)
-    el.replaceChildren()
-    for (let note = base() - 12 * Math.round(spareOctaves / 2), w = 0; w < whites; note++) {
-      const black = BLACK.has(note % 12)
-      const key = el.appendChild(document.createElement('div'))
-      key.className = `key ${black ? 'black' : 'white'}`
-      key.dataset.note = note
-      if (black) key.style.left = `${(w / whites) * 100}%`
-      else w++
-      const label = LABELS[note - base()]
-      if (label) key.insertAdjacentHTML('beforeend', `<span class="label">${label}</span>`)
-      if (note % 12 === 0) key.insertAdjacentHTML('beforeend', `<span class="note">C${note / 12 - 1}</span>`)
-      paint(note)
+  // Every key of the piano, once; place() slides and scales the row to show the window
+  const row = el.appendChild(document.createElement('div'))
+  row.className = 'row'
+  row.style.setProperty('--whites', WHITES)
+  for (const note of NOTES) {
+    const black = BLACK.has(note % 12)
+    const key = row.appendChild(document.createElement('div'))
+    key.className = `key ${black ? 'black' : 'white'}`
+    key.dataset.note = note
+    if (black) key.style.left = `${whitesBelow(note) / WHITES * 100}%`
+    if (note % 12 === 0) key.insertAdjacentHTML('beforeend', `<span class="note">C${note / 12 - 1}</span>`)
+  }
+  const blacks = [...row.querySelectorAll('.black')].map(key => [key, whitesBelow(+key.dataset.note)]) // [key, where its middle is]
+
+  /** Labels the keys the computer keys play. */
+  function label() {
+    for (const span of row.querySelectorAll('.label')) span.remove()
+    for (const [i, text] of Object.entries(LABELS)) {
+      row.querySelector(`[data-note="${base() + +i}"]`)?.insertAdjacentHTML('afterbegin', `<span class="label">${text}</span>`)
     }
     octaveLabel.textContent = `C${octave}`
   }
 
-  function shift(d) {
-    octave = Math.max(0, Math.min(8, octave + d))
-    render()
+  /** Shows the window: slides and scales the row of keys, and moves the strip's box to match. */
+  function place() {
+    const width = el.clientWidth
+    if (!width) return // not shown yet
+    const fitted = fitting()
+    let keyWidth
+    if (fitted) {
+      count = clamp(Math.floor(width / minKeyWidth), MIN_WHITES, 36)
+      keyWidth = width / count
+      const spareOctaves = Math.max(0, Math.floor((count - 11) / 7)) // 11 white keys are mapped
+      center = whitesBelow(base() - 12 * Math.round(spareOctaves / 2)) + count / 2
+    } else {
+      keyWidth = clamp(zoom, width / WHITES, width / MIN_WHITES)
+      count = width / keyWidth
+    }
+    center = clamp(center, count / 2, WHITES - count / 2)
+    const first = center - count / 2
+    row.style.width = `${WHITES * keyWidth}px`
+    row.style.transform = `translateX(${-first * keyWidth}px)`
+    // Fitted, the window ends on white keys' edges, which a black key mustn't straddle half shown
+    for (const [key, at] of blacks) key.hidden = fitted && (at <= first || at >= first + count)
+    if (!nav) return
+    box.style.left = `${first / WHITES * 100}%`
+    box.style.width = `${count / WHITES * 100}%`
+    nav.ariaLabel = `Keys shown: ${noteName(WHITE_NOTES[Math.round(first)])} to ${noteName(WHITE_NOTES[Math.round(first + count) - 1])}`
   }
 
-  // On-screen keys. Each pointer is captured by the keyboard, so it keeps reporting even when a
-  // re-render replaces the key under it, and the key under a moving finger is found by position.
+  function shift(d) {
+    if (octave + d < 1 || octave + d > 6) return // every computer key stays on the piano
+    octave += d
+    label()
+    if (!fitting()) center = whitesBelow(base()) + 5.5 // a chosen key size stays; the window centres on the computer keys
+    place()
+  }
+
+  // The navigator strip. Drag the box to move the window, drag its edges or pinch it to resize it
+  // (fewer keys on screen are bigger), or tap beside it to jump there. Positions are in white keys.
+  let box
+  if (nav) {
+    const rects = [...WHITE_NOTES, ...NOTES.filter(n => BLACK.has(n % 12))].map(n => BLACK.has(n % 12)
+      ? `<rect class="b" x="${whitesBelow(n) - 0.3}" width="0.6" height="0.6" data-note="${n}"/>`
+      : `<rect class="w${n === 60 ? ' c4' : ''}" x="${whitesBelow(n)}" width="1" height="1" data-note="${n}"/>`)
+    nav.innerHTML = `<svg viewBox="0 0 ${WHITES} 1" preserveAspectRatio="none">${rects.join('')}</svg><div class="box"></div>`
+    for (const rect of nav.querySelectorAll('rect')) miniKeys.set(+rect.dataset.note, rect)
+    box = nav.querySelector('.box')
+
+    const fingers = new Map() // pointerId → clientX
+    let gesture = null
+    const at = x => {
+      const r = nav.getBoundingClientRect()
+      return (x - r.left) / r.width * WHITES
+    }
+    /** Starts a gesture from the fingers now down; `fresh` when the first lands, deciding what it grabs. */
+    const begin = fresh => {
+      zoom ??= Math.max(el.clientWidth / count, minKeyWidth) // the strip sets the key size from now on, starting from the one shown
+      const [a, b] = [...fingers.values()].map(at)
+      const first = center - count / 2, last = first + count
+      // An edge can be grabbed from a fingertip outside it to `grip` inside it; a small box keeps its
+      // middle for moving it
+      const reach = 14 / nav.clientWidth * WHITES, grip = clamp(count / 2 - reach, 0, reach)
+      if (b !== undefined) gesture = { kind: 'pinch', span: Math.max(1, Math.abs(a - b)), mid: (a + b) / 2, count, center }
+      else if (fresh && a > first - reach && a < first + grip) gesture = { kind: 'resize', fixed: last, side: -1 }
+      else if (fresh && a > last - grip && a < last + reach) gesture = { kind: 'resize', fixed: first, side: 1 }
+      else {
+        if (fresh && (a < first || a > last)) center = a
+        gesture = { kind: 'pan', from: a, center }
+      }
+      place()
+    }
+    const move = () => {
+      const [a, b] = [...fingers.values()].map(at), g = gesture
+      if (g.kind === 'pinch') {
+        count = clamp(g.count * Math.abs(a - b) / g.span, MIN_WHITES, WHITES)
+        center = g.center + (a + b) / 2 - g.mid
+      } else if (g.kind === 'resize') {
+        count = clamp((a - g.fixed) * g.side, MIN_WHITES, g.side > 0 ? WHITES - g.fixed : g.fixed) // up to the piano's end
+        center = g.fixed + g.side * count / 2
+      } else center = g.center + a - g.from
+      if (g.kind !== 'pan') zoom = el.clientWidth / count // a pan keeps the key size, even while a pane caps it
+      place()
+    }
+    nav.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return
+      e.preventDefault()
+      nav.setPointerCapture(e.pointerId)
+      fingers.set(e.pointerId, e.clientX)
+      begin(fingers.size === 1)
+    })
+    nav.addEventListener('pointermove', e => {
+      if (!fingers.has(e.pointerId)) return
+      fingers.set(e.pointerId, e.clientX)
+      move()
+    })
+    const lift = e => {
+      if (!fingers.delete(e.pointerId)) return
+      if (fingers.size) begin(false) // the fingers left carry on
+      else onView?.({ zoom, center })
+    }
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) nav.addEventListener(type, lift)
+  }
+
+  label()
+  place()
+
+  // On-screen keys. Each pointer is captured by the keyboard, so it keeps reporting wherever it
+  // goes, and the key under a moving finger is found by position.
   const keyAt = e => {
     const key = document.elementFromPoint(e.clientX, e.clientY)?.closest('.key')
     return el.contains(key) ? key : null
@@ -122,24 +246,25 @@ export function createKeyboard(el, octaveLabel, { onNoteOn, onNoteOff, onPedal }
     if (!key || e.button !== 0) return
     e.preventDefault()
     el.setPointerCapture(e.pointerId)
-    pointers.set(e.pointerId, +key.dataset.note)
+    pointers.set(e.pointerId, { note: +key.dataset.note, x: e.clientX, y: e.clientY })
     press(+key.dataset.note, velocity(e, key))
   })
   el.addEventListener('pointermove', e => {
-    if (!pointers.has(e.pointerId)) return
+    const p = pointers.get(e.pointerId)
+    // A resting finger trembles, and the strip may slide the keys under it: only moving on changes notes
+    if (!p || Math.hypot(e.clientX - p.x, e.clientY - p.y) < 6) return
     const key = keyAt(e)
     const note = key ? +key.dataset.note : null
-    const prev = pointers.get(e.pointerId)
-    if (note === prev) return
-    if (prev !== null) release(prev)
-    pointers.set(e.pointerId, note)
+    if (note === p.note) return Object.assign(p, { x: e.clientX, y: e.clientY })
+    if (p.note !== null) release(p.note)
+    pointers.set(e.pointerId, { note, x: e.clientX, y: e.clientY })
     if (key) press(note, velocity(e, key))
   })
   const lift = e => {
-    if (!pointers.has(e.pointerId)) return
-    const note = pointers.get(e.pointerId)
+    const p = pointers.get(e.pointerId)
+    if (!p) return
     pointers.delete(e.pointerId)
-    if (note !== null) release(note)
+    if (p.note !== null) release(p.note)
   }
   el.addEventListener('pointerup', lift)
   el.addEventListener('pointercancel', lift)
@@ -186,12 +311,7 @@ export function createKeyboard(el, octaveLabel, { onNoteOn, onNoteOff, onPedal }
     releaseKeys() // key-ups are lost while the window is unfocused
   })
 
-  let width
-  new ResizeObserver(() => {
-    if (el.clientWidth === width) return
-    width = el.clientWidth
-    render()
-  }).observe(el)
+  new ResizeObserver(place).observe(el)
 
   return {
     shift,
@@ -205,7 +325,7 @@ export function createKeyboard(el, octaveLabel, { onNoteOn, onNoteOff, onPedal }
      */
     releaseAll() {
       releaseKeys()
-      pointers.forEach(note => note !== null && release(note))
+      pointers.forEach(p => p.note !== null && release(p.note))
       pointers.clear()
       setPedal('latch', false)
     },

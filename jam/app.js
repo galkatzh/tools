@@ -154,12 +154,13 @@ function join(name, roomId) {
   me.synth.setPatch(load('patch'))
   // While you are alone, your part comes back an interval later, as the others will hear it
   echo = { on: false, color: `hsl(${me.hue} 35% 72%)`, li: me.li, synth: new Synth(ctx, me.gain, me.synth.patch, me.wet) }
-  kb = createKeyboard($('#keys'), $('#octave'), {
+  $('#app').style.setProperty('--me', me.color)
+  kb = createKeyboard({ keys: $('#keys'), octave: $('#octave'), nav: $('#nav'), view: load('view') }, {
     onNoteOn: (note, vel) => { me.synth.noteOn(note, vel); pulse(me); ribbon(note, me.color, now()); send(['on', note, vel]) },
     onNoteOff: note => { me.synth.noteOff(note); send(['off', note]) },
     onPedal: down => $('#sustain').setAttribute('aria-pressed', down),
+    onView: view => save('view', view),
   })
-  $('#keys').style.setProperty('--me', me.color)
   buildSynthUI()
 
   const room = joinRoom({ appId: APP_ID, maxReceiveBytes: 1 << 16 }, roomId, { onJoinError }) // real messages are ~2 KB
@@ -468,7 +469,7 @@ function showSession() {
   for (const [input, value] of [[$('#bpm'), last.bpm], [$('#bpi'), last.bpi]]) {
     if (document.activeElement !== input) input.value = value
   }
-  $('#transport').classList.toggle('pending', last !== cur)
+  $('#app').classList.toggle('pending', last !== cur)
   $('#progress').style.setProperty('--bpi', cur.bpi)
   $('#progress').style.setProperty('--group', [4, 3].find(g => cur.bpi % g === 0 && cur.bpi > g) ?? cur.bpi)
 }
@@ -586,7 +587,7 @@ function click(t, downbeat) {
 const metronome = $('#metronome')
 const progress = $('#progress')
 const fill = $('#fill')
-const beatLabel = $('#beat')
+const beatLabels = $$('.beat') // beside the interval bar, and on a phone's bar
 let shown, beatKey
 
 /** Animates the interval bar with what is heard (so behind the shared clock by the output latency). */
@@ -602,8 +603,11 @@ function draw() {
   const beat = Math.min(s.bpi, Math.floor(o * s.bpm / 60000) + 1)
   if (`${n}.${beat}` === beatKey) return
   beatKey = `${n}.${beat}`
-  beatLabel.textContent = `${beat}/${s.bpi}`
-  if (beat === 1 && !reducedMotion.matches) progress.animate([{ filter: 'brightness(1.8)' }, { filter: 'none' }], 350)
+  for (const label of beatLabels) label.textContent = `${beat}/${s.bpi}`
+  if (beat === 1 && !reducedMotion.matches) {
+    progress.animate([{ filter: 'brightness(1.8)' }, { filter: 'none' }], 350)
+    $('#count').animate([{ transform: 'scale(1.3)', color: 'var(--accent)' }, { transform: 'none' }], 350)
+  }
 }
 
 /** Marks a note heard at shared time T on the interval bar, in its player's color, fading over an interval. */
@@ -795,6 +799,39 @@ function onPress(button, fn) {
 onPress($('#oct-down'), () => kb.shift(-1))
 onPress($('#oct-up'), () => kb.shift(1))
 onPress($('#sustain'), () => kb.latch())
+
+/** Opens a side pane (on a phone), or closes it if it is the one open: one at a time. */
+function togglePane(name) {
+  const open = $('#app').dataset.pane === name ? '' : name
+  $('#app').dataset.pane = open
+  for (const button of $$('#kb-bar [aria-controls]')) button.ariaExpanded = button.getAttribute('aria-controls') === open
+}
+onPress($('#synth-toggle'), () => togglePane('synth'))
+onPress($('#session-toggle'), () => togglePane('session'))
+addEventListener('keydown', e => e.key === 'Escape' && $('#app').dataset.pane && togglePane(''))
+
+// Chrome on Android moves a slider to where a touch lands, even when the touch goes on to scroll its
+// pane (and is cancelled): put the slider back, and the preset it turned Custom
+for (const panel of [$('#params'), $('#players')]) {
+  let was = null // the slider a touch landed on: { input, value, preset }
+  panel.addEventListener('pointerdown', e => {
+    was = e.target.type === 'range' ? { input: e.target, value: e.target.value, preset: $('#preset').value } : null
+  })
+  panel.addEventListener('pointercancel', e => {
+    if (e.target !== was?.input) return
+    was.input.value = was.value
+    was.input.dispatchEvent(new Event('input'))
+    if ($('#preset').value === was.preset) return
+    $('#preset').value = was.preset
+    save('preset', was.preset)
+  })
+}
+
+$('#rotate').hidden = load('rotated') ?? false // a phone held upright suggests turning it, until dismissed
+$('#rotate button').onclick = () => {
+  $('#rotate').hidden = true
+  save('rotated', true)
+}
 
 $('#midi').hidden = !navigator.requestMIDIAccess
 $('#midi').onclick = async () => {
