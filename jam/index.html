@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#101016">
+  <meta name="description" content="Jam with friends in real time, NINJAM style: everyone plays along to everyone else's previous interval. Peer-to-peer MIDI, with an analog-style and an FM synth for each player.">
+  <title>Jam</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <div id="toasts" aria-live="polite"></div>
+
+  <form id="lobby">
+    <h1>Jam</h1>
+    <p>Play music together over the internet, <a href="https://www.cockos.com/ninjam/">NINJAM</a> style.</p>
+    <p class="dim">Time is split into intervals. While you play, you hear what everyone else played in the
+      <em>previous</em> interval, and they hear you one interval later, so lag never knocks anyone off the beat.
+      Only notes travel; every player brings their own synth.</p>
+    <label>Your name <input id="name" maxlength="24" autocomplete="nickname" placeholder="Player"></label>
+    <label>Room <input id="room" maxlength="48" required autocapitalize="off" autocomplete="off" spellcheck="false"></label>
+    <button>Join the jam</button>
+    <p class="dim small">Everyone who opens the same room joins the same jam. Players connect peer-to-peer over WebRTC.</p>
+  </form>
+
+  <div id="app" hidden>
+    <header>
+      <h1>Jam</h1>
+      <span id="room-name"></span>
+      <button id="share">Invite</button>
+      <span id="status"></span>
+    </header>
+
+    <section id="transport">
+      <label>BPM <input id="bpm" type="number" min="30" max="300" inputmode="numeric"></label>
+      <label>Beats <input id="bpi" type="number" min="1" max="64" inputmode="numeric" title="Beats per interval"></label>
+      <label><input id="metronome" type="checkbox" checked> Click</label>
+      <div id="progress" title="The interval: what you play now, the others hear during the next one"><div id="fill"></div></div>
+      <span id="beat"></span>
+    </section>
+
+    <main>
+      <section>
+        <h2>Players</h2>
+        <div id="alone" hidden>
+          <p><strong>Just you so far.</strong> Send a friend this page's link and they'll join you here.</p>
+          <button id="copy">Copy invite link</button>
+          <p class="dim small">Meanwhile, what you play comes back one interval later, just as the others will hear it.</p>
+        </div>
+        <ul id="players"></ul>
+      </section>
+      <section>
+        <h2>
+          Sound
+          <span id="engine" class="segmented" role="radiogroup" aria-label="Engine">
+            <label><input type="radio" name="engine" value="sub"><span>Analog</span></label>
+            <label><input type="radio" name="engine" value="fm"><span>FM</span></label>
+          </span>
+          <select id="preset" aria-label="Preset"></select>
+        </h2>
+        <div id="params"></div>
+      </section>
+    </main>
+
+    <footer>
+      <div id="kb-bar">
+        <button id="oct-down" aria-label="Octave down">−</button>
+        <span id="octave"></span>
+        <button id="oct-up" aria-label="Octave up">+</button>
+        <button id="sustain" aria-pressed="false" title="Sustain pedal (Space)">Sustain</button>
+        <span class="hint">Play with A–' and W–P · X/Z: octave −/+ · Space: sustain</span>
+        <button id="midi">Connect MIDI</button>
+      </div>
+      <div id="keys"></div>
+      <button id="resume" hidden>Sound is paused. Tap to resume</button>
+    </footer>
+  </div>
+</body>
+</html>

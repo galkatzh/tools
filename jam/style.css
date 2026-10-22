@@ -1,0 +1,344 @@
+:root {
+  --bg: #101016;
+  --panel: #191922;
+  --line: #2b2b38;
+  --text: #e9e9f1;
+  --dim: #8b8ba0;
+  --accent: #8aa4ff;
+  --danger: #ff7a7a;
+  --radius: 10px;
+  --gutter: 16px;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; }
+[hidden] { display: none !important; }
+
+/* No pull-to-refresh, rubber-banding or font inflation getting in the way of playing */
+html { overscroll-behavior: none; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+
+body {
+  font: 14px/1.45 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-tap-highlight-color: transparent;
+}
+
+a { color: var(--accent); }
+button, input, select { font: inherit; color: inherit; touch-action: manipulation; }
+button, select, input[type=number], #lobby input {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 5px 10px;
+}
+button { cursor: pointer; }
+@media (hover: hover) { /* touch screens would keep a tapped control lit */
+  button:hover, select:hover { border-color: var(--accent); }
+  #algs label:hover { border-color: var(--line); }
+}
+input[type=range] { width: 100%; margin: 0; accent-color: var(--accent); }
+.dim { color: var(--dim); }
+.small { font-size: 12px; }
+
+/* ── Lobby ── */
+
+#lobby { max-width: 440px; margin: 8vh auto; padding: 0 16px; display: grid; gap: 14px; }
+#lobby h1 { font-size: 2.6rem; letter-spacing: -0.02em; }
+#lobby label { display: grid; gap: 4px; color: var(--dim); }
+#lobby input { padding: 10px 12px; font-size: 16px; } /* 16px keeps iOS from zooming in on focus */
+#lobby button { background: var(--accent); border: 0; color: #0b0b12; font-weight: 600; padding: 12px; }
+
+/* ── App: header and transport on top, scrolling panels, keyboard pinned to the bottom ── */
+
+#app { height: 100dvh; display: flex; flex-direction: column; }
+
+header, #transport, main, #kb-bar {
+  /* clear of the notch and rounded corners in landscape */
+  padding-left: max(var(--gutter), env(safe-area-inset-left));
+  padding-right: max(var(--gutter), env(safe-area-inset-right));
+}
+header, #transport {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding-block: 8px;
+  border-bottom: 1px solid var(--line);
+}
+header h1 { font-size: 1.15rem; }
+#room-name { font-family: ui-monospace, monospace; color: var(--accent); overflow-wrap: anywhere; }
+#status { margin-left: auto; color: var(--dim); font-size: 13px; white-space: nowrap; }
+
+#transport label { display: flex; align-items: center; gap: 6px; color: var(--dim); }
+#transport input[type=number] { width: 4.2em; padding: 4px 6px; }
+/* A tempo change waiting for its downbeat */
+#transport.pending input[type=number] { border-color: var(--accent); animation: pending 0.8s ease-in-out infinite alternate; }
+@keyframes pending { to { border-color: var(--line); } }
+
+#progress {
+  --step: calc(100% / var(--bpi, 16));
+  flex: 1;
+  min-width: 140px;
+  height: 22px;
+  position: relative;
+  overflow: hidden;
+  border-radius: 4px;
+  /* a tick every beat, a stronger one every bar */
+  background:
+    repeating-linear-gradient(to right, transparent 0 calc(var(--step) * var(--group, 4) - 2px), #4a4a5e 0 calc(var(--step) * var(--group, 4))),
+    repeating-linear-gradient(to right, transparent 0 calc(var(--step) - 1px), var(--line) 0 var(--step)) var(--panel);
+}
+#fill {
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  opacity: 0.35;
+  transform-origin: left;
+  transform: scaleX(0);
+}
+/* Notes as they are heard, in their player's color */
+#progress i {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+#beat { min-width: 3.2em; text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
+
+#toasts {
+  position: fixed;
+  z-index: 10;
+  top: max(10px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  pointer-events: none;
+}
+#toasts div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  background: #23232e;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  box-shadow: 0 6px 24px #0008;
+  animation: toast-in 0.2s ease-out;
+}
+#toasts div::before { content: ''; flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--color); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } }
+
+main {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) 1fr;
+  align-items: start;
+  gap: 16px;
+  padding-block: 16px;
+}
+h2 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+h2 select { text-transform: none; letter-spacing: 0; color: var(--text); }
+
+/* ── Players (mixer) ── */
+
+#alone {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 12px;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius);
+}
+#copy { justify-self: start; background: var(--accent); border: 0; color: #0b0b12; font-weight: 600; min-width: 11em; }
+
+#players { list-style: none; padding: 0; display: grid; gap: 6px; }
+#players li {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas: "dot name mute" "vol vol vol";
+  align-items: center;
+  gap: 6px 8px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border-radius: var(--radius);
+}
+.dot { grid-area: dot; width: 12px; height: 12px; border-radius: 50%; background: var(--color); }
+.name { grid-area: name; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mute { grid-area: mute; padding: 2px 8px; font-size: 12px; }
+.mute.on { background: #b3363a; border-color: #b3363a; }
+#players input { grid-area: vol; accent-color: var(--color); }
+
+/* ── Sound ── */
+
+.segmented { display: inline-flex; padding: 2px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.segmented label { position: relative; }
+.segmented input, #algs input { position: absolute; opacity: 0; pointer-events: none; }
+.segmented span {
+  display: block;
+  padding: 3px 12px;
+  border-radius: 6px;
+  color: var(--dim);
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+.segmented input:checked + span { background: var(--accent); color: #0b0b12; font-weight: 600; }
+.segmented input:focus-visible + span, #algs input:focus-visible + svg { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+#params { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+/* Only the selected engine's controls show */
+#params[data-engine=sub] [data-engine=fm], #params[data-engine=fm] [data-engine=sub] { display: none; }
+fieldset {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 6px 12px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+legend { padding: 0 6px; color: var(--accent); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+fieldset[data-op] legend:not(.carrier) { color: var(--dim); } /* modulators: you don't hear them directly */
+fieldset label { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 12px; color: var(--dim); }
+fieldset label > input { grid-column: 1 / -1; }
+fieldset select { padding: 3px 6px; min-width: 0; }
+.value { color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* FM: the algorithm picker spans the panel, its sliders beside it */
+fieldset:has(#algs) { grid-column: 1 / -1; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px 16px; }
+#algs { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+#algs label { display: grid; grid-template-columns: 1fr; justify-items: center; gap: 2px; padding: 4px 2px; border: 1px solid transparent; border-radius: 8px; cursor: pointer; }
+#algs label:has(:checked) { border-color: var(--accent); background: #8aa4ff14; color: var(--text); }
+#algs svg { width: 100%; max-width: 56px; overflow: visible; }
+#algs line, #algs path { stroke: var(--dim); stroke-width: 1.5; fill: none; }
+#algs rect { fill: var(--bg); stroke: var(--dim); stroke-width: 1.5; }
+#algs rect.carrier { fill: var(--accent); stroke: var(--accent); }
+#algs text { font: 600 8px system-ui, sans-serif; text-anchor: middle; fill: var(--text); }
+#algs rect.carrier + text { fill: #0b0b12; }
+#algs span { font-size: 11px; text-align: center; }
+
+#ops { display: none; grid-column: 1 / -1; gap: 6px; }
+#ops button { flex: 1; padding: 6px 4px; color: var(--dim); white-space: nowrap; }
+#ops button.carrier { color: var(--accent); }
+#ops button[aria-pressed=true] { border-color: var(--accent); background: #8aa4ff1f; color: var(--text); }
+
+/* ── Keyboard ── */
+
+footer { position: relative; border-top: 1px solid var(--line); background: #0b0b10; padding-bottom: env(safe-area-inset-bottom); }
+#kb-bar { display: flex; align-items: center; gap: 8px; padding-block: 6px; }
+#oct-down, #oct-up { width: 36px; padding: 4px 0; }
+#octave { min-width: 2.2em; text-align: center; font-variant-numeric: tabular-nums; }
+#sustain[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #0b0b12; }
+.hint { color: var(--dim); font-size: 12px; }
+#midi { margin-left: auto; }
+
+#keys {
+  position: relative;
+  display: flex;
+  height: clamp(110px, 28dvh, 220px);
+  margin: 0 max(var(--gutter), env(safe-area-inset-right)) 10px max(var(--gutter), env(safe-area-inset-left));
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.key {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 2px;
+  padding-bottom: 6px;
+  font-size: 11px;
+}
+.key.white {
+  flex: 1;
+  background: linear-gradient(#f4f4f7, #dcdce4);
+  border: 1px solid #0b0b10;
+  border-top: 0;
+  border-radius: 0 0 6px 6px;
+  color: #555;
+}
+.key.black {
+  position: absolute;
+  top: 0;
+  z-index: 1;
+  width: calc(100% / var(--whites) * 0.6);
+  height: 60%;
+  transform: translateX(-50%);
+  background: linear-gradient(#3a3a46, #15151b);
+  border-radius: 0 0 4px 4px;
+  color: #999;
+}
+/* Other players' notes tint the key in their color; your own press uses yours, and a note
+   only the pedal holds a lighter shade of it */
+.key.white.mark { background: color-mix(in srgb, var(--mark) 55%, #f4f4f7); }
+.key.black.mark { background: var(--mark); }
+.key.white.sus { background: color-mix(in srgb, var(--me) 40%, #f4f4f7); }
+.key.black.sus { background: color-mix(in srgb, var(--me) 60%, #15151b); }
+.key.down { background: var(--me) !important; }
+.key .note { color: #555; font-weight: 600; }
+
+#resume {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border: 0;
+  border-radius: 0;
+  background: #101016e6;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+@media (hover: none) {
+  .key .label, .hint { display: none; } /* no physical keyboard to label */
+}
+
+@media (pointer: coarse) {
+  select, input[type=number] { font-size: 16px; } /* iOS zooms in on smaller fields */
+  #kb-bar button { min-height: 40px; }
+}
+
+@media (max-width: 700px) {
+  :root { --gutter: 12px; }
+  header, #transport { padding-block: 6px; }
+  #progress, #beat { order: 1; }
+  #progress { flex-basis: 70%; }
+  main { grid-template-columns: 1fr; padding-block: 12px; }
+  #params { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  #algs { grid-template-columns: repeat(4, 1fr); }
+  #params[data-engine=fm] #ops { display: flex; }
+  fieldset.off { display: none; } /* one operator at a time */
+  fieldset[data-op] { grid-column: 1 / -1; grid-template-columns: 1fr 1fr; column-gap: 16px; }
+  #keys { margin-inline: max(4px, env(safe-area-inset-left)) max(4px, env(safe-area-inset-right)); margin-bottom: 6px; }
+}
+
+/* A phone on its side: play mode, with the keys taking most of the height */
+@media (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
+  header { display: none; }
+  #transport { flex-wrap: nowrap; padding-block: 4px; }
+  #keys { height: 50dvh; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; }
+}
