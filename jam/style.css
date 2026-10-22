@@ -167,6 +167,8 @@ h2 select { text-transform: none; letter-spacing: 0; color: var(--text); }
   border: 1px dashed var(--accent);
   border-radius: var(--radius);
 }
+#alone label { display: flex; align-items: center; gap: 8px; }
+#alone input { flex: none; margin: 0; accent-color: var(--accent); }
 #copy { justify-self: start; background: var(--accent); border: 0; color: #0b0b12; font-weight: 600; min-width: 11em; }
 
 #players { list-style: none; padding: 0; display: grid; gap: 6px; }

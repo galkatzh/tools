@@ -47,7 +47,7 @@
         <div id="alone" hidden>
           <p><strong>Just you so far.</strong> Send a friend this page's link and they'll join you here.</p>
           <button id="copy">Copy invite link</button>
-          <p class="dim small">Meanwhile, what you play comes back one interval later, just as the others will hear it.</p>
+          <label class="dim small"><input id="echo" type="checkbox"> Echo: hear what you play again one interval later, as the others will</label>
         </div>
         <ul id="players"></ul>
       </section>
@@ -70,7 +70,7 @@
         <span id="octave"></span>
         <button id="oct-up" aria-label="Octave up">+</button>
         <button id="sustain" aria-pressed="false" title="Sustain pedal (Space)">Sustain</button>
-        <span class="hint">Play with A–' and W–P · X/Z: octave −/+ · Space: sustain</span>
+        <span class="hint">Play with A–' and W–P · Z/X: octave −/+ · Space: sustain</span>
         <button id="midi">Connect MIDI</button>
       </div>
       <div id="keys"></div>

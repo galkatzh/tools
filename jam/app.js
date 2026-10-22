@@ -300,14 +300,15 @@ function onHello(msg, { peerId }) {
   updateStatus()
 }
 
-/** Shows how many are here; alone, you get the invite card and your own echo. */
+/** Shows how many are here; alone, you get the invite card and, unless switched off, your own echo. */
 function updateStatus() {
   const alone = players.size === 1
   $('#status').textContent = `${players.size} player${alone ? '' : 's'}`
   $('#alone').hidden = !alone
-  if (echo.on === alone) return
-  echo.on = alone
-  if (alone) return echo.synth.setPatch(me.synth.patch)
+  const on = alone && $('#echo').checked
+  if (echo.on === on) return
+  echo.on = on
+  if (on) return echo.synth.setPatch(me.synth.patch)
   echo.synth.allOff()
   queue = queue.filter(q => q.id !== 'echo')
   kb.unmarkAll('echo')
@@ -794,6 +795,11 @@ function copyLink(button) {
   })
 }
 $('#copy').onclick = () => copyLink($('#copy'))
+$('#echo').checked = load('echo') ?? true
+$('#echo').onchange = () => {
+  save('echo', $('#echo').checked)
+  updateStatus()
+}
 $('#share').onclick = () => navigator.share
   ? navigator.share({ title: 'Jam', text: 'Come jam with me', url: location.href }).catch(err => {
     console.error('not shared', err)

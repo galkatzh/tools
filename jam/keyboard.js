@@ -6,7 +6,7 @@
  * Computer keys use physical positions (KeyboardEvent.code), so they work on any layout:
  *   white  A S D F G H J K L ; '   →  C D E F G A B C D E F
  *   black  W E   T Y U   O P       →  C# D#  F# G# A#  C# D#
- *   X / Z  octave down / up
+ *   Z / X  octave down / up
  *   Space  sustain pedal (as are MIDI CC 64 and the on-screen latch)
  */
 
@@ -162,7 +162,7 @@ export function createKeyboard(el, octaveLabel, { onNoteOn, onNoteOff, onPedal }
     if (!(e.code in KEYMAP) && e.code !== 'KeyX' && e.code !== 'KeyZ') return
     e.preventDefault()
     if (e.repeat) return
-    if (e.code === 'KeyX' || e.code === 'KeyZ') return shift(e.code === 'KeyZ' ? 1 : -1)
+    if (e.code === 'KeyX' || e.code === 'KeyZ') return shift(e.code === 'KeyX' ? 1 : -1)
     if (codes.has(e.code)) return
     const note = base() + KEYMAP[e.code]
     codes.set(e.code, note)
