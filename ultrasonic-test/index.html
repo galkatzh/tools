@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#101016">
+  <meta name="description" content="Test whether two phones can hear each other at 15–21 kHz from a web page: one plays a ladder of near-ultrasonic tones, the other measures how clearly each one arrives.">
+  <title>Ultrasonic test</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <div id="toasts" aria-live="polite"></div>
+
+  <main>
+    <h1>Ultrasonic test</h1>
+    <p class="dim">Can two phones hear each other above 15 kHz from a web page? Open this page on both,
+      turn the media volume up, tap <b>Send</b> on one and <b>Listen</b> on the other, and hold both still.
+      Send and Listen together on one phone test its own speaker against its own mic.</p>
+
+    <section>
+      <button id="send" aria-pressed="false">Send</button>
+      <label>Volume <input id="volume" type="range" min="0" max="1" step="0.01" value="0.7"></label>
+      <label class="check"><input id="reference" type="checkbox" checked> Start each round with an audible 3 kHz tone</label>
+      <p class="dim small">Plays 15 to 21 kHz in 0.5 kHz steps, 0.35 s each, over and over. <span id="now"></span></p>
+    </section>
+
+    <section>
+      <button id="listen" aria-pressed="false">Listen</button>
+      <label class="check"><input id="processing" type="checkbox"> Voice processing on, as in a call</label>
+
+      <div id="results" hidden>
+        <dl id="settings"></dl>
+        <canvas id="waterfall"></canvas>
+        <div id="axis"></div>
+        <p class="dim small">Frequency in kHz, newest at the top; the blue bar marks the test tones.
+          A dark stretch on the right means the mic path cuts those frequencies off.</p>
+        <ol id="tones"></ol>
+        <p class="dim small">How far each tone rose above the noise around it, at its best over the last round:
+          25 dB or more is clear, 15 to 25 faint, under 15 not heard (noise alone reaches about 12).</p>
+        <button id="copy">Copy results</button>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
