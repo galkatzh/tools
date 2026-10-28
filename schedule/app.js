@@ -25,7 +25,7 @@ const KIND = 30827; // unregistered addressable kind (30000–39999) for this ap
 const EXPIRE = [0, 1, 7, 30]; // auto-delete options: days after the last time (0 = never)
 const MIN = 60e3;
 const HH = 48; // calendar pixels per hour (exported to CSS as --hh)
-const STORE = 'schedule:', NAME = 'schedule.name'; // localStorage: one entry per poll opened; last name used
+const STORE = 'schedule:', NAME = 'schedule.name', BUSY = 'schedule.busy'; // localStorage: one entry per poll opened; last name used; imported calendars
 const NEXT = { '': 'y', y: 'm', m: 'n', n: 'y' }; // what a tap on an answer turns it into
 const MARK = { '': '', y: '✓', m: '(✓)', n: '✗' };
 const ID = /^\w{1,16}$/;
@@ -81,7 +81,7 @@ function toast(msg, isError) {
   t.textContent = msg;
   t.className = `toast show${isError ? ' error' : ''}`;
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => (t.className = 'toast'), isError ? 8000 : 2500);
+  toast.timer = setTimeout(() => (t.className = 'toast'), isError ? 8000 : Math.max(2500, msg.length * 50));
 }
 addEventListener('error', (e) => { console.error(e.error ?? e.message); toast(`Error: ${e.message}`, true); });
 addEventListener('unhandledrejection', (e) => { console.error(e.reason); toast(`Error: ${e.reason?.message ?? e.reason}`, true); });
@@ -135,6 +135,11 @@ let P = null;       // the open poll, see initPoll
 let draft = null;   // poll being created or edited: {title, notes, tz, slots: [{id, s, e}], final, expire}
 let view = dayOf(Date.now()); // first day the calendar shows
 let drag = null;    // calendar gesture in progress (editor)
+let cals, busy;     // calendars imported in this browser: [{name, at, busy: [{s, e, t}]}] (never published); all their busy times
+const setCals = (c) => { cals = c; busy = c.flatMap((x) => x.busy); };
+const clashes = (slot) => busy.filter((b) => b.s < slot.e && b.e > slot.s);
+const away = (day) => busy.filter((b) => b.s <= day && b.e >= dayOf(shift(day, 1))); // busy the whole day: vacations, trips
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /** Set P to the poll a link token names (format in the header). */
 async function initPoll(token) {
@@ -161,6 +166,7 @@ function subscribe(p) {
       if (!p.poll) p.error = 'This poll wasn’t found on any reachable relay. It may have expired, the link may be incomplete, or the relays dropped it.';
       heal(p);
       syncAnswerExpiry(p);
+      markClashes(p);
       render();
     },
     onclose: (reasons) => { // only once every relay has closed: nothing is reachable
@@ -198,6 +204,7 @@ async function receive(p, ev) {
     clearTimeout(p.expTimer); // drop the poll from view when it expires (setTimeout can't wait past ~24.8 days)
     if (p.exp && p.exp * 1000 - Date.now() < 2 ** 31 - 1) p.expTimer = setTimeout(() => expire(p), p.exp * 1000 - Date.now());
     syncAnswerExpiry(p);
+    markClashes(p); // the organizer may have added times
   } else {
     p.votes.set(ev.pubkey, data);
     if (ev.pubkey === p.me && !p.dirty) { // our saved answers (from this or another device)
@@ -408,34 +415,57 @@ function renderCal() {
     Object.assign(weekBtn.dataset, { src: srcWeek, to: week });
   }
   const head = (d, src = copyFrom(d, dayOf, 1)) => `<div class="dh${d === today ? ' today' : ''}">${fHead.format(d)}${Number.isFinite(src)
-    ? `<button class="copy" data-src="${src}" data-to="${d}" data-span="1" title="Copy the times of ${fDay.format(src)}">⧉ ${fHead.format(src)}</button>` : ''}</div>`;
+    ? `<button class="copy" data-src="${src}" data-to="${d}" data-span="1" title="Copy the times of ${fDay.format(src)}">⧉ ${fHead.format(src)}</button>` : ''}${
+    mode === 'poll' ? dayNo(d) : ''}${awayNote(d)}</div>`;
   let html = `<div class="cal-grid" style="--days:${n}"><div class="corner"></div>${cols.map((d) => head(d)).join('')}`
     + `<div class="gutter">${Array.from({ length: 23 }, (_, h) => `<span style="top:${(h + 1) * HH}px">${fHour.format(new Date(view).setHours(h + 1))}</span>`).join('')}</div>`;
   for (const day of cols) {
     const next = dayOf(shift(day, 1));
     // a slot crossing midnight (possible in another time zone) shows as one segment per day
     const segs = all.filter((s) => s.s < next && s.e > day).map((s) => ({ slot: s, s: Math.max(s.s, day), e: Math.min(s.e, next) }));
+    // our own busy times: a whole busy day shades the column (named in the header), the rest are blocks
+    const whole = away(day), mine = busy.filter((b) => b.s < next && b.e > day && !whole.includes(b))
+      .map((b) => ({ t: b.t, s: Math.max(b.s, day), e: Math.min(b.e, next) }));
     lanes(segs);
-    html += `<div class="day${day === today ? ' today' : ''}" data-day="${day}">${segs.map((g) => block(g, next, t)).join('')}</div>`;
+    lanes(mine);
+    html += `<div class="day${day === today ? ' today' : ''}${whole.length ? ' away' : ''}" data-day="${day}">`
+      + `${mine.map((g) => `<div class="busy" style="${place(g, next)}">${esc(g.t)}</div>`).join('')}${segs.map((g) => block(g, next, t)).join('')}</div>`;
   }
   const top = cal.scrollTop;
   cal.innerHTML = `${html}</div>`;
   cal.scrollTop = top;
 }
 
+/** Day header note naming the events that keep us busy all of `day`. */
+function awayNote(day) {
+  const t = away(day).map((b) => b.t || 'busy').join(', ');
+  return t && `<small class="away" title="${esc(t)}">${esc(t)}</small>`;
+}
+
+/** Inline position of segment g (laid out by lanes) in its day column. Editor blocks leave a strip
+ *  (--free) on the right free, so a click there can add a time that overlaps them. */
+function place(g, next) {
+  const top = yOf(g.s, next);
+  return `top:${top}px;height:${Math.max(yOf(g.e, next) - top, HH / 4)}px;`
+    + `left:calc((100% - var(--free, 0px)) * ${g.lane / g.lanes} + 1px);width:calc((100% - var(--free, 0px)) / ${g.lanes} - 3px)`;
+}
+
+/** "clashes with …" for a slot that overlaps our calendar's busy times, else ''. */
+function clashNote(s) {
+  const c = clashes(s);
+  return c.length ? `clashes with ${c.map((b) => b.t || 'busy').join(', ')}` : '';
+}
+
 function block(g, next, t) {
-  const s = g.slot, top = yOf(g.s, next);
-  const style = `top:${top}px;height:${Math.max(yOf(g.e, next) - top, HH / 4)}px;`
-    + `left:calc(${(g.lane / g.lanes) * 100}% + 1px);width:calc(${100 / g.lanes}% - 3px)`;
-  const range = fTime.formatRange(s.s, s.e);
+  const s = g.slot, style = place(g, next), range = fTime.formatRange(s.s, s.e), clash = clashNote(s);
   if (mode === 'editor') {
-    return `<div class="blk edit" data-slot="${s.id}" style="${style}"><span>${range}</span>`
+    return `<div class="blk edit" data-slot="${s.id}" style="${style}" title="${esc(range + (clash && ` · ${clash}`))}"><span>${clash ? '⚠ ' : ''}${range}</span>`
       + `<button class="x" data-del="${s.id}" aria-label="Remove">×</button>`
       + `${g.e === s.e ? `<div class="grip" data-grip="${s.id}"></div>` : ''}</div>`;
   }
   const v = P.mine.votes[s.id] ?? '', x = t.get(s.id);
   return `<button class="blk v-${v || 'none'}${x.best ? ' best' : ''}${P.poll.final === s.id ? ' final' : ''}" data-slot="${s.id}"`
-    + ` data-vote="${s.id}" style="${style}" title="${range}: ${x.y} yes, ${x.m} if need be"><span>${fTime.format(s.s)} ${MARK[v]}</span>`
+    + ` data-vote="${s.id}" style="${style}" title="${esc(`${range}: ${x.y} yes, ${x.m} if need be${clash && ` · ${clash}`}`)}"><span>${fTime.format(s.s)} ${MARK[v]}${clash ? ' ⚠' : ''}</span>`
     + `<small>${x.best ? '★ ' : ''}${x.y}✓${x.m ? ` ${x.m}(✓)` : ''}</small></button>`;
 }
 
@@ -457,16 +487,25 @@ function renderList() {
   for (const s of all) {
     if (dayOf(s.s) !== lastDay) {
       lastDay = dayOf(s.s);
-      html += `<tr class="dayrow"><th colspan="${3 + ppl.length}"><span>${fDay.format(s.s)}</span></th></tr>`;
+      html += `<tr class="dayrow"><th colspan="${3 + ppl.length}"><span>${fDay.format(s.s)} ${dayNo(lastDay)}</span></th></tr>`;
     }
-    const x = t.get(s.id), v = P.mine.votes[s.id] ?? '', final = P.poll.final === s.id;
+    const x = t.get(s.id), v = P.mine.votes[s.id] ?? '', final = P.poll.final === s.id, clash = clashNote(s);
     html += `<tr data-slot="${s.id}" class="${x.best ? 'best' : ''}${final ? ' final' : ''}">`
-      + `<th class="t"><button class="link" data-goto="${s.id}" title="Show in calendar">${fTime.formatRange(s.s, s.e)}</button>${x.best ? ' ★' : ''}${final ? ' 📌' : ''}</th>`
+      + `<th class="t"><button class="link" data-goto="${s.id}" title="Show in calendar">${fTime.formatRange(s.s, s.e)}</button>${clash ? ` <span class="clash" title="${esc(clash)}">⚠</span>` : ''}${x.best ? ' ★' : ''}${final ? ' 📌' : ''}</th>`
       + `<td class="tally">${x.y}✓${x.m ? ` ${x.m}(✓)` : ''}${admin ? ` <button class="pin" data-final="${s.id}" title="${final ? 'Unpick' : 'Pick as the final time'}">📌</button>` : ''}</td>`
       + `<td class="you"><button class="v v-${v || 'none'}" data-vote="${s.id}" aria-label="Your answer">${MARK[v]}</button></td>`
       + ppl.map((p) => `<td class="v v-${p.votes[s.id] || 'none'}">${MARK[p.votes[s.id] ?? '']}</td>`).join('') + '</tr>';
   }
   list.innerHTML = `${html}</tbody></table>`;
+}
+
+const daySlots = (day) => slots().filter((s) => s.s < dayOf(shift(day, 1)) && s.e > day);
+
+/** Poll view: a toggle that answers ✗ to every time on `day` (not available all day), or clears them. */
+function dayNo(day) {
+  const ss = daySlots(day), on = ss.every((s) => P.mine.votes[s.id] === 'n');
+  return ss.length ? `<button class="dayno${on ? ' on' : ''}" data-dayno="${day}" aria-pressed="${on}"`
+    + ` title="${on ? 'Clear your answers for' : 'Not available all day: ✗ to every time on'} ${fDay.format(day)}">✗ all day</button>` : '';
 }
 
 /** Bring time t into view in the calendar. */
@@ -568,6 +607,17 @@ async function saveAnswers() {
   }
 }
 
+/** Answer ✗ to our unanswered times that clash with our calendar, and say so. Waits for the
+ *  initial sync: until then our saved answers may still be on their way. */
+function markClashes(p) {
+  if (mode !== 'poll' || P !== p || !p.synced || !p.poll) return;
+  const hit = p.poll.slots.filter((s) => !p.mine.votes[s.id] && clashes(s).length);
+  if (!hit.length) return;
+  for (const s of hit) p.mine.votes[s.id] = 'n';
+  p.dirty = true;
+  toast(`Marked ${plural(hit.length, 'time')} that clash with your calendar ✗ no. Save answers to send.`);
+}
+
 async function setFinal(id) {
   const final = P.poll.final === id ? null : id;
   const n = await publish(P.dPoll, { ...P.poll, final });
@@ -598,6 +648,118 @@ function downloadIcs() {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
+// --- your calendar ------------------------------------------------------------------------
+// Busy times from the user's own calendar files, read and kept in this browser only: they're
+// never published. Calendar servers don't let other sites fetch their feeds (no CORS), and a
+// public CORS proxy would see the whole calendar, so the user picks or drops an exported file.
+
+/** The calendars in a picked or dropped file: [[file name, iCalendar text]]. Google Calendar
+ *  exports a .zip with one .ics per calendar. */
+async function icsFiles(file) {
+  if (!/\.zip$/i.test(file.name)) return [[file.name, await file.text()]];
+  const { unzipSync, strFromU8 } = await import('https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js');
+  const files = Object.entries(unzipSync(new Uint8Array(await file.arrayBuffer()), { filter: (f) => /\.ics$/i.test(f.name) }));
+  if (!files.length) throw new Error('there’s no .ics file in it');
+  return files.map(([name, data]) => [name.split('/').pop(), strFromU8(data)]);
+}
+
+// A TZID the file doesn't define (no VTIMEZONE) leaves ical.js times "floating", i.e. read as the
+// viewer's local time. When it names an IANA zone, Intl can still place the wall-clock time in it.
+const zones = new Map(), badZones = new Set(); // tzid → Intl formatter (null if unknown); unknown ones this import
+function msOf(t, tzid) {
+  if (t.isDate || t.zone?.tzid !== 'floating' || !tzid) return t.toJSDate().getTime();
+  if (!zones.has(tzid)) {
+    try {
+      zones.set(tzid, new Intl.DateTimeFormat('en-US', { timeZone: tzid, hourCycle: 'h23', year: 'numeric', month: 'numeric',
+        day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }));
+    } catch (err) {
+      console.error(`unknown time zone “${tzid}”: its events are read as local time`, err);
+      zones.set(tzid, null);
+    }
+  }
+  const f = zones.get(tzid), wall = Date.UTC(t.year, t.month - 1, t.day, t.hour, t.minute, t.second);
+  if (!f) {
+    badZones.add(tzid);
+    return t.toJSDate().getTime();
+  }
+  /** How far the zone's clock is ahead of UTC at instant u. */
+  const ahead = (u) => {
+    const p = Object.fromEntries(f.formatToParts(u).map((x) => [x.type, +x.value]));
+    return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - u;
+  };
+  return wall - ahead(wall - ahead(wall)); // the second pass gets the offset right across a DST change
+}
+
+/** One calendar's busy times from yesterday to a year ahead, recurring events expanded:
+ *  {name, at, busy: [{s, e, t}]}. */
+async function parseIcs(name, text) {
+  if (!/^BEGIN:VCALENDAR/i.test(text.trimStart())) throw new Error('it isn’t an iCalendar (.ics) file');
+  const { default: ICAL } = await import('https://cdn.jsdelivr.net/npm/ical.js@2.2.1/dist/ical.min.js');
+  const root = new ICAL.Component(ICAL.parse(text));
+  if (root.name !== 'vcalendar') throw new Error('it holds several calendars: export them one by one');
+  for (const tz of root.getAllSubcomponents('vtimezone')) ICAL.TimezoneService.register(tz);
+  const from = shift(dayOf(Date.now()), -1), to = shift(from, 367), out = [];
+  // Not busy: free (TRANSP:TRANSPARENT), cancelled, or declined by the calendar's owner. Google names
+  // one's main calendar after one's address, which is how the owner appears among the attendees.
+  const me = `mailto:${root.getFirstPropertyValue('x-wr-calname')}`.toLowerCase();
+  const free = (c) => c.getFirstPropertyValue('transp') === 'TRANSPARENT' || c.getFirstPropertyValue('status') === 'CANCELLED'
+    || c.getAllProperties('attendee').some((a) => String(a.getFirstValue()).toLowerCase() === me && a.getParameter('partstat') === 'DECLINED');
+  const add = (ev, s, e) => {
+    const a = msOf(s, ev.startDate.timezone), b = msOf(e, ev.endDate.timezone ?? ev.startDate.timezone);
+    if (a < b && a < to && b > from && !free(ev.component)) out.push({ s: a, e: b, t: String(ev.summary ?? '').slice(0, 80) });
+  };
+  const events = root.getAllSubcomponents('vevent').map((v) => new ICAL.Event(v));
+  // recurring series by UID; an exception (RECURRENCE-ID) replaces one occurrence of its series
+  const series = new Map(events.filter((ev) => ev.isRecurring() && !ev.isRecurrenceException()).map((ev) => [ev.uid, ev]));
+  for (const ev of events) {
+    if (series.get(ev.uid) === ev) continue;
+    if (ev.isRecurrenceException() && series.has(ev.uid)) series.get(ev.uid).relateException(ev);
+    else add(ev, ev.startDate, ev.endDate);
+  }
+  for (const ev of series.values()) {
+    const it = ev.iterator();
+    let n = 0;
+    for (let t; (t = it.next()) && t.toJSDate() < to;) { // iterates from the series' first occurrence
+      if (++n > 1e5) { console.error(`stopped expanding “${ev.summary}” after 100000 occurrences`, ev); break; }
+      const o = ev.getOccurrenceDetails(t);
+      add(o.item, o.startDate, o.endDate);
+    }
+  }
+  return { name: root.getFirstPropertyValue('x-wr-calname') || name.replace(/\.ics$/i, ''), at: Date.now(), busy: out };
+}
+
+/** Add the busy times from calendar files the user picked or dropped (.ics, or Google's .zip).
+ *  Re-adding a calendar replaces its earlier copy. */
+async function importCalendars(files) {
+  toast('Reading your calendar…');
+  const added = [], problems = [];
+  badZones.clear();
+  for (const file of files) {
+    try {
+      for (const [name, text] of await icsFiles(file)) added.push(await parseIcs(name, text));
+    } catch (err) {
+      console.error(`couldn’t read the calendar file ${file.name}`, err);
+      problems.push(`Couldn’t read ${file.name}: ${err.message}.`);
+    }
+  }
+  if (badZones.size) problems.push(`Unknown time zone ${[...badZones].join(', ')}: those events are shown as if in yours.`);
+  const kept = added.filter((c) => c.busy.length);
+  setCals([...cals.filter((c) => !kept.some((k) => k.name === c.name)), ...kept]);
+  store(BUSY, cals);
+  if (added.length) toast(added.map((c) => `${c.name}: ${plural(c.busy.length, 'busy time').replace(/^0/, 'no')} in the coming year`).join('. '));
+  if (P) markClashes(P);
+  if (problems.length) toast(problems.join(' '), true);
+  render();
+}
+
+/** Open (or refresh) the My calendar dialog: the calendars added in this browser. */
+function openCals() {
+  $('#calList').innerHTML = cals.map((c, i) => `<li><span>${esc(c.name)} <small class="muted">${plural(c.busy.length, 'busy time')}, added ${fDate.format(c.at)}</small></span>`
+    + `<button class="x" data-uncal="${i}" title="Remove this calendar" aria-label="Remove">×</button></li>`).join('')
+    || '<li class="muted">No calendar added yet.</li>';
+  if (!$('#cals').open) $('#cals').showModal();
+}
+
 // --- events -------------------------------------------------------------------------------
 
 addEventListener('hashchange', route);
@@ -612,6 +774,35 @@ $('#editBtn').addEventListener('click', () => startEdit(P.poll));
 $('#shareBtn').addEventListener('click', openShare);
 $('#save').addEventListener('click', saveAnswers);
 $('#ics').addEventListener('click', downloadIcs);
+$('#calBtn').addEventListener('click', openCals);
+$('#calPick').addEventListener('click', () => $('#calFile').click());
+$('#calFile').addEventListener('change', (e) => {
+  if (!e.target.files.length) return; // cancelled
+  $('#cals').close(); // so the calendar and the toast show what was added
+  importCalendars([...e.target.files]);
+  e.target.value = '';
+});
+$('#calList').addEventListener('click', (e) => {
+  const i = e.target.dataset.uncal;
+  if (i === undefined) return;
+  setCals(cals.filter((_, j) => j !== +i));
+  store(BUSY, cals);
+  openCals();
+  render();
+});
+
+// Dropping calendar files anywhere adds them. The overlay covers the page while dragging, so its
+// dragleave fires only when the drag leaves the window.
+const hasFiles = (e) => e.dataTransfer?.types.includes('Files');
+addEventListener('dragenter', (e) => hasFiles(e) && ($('#drop').hidden = false));
+addEventListener('dragover', (e) => hasFiles(e) && e.preventDefault());
+$('#drop').addEventListener('dragleave', () => ($('#drop').hidden = true));
+addEventListener('drop', (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  $('#drop').hidden = true;
+  importCalendars([...e.dataTransfer.files]);
+});
 $('#name').addEventListener('input', (e) => { P.mine.name = e.target.value; P.dirty = true; render(); });
 
 $('#mine').addEventListener('click', (e) => {
@@ -636,11 +827,19 @@ $('#share').addEventListener('click', async (e) => {
 
 // One click handler for both views: answers, slot removal, copying, final pick, navigation.
 $('#board').addEventListener('click', (e) => {
-  const el = e.target.closest('[data-vote], [data-del], [data-src], [data-final], [data-goto], [data-nav], #addSlot');
+  const el = e.target.closest('[data-vote], [data-dayno], [data-del], [data-src], [data-final], [data-goto], [data-nav], #addSlot');
   const d = el?.dataset ?? {};
   if (d.src) copyDays(+d.src, +d.to, +d.span);
   else if (d.vote) {
     P.mine.votes[d.vote] = NEXT[P.mine.votes[d.vote] ?? ''];
+    P.dirty = true;
+    render();
+  } else if (d.dayno) { // ✗ the whole day, or clear it again
+    const ss = daySlots(+d.dayno), clear = ss.every((s) => P.mine.votes[s.id] === 'n');
+    for (const s of ss) {
+      if (clear) delete P.mine.votes[s.id];
+      else P.mine.votes[s.id] = 'n';
+    }
     P.dirty = true;
     render();
   } else if (d.del) {
@@ -725,4 +924,5 @@ cal.addEventListener('pointerup', endDrag);
 cal.addEventListener('pointercancel', endDrag);
 
 purgeExpired();
+setCals(load(BUSY, []));
 route();
