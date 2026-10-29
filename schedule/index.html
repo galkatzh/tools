@@ -36,7 +36,7 @@
           <option value="120">2 hours</option>
           <option value="180">3 hours</option>
         </select></label>
-        <span class="muted">Click or drag on the calendar to add times; drag a time's bottom edge to resize it.</span>
+        <span class="muted">Click or drag on the calendar to add times (the strip beside a time adds one that overlaps it); drag a time's bottom edge to resize it.</span>
       </div>
       <div class="bar">
         <label>Delete automatically <select id="expire">
@@ -70,7 +70,8 @@
           <span class="bar"><button id="ics">Add to calendar (.ics)</button><a id="gcal" target="_blank" rel="noopener">Google Calendar</a></span>
         </div>
         <p class="muted">Tap a time, in the calendar or the list, to cycle
-          <span class="chip v-y">✓ yes</span> → <span class="chip v-m">(✓) if need be</span> → <span class="chip v-n">✗ no</span>.</p>
+          <span class="chip v-y">✓ yes</span> → <span class="chip v-m">(✓) if need be</span> → <span class="chip v-n">✗ no</span>.
+          <b>✗ all day</b> says no to a whole day, and <b>📅 My calendar</b> answers ✗ where your own events clash.</p>
       </div>
     </section>
 
@@ -89,6 +90,7 @@
           <button data-nav="1" aria-label="Next">›</button>
           <b id="range"></b>
           <button id="copyWeek" class="copy" data-span="7" title="Copy that week’s times into this week" hidden></button>
+          <button id="calBtn" class="push" title="Show your own events and spot clashes">📅 My calendar</button>
         </div>
         <div id="cal" class="cal"></div>
       </div>
@@ -106,6 +108,30 @@
     <form method="dialog"><button class="primary">Done</button></form>
   </dialog>
 
+  <dialog id="cals">
+    <h3>📅 My calendar</h3>
+    <p class="muted">Add your calendar to see your own events next to the poll’s times. When you answer a poll, times that
+      clash with them are marked ✗ for you. The file is read and kept in this browser only: it’s never uploaded or shared.</p>
+    <ul id="calList" class="mine"></ul>
+    <div class="bar">
+      <button id="calPick" class="primary">Add calendar file…</button>
+      <input id="calFile" type="file" accept=".ics,.zip,text/calendar" multiple hidden>
+      <span class="muted">or drop it anywhere on the page.</span>
+    </div>
+    <p class="muted">What’s added is a snapshot: add the file again when your calendar changes.</p>
+    <details class="muted">
+      <summary>How do I get the file?</summary>
+      <ul>
+        <li><b>Google Calendar</b>, on a computer: ⚙ Settings → Import &amp; export → Export. Add the .zip as it is.</li>
+        <li><b>Apple Calendar</b> on a Mac: select the calendar, then File → Export → Export…</li>
+        <li><b>Outlook</b> on Windows: File → Save Calendar. On the web: Settings → Calendar → Shared calendars → Publish,
+          then open the ICS link to download the file.</li>
+      </ul>
+    </details>
+    <form method="dialog"><button>Done</button></form>
+  </dialog>
+
+  <div id="drop" class="drop" hidden>Drop your calendar file (.ics, or Google’s .zip) to see clashes</div>
   <div id="toast" class="toast" role="status"></div>
 </body>
 </html>

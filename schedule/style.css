@@ -1,6 +1,7 @@
 :root {
   --bg: #f6f6f3; --panel: #fff; --ink: #1d1f23; --muted: #6b7280; --line: #e3e5e8; --line2: #f0f1f3;
   --accent: #2563eb; --accent-ink: #fff;
+  --hatch: repeating-linear-gradient(135deg, color-mix(in srgb, var(--muted) 20%, transparent) 0 3px, transparent 3px 7px);
   --yes: #15803d; --yes-bg: #dcfce7; --maybe: #a16207; --maybe-bg: #fef3c7; --no: #b91c1c; --no-bg: #fde8e8;
   color-scheme: light dark;
   font: 15px/1.45 system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -45,7 +46,7 @@ textarea { width: 100%; resize: vertical; }
 
 .mine { list-style: none; padding: 0; max-width: 40rem; }
 .mine li { display: flex; align-items: center; gap: .5rem; padding: .5rem .25rem; border-bottom: 1px solid var(--line); }
-.mine li a { flex: 1; overflow-wrap: anywhere; }
+.mine li > :first-child { flex: 1; overflow-wrap: anywhere; }
 .badge { padding: 0 .4rem; border-radius: 6px; background: var(--line); color: var(--muted); }
 
 .title-in { width: 100%; font-size: 1.3rem; font-weight: 600; margin: .25rem 0 .5rem; }
@@ -75,9 +76,13 @@ textarea { width: 100%; resize: vertical; }
   border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
 .cal-grid { display: grid; grid-template-columns: 3.2rem repeat(var(--days), minmax(0, 1fr)); }
 .corner, .dh { position: sticky; top: 0; z-index: 3; min-height: 2.4rem; background: var(--panel); border-bottom: 1px solid var(--line); }
-.dh { display: grid; place-content: center; justify-items: center; gap: .15rem; padding: .25rem 0; font-size: .85rem; font-weight: 600; border-left: 1px solid var(--line); }
+.dh { display: grid; grid-template-columns: minmax(0, 100%); place-content: center; justify-items: center; gap: .15rem; padding: .25rem 0; font-size: .85rem; font-weight: 600; border-left: 1px solid var(--line); }
 .copy { padding: .05rem .4rem; border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); color: var(--accent); font-size: .75rem; font-weight: 400; }
 .dh.today { color: var(--accent); }
+.dh .away { max-width: 100%; padding: 0 .3rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; color: var(--muted); }
+.dayno { padding: .05rem .4rem; border-color: color-mix(in srgb, var(--no) 45%, var(--line)); color: var(--no); font-size: .75rem; font-weight: 400; }
+.dayno.on { background: var(--no-bg); border-color: var(--no); }
+.push { margin-left: auto; }
 .gutter { position: relative; height: calc(24 * var(--hh)); }
 .gutter span { position: absolute; right: .4rem; transform: translateY(-50%); font-size: .7rem; color: var(--muted); white-space: nowrap; }
 .day {
@@ -86,6 +91,7 @@ textarea { width: 100%; resize: vertical; }
     var(--line2) calc(var(--hh) / 2) calc(var(--hh) / 2 + 1px), transparent calc(var(--hh) / 2 + 1px) var(--hh));
 }
 .day.today { background-color: color-mix(in srgb, var(--accent) 5%, transparent); }
+.day.away::before { content: ''; position: absolute; inset: 0; background: var(--hatch); pointer-events: none; }
 #editor:not([hidden]) ~ .board .day { cursor: crosshair; }
 
 .blk {
@@ -98,7 +104,13 @@ button.blk { cursor: pointer; }
 .blk.v-none { background: var(--panel); border-style: dashed; border-color: var(--muted); }
 .blk.best small { font-weight: 700; }
 .blk.final { border-width: 2px; border-color: var(--accent); }
-.blk.edit { background: color-mix(in srgb, var(--accent) 18%, var(--panel)); border-color: var(--accent); padding-right: 1.2rem; cursor: default; }
+.blk.edit { background: color-mix(in srgb, var(--accent) 18%, var(--panel)); border-color: var(--accent); padding-right: 1.2rem; cursor: default;
+  --free: 20px; } /* the strip right of the blocks (see place() in app.js) stays clickable */
+@media (pointer: coarse) { .blk.edit { --free: 28px; } }
+/* the viewer's own calendar events: under the poll's times, never in the way of a click */
+.busy { position: absolute; z-index: 0; overflow: hidden; padding: 1px 4px; border-radius: 6px; pointer-events: none;
+  font-size: .68rem; line-height: 1.25; color: var(--muted); border: 1px solid color-mix(in srgb, var(--muted) 40%, transparent);
+  background: var(--hatch); }
 .blk .x { position: absolute; top: 0; right: 0; padding: 0 .3rem; font-size: 1rem; }
 .grip { position: absolute; left: 0; right: 0; bottom: 0; height: 9px; cursor: ns-resize; touch-action: none; }
 .grip::after { content: ''; display: block; width: 22px; height: 3px; margin: 3px auto 0; border-radius: 2px; background: var(--accent); opacity: .6; }
@@ -127,6 +139,8 @@ button.blk { cursor: pointer; }
 .votes tr.best .t { font-weight: 700; }
 .votes tr.final .t { border-left: 4px solid var(--accent); }
 .votes .tally { color: var(--muted); font-size: .85rem; }
+.votes .dayno { margin-left: .4rem; }
+.clash { cursor: help; }
 .votes .you { background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
 .votes button.v { width: 2.6rem; height: 1.9rem; padding: 0; border: 1px solid var(--line); border-radius: 6px; }
 .votes button.v-none { background: var(--panel); border-style: dashed; border-color: var(--muted); }
@@ -139,6 +153,9 @@ dialog::backdrop { background: rgb(0 0 0 / .4); }
 dialog form { text-align: right; margin-top: 1rem; }
 .copy { display: flex; gap: .5rem; margin-bottom: 1rem; }
 .copy input { flex: 1; font-size: .8rem; font-family: ui-monospace, monospace; }
+.drop { position: fixed; inset: 0; z-index: 20; display: grid; place-content: center; padding: 16px; text-align: center;
+  font-size: 1.2rem; font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--bg) 85%, transparent);
+  border: 3px dashed var(--accent); }
 .toast { position: fixed; left: 50%; bottom: 20px; transform: translate(-50%, 150%); max-width: calc(100vw - 32px);
   padding: .6rem 1rem; border-radius: 8px; background: var(--ink); color: var(--bg); opacity: 0; transition: .2s; z-index: 10; }
 .toast.show { transform: translate(-50%, 0); opacity: 1; }

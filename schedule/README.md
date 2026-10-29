@@ -5,14 +5,23 @@ A Doodle-style scheduling poll with no server and no accounts. Polls live on pub
 
 - **Organizer**: give the poll a title, then pick times on a **weekly calendar** (click for
   the default length, drag to draw a range, drag a block's bottom edge to resize, × to remove)
-  or in the **list** next to it (date / start / end inputs, ＋ Add time). Both views edit the
+  or in the **list** next to it (date / start / end inputs, ＋ Add time). Each day keeps a free strip on
+  the right of its times, so a click there adds a time that overlaps another one (13:30 inside a
+  13:00–14:00 option, say). Both views edit the
   same slots, so a change in one shows up in the other immediately. Hovering a time highlights
   it in both. An empty day's header offers **⧉ copy** of the latest earlier day with times,
   and an empty week offers **⧉ Copy week of …** in the toolbar. Copies keep the wall-clock
   hours, even across a DST change. **Create poll** publishes it and shows the invite link.
 - **Participants**: open the link, type a name, and tap times in the calendar *or* the
-  Doodle-style table to cycle ✓ yes → (✓) if need be → ✗ no. **Save answers** publishes
-  them. Everyone's answers, the per-time totals and the ★ leading time update live.
+  Doodle-style table to cycle ✓ yes → (✓) if need be → ✗ no. **✗ all day**, in a day's header
+  or its row in the table, answers ✗ to every time that day (press it again to clear them).
+  **Save answers** publishes them. Everyone's answers, the per-time totals and the ★ leading
+  time update live.
+- **📅 My calendar** (organizers and participants): add your own calendar file, picked or dropped
+  anywhere on the page, to see your events hatched behind the poll's times. Times that clash get
+  a ⚠, and when you answer, the ones you haven't answered yet are marked ✗ for you (save to
+  send them). The file never leaves the browser. It's remembered for every poll you open there,
+  until you remove it.
 - The organizer can **edit the poll** and **📌 pick the final time**. Everyone then sees a
   banner with an `.ics` download and a Google Calendar link.
 - **Delete automatically**: 1 month after the last time (default), 1 day, 1 week, or never.
@@ -78,6 +87,22 @@ opened. If every relay has lost a poll, the next visit from someone who has it r
 the poll, and it reaches the page back through the relay (never displayed straight from the
 cache). If no copy exists anywhere, the page says the poll wasn't found.
 
+**Your calendar.** Calendar servers don't let other sites fetch their iCal feeds (Google's, for
+one, sends no CORS headers), and the public CORS proxies are either down, rate-limited or
+asking for API keys. A proxy would also see the whole calendar. So the app reads an exported
+file instead: an `.ics`, or the `.zip` Google Calendar exports (one `.ics` per calendar, unpacked
+with [fflate](https://github.com/101arrowz/fflate)). [ical.js](https://github.com/kewisch/ical.js)
+parses it, and both libraries load only when a file is added. Recurring events are expanded from
+yesterday to a year ahead, with EXDATEs and moved occurrences (RECURRENCE-ID) applied. Free
+(`TRANSP:TRANSPARENT`), cancelled and declined events don't count as busy. A declined event is
+one where the attendee whose address names the calendar (as Google names your main one) has
+`PARTSTAT=DECLINED`. Times use the file's VTIMEZONEs; a TZID the file doesn't define is resolved
+as an IANA zone with `Intl`, and an unknown one is reported. A day that's busy from midnight to
+midnight (a vacation, a trip) is shaded and named in its header rather than drawn as a block.
+The busy times, with their titles, are stored in `localStorage` (`schedule.busy`) and are never
+published. Clashing times are marked ✗ only after the initial sync, so answers you saved earlier
+(perhaps on another device) load first and are never overwritten.
+
 ## Honest limits
 
 - Your answer is tied to the key in this browser. To edit it from another device, use your
@@ -90,6 +115,9 @@ cache). If no copy exists anywhere, the page says the poll wasn't found.
 - After the organizer changes the expiry, an answer keeps its old expiry until its author
   opens the poll again. Answers from people who never return can therefore expire earlier
   or later than the poll.
+- An added calendar is a snapshot: add the file again when your calendar changes (the dialog
+  shows when each one was added). Phones can't easily export a calendar, so this works best on a
+  computer. Declined invitations are only recognized in Google's files.
 - Durability is whatever the six public relays (plus self-healing) provide. That's fine for
   a poll that lives for weeks, not an archive.
 
@@ -111,6 +139,17 @@ expiry side they check:
 - that a client ignores expired events and an open page closes the poll at expiry;
 - the purge from local storage;
 - refusal when every time is already past, or when no relay supports NIP-40.
+
+For the calendar features they check:
+- clicks and drags in the free strip adding overlapping times (mouse and touch), while clicks
+  on a block add nothing;
+- ✗ all day from the calendar header and from the table, and pressing it again to clear;
+- adding a calendar from the dialog and by dropping Google's `.zip`;
+- the parsed busy times: recurring events with a moved occurrence, a VTIMEZONE zone and an
+  undefined TZID, with free, cancelled and declined events left out;
+- clash marks, auto-✗ of unanswered times only, nothing re-marked after saving and reloading;
+- whole busy days shaded, escaped titles, loud errors for non-calendar files and unknown zones,
+  and removing a calendar.
 
 Also checked live against the default public relays: they accept the custom kind with
 expiration tags and serve it back.
