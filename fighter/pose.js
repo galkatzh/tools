@@ -33,8 +33,10 @@ export const DEFAULTS = {
   hookSpeed: 3, hookMinY: 0.9, hookHighMs: 300, hookMaxDown: 0.3,
   uppercutSpeed: 4, upperStartY: 0.75, upperLookMs: 300, bothHandsRatio: 0.5,
   guardOn: 1.0, guardOff: 0.85, guardX: 0.5,
-  duckDepth: 0.6,             // head drop below recent standing height, in shoulder widths, for duck = 1
-  duckRelax: 0.3,             // how fast standing height follows a lower stance, shoulder widths/s
+  duckDepth: 0.6,             // fast head drop, in shoulder widths, for duck = 1
+  duckWindowMs: 300,          // the drop must happen within this long (walking back lowers the head slowly)
+  duckHoldMs: 2000,           // a triggered duck stays on until the head comes back up, at most this long
+  duckAwayGate: 0.12, duckAwayMs: 400, // no new duck while apparent size shrinks this much (ln) in this long
   leanFull: 0.4, leanDead: 0.3, // shoulder-over-hip offset (shoulder widths) for lean = 1; dead zone (fraction)
   calibMs: 2000,
 };
@@ -80,6 +82,9 @@ export class OneEuro {
  * Lean and duck can't use that frame (it tilts and crouches with the player), so
  * they come from the image: lean is the shoulder centre's sideways offset from the
  * hip centre, and duck the head's height; both in shoulder widths (`shW`).
+ * `near` is ln(apparent size): the shoulders' image length over their world x-y
+ * length. World landmarks are camera-aligned, so turning shortens both alike and
+ * only distance to the camera changes it; it falls when the player steps back.
  * @param {Landmark[]} w worldLandmarks (metres, hip-origin)
  * @param {Landmark[]} img image landmarks (0..1)
  * @param {number} aspect video width / height, to measure image distances in one unit
@@ -95,7 +100,8 @@ export function features(w, img, aspect) {
   const cx = (a, b) => (img[a].x + img[b].x) / 2;
   // The feed is unmirrored, so the player's right is image left: negate to make +lean = player's right.
   const lean = -(cx(SH.L, SH.R) - cx(HIP.L, HIP.R)) * aspect / shW;
-  const f = /** @type {Record<string, number[]>} */ ({ lean: [lean], nose: [img[NOSE].y], shW: [shW] });
+  const near = Math.log(shW / Math.hypot(w[SH.L].x - w[SH.R].x, w[SH.L].y - w[SH.R].y));
+  const f = /** @type {Record<string, number[]>} */ ({ lean: [lean], nose: [img[NOSE].y], shW: [shW], near: [near] });
   for (const s of /** @type {const} */ (['L', 'R'])) {
     f['sh' + s] = local(SH[s]); f['el' + s] = local(EL[s]); f['wr' + s] = local(WR[s]);
   }
@@ -113,8 +119,8 @@ export class Recogniser {
     this.lastAny = -Infinity;
     this.guard = false;
     /** @type {{lean:number}|null} */ this.base = null;
-    /** Recent standing height: the highest nose y seen, sinking slowly (see #posture). */
-    this.top = Infinity;
+    /** A triggered duck: the head height it dropped from, and when (see #posture). */
+    /** @type {{top:number, t:number}|null} */ this.duck = null;
     /** @type {{until:number, samples:Record<string, number>[]}|null} */ this.calib = null;
   }
 
@@ -175,7 +181,7 @@ export class Recogniser {
       this.lastFire[best.side] = this.lastAny = t;
       events.push({ type: best.type, side: best.side, power: clamp(best.speed / (2 * cfg[best.type + 'Speed']), 0, 1), time: t });
     }
-    return { events, posture: this.#posture(f, dt), feats: f };
+    return { events, posture: this.#posture(f, t), feats: f };
   }
 
   #calibrate(t, f) {
@@ -188,20 +194,33 @@ export class Recogniser {
   }
 
   /** @returns {Posture} */
-  #posture(f, dt) {
+  #posture(f, t) {
     const { cfg, base } = this, [l, r] = [f.wrL, f.wrR];
     const high = Math.min(l[1], r[1]);
     // Hysteresis so the guard doesn't flicker at the threshold.
     this.guard = this.guard ? high > cfg.guardOff : high > cfg.guardOn && Math.max(Math.abs(l[0]), Math.abs(r[0])) < cfg.guardX;
-    // Duck = head drop below recent standing height. That height snaps up to the
-    // highest head position and sinks at duckRelax, so settling into a lower stance
-    // is absorbed within seconds, while a duck (fast, well under a second or two) isn't.
-    // A fixed calibrated baseline drifted: players relax lower after calibrating.
-    // (Slowing the sink while ducking was tried: the baseline then sticks low and
-    // idle false-ducks tripled on real recordings.)
+    // Duck = a FAST head drop: below the highest head position of the last
+    // duckWindowMs. Once past half depth it latches that height until the head comes
+    // back up (or duckHoldMs passes), so a held duck stays on. Walking back also lowers
+    // the head in the image (camera below head height) and shrinks the player, but
+    // gradually, so the short window ignores most of it; new ducks are also blocked
+    // while apparent size is clearly shrinking. A pure distance gate failed on real
+    // ducks: they change apparent size too, so only "moving away" blocks, and only new
+    // ducks. (Earlier baselines drifted: a calibrated height as players settled lower,
+    // a slowly sinking one when they walked back.)
     const [nose, shW] = [f.nose[0], f.shW[0]];
-    this.top = Math.min(nose, this.top + cfg.duckRelax * shW * dt);
-    const duck = clamp((nose - this.top) / shW / cfg.duckDepth, 0, 1);
+    const drop = (top) => clamp((nose - top) / shW / cfg.duckDepth, 0, 1);
+    let duck = 0;
+    if (this.duck) {
+      duck = drop(this.duck.top);
+      if (duck < 0.25 || t - this.duck.t > cfg.duckHoldMs) this.duck = null;
+    }
+    if (!this.duck) {
+      const top = Math.min(...this.hist.filter((h) => h.t >= t - cfg.duckWindowMs).map((h) => h.f.nose[0]));
+      const then = /** @type {{t:number, f:Record<string, number[]>}} */ (this.hist.find((h) => h.t >= t - cfg.duckAwayMs));
+      duck = then.f.near[0] - f.near[0] > cfg.duckAwayGate ? 0 : drop(top);
+      if (duck > 0.5) this.duck = { top, t };
+    }
     const lean = clamp((f.lean[0] - (base?.lean ?? 0)) / cfg.leanFull, -1, 1);
     const dead = Math.max(0, Math.abs(lean) - cfg.leanDead) / (1 - cfg.leanDead);
     return { guard: this.guard, duck, lean: Math.sign(lean) * dead };
