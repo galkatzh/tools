@@ -145,11 +145,14 @@ export class Recogniser {
     const vel = (k) => (past ? scale(sub(f[k], past.f[k]), 1000 / (t - past.t)) : [0, 0, 0]);
     const vL = vel('wrL'), vR = vel('wrR');
     /** @type {ActionEvent[]} */ const events = [];
+    // Both wrists often move toward the camera together (stepping or leaning in), so
+    // both can qualify on the same frame. The punching hand is the faster one: checking
+    // L first handed right hooks to the left hand. So collect candidates, fire the fastest.
+    /** @type {{type:'hook'|'uppercut', side:'L'|'R', speed:number}[]} */ const cands = [];
     for (const [s, v, vOther] of /** @type {const} */ ([['L', vL, vR], ['R', vR, vL]])) {
       if (!past || t - this.lastFire[s] < cfg.refractoryMs || t - this.lastAny < cfg.lockoutMs) continue;
       if (Math.min(img[WR[s]].visibility ?? 1, img[EL[s]].visibility ?? 1) < cfg.minVis) continue;
       const vy = v[1], speed3 = norm(v);
-      let type = null, speed = 0;
       // A hook's strike swings mostly toward the camera, i.e. in depth, so its visible
       // sideways component is tiny (on recordings: one or two frames). What the camera
       // does see is the path: from guard the fist loads out and up and strikes while
@@ -158,17 +161,19 @@ export class Recogniser {
       // so the two rules can't both match.
       if (speed3 > cfg.hookSpeed && vy > -cfg.hookMaxDown * speed3
           && this.hist.every((h) => h.t < t - cfg.hookHighMs || h.f['wr' + s][1] > cfg.hookMinY)) {
-        type = 'hook'; speed = speed3;
+        cands.push({ type: 'hook', side: s, speed: speed3 });
       } else if (vy > cfg.uppercutSpeed && vy > cfg.dirRatio * Math.abs(v[0])
           // An uppercut starts low; both hands rising together is a guard being raised.
           && this.hist.some((h) => h.t >= t - cfg.upperLookMs && h.f['wr' + s][1] < cfg.upperStartY)
           && vOther[1] < cfg.bothHandsRatio * vy) {
-        type = 'uppercut'; speed = vy;
+        cands.push({ type: 'uppercut', side: s, speed: vy });
       }
-      if (type) {
-        this.lastFire[s] = this.lastAny = t;
-        events.push({ type, side: s, power: clamp(speed / (2 * cfg[type + 'Speed']), 0, 1), time: t });
-      }
+    }
+    // The cross-hand lockout allows one attack per frame anyway; this decides which.
+    const best = cands.sort((a, b) => b.speed - a.speed)[0];
+    if (best) {
+      this.lastFire[best.side] = this.lastAny = t;
+      events.push({ type: best.type, side: best.side, power: clamp(best.speed / (2 * cfg[best.type + 'Speed']), 0, 1), time: t });
     }
     return { events, posture: this.#posture(f, dt), feats: f };
   }
