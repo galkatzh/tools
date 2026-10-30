@@ -381,6 +381,7 @@ function renderHead() {
   }
   $('#save').disabled = !p.dirty;
   $('#saveState').textContent = p.dirty ? 'Unsaved' : p.votes.has(p.me) ? 'Saved ✓' : '';
+  $('#deviceBtn').hidden = !p.votes.has(p.me) && p.me !== p.org; // once there's something here worth taking along
 }
 
 /** Place overlapping segments side by side: each gets a lane and its cluster's lane count. */
@@ -595,13 +596,14 @@ async function saveAnswers() {
   const name = P.mine.name.trim();
   if (!name) { $('#name').focus(); return toast('Enter your name first', true); }
   store(NAME, name);
-  const sent = JSON.stringify(P.mine);
+  const sent = JSON.stringify(P.mine), first = !P.votes.has(P.me);
   $('#save').disabled = true;
   $('#saveState').textContent = 'Saving…';
   try {
     const n = await publish(P.dVote, { ...P.mine, name });
     P.dirty = JSON.stringify(P.mine) !== sent; // still dirty if they kept tapping while it saved
     toast(`Saved to ${n} relays`);
+    if (first) openDevice(true); // the moment to take the private link along, before it's needed
   } finally {
     render();
   }
@@ -625,13 +627,32 @@ async function setFinal(id) {
 }
 
 function openShare() {
-  const base = `${location.href.split('#')[0]}#`;
-  $('#shareLink').value = base + P.share;
-  $('#privLink').value = base + b64u(new Uint8Array([...unb64u(P.share), ...P.sk]));
-  $('#privHint').textContent = P.me === P.org
-    ? 'Opens the poll as the organizer, to edit it from another device. Anyone holding it can change the poll: keep it to yourself.'
-    : 'Opens the poll as you, to change your answers from another device. Keep it to yourself.';
+  $('#shareLink').value = `${location.href.split('#')[0]}#${P.share}`;
   $('#share').showModal();
+}
+
+/** Show our private link (it carries our key, see the header) as a QR code, a copyable link and
+ *  the share sheet, so the poll opens as us on another device. `saved`: right after a first save. */
+async function openDevice(saved) {
+  const link = `${location.href.split('#')[0]}#${b64u(new Uint8Array([...unb64u(P.share), ...P.sk]))}`;
+  $('#privLink').value = link;
+  $('#devSaved').hidden = !saved;
+  $('#devHint').textContent = P.me === P.org
+    ? 'Open this on your other device to edit the poll and your answers there: scan the code with a phone, or copy the link. Keep it to yourself: anyone holding it can change the poll.'
+    : 'Open this on your other device to change your answers there: scan the code with a phone, or copy the link. Both devices then share one answer. Keep it to yourself: anyone holding it can answer as you.';
+  $('#sendLink').hidden = !navigator.canShare?.({ url: link });
+  $('#qr').textContent = 'Loading the QR code…';
+  $('#device').showModal();
+  try {
+    const { default: qrcode } = await import('https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.mjs');
+    const qr = qrcode(0, 'M'); // 0: the smallest version that fits
+    qr.addData(link);
+    qr.make();
+    $('#qr').innerHTML = qr.createSvgTag({ cellSize: 4, margin: 16, scalable: true, title: 'QR code of your private link' });
+  } catch (err) {
+    console.error('couldn’t draw the QR code', err);
+    $('#qr').textContent = `Couldn’t draw the QR code (${err.message}). Copy the link instead.`;
+  }
 }
 
 function downloadIcs() {
@@ -772,6 +793,19 @@ $('#cancel').addEventListener('click', () => {
 });
 $('#editBtn').addEventListener('click', () => startEdit(P.poll));
 $('#shareBtn').addEventListener('click', openShare);
+$('#deviceBtn').addEventListener('click', () => openDevice());
+$('#toDevice').addEventListener('click', () => {
+  $('#share').close();
+  openDevice();
+});
+$('#sendLink').addEventListener('click', async () => {
+  try {
+    await navigator.share({ title: `${P.poll.title} · Find a time`, text: 'My private link: it opens the poll as me.', url: $('#privLink').value });
+  } catch (err) {
+    console.error('share sheet failed', err);
+    if (err.name !== 'AbortError') toast(`Couldn’t share the link: ${err.message}`, true); // AbortError: the sheet was dismissed
+  }
+});
 $('#save').addEventListener('click', saveAnswers);
 $('#ics').addEventListener('click', downloadIcs);
 $('#calBtn').addEventListener('click', openCals);
@@ -812,18 +846,23 @@ $('#mine').addEventListener('click', (e) => {
   renderHome();
 });
 
-$('#share').addEventListener('click', async (e) => {
-  const input = e.target.dataset.copy && $(`#${e.target.dataset.copy}`);
+// The dialogs' Copy buttons: data-copy names the input to copy. They confirm on the button
+// itself, since a toast would sit under the modal's backdrop.
+const copyLink = async (e) => {
+  const btn = e.target, input = btn.dataset.copy && $(`#${btn.dataset.copy}`);
   if (!input) return;
   try {
     await navigator.clipboard.writeText(input.value);
-    toast('Copied');
+    btn.textContent = 'Copied ✓';
+    setTimeout(() => (btn.textContent = 'Copy'), 1500);
   } catch (err) {
     console.error('clipboard write failed', err);
     input.select();
     toast('Couldn’t copy automatically: the link is selected, copy it by hand.', true);
   }
-});
+};
+$('#share').addEventListener('click', copyLink);
+$('#device').addEventListener('click', copyLink);
 
 // One click handler for both views: answers, slot removal, copying, final pick, navigation.
 $('#board').addEventListener('click', (e) => {
