@@ -17,6 +17,11 @@ A Doodle-style scheduling poll with no server and no accounts. Polls live on pub
   or its row in the table, answers ✗ to every time that day (press it again to clear them).
   **Save answers** publishes them. Everyone's answers, the per-time totals and the ★ leading
   time update live.
+- **📱 Edit on another device**: right after your first save, the page shows your **private
+  link** as a QR code to scan with your phone, a link to copy, and (where the browser has one)
+  the share sheet to send it to yourself. Opening it elsewhere opens the poll as you, with your
+  answers, and saving there updates the same answer. The button stays next to **Save answers**,
+  and organizers also reach it from 🔗 Share (their private link also lets them edit the poll).
 - **📅 My calendar** (organizers and participants): add your own calendar file, picked or dropped
   anywhere on the page, to see your events hatched behind the poll's times. Times that clash get
   a ⚠, and when you answer, the ones you haven't answered yet are marked ✗ for you (save to
@@ -105,8 +110,10 @@ published. Clashing times are marked ✗ only after the initial sync, so answers
 
 ## Honest limits
 
-- Your answer is tied to the key in this browser. To edit it from another device, use your
-  **private link** (🔗 Share). "Forget" on the home page deletes that key.
+- Your answer is tied to the key in this browser. To edit it from another device, take your
+  **private link** along (📱 Edit on another device). "Forget" on the home page deletes that key.
+  Anyone holding the private link can answer as you (and the organizer's can change the poll),
+  so keep it to yourself.
 - Anyone with the invite link can read the poll and add answers under any name. That's
   Doodle's trust model too. Nobody can change *your* answer without your key.
 - Without automatic deletion, relays keep the latest encrypted versions until they prune
@@ -150,6 +157,11 @@ For the calendar features they check:
 - clash marks, auto-✗ of unanswered times only, nothing re-marked after saving and reloading;
 - whole busy days shaded, escaped titles, loud errors for non-calendar files and unknown zones,
   and removing a calendar.
+
+For taking answers to another device they check: the QR code decodes to the private link; the
+first save opens the dialog and later ones don't; copying; the share sheet, and dismissing it
+quietly; a second device opening as you and editing the same answer, followed live by the first
+device and the organizer; and a visible message when the QR library can't load.
 
 Also checked live against the default public relays: they accept the custom kind with
 expiration tags and serve it back.

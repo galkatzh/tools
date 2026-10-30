@@ -80,6 +80,7 @@
       <input id="name" maxlength="60" autocomplete="name" placeholder="Your name" aria-label="Your name">
       <button id="save" class="primary" disabled>Save answers</button>
       <span id="saveState" class="muted"></span>
+      <button id="deviceBtn" hidden>📱 Edit on another device</button>
     </div>
 
     <div id="board" class="board" hidden>
@@ -102,10 +103,19 @@
     <h3>Invite link</h3>
     <p class="muted">Anyone with this link can see the poll and answer. It carries the decryption key, so share it only with participants.</p>
     <div class="copy"><input id="shareLink" readonly><button data-copy="shareLink">Copy</button></div>
-    <h3>Your private link</h3>
-    <p id="privHint" class="muted"></p>
-    <div class="copy"><input id="privLink" readonly><button data-copy="privLink">Copy</button></div>
+    <h3>Your other devices</h3>
+    <p class="muted">To answer as you, or edit the poll, on your phone or another computer, open your private link there.</p>
+    <button id="toDevice">📱 Edit on another device…</button>
     <form method="dialog"><button class="primary">Done</button></form>
+  </dialog>
+
+  <dialog id="device">
+    <h3>📱 Edit on another device</h3>
+    <p id="devSaved" class="saved" hidden>✓ Your answers are saved.</p>
+    <p id="devHint" class="muted"></p>
+    <div id="qr" class="qr"></div>
+    <div class="copy"><input id="privLink" readonly aria-label="Your private link"><button data-copy="privLink">Copy</button></div>
+    <form method="dialog"><button type="button" id="sendLink" hidden>Send to myself…</button> <button class="primary">Done</button></form>
   </dialog>
 
   <dialog id="cals">

@@ -153,6 +153,10 @@ dialog::backdrop { background: rgb(0 0 0 / .4); }
 dialog form { text-align: right; margin-top: 1rem; }
 .copy { display: flex; gap: .5rem; margin-bottom: 1rem; }
 .copy input { flex: 1; font-size: .8rem; font-family: ui-monospace, monospace; }
+.saved { margin: 0 0 .25rem; color: var(--yes); font-weight: 600; }
+/* stays black on white in dark mode too, for the scanner; the margin is the QR quiet zone */
+.qr { width: min(240px, 70vw); margin: .75rem auto 1rem; text-align: center; color: var(--muted); font-size: .9rem; }
+.qr svg { display: block; width: 100%; height: auto; border-radius: 8px; }
 .drop { position: fixed; inset: 0; z-index: 20; display: grid; place-content: center; padding: 16px; text-align: center;
   font-size: 1.2rem; font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--bg) 85%, transparent);
   border: 3px dashed var(--accent); }
