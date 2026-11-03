@@ -2,173 +2,181 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="description" content="Create and manage expense reports with ease">
-    <meta name="theme-color" content="#2563eb">
-    <title>Expense Report Manager</title>
+    <meta name="theme-color" content="#f4f5f8" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <title>Expenses</title>
     <link rel="manifest" href="manifest.json">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="apple-touch-icon" href="icons/icon-192.svg">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div class="app-container">
-        <header class="header">
-            <h1>Expense Report Manager</h1>
-            <div class="header-actions">
-                <input type="file" id="importZipInput" accept=".zip" class="hidden">
-                <button id="importZipBtn" class="btn btn-secondary" title="Load expenses from ZIP">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
-                    </svg>
-                    Import ZIP
-                </button>
-                <button id="exportZipBtn" class="btn btn-secondary" title="Save expenses to ZIP" disabled>
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
-                    </svg>
-                    Export ZIP
-                </button>
-                <button id="clearAllBtn" class="btn btn-danger" title="Clear all expenses">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
-                    </svg>
-                    Clear All
-                </button>
-            </div>
-        </header>
-
-        <main class="main-content">
-            <section class="add-expense-section">
-                <h2>Add New Expense</h2>
-                <form id="expenseForm" class="expense-form">
-                    <div class="form-group">
-                        <label for="expenseTitle">Title</label>
-                        <input type="text" id="expenseTitle" name="title" placeholder="Enter expense title...">
-                    </div>
-
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="expenseDate">Date</label>
-                            <input type="date" id="expenseDate" name="date" required>
-                        </div>
-                        <div class="form-group">
-                            <label for="expenseTime">Time (optional)</label>
-                            <input type="time" id="expenseTime" name="time" placeholder="HH:MM">
-                        </div>
-                    </div>
-
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="expenseAmount">Amount (optional)</label>
-                            <input type="number" id="expenseAmount" name="amount" placeholder="0.00" min="0" step="any">
-                        </div>
-                        <div class="form-group">
-                            <label for="expenseCurrency">Currency</label>
-                            <select id="expenseCurrency" name="currency">
-                                <option value="USD">USD – US Dollar</option>
-                                <option value="EUR">EUR – Euro</option>
-                                <option value="GBP">GBP – British Pound</option>
-                                <option value="ILS">ILS – Israeli Shekel</option>
-                                <option value="JPY">JPY – Japanese Yen</option>
-                                <option value="CHF">CHF – Swiss Franc</option>
-                                <option value="CAD">CAD – Canadian Dollar</option>
-                                <option value="AUD">AUD – Australian Dollar</option>
-                                <option value="CNY">CNY – Chinese Yuan</option>
-                                <option value="INR">INR – Indian Rupee</option>
-                                <option value="MXN">MXN – Mexican Peso</option>
-                                <option value="BRL">BRL – Brazilian Real</option>
-                                <option value="KRW">KRW – Korean Won</option>
-                                <option value="SGD">SGD – Singapore Dollar</option>
-                                <option value="HKD">HKD – Hong Kong Dollar</option>
-                                <option value="NOK">NOK – Norwegian Krone</option>
-                                <option value="SEK">SEK – Swedish Krona</option>
-                                <option value="DKK">DKK – Danish Krone</option>
-                                <option value="PLN">PLN – Polish Złoty</option>
-                                <option value="TRY">TRY – Turkish Lira</option>
-                                <option value="ZAR">ZAR – South African Rand</option>
-                                <option value="AED">AED – UAE Dirham</option>
-                                <option value="SAR">SAR – Saudi Riyal</option>
-                                <option value="THB">THB – Thai Baht</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="expenseFile">Upload File (Image or PDF)</label>
-                        <div class="file-input-wrapper">
-                            <input type="file" id="expenseFile" name="file" accept="image/*,.pdf" required>
-                            <div class="file-input-display">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
-                                </svg>
-                                <span id="fileLabel">Choose a file or drag it here</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div id="filePreview" class="file-preview hidden"></div>
-
-                    <button type="submit" class="btn btn-primary">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M12 5v14M5 12h14"/>
-                        </svg>
-                        Add Expense
-                    </button>
-                </form>
-            </section>
-
-            <section class="expenses-section">
-                <div class="expenses-header">
-                    <h2>Expenses (<span id="expenseCount">0</span>)</h2>
-                    <div class="export-controls">
-                        <input type="text" id="reportTitle" placeholder="Report title..." class="report-title-input">
-                        <button id="exportBtn" class="btn btn-success" disabled>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-                            <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/>
-                        </svg>
-                        Export as PDF
-                    </button>
-                    </div>
-                </div>
-
-                <div id="expensesList" class="expenses-list">
-                    <div class="empty-state">
-                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                            <path d="M9 17h6M9 13h6M9 9h6M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z"/>
-                        </svg>
-                        <p>No expenses yet. Add your first expense above.</p>
-                    </div>
-                </div>
-                <div id="currencyTotals" class="currency-totals hidden"></div>
-            </section>
-        </main>
-
-        <footer class="footer">
-            <p>Expense Report Manager - Works offline</p>
-        </footer>
-    </div>
-
-    <div id="modal" class="modal hidden">
-        <div class="modal-content">
-            <h3 id="modalTitle">Confirm Action</h3>
-            <p id="modalMessage">Are you sure?</p>
-            <div class="modal-actions">
-                <button id="modalCancel" class="btn btn-secondary">Cancel</button>
-                <button id="modalConfirm" class="btn btn-danger">Confirm</button>
-            </div>
+    <header class="topbar">
+        <div class="brand"><img src="favicon.svg" alt="" width="28" height="28"><span>Expenses</span></div>
+        <button id="backupBtn" class="backup-pill" title="Backup">
+            <span class="dot"></span><span id="backupStatus">Backup</span>
+        </button>
+        <button class="icon-btn" popovertarget="menu" title="More" aria-label="More">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+        </button>
+        <div id="menu" class="menu" popover>
+            <button id="restoreBtn">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+                Restore from backup…
+            </button>
+            <button id="clearAllBtn" class="danger">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+                Clear all expenses
+            </button>
         </div>
-    </div>
+        <input type="file" id="importZipInput" accept=".zip,application/zip" hidden>
+    </header>
 
-    <div id="toast" class="toast hidden"></div>
+    <main class="layout">
+        <section class="card add-card" id="addSection">
+            <h2>New expense</h2>
+            <form id="expenseForm" class="expense-form">
+                <input type="file" id="expenseFile" accept="image/*,.pdf,application/pdf" multiple hidden>
+                <label for="expenseFile" id="dropzone" class="dropzone">
+                    <span class="dropzone-icon">
+                        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2v20l3-2 3 2 3-2 3 2 3-2 1 .7V2l-1 .7-3-2-3 2-3-2-3 2-3-2zM8 8h8M8 12h8M8 16h5"/></svg>
+                    </span>
+                    <strong>Add a receipt</strong>
+                    <span class="muted">Tap to choose photos or PDFs, or drop them here</span>
+                </label>
+                <button type="button" id="pasteBtn" class="btn btn-ghost paste-btn" hidden>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>
+                    Paste from clipboard
+                </button>
 
-    <div id="loadingOverlay" class="loading-overlay hidden">
+                <div id="staged" class="staged" hidden>
+                    <div id="stagedThumb" class="thumb"></div>
+                    <div class="staged-info">
+                        <div id="stagedName" class="ellipsis"></div>
+                        <div id="stagedMeta" class="muted small"></div>
+                    </div>
+                    <button type="button" id="skipBtn" class="btn btn-ghost">Remove</button>
+                </div>
+
+                <label class="field">
+                    <span>Title</span>
+                    <input type="text" id="expenseTitle" name="title" placeholder="e.g. Taxi to airport" autocomplete="off">
+                </label>
+
+                <div class="field-row">
+                    <label class="field grow">
+                        <span>Amount</span>
+                        <input type="number" id="expenseAmount" name="amount" placeholder="0.00" min="0" step="any" inputmode="decimal">
+                    </label>
+                    <label class="field">
+                        <span>Currency</span>
+                        <select id="expenseCurrency" name="currency">
+                            <option value="USD">USD</option>
+                            <option value="EUR">EUR</option>
+                            <option value="GBP">GBP</option>
+                            <option value="ILS">ILS</option>
+                            <option value="JPY">JPY</option>
+                            <option value="CHF">CHF</option>
+                            <option value="CAD">CAD</option>
+                            <option value="AUD">AUD</option>
+                            <option value="CNY">CNY</option>
+                            <option value="INR">INR</option>
+                            <option value="MXN">MXN</option>
+                            <option value="BRL">BRL</option>
+                            <option value="KRW">KRW</option>
+                            <option value="SGD">SGD</option>
+                            <option value="HKD">HKD</option>
+                            <option value="NOK">NOK</option>
+                            <option value="SEK">SEK</option>
+                            <option value="DKK">DKK</option>
+                            <option value="PLN">PLN</option>
+                            <option value="TRY">TRY</option>
+                            <option value="ZAR">ZAR</option>
+                            <option value="AED">AED</option>
+                            <option value="SAR">SAR</option>
+                            <option value="THB">THB</option>
+                        </select>
+                    </label>
+                </div>
+
+                <div class="field-row">
+                    <label class="field grow">
+                        <span>Date</span>
+                        <input type="date" id="expenseDate" name="date" required>
+                    </label>
+                    <label class="field grow">
+                        <span>Time <em>optional</em></span>
+                        <input type="time" id="expenseTime" name="time">
+                    </label>
+                </div>
+
+                <button type="submit" id="submitBtn" class="btn btn-primary btn-block">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+                    Add expense
+                </button>
+            </form>
+        </section>
+
+        <section class="card report-card">
+            <div class="report-head">
+                <div>
+                    <div class="eyebrow"><span id="expenseCount">0</span> expenses</div>
+                    <div id="currencyTotals" class="totals"><span class="muted">No amounts yet</span></div>
+                </div>
+            </div>
+            <div class="report-export">
+                <input type="text" id="reportTitle" placeholder="Report title (optional)">
+                <button id="exportBtn" class="btn btn-primary" disabled>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M12 18v-6M9 15l3 3 3-3"/></svg>
+                    Export PDF
+                </button>
+            </div>
+            <ul id="expensesList" class="expense-list"></ul>
+        </section>
+    </main>
+
+    <!-- Generic confirm dialog: buttons are filled in by app.js -->
+    <dialog id="confirmDialog" class="sheet">
+        <form method="dialog">
+            <h3 id="confirmTitle"></h3>
+            <p id="confirmMessage" class="muted"></p>
+            <div id="confirmActions" class="sheet-actions"></div>
+        </form>
+    </dialog>
+
+    <dialog id="backupDialog" class="sheet">
+        <form method="dialog">
+            <h3>Backup</h3>
+            <dl class="backup-facts">
+                <dt>Last backup</dt><dd id="backupLast"></dd>
+                <dt>Changes since</dt><dd id="backupChanges"></dd>
+                <dt>On this device</dt><dd id="storageInfo"></dd>
+            </dl>
+            <p class="muted small">A backup is a ZIP with every receipt and its details. Keep it somewhere off this device (iCloud Drive, Google Drive, email to yourself) and restore it from the ⋯ menu.</p>
+            <div class="sheet-actions">
+                <button value="" class="btn btn-ghost">Close</button>
+                <button type="button" id="downloadBackupBtn" class="btn btn-secondary" disabled>Download ZIP</button>
+                <button type="button" id="shareBackupBtn" class="btn btn-primary" disabled hidden>Share backup…</button>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog id="viewer" class="viewer">
+        <form method="dialog"><button class="icon-btn viewer-close" aria-label="Close">✕</button></form>
+        <img id="viewerImg" alt="">
+    </dialog>
+
+    <div id="toast" class="toast" hidden></div>
+
+    <div id="loadingOverlay" class="loading-overlay" hidden>
         <div class="spinner"></div>
-        <p>Generating PDF...</p>
+        <p id="loadingText"></p>
     </div>
 
-    <!-- PDF and ZIP libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>

@@ -1,41 +1,175 @@
 // Expense Report Manager - PWA Application
-// Uses IndexedDB for storage to handle large files (images/PDFs)
+// Expenses (including their receipt files, as data URLs) live in IndexedDB.
 
 const DB_NAME = 'ExpenseReportDB';
 const DB_VERSION = 1;
 const STORE_NAME = 'expenses';
+const SHARE_CACHE = 'expense-share';   // filled by sw.js when files are shared into the app — keep in sync
+const BACKUP_KEY = 'expenses-backup';  // localStorage: { at: ISO date of last backup | null, changes: n since }
+const CURRENCY_KEY = 'expenses-currency';
+
+const $ = (id) => document.getElementById(id);
+
+const ICONS = {
+    pdf: `<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>`,
+    trash: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>`,
+    grip: `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>`,
+    receipt: `<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2v20l3-2 3 2 3-2 3 2 3-2 1 .7V2l-1 .7-3-2-3 2-3-2-3 2-3-2zM8 8h8M8 12h8M8 16h5"/></svg>`
+};
+
+/** Show a transient message at the bottom of the screen. */
+function toast(message, type = '') {
+    const el = $('toast');
+    el.textContent = message;
+    el.className = `toast ${type}`;
+    el.hidden = false;
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => { el.hidden = true; }, type === 'error' ? 6000 : 3000);
+}
+
+addEventListener('error', (e) => { console.error(e.error || e.message); toast(`Error: ${e.message}`, 'error'); });
+addEventListener('unhandledrejection', (e) => { console.error(e.reason); toast(`Error: ${e.reason?.message ?? e.reason}`, 'error'); });
+
+/** Show (text) or hide (false) the full-screen busy overlay. */
+function busy(text) {
+    $('loadingOverlay').hidden = !text;
+    if (text) $('loadingText').textContent = text;
+}
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/** Parse a YYYY-MM-DD string as a *local* date (new Date('2024-01-02') would be UTC midnight). */
+const localDate = (date) => new Date(`${date}T00:00`);
+
+const formatDate = (date, month = 'long') =>
+    localDate(date).toLocaleDateString('en-US', { year: 'numeric', month, day: 'numeric' });
+
+function formatTime(time) {
+    if (!time) return null;
+    const [hours, minutes] = time.split(':');
+    const hour = parseInt(hours);
+    return `${hour % 12 || 12}:${minutes} ${hour >= 12 ? 'PM' : 'AM'}`;
+}
+
+function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+/** Format a monetary amount using the browser's Intl API (for UI display). */
+function formatAmount(amount, currency) {
+    try {
+        return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(amount);
+    } catch (e) {
+        console.error(`Cannot format currency ${currency}:`, e);
+        return `${currency} ${amount.toFixed(2)}`;
+    }
+}
+
+/**
+ * Format a monetary amount for PDF embedding.
+ * pdf-lib standard fonts only support WinAnsi (Latin-1), so we use the
+ * currency code instead of a locale symbol to avoid encoding errors (e.g. ₪).
+ */
+const formatAmountForPDF = (amount, currency) => `${currency} ${amount.toFixed(2)}`;
+
+const hasAmount = (e) => e.amount !== null && e.amount !== undefined && e.currency;
+
+/** Sum amounts per currency: { USD: 12.5, ILS: 40 }. */
+function currencyTotals(expenses) {
+    const totals = {};
+    for (const e of expenses.filter(hasAmount)) totals[e.currency] = (totals[e.currency] || 0) + e.amount;
+    return totals;
+}
+
+/** "3 days ago", "yesterday", "just now". */
+function timeAgo(iso) {
+    const seconds = (Date.now() - new Date(iso)) / 1000;
+    const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+    for (const [unit, n] of [['day', 86400], ['hour', 3600], ['minute', 60]]) {
+        if (seconds >= n) return rtf.format(-Math.floor(seconds / n), unit);
+    }
+    return 'just now';
+}
+
+const isPdf = (file) => file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+
+function readFileAsDataURL(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+    });
+}
+
+function dataUrlToUint8Array(dataUrl) {
+    const binary = atob(dataUrl.split(',')[1]);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+}
+
+function getImageDimensions(dataUrl) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve({ width: img.width, height: img.height });
+        img.onerror = () => reject(new Error('Could not decode image'));
+        img.src = dataUrl;
+    });
+}
+
+/**
+ * Clipboard images arrive nameless and as (often huge) PNGs — an iPhone photo copied from
+ * Photos is ~15 MB as PNG. Re-encode as a named JPEG capped at 2400px to keep storage and PDFs small.
+ */
+async function pastedImageToFile(blob) {
+    const bmp = await createImageBitmap(blob);
+    const scale = Math.min(1, 2400 / Math.max(bmp.width, bmp.height));
+    const canvas = Object.assign(document.createElement('canvas'), {
+        width: Math.round(bmp.width * scale), height: Math.round(bmp.height * scale)
+    });
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; // transparent PNG areas would otherwise turn black
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    const jpeg = await new Promise((resolve, reject) =>
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('JPEG encoding failed'))), 'image/jpeg', 0.85));
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+    return new File([jpeg], `pasted-${stamp}.jpg`, { type: 'image/jpeg' });
+}
 
 class ExpenseManager {
     constructor() {
         this.db = null;
         this.expenses = [];
-        this.lastCurrency = 'USD';
+        this.queue = [];          // files waiting to become expenses; the form edits queue[0]
+        this.previewUrl = null;   // object URL for the queued file's thumbnail
+        this.backupFile = null;   // prepared backup ZIP (see openBackup)
+        this.persisted = null;    // whether the browser promised not to evict our storage
         this.init();
     }
 
     async init() {
+        this.setupEventListeners();
+        this.resetForm();
         await this.initDB();
         await this.loadExpenses();
-        this.setupEventListeners();
-        this.setDefaultDate();
+        this.renderBackupStatus();
+        await this.receiveShared();
         this.registerServiceWorker();
+        // Ask the browser not to evict IndexedDB under storage pressure (Safari otherwise may after 7 days of no use).
+        this.persisted = (await navigator.storage?.persisted?.()) || (await navigator.storage?.persist?.()) || false;
     }
 
-    // IndexedDB Initialization
+    // ---------- IndexedDB ----------
+
     initDB() {
         return new Promise((resolve, reject) => {
             const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-            request.onerror = () => {
-                console.error('Failed to open database');
-                reject(request.error);
-            };
-
-            request.onsuccess = () => {
-                this.db = request.result;
-                resolve();
-            };
-
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => { this.db = request.result; resolve(); };
             request.onupgradeneeded = (event) => {
                 const db = event.target.result;
                 if (!db.objectStoreNames.contains(STORE_NAME)) {
@@ -47,560 +181,517 @@ class ExpenseManager {
         });
     }
 
-    // Load all expenses from IndexedDB
+    /** Run fn(store) in one transaction; resolves with fn's request result once the transaction commits. */
+    idb(mode, fn) {
+        return new Promise((resolve, reject) => {
+            const tx = this.db.transaction(STORE_NAME, mode);
+            const request = fn(tx.objectStore(STORE_NAME));
+            tx.oncomplete = () => resolve(request?.result);
+            tx.onerror = tx.onabort = () => reject(tx.error);
+        });
+    }
+
     async loadExpenses() {
-        return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([STORE_NAME], 'readonly');
-            const store = transaction.objectStore(STORE_NAME);
-            const request = store.getAll();
-
-            request.onsuccess = () => {
-                // Sort by order field if exists, otherwise by createdAt
-                this.expenses = request.result.sort((a, b) => {
-                    if (a.order !== undefined && b.order !== undefined) {
-                        return a.order - b.order;
-                    }
-                    return new Date(b.createdAt) - new Date(a.createdAt);
-                });
-                this.renderExpenses();
-                resolve();
-            };
-
-            request.onerror = () => reject(request.error);
-        });
-    }
-
-    // Add expense to IndexedDB
-    async addExpense(expense) {
-        return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([STORE_NAME], 'readwrite');
-            const store = transaction.objectStore(STORE_NAME);
-            const request = store.add(expense);
-
-            request.onsuccess = () => {
-                this.expenses.unshift(expense);
-                this.renderExpenses();
-                resolve();
-            };
-
-            request.onerror = () => reject(request.error);
-        });
-    }
-
-    // Delete expense from IndexedDB
-    async deleteExpense(id) {
-        return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([STORE_NAME], 'readwrite');
-            const store = transaction.objectStore(STORE_NAME);
-            const request = store.delete(id);
-
-            request.onsuccess = () => {
-                this.expenses = this.expenses.filter(e => e.id !== id);
-                this.renderExpenses();
-                resolve();
-            };
-
-            request.onerror = () => reject(request.error);
-        });
-    }
-
-    // Clear all expenses from IndexedDB
-    async clearAllExpenses() {
-        return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([STORE_NAME], 'readwrite');
-            const store = transaction.objectStore(STORE_NAME);
-            const request = store.clear();
-
-            request.onsuccess = () => {
-                this.expenses = [];
-                this.renderExpenses();
-                resolve();
-            };
-
-            request.onerror = () => reject(request.error);
-        });
-    }
-
-    // Setup event listeners
-    setupEventListeners() {
-        // Form submission
-        const form = document.getElementById('expenseForm');
-        form.addEventListener('submit', (e) => this.handleFormSubmit(e));
-
-        // File input change
-        const fileInput = document.getElementById('expenseFile');
-        fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
-
-        // Drag and drop
-        const fileDisplay = document.querySelector('.file-input-display');
-        fileDisplay.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            fileDisplay.classList.add('dragover');
-        });
-        fileDisplay.addEventListener('dragleave', () => {
-            fileDisplay.classList.remove('dragover');
-        });
-        fileDisplay.addEventListener('drop', (e) => {
-            e.preventDefault();
-            fileDisplay.classList.remove('dragover');
-            if (e.dataTransfer.files.length > 0) {
-                fileInput.files = e.dataTransfer.files;
-                this.handleFileSelect({ target: fileInput });
-            }
-        });
-
-        // Clear all button
-        document.getElementById('clearAllBtn').addEventListener('click', () => {
-            this.showModal(
-                'Clear All Expenses',
-                'Are you sure you want to delete all expenses? This action cannot be undone.',
-                async () => {
-                    await this.clearAllExpenses();
-                    this.showToast('All expenses cleared', 'success');
-                }
-            );
-        });
-
-        // Export PDF button
-        document.getElementById('exportBtn').addEventListener('click', () => {
-            this.exportToPDF();
-        });
-
-        // Export ZIP button
-        document.getElementById('exportZipBtn').addEventListener('click', () => {
-            this.exportToZip();
-        });
-
-        // Import ZIP button
-        const importZipInput = document.getElementById('importZipInput');
-        document.getElementById('importZipBtn').addEventListener('click', () => {
-            importZipInput.click();
-        });
-        importZipInput.addEventListener('change', (e) => {
-            if (e.target.files.length > 0) {
-                this.importFromZip(e.target.files[0]);
-                e.target.value = ''; // Reset for re-importing same file
-            }
-        });
-
-        // Modal buttons
-        document.getElementById('modalCancel').addEventListener('click', () => {
-            this.hideModal();
-        });
-    }
-
-    // Set default date to today
-    setDefaultDate() {
-        const dateInput = document.getElementById('expenseDate');
-        const today = new Date().toISOString().split('T')[0];
-        dateInput.value = today;
-    }
-
-    // Handle file selection
-    handleFileSelect(event) {
-        const file = event.target.files[0];
-        if (!file) return;
-
-        const fileLabel = document.getElementById('fileLabel');
-        const preview = document.getElementById('filePreview');
-
-        fileLabel.textContent = file.name;
-
-        // Show preview
-        preview.innerHTML = '';
-        preview.classList.remove('hidden');
-
-        if (file.type.startsWith('image/')) {
-            const img = document.createElement('img');
-            img.src = URL.createObjectURL(file);
-            img.alt = 'Preview';
-            preview.appendChild(img);
-        } else if (file.type === 'application/pdf') {
-            preview.innerHTML = `
-                <div class="pdf-preview">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-                        <path d="M14 2v6h6"/>
-                    </svg>
-                    <span>${file.name}</span>
-                </div>
-            `;
-        }
-    }
-
-    // Handle form submission
-    async handleFormSubmit(event) {
-        event.preventDefault();
-
-        const form = event.target;
-        const title = form.title.value.trim();
-        const date = form.date.value;
-        const time = form.time.value || null;
-        const file = form.file.files[0];
-        const amountVal = form.amount.value;
-        const amount = amountVal !== '' ? parseFloat(amountVal) : null;
-        const currency = form.currency.value;
-
-        if (!file) {
-            this.showToast('Please select a file', 'error');
-            return;
-        }
-
-        // Remember currency choice for next expense
-        if (amount !== null) this.lastCurrency = currency;
-
-        try {
-            // Read file as base64
-            const fileData = await this.readFileAsBase64(file);
-
-            const expense = {
-                id: Date.now().toString(),
-                title: title || '',
-                date: date,
-                time: time,
-                amount: amount,
-                currency: amount !== null ? currency : null,
-                fileName: file.name,
-                fileType: file.type,
-                fileSize: file.size,
-                fileData: fileData,
-                order: this.expenses.length,
-                createdAt: new Date().toISOString()
-            };
-
-            await this.addExpense(expense);
-            this.showToast('Expense added successfully', 'success');
-
-            // Reset form, but restore last-used currency
-            form.reset();
-            this.setDefaultDate();
-            document.getElementById('expenseCurrency').value = this.lastCurrency;
-            document.getElementById('fileLabel').textContent = 'Choose a file or drag it here';
-            document.getElementById('filePreview').classList.add('hidden');
-        } catch (error) {
-            console.error('Error adding expense:', error);
-            this.showToast('Failed to add expense', 'error');
-        }
-    }
-
-    // Read file as base64
-    readFileAsBase64(file) {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result);
-            reader.onerror = () => reject(reader.error);
-            reader.readAsDataURL(file);
-        });
-    }
-
-    // Render expenses list
-    renderExpenses() {
-        const list = document.getElementById('expensesList');
-        const count = document.getElementById('expenseCount');
-        const exportBtn = document.getElementById('exportBtn');
-        const exportZipBtn = document.getElementById('exportZipBtn');
-
-        count.textContent = this.expenses.length;
-        exportBtn.disabled = this.expenses.length === 0;
-        exportZipBtn.disabled = this.expenses.length === 0;
-
-        if (this.expenses.length === 0) {
-            list.innerHTML = `
-                <div class="empty-state">
-                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <path d="M9 17h6M9 13h6M9 9h6M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z"/>
-                    </svg>
-                    <p>No expenses yet. Add your first expense above.</p>
-                </div>
-            `;
-            this.renderCurrencyTotals();
-            return;
-        }
-
-        list.innerHTML = this.expenses.map((expense, index) => this.createExpenseCard(expense, index)).join('');
-
-        this.renderCurrencyTotals();
-
-        // Add delete event listeners
-        list.querySelectorAll('.delete-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const id = btn.dataset.id;
-                const expense = this.expenses.find(e => e.id === id);
-                this.showModal(
-                    'Delete Expense',
-                    `Are you sure you want to delete "${expense.title || 'Untitled'}"?`,
-                    async () => {
-                        await this.deleteExpense(id);
-                        this.showToast('Expense deleted', 'success');
-                    }
-                );
-            });
-        });
-
-        // Add drag and drop event listeners
-        this.setupDragAndDrop(list);
-    }
-
-    // Setup drag and drop for expense reordering
-    setupDragAndDrop(list) {
-        let draggedItem = null;
-        let draggedIndex = null;
-
-        const cards = list.querySelectorAll('.expense-card');
-
-        cards.forEach(card => {
-            card.addEventListener('dragstart', (e) => {
-                draggedItem = card;
-                draggedIndex = parseInt(card.dataset.index);
-                card.classList.add('dragging');
-                e.dataTransfer.effectAllowed = 'move';
-            });
-
-            card.addEventListener('dragend', () => {
-                card.classList.remove('dragging');
-                draggedItem = null;
-                draggedIndex = null;
-                // Remove all drop indicators
-                list.querySelectorAll('.expense-card').forEach(c => {
-                    c.classList.remove('drag-over', 'drag-over-top', 'drag-over-bottom');
-                });
-            });
-
-            card.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                e.dataTransfer.dropEffect = 'move';
-
-                if (draggedItem && draggedItem !== card) {
-                    const rect = card.getBoundingClientRect();
-                    const midpoint = rect.top + rect.height / 2;
-
-                    card.classList.remove('drag-over-top', 'drag-over-bottom');
-                    if (e.clientY < midpoint) {
-                        card.classList.add('drag-over-top');
-                    } else {
-                        card.classList.add('drag-over-bottom');
-                    }
-                }
-            });
-
-            card.addEventListener('dragleave', () => {
-                card.classList.remove('drag-over', 'drag-over-top', 'drag-over-bottom');
-            });
-
-            card.addEventListener('drop', async (e) => {
-                e.preventDefault();
-                card.classList.remove('drag-over', 'drag-over-top', 'drag-over-bottom');
-
-                if (draggedItem && draggedItem !== card) {
-                    const targetIndex = parseInt(card.dataset.index);
-                    const rect = card.getBoundingClientRect();
-                    const midpoint = rect.top + rect.height / 2;
-                    const insertAfter = e.clientY >= midpoint;
-
-                    await this.reorderExpenses(draggedIndex, targetIndex, insertAfter);
-                }
-            });
-        });
-    }
-
-    // Reorder expenses and update IndexedDB
-    async reorderExpenses(fromIndex, toIndex, insertAfter) {
-        const item = this.expenses.splice(fromIndex, 1)[0];
-
-        // Calculate new index after removal
-        let newIndex = toIndex;
-        if (fromIndex < toIndex) {
-            newIndex = insertAfter ? toIndex : toIndex - 1;
-        } else {
-            newIndex = insertAfter ? toIndex + 1 : toIndex;
-        }
-
-        this.expenses.splice(newIndex, 0, item);
-
-        // Update order field for all expenses
-        const transaction = this.db.transaction([STORE_NAME], 'readwrite');
-        const store = transaction.objectStore(STORE_NAME);
-
-        for (let i = 0; i < this.expenses.length; i++) {
-            this.expenses[i].order = i;
-            store.put(this.expenses[i]);
-        }
-
-        await new Promise((resolve, reject) => {
-            transaction.oncomplete = resolve;
-            transaction.onerror = () => reject(transaction.error);
-        });
-
+        const all = await this.idb('readonly', (s) => s.getAll());
+        // Sort by order field if present, otherwise newest first
+        this.expenses = all.sort((a, b) =>
+            a.order !== undefined && b.order !== undefined ? a.order - b.order : new Date(b.createdAt) - new Date(a.createdAt));
         this.renderExpenses();
     }
 
-    // Format time for display
-    formatTime(time) {
-        if (!time) return null;
-        const [hours, minutes] = time.split(':');
-        const hour = parseInt(hours);
-        const ampm = hour >= 12 ? 'PM' : 'AM';
-        const hour12 = hour % 12 || 12;
-        return `${hour12}:${minutes} ${ampm}`;
+    /** Persist the current array order into each expense's `order` field. */
+    saveOrder() {
+        return this.idb('readwrite', (s) => { this.expenses.forEach((e, i) => { e.order = i; s.put(e); }); });
     }
 
-    // Create expense card HTML
-    createExpenseCard(expense, index) {
-        const isImage = expense.fileType.startsWith('image/');
-        const formattedDate = new Date(expense.date).toLocaleDateString('en-US', {
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric'
+    // ---------- Event wiring ----------
+
+    setupEventListeners() {
+        $('expenseForm').addEventListener('submit', (e) => this.handleFormSubmit(e));
+        $('expenseFile').addEventListener('change', (e) => {
+            this.enqueue([...e.target.files]);
+            e.target.value = '';
         });
-        const formattedTime = this.formatTime(expense.time);
-        const dateTimeDisplay = formattedTime ? `${formattedDate} at ${formattedTime}` : formattedDate;
-        const fileSize = this.formatFileSize(expense.fileSize);
+        $('skipBtn').addEventListener('click', () => { this.queue.shift(); this.renderQueue(); });
 
-        return `
-            <div class="expense-card" draggable="true" data-id="${expense.id}" data-index="${index}">
-                <div class="drag-handle" title="Drag to reorder">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/>
-                        <circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/>
-                        <circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/>
-                    </svg>
-                </div>
-                <div class="expense-thumbnail ${isImage ? '' : 'pdf'}">
-                    ${isImage
-                        ? `<img src="${expense.fileData}" alt="${expense.title || 'Expense'}">`
-                        : `<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-                            <path d="M14 2v6h6"/>
-                           </svg>`
-                    }
-                </div>
-                <div class="expense-details">
-                    <div class="expense-title ${expense.title ? '' : 'untitled'}">
-                        ${expense.title || 'Untitled'}
-                    </div>
-                    <div class="expense-date">${dateTimeDisplay}</div>
-                    <div class="expense-file-info">${expense.fileName} (${fileSize})</div>
-                    ${expense.amount !== null && expense.amount !== undefined
-                        ? `<div class="expense-amount">${this.formatAmount(expense.amount, expense.currency)}</div>`
-                        : ''}
-                </div>
-                <div class="expense-actions">
-                    <button class="btn-icon delete-btn" data-id="${expense.id}" title="Delete expense">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
-                        </svg>
-                    </button>
-                </div>
-            </div>
-        `;
+        // Drop files anywhere on the page
+        addEventListener('dragover', (e) => {
+            if (!e.dataTransfer.types.includes('Files')) return;
+            e.preventDefault();
+            $('dropzone').classList.add('dragover');
+        });
+        addEventListener('dragleave', (e) => { if (!e.relatedTarget) $('dropzone').classList.remove('dragover'); });
+        addEventListener('drop', (e) => {
+            $('dropzone').classList.remove('dragover');
+            if (!e.dataTransfer.files.length) return;
+            e.preventDefault();
+            this.enqueue([...e.dataTransfer.files]);
+        });
+
+        // Paste (⌘V / long-press → Paste) images or files anywhere on the page
+        addEventListener('paste', async (e) => {
+            const files = [...e.clipboardData.files];
+            if (!files.length) return; // plain text paste into an input — leave it alone
+            e.preventDefault();
+            this.enqueue(await Promise.all(files.map((f) => (f.type.startsWith('image/') ? pastedImageToFile(f) : f))));
+        });
+        if (navigator.clipboard?.read) {
+            $('pasteBtn').hidden = false;
+            $('pasteBtn').addEventListener('click', () => this.pasteFromClipboard());
+        }
+
+        $('expensesList').addEventListener('click', (e) => {
+            const card = e.target.closest('.expense');
+            if (!card) return;
+            const expense = this.expenses[card.dataset.index];
+            if (e.target.closest('.delete-btn')) this.confirmDelete(expense);
+            else if (e.target.closest('.thumb')) this.view(expense);
+        });
+        this.setupDragAndDrop($('expensesList'));
+        $('viewer').addEventListener('click', () => $('viewer').close());
+
+        $('exportBtn').addEventListener('click', () => this.exportToPDF());
+        $('backupBtn').addEventListener('click', () => this.openBackup());
+        $('downloadBackupBtn').addEventListener('click', () => this.downloadBackup());
+        $('shareBackupBtn').addEventListener('click', () => this.shareBackup());
+        $('restoreBtn').addEventListener('click', () => { $('menu').hidePopover(); $('importZipInput').click(); });
+        $('importZipInput').addEventListener('change', (e) => {
+            if (e.target.files.length) this.importFromZip(e.target.files[0]);
+            e.target.value = ''; // allow re-importing the same file
+        });
+        $('clearAllBtn').addEventListener('click', () => { $('menu').hidePopover(); this.confirmClearAll(); });
+        $('expenseCurrency').addEventListener('change', (e) => this.store(CURRENCY_KEY, e.target.value));
     }
 
-    // Format file size
-    formatFileSize(bytes) {
-        if (bytes < 1024) return bytes + ' B';
-        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    // ---------- Adding expenses ----------
+
+    /** Queue files (from picker, drop, paste or share sheet) to be filled in one by one via the form. */
+    enqueue(files, title = '') {
+        const ok = files.filter((f) => f.type.startsWith('image/') || isPdf(f));
+        if (ok.length < files.length) toast(`Skipped ${files.length - ok.length} file(s): only images and PDFs are supported`, 'error');
+        if (!ok.length) return;
+        this.queue.push(...ok);
+        if (title && !$('expenseTitle').value) $('expenseTitle').value = title;
+        this.renderQueue();
+        $('addSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
-    /** Format a monetary amount using the browser's Intl API (for UI display). */
-    formatAmount(amount, currency) {
+    renderQueue() {
+        const file = this.queue[0];
+        $('dropzone').hidden = !!file;
+        $('pasteBtn').hidden = !!file || !navigator.clipboard?.read;
+        $('staged').hidden = !file;
+        URL.revokeObjectURL(this.previewUrl);
+        if (!file) return;
+        this.previewUrl = URL.createObjectURL(file);
+        $('stagedThumb').className = `thumb ${isPdf(file) ? 'pdf' : ''}`;
+        $('stagedThumb').innerHTML = isPdf(file) ? ICONS.pdf : `<img src="${this.previewUrl}" alt="">`;
+        $('stagedName').textContent = file.name;
+        $('stagedMeta').textContent = formatFileSize(file.size) + (this.queue.length > 1 ? ` · 1 of ${this.queue.length} to add` : '');
+        $('skipBtn').textContent = this.queue.length > 1 ? 'Skip' : 'Remove';
+    }
+
+    async pasteFromClipboard() {
         try {
-            return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(amount);
-        } catch (e) {
-            return `${currency} ${amount.toFixed(2)}`;
-        }
-    }
-
-    /**
-     * Format a monetary amount for PDF embedding.
-     * pdf-lib standard fonts only support WinAnsi (Latin-1), so we use the
-     * currency code instead of a locale symbol to avoid encoding errors (e.g. ₪).
-     */
-    formatAmountForPDF(amount, currency) {
-        return `${currency} ${amount.toFixed(2)}`;
-    }
-
-    /** Compute per-currency totals and render the summary strip. */
-    renderCurrencyTotals() {
-        const totalsEl = document.getElementById('currencyTotals');
-        if (!totalsEl) return;
-
-        const totals = {};
-        for (const expense of this.expenses) {
-            if (expense.amount !== null && expense.amount !== undefined && expense.currency) {
-                totals[expense.currency] = (totals[expense.currency] || 0) + expense.amount;
+            const files = [];
+            for (const item of await navigator.clipboard.read()) {
+                const type = item.types.find((t) => t.startsWith('image/') || t === 'application/pdf');
+                if (!type) continue;
+                const blob = await item.getType(type);
+                files.push(type === 'application/pdf' ? new File([blob], 'pasted.pdf', { type }) : await pastedImageToFile(blob));
             }
+            if (!files.length) return toast('No image or PDF on the clipboard. Copy one first (Share → Copy).', 'error');
+            this.enqueue(files);
+        } catch (e) {
+            console.error('Clipboard read failed:', e);
+            toast(`Could not read clipboard: ${e.message}`, 'error');
         }
+    }
 
-        const currencies = Object.keys(totals);
-        if (currencies.length === 0) {
-            totalsEl.classList.add('hidden');
+    /** Pick up files the service worker stashed after a Web Share Target POST (Android / Chrome). */
+    async receiveShared() {
+        const params = new URLSearchParams(location.search);
+        if (params.has('share-error')) toast(`Sharing failed: ${params.get('share-error')}`, 'error');
+        if (params.has('shared') || params.has('share-error')) history.replaceState(null, '', location.pathname);
+        if (!('caches' in window) || !(await caches.has(SHARE_CACHE))) return;
+
+        const cache = await caches.open(SHARE_CACHE);
+        const files = [];
+        for (const request of await cache.keys()) {
+            const response = await cache.match(request);
+            const name = decodeURIComponent(response.headers.get('X-File-Name') || 'shared-file');
+            files.push(new File([await response.blob()], name, { type: response.headers.get('Content-Type') || '' }));
+        }
+        await caches.delete(SHARE_CACHE);
+        if (files.length) {
+            this.enqueue(files, params.get('title') || '');
+            toast(`Received ${files.length} shared file(s)`, 'success');
+        } else {
+            toast('The share contained no files', 'error');
+        }
+    }
+
+    resetForm() {
+        const form = $('expenseForm');
+        form.reset();
+        form.date.value = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local time
+        form.currency.value = this.load(CURRENCY_KEY) || 'USD';
+    }
+
+    async handleFormSubmit(event) {
+        event.preventDefault();
+        const form = event.target;
+        const file = this.queue[0];
+        if (!file) return toast('Add a receipt (photo or PDF) first', 'error');
+
+        const amount = form.amount.value !== '' ? parseFloat(form.amount.value) : null;
+        try {
+            const expense = {
+                id: Date.now().toString(),
+                title: form.title.value.trim(),
+                date: form.date.value,
+                time: form.time.value || null,
+                amount,
+                currency: amount !== null ? form.currency.value : null,
+                fileName: file.name,
+                fileType: isPdf(file) ? 'application/pdf' : file.type,
+                fileSize: file.size,
+                fileData: await readFileAsDataURL(file),
+                order: this.expenses.length,
+                createdAt: new Date().toISOString()
+            };
+            await this.idb('readwrite', (s) => s.add(expense));
+            this.expenses.push(expense);
+            this.changed();
+            this.renderExpenses();
+            this.queue.shift();
+            this.renderQueue();
+            this.resetForm();
+            toast(this.queue.length ? `Added — ${this.queue.length} more to go` : 'Expense added', 'success');
+        } catch (error) {
+            console.error('Error adding expense:', error);
+            toast(`Failed to add expense: ${error.message}`, 'error');
+        }
+    }
+
+    // ---------- List ----------
+
+    renderExpenses() {
+        const list = $('expensesList');
+        $('expenseCount').textContent = this.expenses.length;
+        $('exportBtn').disabled = this.expenses.length === 0;
+
+        const totals = currencyTotals(this.expenses);
+        $('currencyTotals').innerHTML = Object.keys(totals).length
+            ? Object.entries(totals).map(([c, t]) => `<span class="total">${formatAmount(t, c)}</span>`).join('')
+            : '<span class="muted">No amounts yet</span>';
+
+        list.innerHTML = this.expenses.length
+            ? this.expenses.map((e, i) => this.createExpenseCard(e, i)).join('')
+            : `<li class="empty-state">${ICONS.receipt}<p>No expenses yet.<br>Add a receipt, or share one to this app.</p></li>`;
+    }
+
+    createExpenseCard(expense, index) {
+        const pdf = expense.fileType === 'application/pdf';
+        const meta = [formatDate(expense.date, 'short'), formatTime(expense.time), expense.fileName].filter(Boolean);
+        return `
+            <li class="expense" draggable="true" data-index="${index}">
+                <span class="grip" title="Drag to reorder">${ICONS.grip}</span>
+                <button class="thumb ${pdf ? 'pdf' : ''}" title="View receipt">
+                    ${pdf ? ICONS.pdf : `<img src="${expense.fileData}" alt="" loading="lazy">`}
+                </button>
+                <div class="expense-info">
+                    <div class="expense-title ellipsis ${expense.title ? '' : 'untitled'}">${esc(expense.title || 'Untitled')}</div>
+                    <div class="muted small ellipsis">${meta.map(esc).join(' · ')}</div>
+                </div>
+                ${hasAmount(expense) ? `<div class="expense-amount">${formatAmount(expense.amount, expense.currency)}</div>` : ''}
+                <button class="icon-btn delete-btn" title="Delete expense" aria-label="Delete">${ICONS.trash}</button>
+            </li>`;
+    }
+
+    /** Images open in an in-page viewer; PDFs in the browser's own PDF viewer. */
+    view(expense) {
+        if (expense.fileType === 'application/pdf') {
+            const blob = new Blob([dataUrlToUint8Array(expense.fileData)], { type: 'application/pdf' });
+            if (!window.open(URL.createObjectURL(blob), '_blank')) toast('Popup blocked — allow popups to view PDFs', 'error');
             return;
         }
-
-        totalsEl.innerHTML = `
-            <span class="currency-totals-label">Totals:</span>
-            ${currencies.map(c => `<span class="currency-total-item">${this.formatAmount(totals[c], c)}</span>`).join('')}
-        `;
-        totalsEl.classList.remove('hidden');
+        $('viewerImg').src = expense.fileData;
+        $('viewer').showModal();
     }
 
-    // Convert base64 data URL to Uint8Array
-    dataUrlToUint8Array(dataUrl) {
-        const base64 = dataUrl.split(',')[1];
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-            bytes[i] = binary.charCodeAt(i);
-        }
-        return bytes;
+    async confirmDelete(expense) {
+        const ok = await this.ask('Delete expense', `Delete "${expense.title || 'Untitled'}"? This cannot be undone.`, [['yes', 'Delete', 'btn-danger']]);
+        if (!ok) return;
+        await this.idb('readwrite', (s) => s.delete(expense.id));
+        this.expenses = this.expenses.filter((e) => e !== expense);
+        this.changed();
+        this.renderExpenses();
+        toast('Expense deleted', 'success');
     }
 
-    // Get page count for a PDF
-    async getPdfPageCount(dataUrl) {
+    async confirmClearAll() {
+        const { changes } = this.backupState();
+        const warning = changes ? ` ${changes} change(s) haven't been backed up yet.` : '';
+        const ok = await this.ask('Clear all expenses', `Delete all ${this.expenses.length} expenses?${warning} This cannot be undone.`, [['yes', 'Delete all', 'btn-danger']]);
+        if (!ok) return;
+        await this.idb('readwrite', (s) => s.clear());
+        this.expenses = [];
+        this.changed();
+        this.renderExpenses();
+        toast('All expenses cleared', 'success');
+    }
+
+    /** HTML5 drag & drop reordering (pointer devices). The drop indicator is drawn above/below the hovered card. */
+    setupDragAndDrop(list) {
+        let from = null;
+        const cardAt = (e) => e.target.closest?.('.expense');
+        const clear = () => list.querySelectorAll('.drag-over-top, .drag-over-bottom')
+            .forEach((c) => c.classList.remove('drag-over-top', 'drag-over-bottom'));
+        const below = (card, e) => { const r = card.getBoundingClientRect(); return e.clientY >= r.top + r.height / 2; };
+
+        list.addEventListener('dragstart', (e) => {
+            const card = cardAt(e);
+            if (!card) return;
+            from = +card.dataset.index;
+            card.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', ''); // Firefox requires data to start a drag
+        });
+        list.addEventListener('dragend', (e) => { cardAt(e)?.classList.remove('dragging'); clear(); from = null; });
+        list.addEventListener('dragover', (e) => {
+            const card = cardAt(e);
+            if (from === null || !card) return;
+            e.preventDefault();
+            e.stopPropagation(); // not a file drop
+            clear();
+            if (+card.dataset.index !== from) card.classList.add(below(card, e) ? 'drag-over-bottom' : 'drag-over-top');
+        });
+        list.addEventListener('drop', async (e) => {
+            const card = cardAt(e);
+            if (from === null || !card) return;
+            e.preventDefault();
+            e.stopPropagation();
+            clear();
+            const to = +card.dataset.index;
+            if (to === from) return;
+            const [item] = this.expenses.splice(from, 1);
+            // Index of the target after removal, then insert before or after it
+            const target = to - (from < to ? 1 : 0);
+            this.expenses.splice(target + (below(card, e) ? 1 : 0), 0, item);
+            await this.saveOrder();
+            this.changed();
+            this.renderExpenses();
+        });
+    }
+
+    // ---------- Dialogs ----------
+
+    /** Show the confirm dialog; resolves with the clicked button's value ('' for Cancel / Escape). */
+    ask(title, message, buttons) {
+        const dialog = $('confirmDialog');
+        $('confirmTitle').textContent = title;
+        $('confirmMessage').textContent = message;
+        $('confirmActions').innerHTML = [['', 'Cancel', 'btn-ghost'], ...buttons]
+            .map(([value, label, cls]) => `<button value="${value}" class="btn ${cls}">${label}</button>`).join('');
+        dialog.returnValue = '';
+        dialog.showModal();
+        return new Promise((resolve) => dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true }));
+    }
+
+    // ---------- Backups ----------
+
+    load(key) {
+        try { return localStorage.getItem(key); } catch (e) { console.error('localStorage read failed:', e); return null; }
+    }
+
+    store(key, value) {
+        try { localStorage.setItem(key, value); } catch (e) { console.error('localStorage write failed:', e); }
+    }
+
+    backupState() {
+        return { at: null, changes: 0, ...JSON.parse(this.load(BACKUP_KEY) || '{}') };
+    }
+
+    /** Record a data change (for the "N changes not backed up" reminder). */
+    changed() {
+        const state = this.backupState();
+        this.store(BACKUP_KEY, JSON.stringify({ ...state, changes: state.changes + 1 }));
+        this.backupFile = null;
+        this.renderBackupStatus();
+    }
+
+    markBackedUp() {
+        this.store(BACKUP_KEY, JSON.stringify({ at: new Date().toISOString(), changes: 0 }));
+        this.renderBackupStatus();
+    }
+
+    renderBackupStatus() {
+        const { at, changes } = this.backupState();
+        const pending = changes > 0 && this.expenses.length > 0;
+        $('backupBtn').classList.toggle('warn', pending);
+        $('backupBtn').classList.toggle('ok', !pending && !!at);
+        $('backupStatus').textContent = pending ? `${changes} not backed up` : at ? `Backed up ${timeAgo(at)}` : 'Backup';
+    }
+
+    /** Open the backup sheet and build the ZIP right away, so Share runs within the tap's user gesture (iOS requires it). */
+    async openBackup() {
+        const { at, changes } = this.backupState();
+        $('backupLast').textContent = at ? `${timeAgo(at)} (${new Date(at).toLocaleString()})` : 'Never';
+        $('backupChanges').textContent = String(changes);
+        const estimate = await navigator.storage?.estimate?.();
+        $('storageInfo').textContent = `${this.expenses.length} expenses` +
+            (estimate ? `, ${formatFileSize(estimate.usage)} used` : '') +
+            (this.persisted ? ' · protected from automatic cleanup' : ' · ⚠ browser may clear this data when space is low');
+        $('backupDialog').showModal();
+
+        const share = $('shareBackupBtn'), download = $('downloadBackupBtn');
+        share.disabled = download.disabled = true;
+        if (!this.expenses.length) return;
+        download.textContent = 'Preparing…';
         try {
-            const pdfBytes = this.dataUrlToUint8Array(dataUrl);
-            const pdfDoc = await PDFLib.PDFDocument.load(pdfBytes);
-            return pdfDoc.getPageCount();
+            this.backupFile ??= await this.buildZip();
+            share.hidden = !navigator.canShare?.({ files: [this.backupFile] });
+            share.disabled = download.disabled = false;
+            download.textContent = `Download ZIP (${formatFileSize(this.backupFile.size)})`;
         } catch (error) {
-            console.error('Error getting PDF page count:', error);
-            return 1;
+            console.error('Error building backup:', error);
+            download.textContent = 'Download ZIP';
+            toast(`Failed to build backup: ${error.message}`, 'error');
         }
     }
 
-    // Export to PDF
+    downloadBackup() {
+        const url = URL.createObjectURL(this.backupFile);
+        Object.assign(document.createElement('a'), { href: url, download: this.backupFile.name }).click();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+        this.markBackedUp();
+        $('backupDialog').close();
+        toast('Backup downloaded', 'success');
+    }
+
+    async shareBackup() {
+        try {
+            await navigator.share({ files: [this.backupFile], title: 'Expenses backup' });
+            this.markBackedUp();
+            $('backupDialog').close();
+            toast('Backup shared', 'success');
+        } catch (error) {
+            if (error.name === 'AbortError') return toast('Share cancelled — not backed up');
+            console.error('Share failed:', error);
+            toast(`Share failed: ${error.message}`, 'error');
+        }
+    }
+
+    /** Build a ZIP with expenses.json (metadata) and files/<id>.<ext> (receipts). */
+    async buildZip() {
+        const zip = new JSZip();
+        zip.file('expenses.json', JSON.stringify({
+            version: 1,
+            exportedAt: new Date().toISOString(),
+            expenses: this.expenses.map((e, index) => ({
+                id: e.id, title: e.title, date: e.date, time: e.time || null,
+                amount: e.amount ?? null, currency: e.currency ?? null, order: index,
+                fileName: e.fileName, fileType: e.fileType, fileSize: e.fileSize, createdAt: e.createdAt
+            }))
+        }, null, 2));
+        for (const e of this.expenses) {
+            zip.file(`files/${e.id}.${e.fileName.split('.').pop()}`, e.fileData.split(',')[1], { base64: true });
+        }
+        // Receipts are already compressed (JPEG/PDF); STORE is much faster and barely larger.
+        const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
+        const stamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
+        return new File([blob], `expenses-backup-${stamp}.zip`, { type: 'application/zip' });
+    }
+
+    /** Restore from a backup ZIP, either replacing everything or merging (skipping expenses already present). */
+    async importFromZip(file) {
+        try {
+            busy('Reading backup…');
+            const zip = await JSZip.loadAsync(file);
+            const metadataFile = zip.file('expenses.json');
+            if (!metadataFile) throw new Error('Invalid ZIP: expenses.json not found');
+            const metadata = JSON.parse(await metadataFile.async('string'));
+            if (!Array.isArray(metadata.expenses)) throw new Error('Invalid ZIP: expenses data is missing or invalid');
+            busy(false);
+
+            let replace = true;
+            if (this.expenses.length) {
+                const choice = await this.ask('Restore backup',
+                    `The backup has ${metadata.expenses.length} expense(s); you have ${this.expenses.length}. Merge them, or replace yours?`,
+                    [['merge', 'Merge', 'btn-secondary'], ['replace', 'Replace all', 'btn-danger']]);
+                if (!choice) return;
+                replace = choice === 'replace';
+            }
+
+            busy('Restoring…');
+            const existing = new Set(replace ? [] : this.expenses.map((e) => e.id));
+            const incoming = [];
+            const missing = [];
+            for (const meta of metadata.expenses) {
+                if (existing.has(meta.id)) continue;
+                const entry = zip.file(`files/${meta.id}.${meta.fileName.split('.').pop()}`);
+                if (!entry) { missing.push(meta.fileName); continue; }
+                incoming.push({
+                    id: meta.id,
+                    title: meta.title || '',
+                    date: meta.date,
+                    time: meta.time || null,
+                    amount: meta.amount ?? null,
+                    currency: meta.currency ?? null,
+                    fileName: meta.fileName,
+                    fileType: meta.fileType,
+                    fileSize: meta.fileSize,
+                    fileData: `data:${meta.fileType};base64,${await entry.async('base64')}`,
+                    createdAt: meta.createdAt || new Date().toISOString()
+                });
+            }
+            const base = replace ? 0 : this.expenses.length;
+            await this.idb('readwrite', (s) => {
+                if (replace) s.clear();
+                incoming.forEach((e, i) => s.put({ ...e, order: base + i }));
+            });
+            await this.loadExpenses();
+            if (replace || incoming.length) this.changed();
+
+            const skipped = metadata.expenses.length - incoming.length - missing.length;
+            toast(`Restored ${incoming.length} expense(s)` + (skipped ? `, skipped ${skipped} already here` : ''), 'success');
+            if (missing.length) {
+                console.error('Files missing from backup ZIP:', missing);
+                toast(`${missing.length} receipt file(s) were missing from the ZIP: ${missing.join(', ')}`, 'error');
+            }
+        } catch (error) {
+            console.error('Error importing from ZIP:', error);
+            toast(`Restore failed: ${error.message}`, 'error');
+        } finally {
+            busy(false);
+        }
+    }
+
+    // ---------- PDF export ----------
+
+    async getPdfPageCount(dataUrl) {
+        const pdfDoc = await PDFLib.PDFDocument.load(dataUrlToUint8Array(dataUrl));
+        return pdfDoc.getPageCount();
+    }
+
     async exportToPDF() {
         if (this.expenses.length === 0) return;
-
-        const loadingOverlay = document.getElementById('loadingOverlay');
-        loadingOverlay.classList.remove('hidden');
-
-        // Get the report title from input
-        const reportTitleInput = document.getElementById('reportTitle');
-        const reportTitle = reportTitleInput.value.trim() || 'Expense Report';
+        busy('Generating PDF…');
+        const reportTitle = $('reportTitle').value.trim() || 'Expense Report';
 
         try {
             const { jsPDF } = window.jspdf;
             const { PDFDocument, rgb } = PDFLib;
 
-            // Sort expenses by date
-            const sortedExpenses = [...this.expenses].sort((a, b) =>
-                new Date(a.date) - new Date(b.date)
-            );
+            const sortedExpenses = [...this.expenses].sort((a, b) => localDate(a.date) - localDate(b.date));
 
-            // First pass: Calculate page counts for each expense
+            // First pass: page counts, so the table of contents can reference page numbers.
+            // Page 1 = Title/TOC, expenses start at page 2.
             const expensePageCounts = [];
             for (const expense of sortedExpenses) {
-                if (expense.fileType === 'application/pdf') {
-                    const pageCount = await this.getPdfPageCount(expense.fileData);
-                    expensePageCounts.push(pageCount);
-                } else {
-                    expensePageCounts.push(1); // Images take 1 page
-                }
+                expensePageCounts.push(expense.fileType === 'application/pdf' ? await this.getPdfPageCount(expense.fileData) : 1);
             }
-
-            // Calculate starting page for each expense
-            // Page 1 = Title/TOC, expenses start at page 2
             const expenseStartPages = [];
             let currentPage = 2;
             for (const pageCount of expensePageCounts) {
@@ -609,620 +700,157 @@ class ExpenseManager {
             }
             const totalPages = currentPage - 1;
 
-            // Create the final PDF document using pdf-lib
             const finalPdf = await PDFDocument.create();
-            const pageWidth = 595.28; // A4 width in points
+            const pageWidth = 595.28;  // A4 width in points
             const pageHeight = 841.89; // A4 height in points
-            const margin = 56.69; // 20mm in points
-
-            // Helper to add text to a page
-            const addText = async (page, text, x, y, size = 12, bold = false) => {
-                const font = bold
-                    ? await finalPdf.embedFont(PDFLib.StandardFonts.HelveticaBold)
-                    : await finalPdf.embedFont(PDFLib.StandardFonts.Helvetica);
-                page.drawText(text, {
-                    x,
-                    y: pageHeight - y,
-                    size,
-                    font,
-                    color: rgb(0, 0, 0)
-                });
-            };
-
-            // Create title page with TOC
-            const titlePage = finalPdf.addPage([pageWidth, pageHeight]);
+            const margin = 56.69;      // 20mm in points
             const helveticaBold = await finalPdf.embedFont(PDFLib.StandardFonts.HelveticaBold);
             const helvetica = await finalPdf.embedFont(PDFLib.StandardFonts.Helvetica);
+            const black = rgb(0, 0, 0);
 
-            // Title - center based on text width
-            const titleWidth = helveticaBold.widthOfTextAtSize(reportTitle, 24);
-            titlePage.drawText(reportTitle, {
-                x: (pageWidth - titleWidth) / 2,
-                y: pageHeight - 113, // ~40mm from top
-                size: 24,
-                font: helveticaBold,
-                color: rgb(0, 0, 0)
+            const titlePage = finalPdf.addPage([pageWidth, pageHeight]);
+            /** Draw text horizontally centred on the title page; `top` is measured from the top edge. */
+            const centered = (text, top, size, font, color = black) => titlePage.drawText(text, {
+                x: (pageWidth - font.widthOfTextAtSize(text, size)) / 2, y: pageHeight - top, size, font, color
             });
 
-            // Generated date
-            const generatedDate = new Date().toLocaleDateString('en-US', {
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric'
-            });
-            titlePage.drawText(`Generated: ${generatedDate}`, {
-                x: pageWidth / 2 - 60,
-                y: pageHeight - 147, // ~52mm
-                size: 12,
-                font: helvetica,
-                color: rgb(0, 0, 0)
-            });
+            centered(reportTitle, 113, 24, helveticaBold);
+            centered(`Generated: ${formatDate(new Date().toLocaleDateString('en-CA'))}`, 147, 12, helvetica);
+            centered(`Total Expenses: ${sortedExpenses.length}`, 170, 12, helvetica);
 
-            titlePage.drawText(`Total Expenses: ${sortedExpenses.length}`, {
-                x: pageWidth / 2 - 45,
-                y: pageHeight - 170, // ~60mm
-                size: 12,
-                font: helvetica,
-                color: rgb(0, 0, 0)
-            });
+            titlePage.drawText('Table of Contents', { x: margin, y: pageHeight - 241, size: 16, font: helveticaBold, color: black });
 
-            // Table of Contents header
-            titlePage.drawText('Table of Contents', {
-                x: margin,
-                y: pageHeight - 241, // ~85mm
-                size: 16,
-                font: helveticaBold,
-                color: rgb(0, 0, 0)
-            });
-
-            // TOC entries
-            let yPos = 269; // Starting Y position for TOC entries (~95mm)
-            for (let i = 0; i < sortedExpenses.length; i++) {
-                const expense = sortedExpenses[i];
-                const formattedDate = new Date(expense.date).toLocaleDateString('en-US', {
-                    year: 'numeric',
-                    month: 'short',
-                    day: 'numeric'
-                });
-                const formattedTime = this.formatTime(expense.time);
-                const dateTimeStr = formattedTime ? `${formattedDate} ${formattedTime}` : formattedDate;
-                const title = expense.title || 'Untitled';
+            let yPos = 269;
+            sortedExpenses.forEach((expense, i) => {
+                const formattedTime = formatTime(expense.time);
+                const dateTimeStr = [formatDate(expense.date, 'short'), formattedTime].filter(Boolean).join(' ');
                 const pageCount = expensePageCounts[i];
                 const pageInfo = pageCount > 1
                     ? `Pages ${expenseStartPages[i]}-${expenseStartPages[i] + pageCount - 1}`
                     : `Page ${expenseStartPages[i]}`;
+                const amountStr = hasAmount(expense) ? `  ${formatAmountForPDF(expense.amount, expense.currency)}` : '';
 
-                const amountStr = expense.amount !== null && expense.amount !== undefined
-                    ? `  ${this.formatAmountForPDF(expense.amount, expense.currency)}`
-                    : '';
-                const tocEntry = `${i + 1}. ${title} (${dateTimeStr})${amountStr}`;
-
-                titlePage.drawText(tocEntry, {
-                    x: margin,
-                    y: pageHeight - yPos,
-                    size: 10,
-                    font: helvetica,
-                    color: rgb(0, 0, 0)
+                titlePage.drawText(`${i + 1}. ${expense.title || 'Untitled'} (${dateTimeStr})${amountStr}`, {
+                    x: margin, y: pageHeight - yPos, size: 10, font: helvetica, color: black
                 });
-
                 titlePage.drawText(pageInfo, {
-                    x: pageWidth - margin - 60,
-                    y: pageHeight - yPos,
-                    size: 10,
-                    font: helvetica,
-                    color: rgb(0.4, 0.4, 0.4)
+                    x: pageWidth - margin - 60, y: pageHeight - yPos, size: 10, font: helvetica, color: rgb(0.4, 0.4, 0.4)
                 });
-
                 yPos += 20;
-            }
+            });
 
-            // Currency totals section on title page
-            const totalsMap = {};
-            for (const expense of sortedExpenses) {
-                if (expense.amount !== null && expense.amount !== undefined && expense.currency) {
-                    totalsMap[expense.currency] = (totalsMap[expense.currency] || 0) + expense.amount;
-                }
-            }
-            const totalsCurrencies = Object.keys(totalsMap);
-            if (totalsCurrencies.length > 0) {
-                titlePage.drawText('Totals', {
-                    x: margin,
-                    y: pageHeight - yPos - 10,
-                    size: 13,
-                    font: helveticaBold,
-                    color: rgb(0, 0, 0)
-                });
+            const totals = currencyTotals(sortedExpenses);
+            if (Object.keys(totals).length) {
+                titlePage.drawText('Totals', { x: margin, y: pageHeight - yPos - 10, size: 13, font: helveticaBold, color: black });
                 yPos += 30;
-                for (const c of totalsCurrencies) {
-                    titlePage.drawText(`${c}: ${this.formatAmountForPDF(totalsMap[c], c)}`, {
-                        x: margin + 12,
-                        y: pageHeight - yPos,
-                        size: 11,
-                        font: helvetica,
-                        color: rgb(0, 0, 0)
+                for (const [c, total] of Object.entries(totals)) {
+                    titlePage.drawText(`${c}: ${formatAmountForPDF(total, c)}`, {
+                        x: margin + 12, y: pageHeight - yPos, size: 11, font: helvetica, color: black
                     });
                     yPos += 18;
                 }
             }
 
-            // Page number on title page
-            titlePage.drawText(`Page 1 of ${totalPages}`, {
-                x: pageWidth / 2 - 30,
-                y: 28,
-                size: 9,
-                font: helvetica,
-                color: rgb(0.5, 0.5, 0.5)
-            });
+            centered(`Page 1 of ${totalPages}`, pageHeight - 28, 9, helvetica, rgb(0.5, 0.5, 0.5));
 
-            // Add expense pages
             let currentPageNum = 2;
-            for (let i = 0; i < sortedExpenses.length; i++) {
-                const expense = sortedExpenses[i];
-                const formattedDate = new Date(expense.date).toLocaleDateString('en-US', {
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric'
-                });
-                const formattedTimeForPage = this.formatTime(expense.time);
-                const dateTimeForPage = formattedTimeForPage ? `${formattedDate} at ${formattedTimeForPage}` : formattedDate;
+            for (const expense of sortedExpenses) {
+                const formattedTime = formatTime(expense.time);
+                const dateTimeForPage = formattedTime ? `${formatDate(expense.date)} at ${formattedTime}` : formatDate(expense.date);
                 const title = expense.title || 'Untitled';
+                const amountLine = hasAmount(expense) ? `  |  Amount: ${formatAmountForPDF(expense.amount, expense.currency)}` : '';
 
                 if (expense.fileType === 'application/pdf') {
-                    // Load the source PDF
-                    const pdfBytes = this.dataUrlToUint8Array(expense.fileData);
-                    const sourcePdf = await PDFDocument.load(pdfBytes);
+                    const sourcePdf = await PDFDocument.load(dataUrlToUint8Array(expense.fileData));
                     const sourcePages = await finalPdf.copyPages(sourcePdf, sourcePdf.getPageIndices());
 
-                    // Add each page from the source PDF
-                    for (let j = 0; j < sourcePages.length; j++) {
-                        const page = sourcePages[j];
-                        finalPdf.addPage(page);
-
-                        // Get the page we just added to add header/footer
-                        const addedPage = finalPdf.getPage(finalPdf.getPageCount() - 1);
+                    sourcePages.forEach((page, j) => {
+                        const addedPage = finalPdf.addPage(page);
                         const { width, height } = addedPage.getSize();
 
-                        // Add header on first page of this expense
+                        // Header on the first page of this expense, over a translucent white band
                         if (j === 0) {
-                            // Draw a white rectangle for header background
-                            addedPage.drawRectangle({
-                                x: 0,
-                                y: height - 85,
-                                width: width,
-                                height: 85,
-                                color: rgb(1, 1, 1),
-                                opacity: 0.9
+                            addedPage.drawRectangle({ x: 0, y: height - 85, width, height: 85, color: rgb(1, 1, 1), opacity: 0.9 });
+                            addedPage.drawText(title, { x: 40, y: height - 35, size: 14, font: helveticaBold, color: black });
+                            addedPage.drawText(`Date: ${dateTimeForPage}${amountLine}  |  File: ${expense.fileName}  |  Page ${j + 1} of ${sourcePages.length}`, {
+                                x: 40, y: height - 55, size: 9, font: helvetica, color: rgb(0.3, 0.3, 0.3)
                             });
-
-                            addedPage.drawText(title, {
-                                x: 40,
-                                y: height - 35,
-                                size: 14,
-                                font: helveticaBold,
-                                color: rgb(0, 0, 0)
-                            });
-
-                            const amountLinePdf = expense.amount !== null && expense.amount !== undefined
-                                ? `  |  Amount: ${this.formatAmountForPDF(expense.amount, expense.currency)}`
-                                : '';
-                            addedPage.drawText(`Date: ${dateTimeForPage}${amountLinePdf}  |  File: ${expense.fileName}  |  Page ${j + 1} of ${sourcePages.length}`, {
-                                x: 40,
-                                y: height - 55,
-                                size: 9,
-                                font: helvetica,
-                                color: rgb(0.3, 0.3, 0.3)
-                            });
-
-                            // Draw separator line
                             addedPage.drawLine({
-                                start: { x: 40, y: height - 70 },
-                                end: { x: width - 40, y: height - 70 },
-                                thickness: 0.5,
-                                color: rgb(0.8, 0.8, 0.8)
+                                start: { x: 40, y: height - 70 }, end: { x: width - 40, y: height - 70 },
+                                thickness: 0.5, color: rgb(0.8, 0.8, 0.8)
                             });
                         }
-
-                        // Add page number footer
                         addedPage.drawText(`Page ${currentPageNum} of ${totalPages}`, {
-                            x: width / 2 - 30,
-                            y: 20,
-                            size: 9,
-                            font: helvetica,
-                            color: rgb(0.5, 0.5, 0.5)
+                            x: width / 2 - 30, y: 20, size: 9, font: helvetica, color: rgb(0.5, 0.5, 0.5)
                         });
-
                         currentPageNum++;
-                    }
+                    });
                 } else {
-                    // Image expense - create page using jsPDF then import
+                    // Image expense: lay the page out with jsPDF (handles image scaling), then import it
                     const tempPdf = new jsPDF('p', 'mm', 'a4');
                     const pdfPageWidth = tempPdf.internal.pageSize.getWidth();
                     const pdfPageHeight = tempPdf.internal.pageSize.getHeight();
                     const pdfMargin = 20;
-                    const contentWidth = pdfPageWidth - (pdfMargin * 2);
+                    const contentWidth = pdfPageWidth - pdfMargin * 2;
 
-                    // Header
                     tempPdf.setFontSize(16);
                     tempPdf.setFont(undefined, 'bold');
                     tempPdf.text(title, pdfMargin, pdfMargin + 5);
-
                     tempPdf.setFontSize(11);
                     tempPdf.setFont(undefined, 'normal');
-                    const amountLineImg = expense.amount !== null && expense.amount !== undefined
-                        ? `  |  Amount: ${this.formatAmountForPDF(expense.amount, expense.currency)}`
-                        : '';
-                    tempPdf.text(`Date: ${dateTimeForPage}${amountLineImg}`, pdfMargin, pdfMargin + 14);
+                    tempPdf.text(`Date: ${dateTimeForPage}${amountLine}`, pdfMargin, pdfMargin + 14);
                     tempPdf.text(`File: ${expense.fileName}`, pdfMargin, pdfMargin + 21);
-
-                    // Separator line
                     tempPdf.setDrawColor(200);
                     tempPdf.line(pdfMargin, pdfMargin + 27, pdfPageWidth - pdfMargin, pdfMargin + 27);
 
-                    // Add image
                     const contentStartY = pdfMargin + 35;
                     const maxImageHeight = pdfPageHeight - contentStartY - pdfMargin - 15;
-
-                    try {
-                        const imgDimensions = await this.getImageDimensions(expense.fileData);
-                        let imgWidth = contentWidth;
-                        let imgHeight = (imgDimensions.height / imgDimensions.width) * imgWidth;
-
-                        if (imgHeight > maxImageHeight) {
-                            imgHeight = maxImageHeight;
-                            imgWidth = (imgDimensions.width / imgDimensions.height) * imgHeight;
-                        }
-
-                        const imgX = pdfMargin + (contentWidth - imgWidth) / 2;
-                        tempPdf.addImage(expense.fileData, 'JPEG', imgX, contentStartY, imgWidth, imgHeight);
-                    } catch (error) {
-                        console.error('Error adding image to PDF:', error);
-                        tempPdf.setFontSize(12);
-                        tempPdf.text('Error loading image', pdfMargin, contentStartY + 10);
+                    const dims = await getImageDimensions(expense.fileData);
+                    let imgWidth = contentWidth;
+                    let imgHeight = (dims.height / dims.width) * imgWidth;
+                    if (imgHeight > maxImageHeight) {
+                        imgHeight = maxImageHeight;
+                        imgWidth = (dims.width / dims.height) * imgHeight;
                     }
+                    const format = expense.fileType === 'image/png' ? 'PNG' : 'JPEG';
+                    tempPdf.addImage(expense.fileData, format, pdfMargin + (contentWidth - imgWidth) / 2, contentStartY, imgWidth, imgHeight);
 
-                    // Page number footer
                     tempPdf.setFontSize(9);
                     tempPdf.setTextColor(128);
                     tempPdf.text(`Page ${currentPageNum} of ${totalPages}`, pdfPageWidth / 2, pdfPageHeight - 10, { align: 'center' });
 
-                    // Convert jsPDF to bytes and import into final PDF
-                    const tempPdfBytes = tempPdf.output('arraybuffer');
-                    const tempPdfDoc = await PDFDocument.load(tempPdfBytes);
+                    const tempPdfDoc = await PDFDocument.load(tempPdf.output('arraybuffer'));
                     const [importedPage] = await finalPdf.copyPages(tempPdfDoc, [0]);
                     finalPdf.addPage(importedPage);
-
                     currentPageNum++;
                 }
             }
 
-            // Save the final PDF
-            const pdfBytes = await finalPdf.save();
-            const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+            const blob = new Blob([await finalPdf.save()], { type: 'application/pdf' });
             const url = URL.createObjectURL(blob);
-
-            const link = document.createElement('a');
-            link.href = url;
-            const safeTitle = reportTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-            link.download = `${safeTitle}-${new Date().toISOString().split('T')[0]}.pdf`;
-            link.click();
-
-            URL.revokeObjectURL(url);
-
-            this.showToast('PDF exported successfully', 'success');
+            const safeTitle = reportTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'expense-report';
+            Object.assign(document.createElement('a'), {
+                href: url, download: `${safeTitle}-${new Date().toLocaleDateString('en-CA')}.pdf`
+            }).click();
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+            toast('PDF exported', 'success');
         } catch (error) {
             console.error('Error generating PDF:', error);
-            this.showToast('Failed to generate PDF', 'error');
+            toast(`Failed to generate PDF: ${error.message}`, 'error');
         } finally {
-            loadingOverlay.classList.add('hidden');
+            busy(false);
         }
     }
 
-    // Get image dimensions
-    getImageDimensions(dataUrl) {
-        return new Promise((resolve, reject) => {
-            const img = new Image();
-            img.onload = () => {
-                resolve({ width: img.width, height: img.height });
-            };
-            img.onerror = reject;
-            img.src = dataUrl;
-        });
-    }
-
-    // Export expenses to ZIP file
-    async exportToZip() {
-        if (this.expenses.length === 0) return;
-
-        const loadingOverlay = document.getElementById('loadingOverlay');
-        const loadingText = loadingOverlay.querySelector('p');
-        const originalText = loadingText.textContent;
-        loadingText.textContent = 'Creating ZIP archive...';
-        loadingOverlay.classList.remove('hidden');
-
-        try {
-            const zip = new JSZip();
-
-            // Create metadata JSON
-            const metadata = {
-                version: 1,
-                exportedAt: new Date().toISOString(),
-                expenses: this.expenses.map((expense, index) => ({
-                    id: expense.id,
-                    title: expense.title,
-                    date: expense.date,
-                    time: expense.time || null,
-                    amount: expense.amount ?? null,
-                    currency: expense.currency ?? null,
-                    order: index,
-                    fileName: expense.fileName,
-                    fileType: expense.fileType,
-                    fileSize: expense.fileSize,
-                    createdAt: expense.createdAt
-                }))
-            };
-
-            zip.file('expenses.json', JSON.stringify(metadata, null, 2));
-
-            // Add files folder
-            const filesFolder = zip.folder('files');
-
-            // Add each expense file
-            for (const expense of this.expenses) {
-                // Extract base64 data from data URL
-                const base64Data = expense.fileData.split(',')[1];
-                // Use expense ID + original extension for unique filename
-                const ext = expense.fileName.split('.').pop();
-                const zipFileName = `${expense.id}.${ext}`;
-                filesFolder.file(zipFileName, base64Data, { base64: true });
-            }
-
-            // Generate ZIP blob
-            const zipBlob = await zip.generateAsync({
-                type: 'blob',
-                compression: 'DEFLATE',
-                compressionOptions: { level: 6 }
-            });
-
-            // Download ZIP file
-            const url = URL.createObjectURL(zipBlob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `expense-report-${new Date().toISOString().split('T')[0]}.zip`;
-            link.click();
-            URL.revokeObjectURL(url);
-
-            this.showToast('Expenses exported to ZIP', 'success');
-        } catch (error) {
-            console.error('Error exporting to ZIP:', error);
-            this.showToast('Failed to export ZIP', 'error');
-        } finally {
-            loadingText.textContent = originalText;
-            loadingOverlay.classList.add('hidden');
-        }
-    }
-
-    // Import expenses from ZIP file
-    async importFromZip(file) {
-        const loadingOverlay = document.getElementById('loadingOverlay');
-        const loadingText = loadingOverlay.querySelector('p');
-        const originalText = loadingText.textContent;
-        loadingText.textContent = 'Importing from ZIP...';
-        loadingOverlay.classList.remove('hidden');
-
-        try {
-            const zip = await JSZip.loadAsync(file);
-
-            // Read metadata
-            const metadataFile = zip.file('expenses.json');
-            if (!metadataFile) {
-                throw new Error('Invalid ZIP: expenses.json not found');
-            }
-
-            const metadataJson = await metadataFile.async('string');
-            const metadata = JSON.parse(metadataJson);
-
-            if (!metadata.expenses || !Array.isArray(metadata.expenses)) {
-                throw new Error('Invalid ZIP: expenses data is missing or invalid');
-            }
-
-            // Check if user wants to replace or merge
-            const hasExisting = this.expenses.length > 0;
-
-            const doImport = async (replace) => {
-                if (replace) {
-                    await this.clearAllExpenses();
-                }
-
-                const startOrder = replace ? 0 : this.expenses.length;
-                let importCount = 0;
-
-                for (let i = 0; i < metadata.expenses.length; i++) {
-                    const expenseMeta = metadata.expenses[i];
-
-                    // Find the file in ZIP
-                    const ext = expenseMeta.fileName.split('.').pop();
-                    const zipFileName = `files/${expenseMeta.id}.${ext}`;
-                    const fileEntry = zip.file(zipFileName);
-
-                    if (!fileEntry) {
-                        console.warn(`File not found in ZIP: ${zipFileName}`);
-                        continue;
-                    }
-
-                    // Read file as base64
-                    const base64Data = await fileEntry.async('base64');
-                    const fileData = `data:${expenseMeta.fileType};base64,${base64Data}`;
-
-                    // Create expense object
-                    const expense = {
-                        id: replace ? expenseMeta.id : Date.now().toString() + i,
-                        title: expenseMeta.title || '',
-                        date: expenseMeta.date,
-                        time: expenseMeta.time || null,
-                        amount: expenseMeta.amount ?? null,
-                        currency: expenseMeta.currency ?? null,
-                        fileName: expenseMeta.fileName,
-                        fileType: expenseMeta.fileType,
-                        fileSize: expenseMeta.fileSize,
-                        fileData: fileData,
-                        order: startOrder + i,
-                        createdAt: expenseMeta.createdAt || new Date().toISOString()
-                    };
-
-                    await this.addExpenseWithoutRender(expense);
-                    importCount++;
-                }
-
-                await this.loadExpenses();
-                this.showToast(`Imported ${importCount} expense(s)`, 'success');
-            };
-
-            if (hasExisting) {
-                loadingOverlay.classList.add('hidden');
-                this.showImportModal(
-                    'Import Options',
-                    `You have ${this.expenses.length} existing expense(s). How would you like to import?`,
-                    async () => {
-                        loadingOverlay.classList.remove('hidden');
-                        await doImport(true);
-                        loadingOverlay.classList.add('hidden');
-                    },
-                    async () => {
-                        loadingOverlay.classList.remove('hidden');
-                        await doImport(false);
-                        loadingOverlay.classList.add('hidden');
-                    }
-                );
-            } else {
-                await doImport(true);
-                loadingOverlay.classList.add('hidden');
-            }
-        } catch (error) {
-            console.error('Error importing from ZIP:', error);
-            this.showToast(error.message || 'Failed to import ZIP', 'error');
-            loadingOverlay.classList.add('hidden');
-        } finally {
-            loadingText.textContent = originalText;
-        }
-    }
-
-    // Add expense without triggering render (for batch imports)
-    async addExpenseWithoutRender(expense) {
-        return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([STORE_NAME], 'readwrite');
-            const store = transaction.objectStore(STORE_NAME);
-            const request = store.add(expense);
-
-            request.onsuccess = () => resolve();
-            request.onerror = () => reject(request.error);
-        });
-    }
-
-    // Show import modal with replace/merge options
-    showImportModal(title, message, onReplace, onMerge) {
-        const modal = document.getElementById('modal');
-        const modalTitle = document.getElementById('modalTitle');
-        const modalMessage = document.getElementById('modalMessage');
-        const modalActions = modal.querySelector('.modal-actions');
-
-        modalTitle.textContent = title;
-        modalMessage.textContent = message;
-
-        // Replace modal actions with three buttons
-        modalActions.innerHTML = `
-            <button id="modalCancel" class="btn btn-secondary">Cancel</button>
-            <button id="modalMerge" class="btn btn-primary">Add to existing</button>
-            <button id="modalReplace" class="btn btn-danger">Replace all</button>
-        `;
-
-        document.getElementById('modalCancel').addEventListener('click', () => {
-            this.hideModal();
-            this.restoreModalActions();
-        });
-
-        document.getElementById('modalMerge').addEventListener('click', async () => {
-            this.hideModal();
-            this.restoreModalActions();
-            await onMerge();
-        });
-
-        document.getElementById('modalReplace').addEventListener('click', async () => {
-            this.hideModal();
-            this.restoreModalActions();
-            await onReplace();
-        });
-
-        modal.classList.remove('hidden');
-    }
-
-    // Restore modal to default state
-    restoreModalActions() {
-        const modal = document.getElementById('modal');
-        const modalActions = modal.querySelector('.modal-actions');
-        modalActions.innerHTML = `
-            <button id="modalCancel" class="btn btn-secondary">Cancel</button>
-            <button id="modalConfirm" class="btn btn-danger">Confirm</button>
-        `;
-        document.getElementById('modalCancel').addEventListener('click', () => {
-            this.hideModal();
-        });
-    }
-
-    // Show modal
-    showModal(title, message, onConfirm) {
-        const modal = document.getElementById('modal');
-        const modalTitle = document.getElementById('modalTitle');
-        const modalMessage = document.getElementById('modalMessage');
-        const confirmBtn = document.getElementById('modalConfirm');
-
-        modalTitle.textContent = title;
-        modalMessage.textContent = message;
-
-        // Remove old listener and add new one
-        const newConfirmBtn = confirmBtn.cloneNode(true);
-        confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
-
-        newConfirmBtn.addEventListener('click', async () => {
-            await onConfirm();
-            this.hideModal();
-        });
-
-        modal.classList.remove('hidden');
-    }
-
-    // Hide modal
-    hideModal() {
-        document.getElementById('modal').classList.add('hidden');
-    }
-
-    // Show toast notification
-    showToast(message, type = '') {
-        const toast = document.getElementById('toast');
-        toast.textContent = message;
-        toast.className = 'toast';
-        if (type) {
-            toast.classList.add(type);
-        }
-
-        setTimeout(() => {
-            toast.classList.add('hidden');
-        }, 3000);
-    }
-
-    // Register service worker
     async registerServiceWorker() {
-        if ('serviceWorker' in navigator) {
-            try {
-                const registration = await navigator.serviceWorker.register('/expenses/sw.js');
-                console.log('Service Worker registered:', registration.scope);
-            } catch (error) {
-                console.error('Service Worker registration failed:', error);
-            }
+        if (!('serviceWorker' in navigator)) return;
+        try {
+            await navigator.serviceWorker.register('/expenses/sw.js');
+        } catch (error) {
+            console.error('Service Worker registration failed:', error);
+            toast('Offline mode unavailable: service worker failed to register', 'error');
         }
     }
 }
 
-// Initialize app when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-    new ExpenseManager();
-});
+document.addEventListener('DOMContentLoaded', () => { window.app = new ExpenseManager(); });
