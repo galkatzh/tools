@@ -13,6 +13,10 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+/* No pull-to-refresh or rubber-banding getting in the way of playing */
+html { overscroll-behavior: none; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 
 html, body {
   margin: 0;
@@ -31,12 +35,17 @@ html, body {
   display: flex;
   flex-direction: column;
   height: 100dvh;
+  /* clear of the notch and rounded corners (viewport-fit=cover) */
+  --pad-l: max(1rem, env(safe-area-inset-left));
+  --pad-r: max(1rem, env(safe-area-inset-right));
 }
+
+button, select, input { font: inherit; touch-action: manipulation; } /* no double-tap zoom */
 
 #topbar {
   background: var(--panel);
   border-bottom: 1px solid var(--border);
-  padding: 0.6rem 1rem;
+  padding: max(0.6rem, env(safe-area-inset-top)) var(--pad-r) 0.6rem var(--pad-l);
 }
 #topbar h1 {
   margin: 0;
@@ -50,6 +59,7 @@ html, body {
   display: flex;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
+  padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
 }
 .tab-btn {
   flex: 1;
@@ -57,6 +67,7 @@ html, body {
   border: 0;
   color: var(--muted);
   padding: 0.7rem 0.5rem;
+  min-height: 44px;
   font-size: 0.85rem;
   font-weight: 500;
   cursor: pointer;
@@ -69,13 +80,28 @@ html, body {
   border-bottom-color: var(--accent);
 }
 
-#view {
-  flex: 1;
-  overflow-y: auto;
-  padding: 1rem;
+#error {
+  margin: 0;
+  padding: 0.6rem var(--pad-r) 0.6rem var(--pad-l);
+  background: rgba(248, 113, 113, 0.15);
+  border-bottom: 1px solid var(--bad);
+  color: var(--bad);
+  font-size: 0.9rem;
+  cursor: pointer;
 }
 
-.view { max-width: 720px; margin: 0 auto; }
+/* A column, so the melody view can fill the height and keep the keyboard at the bottom */
+#view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem var(--pad-r) max(1rem, env(safe-area-inset-bottom)) var(--pad-l);
+}
+
+.view { width: 100%; max-width: 720px; margin: 0 auto; }
 
 .muted { color: var(--muted); font-size: 0.9rem; }
 
@@ -136,8 +162,8 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   flex-wrap: wrap;
 }
 .mq-slot {
-  flex: 1 1 60px;
-  min-width: 56px;
+  flex: 1 1 0;
+  min-width: 2.75rem;
   min-height: 64px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -169,72 +195,81 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   flex-wrap: wrap;
 }
 
-/* Keyboard */
-.mq-keyboard {
+/* Keyboard: Jam's (../jam/keyboard.js), pinned to the bottom and taking the height left */
+.view-melody { flex: 1 0 auto; display: flex; flex-direction: column; --me: var(--accent); }
+.mq-input-keys { flex: 1 0 auto; display: flex; flex-direction: column; justify-content: flex-end; }
+.mq-keyboard { display: flex; flex-direction: column; flex: 1 0 auto; justify-content: flex-end; }
+
+.kb-bar { display: flex; align-items: center; gap: 6px; margin: 0.6rem 0 10px; }
+.kb-shift { width: 34px; padding: 4px 0; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+.kb-octave { min-width: 2.2em; text-align: center; font-size: 0.85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.kb-hint { margin: 6px 0 0; color: var(--muted); font-size: 0.75rem; }
+
+/* The navigator strip: the piano in miniature, with a box around the keys shown. Drag the box to
+   scroll, drag its edges or pinch it to resize the keys, tap beside it to jump. */
+.kb-nav { position: relative; flex: 1; min-width: 60px; height: 30px; margin-inline: 6px; touch-action: none; user-select: none; -webkit-user-select: none; }
+.kb-nav::before { content: ''; position: absolute; inset: -6px 0; } /* a taller target for fingers */
+.kb-nav svg { display: block; width: 100%; height: 100%; clip-path: inset(0 round 4px); }
+.kb-nav .w { fill: #d6d6de; stroke: var(--bg); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.kb-nav .w.c4 { fill: #b9c6ff; } /* middle C, to find your way */
+.kb-nav .b { fill: #26262f; }
+.kb-nav .box { position: absolute; inset-block: -2px; border: 2px solid var(--accent); border-radius: 5px; background: rgba(0, 212, 255, 0.18); pointer-events: none; }
+.kb-nav .box::before, .kb-nav .box::after { content: ''; position: absolute; top: 50%; width: 5px; height: 14px; margin-top: -7px; border-radius: 3px; background: var(--accent); }
+.kb-nav .box::before { left: -4px; } /* grips: drag an edge to resize */
+.kb-nav .box::after { right: -4px; }
+
+.kb-keys {
   position: relative;
-  margin: 0.8rem 0;
+  overflow: hidden;
+  flex: 1 1 auto;
+  min-height: 110px;
+  max-height: 300px;
+  touch-action: none;
   user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
-.mq-white-row, .mq-black-row {
+.kb-keys .row { position: relative; display: flex; height: 100%; } /* the whole piano, slid and scaled to the window */
+.key {
   display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
   gap: 2px;
+  padding-bottom: 6px;
+  font-size: 11px;
 }
-.mq-white-row { position: relative; z-index: 1; }
-.mq-black-row { position: absolute; top: 0; left: 0; right: 0; z-index: 2; pointer-events: none; gap: 2px; }
-.mq-black-spacer { flex: 1; display: flex; justify-content: flex-end; }
-
-.mq-key-white {
+.key.white {
   flex: 1;
-  height: 130px;
-  background: #f0f0f5;
-  color: #222;
-  border: 1px solid #888;
+  min-width: 0; /* zoomed out, narrower than its label */
+  overflow: hidden;
+  background: linear-gradient(#f4f4f7, #dcdce4);
+  border: 1px solid var(--bg);
+  border-top: 0;
   border-radius: 0 0 6px 6px;
-  font-size: 0.7rem;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  padding-bottom: 0.4rem;
-  cursor: pointer;
+  color: #555;
 }
-.mq-key-white:hover { background: #ffffff; }
-.mq-key-white:active { background: #cce8ff; }
-.mq-key-white.mq-key-tonic {
-  background: #ffd9b8;
-  border-color: var(--accent-2);
+.key.black {
+  position: absolute;
+  top: 0;
+  z-index: 1;
+  width: calc(100% / var(--whites) * 0.6);
+  height: 60%;
+  transform: translateX(-50%);
+  background: linear-gradient(#3a3a46, #15151b);
+  border-radius: 0 0 4px 4px;
+  color: #999;
 }
-.mq-key-white.mq-key-playing {
-  background: var(--accent);
-  color: var(--bg);
-  box-shadow: 0 0 12px rgba(0, 212, 255, 0.6);
-}
+.key.white.tonic { background: #ffd9b8; }
+.key.black.tonic { background: #c25a24; }
+.key.white.mark, .key.black.mark { background: var(--mark); box-shadow: 0 0 12px rgba(0, 212, 255, 0.6); } /* the Solution's notes */
+.key.white.sus { background: color-mix(in srgb, var(--me) 40%, #f4f4f7); } /* held by the Space pedal */
+.key.black.sus { background: color-mix(in srgb, var(--me) 60%, #15151b); }
+.key.down { background: var(--me) !important; }
+.key .note { color: #555; font-weight: 600; }
 
-.mq-key-black {
-  width: 60%;
-  height: 80px;
-  background: #1a1a1a;
-  color: #f0f0f0;
-  border: 1px solid #000;
-  border-radius: 0 0 5px 5px;
-  font-size: 0.6rem;
-  cursor: pointer;
-  pointer-events: auto;
-  position: relative;
-  left: 30%;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  padding-bottom: 0.3rem;
-}
-.mq-key-black:active { background: #444; }
-.mq-key-black.mq-key-tonic {
-  background: #6b1f00;
-  border-color: var(--accent-2);
-}
-.mq-key-black.mq-key-playing {
-  background: var(--accent);
-  color: var(--bg);
-  box-shadow: 0 0 12px rgba(0, 212, 255, 0.7);
+@media (hover: none) {
+  .key .label, .kb-hint, .kb-shift, .kb-octave { display: none; } /* no computer keys to label */
 }
 
 /* Degree buttons */
@@ -266,7 +301,7 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .mq-input { margin-top: 0.4rem; }
 .mq-input-toggle { font-size: 0.8rem; padding: 0.4rem 0.7rem; }
-.mq-next { width: 100%; margin-top: 0.8rem; }
+.mq-next { width: 100%; }
 
 /* ───── Chord quiz ───── */
 .cq-head {
@@ -415,4 +450,31 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   background: var(--panel-2);
   color: var(--accent);
   border-color: var(--accent);
+}
+
+/* ───── Small screens ───── */
+@media (pointer: coarse) {
+  select, input[type="number"] { font-size: 16px; } /* iOS zooms in on smaller fields */
+  .kb-keys { max-height: 50dvh; } /* a phone held upright has room for taller keys */
+}
+
+@media (max-width: 480px) {
+  .mq-degrees { grid-template-columns: repeat(4, 1fr); }
+  .stats-day { grid-template-columns: 5.5rem 1fr 4.5rem; gap: 0.4rem; }
+  .stats-ct-row { grid-template-columns: 7rem 1fr 5.5rem; gap: 0.4rem; font-size: 0.8rem; }
+  .field select { min-width: 0; max-width: 55%; }
+}
+
+/* A phone on its side: every pixel of height goes to the keys */
+@media (max-height: 500px) {
+  #topbar { display: none; }
+  #view { padding-top: 0.5rem; padding-bottom: max(0.5rem, env(safe-area-inset-bottom)); }
+  .tab-btn { padding-block: 0.4rem; min-height: 36px; }
+  .mq-head { margin-bottom: 0.3rem; }
+  .mq-slots { margin: 0.3rem 0; }
+  .mq-slot { min-height: 44px; }
+  .mq-ctrl { margin: 0.3rem 0; }
+  .btn, .btn-ghost, .btn-primary { padding: 0.45rem 0.8rem; }
+  .kb-bar { margin: 0.3rem 0 8px; }
+  .kb-keys { min-height: 90px; }
 }

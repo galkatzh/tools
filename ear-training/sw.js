@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ear-training-v5';
+const CACHE_NAME = 'ear-training-v6';
 const STATIC_ASSETS = [
   './',
   './index.html',
@@ -12,8 +12,14 @@ const STATIC_ASSETS = [
   './manifest.json',
   './favicon.svg',
   './icons/icon-192.svg',
-  './icons/icon-512.svg'
+  './icons/icon-512.svg',
+  // Shared with Jam: bump CACHE_NAME when they change too, or the app keeps the cached copies
+  '../jam/synth.js',
+  '../jam/keyboard.js'
 ];
+
+self.addEventListener('error', (e) => console.error('SW error:', e.error || e.message));
+self.addEventListener('unhandledrejection', (e) => console.error('SW unhandled rejection:', e.reason));
 
 self.addEventListener('install', (e) => {
   e.waitUntil(

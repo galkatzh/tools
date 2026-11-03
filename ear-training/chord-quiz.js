@@ -11,8 +11,7 @@
   var state = null;
 
   function newRound(settings) {
-    if (settings.randomizePatch) A.randomizePatch();
-    else if (!A.hasSynth()) A.applyPatch(A.defaultPatch());
+    A.newPatch(settings.randomizePatch);
 
     var enabled = settings.enabledChordTypes && settings.enabledChordTypes.length
       ? settings.enabledChordTypes.slice()
@@ -45,7 +44,7 @@
       A.playArpeggio(state.midis, 0.16, 0.4);
       // Then also strike the full chord at the end so the user hears the stack.
       var spacing = 0.16;
-      var when = (window.Tone ? Tone.now() : 0) + state.midis.length * spacing + 0.4;
+      var when = A.now() + state.midis.length * spacing + 0.4;
       A.playChord(state.midis, 1.4, when);
     } else {
       A.playChord(state.midis, 1.6);
