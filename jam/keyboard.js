@@ -33,13 +33,15 @@ const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x))
 const TYPING = 'input:not([type=range], [type=checkbox], [type=radio]), textarea'
 
 /**
- * @param {{keys: HTMLElement, octave: HTMLElement, nav?: HTMLElement, view?: {zoom: number, center: number}}} els
+ * @param {{keys: HTMLElement, octave: HTMLElement, nav?: HTMLElement, view?: {zoom: number, center: number},
+ *   slide?: boolean}} els
  *   the container for the keys, the label showing the octave the computer keys play, the container
- *   for the navigator strip, and a view the strip set before (from onView)
+ *   for the navigator strip, a view the strip set before (from onView), and whether sliding a
+ *   finger onto other keys plays them (default) or a finger keeps its first key until lifted
  * @param {{onNoteOn(note: number, vel: number): void, onNoteOff(note: number): void,
  *   onPedal(down: boolean): void, onView?(view: {zoom: number, center: number}): void}} handlers
  */
-export function createKeyboard({ keys: el, octave: octaveLabel, nav, view }, { onNoteOn, onNoteOff, onPedal, onView }) {
+export function createKeyboard({ keys: el, octave: octaveLabel, nav, view, slide = true }, { onNoteOn, onNoteOff, onPedal, onView }) {
   let octave = 4
   const held = new Map() // note → number of sources holding it
   const sustained = new Set() // notes let go of while the pedal is down, still sounding
@@ -249,7 +251,7 @@ export function createKeyboard({ keys: el, octave: octaveLabel, nav, view }, { o
     pointers.set(e.pointerId, { note: +key.dataset.note, x: e.clientX, y: e.clientY })
     press(+key.dataset.note, velocity(e, key))
   })
-  el.addEventListener('pointermove', e => {
+  if (slide) el.addEventListener('pointermove', e => {
     const p = pointers.get(e.pointerId)
     // A resting finger trembles, and the strip may slide the keys under it: only moving on changes notes
     if (!p || Math.hypot(e.clientX - p.x, e.clientY - p.y) < 6) return
@@ -280,7 +282,8 @@ export function createKeyboard({ keys: el, octave: octaveLabel, nav, view }, { o
   addEventListener('focusin', e => { keyTarget = byKey ? e.target : null })
   addEventListener('keydown', e => {
     byKey = true
-    if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest?.(TYPING)) return
+    // Keys taken off the page (a page showing something else for now) leave the keyboard alone
+    if (!el.isConnected || e.ctrlKey || e.metaKey || e.altKey || e.target.closest?.(TYPING)) return
     const keyFocus = e.target === keyTarget
     if (!keyFocus && e.key.length === 1) e.preventDefault() // no select type-ahead, toggling or scrolling
     if (e.code === 'Space' && !keyFocus) return setPedal('space', true)
@@ -315,6 +318,17 @@ export function createKeyboard({ keys: el, octave: octaveLabel, nav, view }, { o
 
   return {
     shift,
+
+    /**
+     * Brings a note into view: the computer keys move to its octave, and a window the strip sized
+     * centres on it (fitting the width, the window shows the computer keys, as always).
+     */
+    show(note) {
+      octave = clamp(Math.floor(note / 12) - 1, 1, 6)
+      label()
+      center = whitesBelow(note) + 0.5
+      place()
+    },
 
     /** Toggles the on-screen sustain latch. */
     latch: () => setPedal('latch', !pedal.has('latch')),

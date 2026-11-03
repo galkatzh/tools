@@ -4,6 +4,21 @@
 (function () {
   'use strict';
 
+  // ───── Errors: anything uncaught is logged and shown in a banner ─────
+  function showError(message) {
+    var box = document.getElementById('error');
+    box.textContent = '⚠ ' + message;
+    box.hidden = false;
+  }
+  window.addEventListener('error', function (e) {
+    console.error('Uncaught error:', e.error || e.message);
+    showError(e.message);
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    console.error('Unhandled rejection:', e.reason);
+    showError((e.reason && e.reason.message) || String(e.reason));
+  });
+
   var SETTINGS_KEY = 'ear-training-settings';
 
   var DEFAULT_SETTINGS = {
@@ -204,7 +219,7 @@
       { value: 'first', label: 'First note only' },
       { value: 'last',  label: 'Last note only' }
     ]));
-    rootEl.appendChild(selectField('Default input', 'melodyInputMode', [
+    rootEl.appendChild(selectField('Input', 'melodyInputMode', [
       { value: 'degrees',  label: 'Scale-degree buttons' },
       { value: 'keyboard', label: 'On-screen keyboard' }
     ]));
@@ -297,6 +312,8 @@
     if (!('wakeLock' in navigator)) return;
     try {
       wakeLock = await navigator.wakeLock.request('screen');
+      // The browser lets go of it when the page hides; it's taken again on return.
+      wakeLock.addEventListener('release', function () { wakeLock = null; });
     } catch (err) {
       console.error('wakeLock request failed:', err);
     }
@@ -308,6 +325,8 @@
   // ───── Boot ─────
   document.addEventListener('DOMContentLoaded', function () {
     viewEl = document.getElementById('view');
+    var errorEl = document.getElementById('error');
+    errorEl.addEventListener('click', function () { errorEl.hidden = true; });
 
     document.querySelectorAll('.tab-btn').forEach(function (b) {
       b.addEventListener('click', function () { navigate(b.dataset.route); });
