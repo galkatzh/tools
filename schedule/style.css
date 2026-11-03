@@ -2,6 +2,7 @@
   --bg: #f6f6f3; --panel: #fff; --ink: #1d1f23; --muted: #6b7280; --line: #e3e5e8; --line2: #f0f1f3;
   --accent: #2563eb; --accent-ink: #fff;
   --hatch: repeating-linear-gradient(135deg, color-mix(in srgb, var(--muted) 20%, transparent) 0 3px, transparent 3px 7px);
+  --cell: color-mix(in srgb, var(--ink) 7%, var(--panel)); /* a grid poll's offered time, not painted */
   --yes: #15803d; --yes-bg: #dcfce7; --maybe: #a16207; --maybe-bg: #fef3c7; --no: #b91c1c; --no-bg: #fde8e8;
   color-scheme: light dark;
   font: 15px/1.45 system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -14,6 +15,7 @@
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+body[data-kind="grid"] .vote-only, body:not([data-kind="grid"]) .grid-only { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--ink); }
 main { max-width: 1400px; margin: 0 auto; padding: 0 16px 48px; }
 h1 { font-size: 1.5rem; margin: 0; overflow-wrap: anywhere; }
@@ -59,6 +61,15 @@ textarea { width: 100%; resize: vertical; }
 .me { position: sticky; top: 0; z-index: 5; margin: 0; padding: .5rem 0; background: var(--bg); }
 .me input { flex: 0 1 14rem; }
 .chip { padding: 0 .35rem; border-radius: 5px; white-space: nowrap; }
+/* a radio group drawn as one segmented button */
+.seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
+.seg label { position: relative; padding: .4rem .75rem; cursor: pointer; }
+.seg label + label { border-left: 1px solid var(--line); }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg label:has(:checked) { background: var(--accent); color: var(--accent-ink); }
+.seg label:has(:focus-visible) { outline: 2px solid var(--accent); outline-offset: -3px; }
+.seg label:has(:disabled) { cursor: default; }
+.seg label:has(:disabled:not(:checked)) { opacity: .5; }
 
 /* answer colors, shared by calendar blocks, list cells and the legend */
 .v-y { background: var(--yes-bg); color: var(--yes); border-color: var(--yes); }
@@ -79,6 +90,7 @@ textarea { width: 100%; resize: vertical; }
 .dh { display: grid; grid-template-columns: minmax(0, 100%); place-content: center; justify-items: center; gap: .15rem; padding: .25rem 0; font-size: .85rem; font-weight: 600; border-left: 1px solid var(--line); }
 .copy { padding: .05rem .4rem; border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); color: var(--accent); font-size: .75rem; font-weight: 400; }
 .dh.today { color: var(--accent); }
+.copy.ghost { visibility: hidden; }
 .dh .away { max-width: 100%; padding: 0 .3rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; color: var(--muted); }
 .dayno { padding: .05rem .4rem; border-color: color-mix(in srgb, var(--no) 45%, var(--line)); color: var(--no); font-size: .75rem; font-weight: 400; }
 .dayno.on { background: var(--no-bg); border-color: var(--no); }
@@ -112,6 +124,23 @@ button.blk { cursor: pointer; }
   font-size: .68rem; line-height: 1.25; color: var(--muted); border: 1px solid color-mix(in srgb, var(--muted) 40%, transparent);
   background: var(--hatch); }
 .blk .x { position: absolute; top: 0; right: 0; padding: 0 .3rem; font-size: 1rem; }
+/* grid polls: our cells to paint, and everyone's heat map */
+.cell, .heat { position: absolute; left: 1px; right: 1px; border-top: 1px solid var(--line2); outline: 2px solid var(--hl, transparent); outline-offset: -2px; }
+.cell { background: var(--cell); cursor: pointer; touch-action: none; }
+.cell.on { background: var(--yes-bg); border-top-color: color-mix(in srgb, var(--yes) 25%, transparent); }
+.heat { background: color-mix(in srgb, var(--yes) var(--heat), var(--cell)); }
+.heat.final { box-shadow: inset 4px 0 var(--accent); }
+body[data-kind="grid"] .board .list { max-height: none; }
+.list .cal { border: 0; border-radius: 0; border-top: 1px solid var(--line); }
+.ghead, #ginfo { margin: .5rem .8rem; }
+#ginfo { min-height: 2.6em; }
+.ramp { display: inline-block; width: 4rem; height: .7rem; margin-left: .3rem; vertical-align: middle; border: 1px solid var(--line);
+  border-radius: 3px; background: linear-gradient(to right, var(--cell), var(--yes)); }
+.list h3 { margin: 1rem .8rem .25rem; }
+.best { margin: 0 .8rem .5rem; padding-left: 1.4rem; }
+.best li { padding: .15rem 0; }
+.best li.final { font-weight: 600; }
+.list > .muted { margin: .5rem .8rem; }
 .grip { position: absolute; left: 0; right: 0; bottom: 0; height: 9px; cursor: ns-resize; touch-action: none; }
 .grip::after { content: ''; display: block; width: 22px; height: 3px; margin: 3px auto 0; border-radius: 2px; background: var(--accent); opacity: .6; }
 @media (pointer: coarse) { .grip { height: 16px; } .grip::after { margin-top: 10px; } }
@@ -145,7 +174,7 @@ button.blk { cursor: pointer; }
 .votes button.v { width: 2.6rem; height: 1.9rem; padding: 0; border: 1px solid var(--line); border-radius: 6px; }
 .votes button.v-none { background: var(--panel); border-style: dashed; border-color: var(--muted); }
 .pin { padding: 0 .2rem; border: 0; background: none; filter: grayscale(1); opacity: .5; }
-.pin:hover, tr.final .pin { filter: none; opacity: 1; }
+.pin:hover, .final .pin { filter: none; opacity: 1; }
 
 /* --- dialog, toast ----------------------------------------------------------------------- */
 dialog { width: min(36rem, calc(100vw - 32px)); border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); }
