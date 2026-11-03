@@ -1,5 +1,5 @@
 // Service Worker for Expense Report Manager PWA: offline cache + Web Share Target receiver.
-const CACHE_NAME = 'expense-report-v6';
+const CACHE_NAME = 'expense-report-v7';
 const SHARE_CACHE = 'expense-share'; // shared files handed over to the page; keep in sync with app.js
 const ASSETS = [
     './',

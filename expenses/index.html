@@ -157,6 +157,15 @@
                 <dt>On this device</dt><dd id="storageInfo"></dd>
             </dl>
             <p class="muted small">A backup is a ZIP with every receipt and its details. Keep it somewhere off this device (iCloud Drive, Google Drive, email to yourself) and restore it from the ⋯ menu.</p>
+            <section id="autoBackup" class="auto-backup" hidden>
+                <div class="auto-backup-head"><strong>Auto-backup to a folder</strong><span id="autoBackupInfo" class="muted small"></span></div>
+                <p class="muted small">After every change, a ZIP is saved into a folder on this computer (one file per day, the last 14 days are kept). Pick a folder that Dropbox, Google Drive or iCloud syncs to get it off this device too.</p>
+                <div class="auto-backup-actions">
+                    <button type="button" id="resumeBackupBtn" class="btn btn-primary" hidden>Resume</button>
+                    <button type="button" id="chooseFolderBtn" class="btn btn-secondary">Choose folder…</button>
+                    <button type="button" id="stopBackupBtn" class="btn btn-ghost" hidden>Turn off</button>
+                </div>
+            </section>
             <div class="sheet-actions">
                 <button value="" class="btn btn-ghost">Close</button>
                 <button type="button" id="downloadBackupBtn" class="btn btn-secondary" disabled>Download ZIP</button>

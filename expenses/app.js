@@ -2,11 +2,14 @@
 // Expenses (including their receipt files, as data URLs) live in IndexedDB.
 
 const DB_NAME = 'ExpenseReportDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = 'expenses';
+const SETTINGS_STORE = 'settings';    // key/value; holds the auto-backup folder handle
 const SHARE_CACHE = 'expense-share';   // filled by sw.js when files are shared into the app — keep in sync
 const BACKUP_KEY = 'expenses-backup';  // localStorage: { at: ISO date of last backup | null, changes: n since }
 const CURRENCY_KEY = 'expenses-currency';
+const AUTO_BACKUP_KEEP = 14;           // daily ZIPs kept in the auto-backup folder
+const AUTO_BACKUP_NAME = /^expenses-backup-\d{4}-\d{2}-\d{2}\.zip$/;
 
 const $ = (id) => document.getElementById(id);
 
@@ -17,14 +20,19 @@ const ICONS = {
     receipt: `<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2v20l3-2 3 2 3-2 3 2 3-2 1 .7V2l-1 .7-3-2-3 2-3-2-3 2-3-2zM8 8h8M8 12h8M8 16h5"/></svg>`
 };
 
-/** Show a transient message at the bottom of the screen. */
-function toast(message, type = '') {
+/** Show a transient message at the bottom of the screen, optionally with an action button ({ label, run }). */
+function toast(message, type = '', action = null) {
     const el = $('toast');
-    el.textContent = message;
     el.className = `toast ${type}`;
+    el.replaceChildren(message);
+    if (action) {
+        const button = Object.assign(document.createElement('button'), { className: 'toast-action', textContent: action.label });
+        button.onclick = () => { el.hidden = true; action.run(); };
+        el.append(button);
+    }
     el.hidden = false;
     clearTimeout(toast.timer);
-    toast.timer = setTimeout(() => { el.hidden = true; }, type === 'error' ? 6000 : 3000);
+    toast.timer = setTimeout(() => { el.hidden = true; }, action ? 8000 : type === 'error' ? 6000 : 3000);
 }
 
 addEventListener('error', (e) => { console.error(e.error || e.message); toast(`Error: ${e.message}`, 'error'); });
@@ -148,6 +156,9 @@ class ExpenseManager {
         this.previewUrl = null;   // object URL for the queued file's thumbnail
         this.backupFile = null;   // prepared backup ZIP (see openBackup)
         this.persisted = null;    // whether the browser promised not to evict our storage
+        this.backupDir = null;    // FileSystemDirectoryHandle for auto-backups (desktop Chrome/Edge)
+        this.autoBackupStatus = 'off'; // 'off' | 'on' | 'paused' (folder chosen, but permission must be re-granted)
+        this.autoBackupRun = Promise.resolve(); // serializes folder writes
         this.init();
     }
 
@@ -157,6 +168,7 @@ class ExpenseManager {
         await this.initDB();
         await this.loadExpenses();
         this.renderBackupStatus();
+        await this.initAutoBackup();
         await this.receiveShared();
         this.registerServiceWorker();
         // Ask the browser not to evict IndexedDB under storage pressure (Safari otherwise may after 7 days of no use).
@@ -177,15 +189,16 @@ class ExpenseManager {
                     store.createIndex('date', 'date', { unique: false });
                     store.createIndex('createdAt', 'createdAt', { unique: false });
                 }
+                if (!db.objectStoreNames.contains(SETTINGS_STORE)) db.createObjectStore(SETTINGS_STORE);
             };
         });
     }
 
     /** Run fn(store) in one transaction; resolves with fn's request result once the transaction commits. */
-    idb(mode, fn) {
+    idb(mode, fn, storeName = STORE_NAME) {
         return new Promise((resolve, reject) => {
-            const tx = this.db.transaction(STORE_NAME, mode);
-            const request = fn(tx.objectStore(STORE_NAME));
+            const tx = this.db.transaction(storeName, mode);
+            const request = fn(tx.objectStore(storeName));
             tx.oncomplete = () => resolve(request?.result);
             tx.onerror = tx.onabort = () => reject(tx.error);
         });
@@ -244,7 +257,7 @@ class ExpenseManager {
             const card = e.target.closest('.expense');
             if (!card) return;
             const expense = this.expenses[card.dataset.index];
-            if (e.target.closest('.delete-btn')) this.confirmDelete(expense);
+            if (e.target.closest('.delete-btn')) this.deleteExpense(expense);
             else if (e.target.closest('.thumb')) this.view(expense);
         });
         this.setupDragAndDrop($('expensesList'));
@@ -261,6 +274,9 @@ class ExpenseManager {
         });
         $('clearAllBtn').addEventListener('click', () => { $('menu').hidePopover(); this.confirmClearAll(); });
         $('expenseCurrency').addEventListener('change', (e) => this.store(CURRENCY_KEY, e.target.value));
+        $('chooseFolderBtn').addEventListener('click', () => this.chooseBackupFolder());
+        $('resumeBackupBtn').addEventListener('click', () => this.resumeAutoBackup());
+        $('stopBackupBtn').addEventListener('click', () => this.stopAutoBackup());
     }
 
     // ---------- Adding expenses ----------
@@ -420,26 +436,44 @@ class ExpenseManager {
         $('viewer').showModal();
     }
 
-    async confirmDelete(expense) {
-        const ok = await this.ask('Delete expense', `Delete "${expense.title || 'Untitled'}"? This cannot be undone.`, [['yes', 'Delete', 'btn-danger']]);
-        if (!ok) return;
+    async deleteExpense(expense) {
+        const before = [...this.expenses];
         await this.idb('readwrite', (s) => s.delete(expense.id));
         this.expenses = this.expenses.filter((e) => e !== expense);
         this.changed();
         this.renderExpenses();
-        toast('Expense deleted', 'success');
+        this.offerUndo(`Deleted “${expense.title || 'Untitled'}”`, before);
+    }
+
+    /**
+     * Toast with an Undo button that brings back the expenses of `before` that are gone now, at their old
+     * positions; anything added in the meantime stays, after them. Only the latest toast can be undone.
+     */
+    offerUndo(message, before) {
+        toast(message, '', {
+            label: 'Undo',
+            run: async () => {
+                const ids = new Set(before.map((e) => e.id));
+                this.expenses = [...before, ...this.expenses.filter((e) => !ids.has(e.id))];
+                await this.saveOrder(); // put() re-inserts the deleted records
+                this.changed();
+                this.renderExpenses();
+                toast('Restored', 'success');
+            }
+        });
     }
 
     async confirmClearAll() {
         const { changes } = this.backupState();
         const warning = changes ? ` ${changes} change(s) haven't been backed up yet.` : '';
-        const ok = await this.ask('Clear all expenses', `Delete all ${this.expenses.length} expenses?${warning} This cannot be undone.`, [['yes', 'Delete all', 'btn-danger']]);
+        const ok = await this.ask('Clear all expenses', `Delete all ${this.expenses.length} expenses?${warning}`, [['yes', 'Delete all', 'btn-danger']]);
         if (!ok) return;
+        const before = this.expenses;
         await this.idb('readwrite', (s) => s.clear());
         this.expenses = [];
         this.changed();
         this.renderExpenses();
-        toast('All expenses cleared', 'success');
+        this.offerUndo('All expenses cleared', before);
     }
 
     /** HTML5 drag & drop reordering (pointer devices). The drop indicator is drawn above/below the hovered card. */
@@ -519,6 +553,7 @@ class ExpenseManager {
         this.store(BACKUP_KEY, JSON.stringify({ ...state, changes: state.changes + 1 }));
         this.backupFile = null;
         this.renderBackupStatus();
+        this.scheduleAutoBackup();
     }
 
     markBackedUp() {
@@ -531,7 +566,9 @@ class ExpenseManager {
         const pending = changes > 0 && this.expenses.length > 0;
         $('backupBtn').classList.toggle('warn', pending);
         $('backupBtn').classList.toggle('ok', !pending && !!at);
-        $('backupStatus').textContent = pending ? `${changes} not backed up` : at ? `Backed up ${timeAgo(at)}` : 'Backup';
+        $('backupStatus').textContent = pending
+            ? (this.autoBackupStatus === 'paused' ? 'Auto-backup paused' : `${changes} not backed up`)
+            : at ? `Backed up ${timeAgo(at)}` : 'Backup';
     }
 
     /** Open the backup sheet and build the ZIP right away, so Share runs within the tap's user gesture (iOS requires it). */
@@ -581,6 +618,93 @@ class ExpenseManager {
             console.error('Share failed:', error);
             toast(`Share failed: ${error.message}`, 'error');
         }
+    }
+
+    // ---------- Auto-backup to a folder (File System Access API: desktop Chrome / Edge only) ----------
+
+    async initAutoBackup() {
+        if (!('showDirectoryPicker' in window)) return;
+        $('autoBackup').hidden = false;
+        this.backupDir = (await this.idb('readonly', (s) => s.get('backupDir'), SETTINGS_STORE)) || null;
+        await this.renderAutoBackup();
+        if (this.backupState().changes) this.scheduleAutoBackup();
+    }
+
+    async renderAutoBackup() {
+        const permission = await this.backupDir?.queryPermission({ mode: 'readwrite' });
+        this.autoBackupStatus = !this.backupDir ? 'off' : permission === 'granted' ? 'on' : 'paused';
+        const folder = this.backupDir?.name;
+        $('autoBackupInfo').textContent = {
+            off: 'Off',
+            on: `On · saving to “${folder}”`,
+            paused: `Paused · allow access to “${folder}” again`
+        }[this.autoBackupStatus];
+        $('chooseFolderBtn').textContent = this.backupDir ? 'Change folder…' : 'Choose folder…';
+        $('resumeBackupBtn').hidden = this.autoBackupStatus !== 'paused';
+        $('stopBackupBtn').hidden = !this.backupDir;
+        this.renderBackupStatus();
+    }
+
+    async chooseBackupFolder() {
+        try {
+            this.backupDir = await showDirectoryPicker({ id: 'expenses-backup', mode: 'readwrite' });
+        } catch (error) {
+            if (error.name === 'AbortError') return; // user closed the picker
+            console.error('Folder picker failed:', error);
+            return toast(`Could not open folder: ${error.message}`, 'error');
+        }
+        await this.idb('readwrite', (s) => s.put(this.backupDir, 'backupDir'), SETTINGS_STORE);
+        await this.writeAutoBackup();
+        if (this.expenses.length) toast(`Backed up to “${this.backupDir.name}”`, 'success');
+    }
+
+    /** Browsers forget folder permission between sessions; re-granting needs a click (and may offer "allow on every visit"). */
+    async resumeAutoBackup() {
+        if ((await this.backupDir.requestPermission({ mode: 'readwrite' })) !== 'granted') {
+            await this.renderAutoBackup();
+            return toast('Folder access not granted, so auto-backup stays paused', 'error');
+        }
+        await this.writeAutoBackup();
+    }
+
+    async stopAutoBackup() {
+        await this.idb('readwrite', (s) => s.delete('backupDir'), SETTINGS_STORE);
+        this.backupDir = null;
+        await this.renderAutoBackup();
+    }
+
+    scheduleAutoBackup() {
+        clearTimeout(this.autoBackupTimer);
+        if (this.backupDir) this.autoBackupTimer = setTimeout(() => this.writeAutoBackup(), 1500); // coalesce bursts of changes
+    }
+
+    /**
+     * Write today's ZIP into the backup folder (replacing earlier ones from today), then prune all but the
+     * newest AUTO_BACKUP_KEEP days. Daily files mean a bad state (e.g. after mass deletes) can't overwrite
+     * every good backup. Never writes an empty backup.
+     */
+    writeAutoBackup() {
+        this.autoBackupRun = this.autoBackupRun.then(async () => {
+            try {
+                if ((await this.backupDir?.queryPermission({ mode: 'readwrite' })) !== 'granted' || !this.expenses.length) return;
+                this.backupFile ??= await this.buildZip();
+                const name = `expenses-backup-${new Date().toLocaleDateString('en-CA')}.zip`;
+                const writable = await (await this.backupDir.getFileHandle(name, { create: true })).createWritable();
+                await writable.write(this.backupFile);
+                await writable.close();
+
+                const daily = [];
+                for await (const entry of this.backupDir.keys()) if (AUTO_BACKUP_NAME.test(entry)) daily.push(entry);
+                for (const old of daily.sort().slice(0, -AUTO_BACKUP_KEEP)) await this.backupDir.removeEntry(old);
+                this.markBackedUp();
+            } catch (error) {
+                console.error('Auto-backup failed:', error);
+                toast(`Auto-backup failed: ${error.message}`, 'error');
+            } finally {
+                await this.renderAutoBackup();
+            }
+        });
+        return this.autoBackupRun;
     }
 
     /** Build a ZIP with expenses.json (metadata) and files/<id>.<ext> (receipts). */
