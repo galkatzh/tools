@@ -52,9 +52,12 @@ const fTime = fmt({ hour: 'numeric', minute: '2-digit' }), fHour = fmt({ hour: '
 const fHead = fmt({ weekday: 'short', day: 'numeric' }), fDay = fmt({ weekday: 'long', month: 'long', day: 'numeric' });
 const fRange = fmt({ month: 'short', day: 'numeric', year: 'numeric' }), fDate = fmt({ month: 'short', day: 'numeric' });
 const fFull = fmt({ weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+const fWd = fmt({ weekday: 'short' }), fWeekday = fmt({ weekday: 'long' }); // for weekly polls: no dates
 const dayOf = (t) => new Date(t).setHours(0, 0, 0, 0);
 const shift = (t, days) => { const d = new Date(t); return d.setDate(d.getDate() + days); }; // same wall-clock time
 const weekOf = (t) => dayOf(shift(t, -((new Date(t).getDay() - FIRST_DAY + 7) % 7)));
+/** t moved by whole weeks (same wall-clock time) into the 7 days from day w. */
+const into = (t, w) => shift(t, -7 * Math.floor(Math.round((dayOf(t) - w) / 864e5) / 7));
 const iso = (t) => new Date(t - new Date(t).getTimezoneOffset() * MIN).toISOString(); // local, for <input> values
 const utc = (t) => new Date(t).toISOString().replace(/[-:]|\.\d+/g, ''); // iCalendar / Google Calendar format
 // Calendar geometry is by wall-clock time, so DST-change days still line up with the hour labels.
@@ -110,18 +113,28 @@ function unseal(p, ev) {
 }
 
 // Decrypted payloads come from anyone holding the link: keep only well-formed fields.
+// A poll is `kind` 'vote' (answer each time ✓ / (✓) / ✗) or 'grid' (paint free time inside its
+// windows, in cells of `step` minutes); `weekly` ones are about weekdays, not dates (see wrap).
 function cleanPoll(x) {
   const slots = (Array.isArray(x.slots) ? x.slots : [])
     .filter((s) => typeof s?.id === 'string' && ID.test(s.id) && Number.isFinite(s.s) && Number.isFinite(s.e) && s.s < s.e)
     .slice(0, 500).map(({ id, s, e }) => ({ id, s, e }));
   if (!slots.length) throw new Error('poll has no valid times');
+  const kind = x.kind === 'grid' ? 'grid' : 'vote', f = x.final, tz = String(x.tz ?? '').slice(0, 64);
   return { title: String(x.title ?? '').slice(0, 120), notes: String(x.notes ?? '').slice(0, 2000),
-    tz: String(x.tz ?? '').slice(0, 64), slots, final: slots.some((s) => s.id === x.final) ? x.final : null,
+    tz: tz && knownZone(tz) ? tz : '', kind, weekly: x.weekly === true, step: [15, 30, 60].includes(x.step) ? x.step : 30, slots,
+    final: kind === 'grid' ? (Number.isFinite(f?.s) && Number.isFinite(f?.e) && f.s < f.e ? { s: f.s, e: f.e } : null)
+      : slots.some((s) => s.id === f) ? f : null, // a grid poll's final time is a range, a vote's one of its times
     expire: EXPIRE.includes(x.expire) ? x.expire : 0 };
+}
+function knownZone(tz) {
+  try { return !!new Intl.DateTimeFormat('en-US', { timeZone: tz }); } catch (err) { console.error(`ignoring the poll's unknown time zone ${tz}`, err); return false; }
 }
 function cleanVote(x) {
   return { name: String(x.name ?? '').slice(0, 60) || 'Anonymous',
-    votes: Object.fromEntries(Object.entries(x.votes ?? {}).filter(([id, v]) => ID.test(id) && /^[ymn]$/.test(v))) };
+    votes: Object.fromEntries(Object.entries(x.votes ?? {}).filter(([id, v]) => ID.test(id) && /^[ymn]$/.test(v))),
+    avail: (Array.isArray(x.avail) ? x.avail : []) // grid polls: [[start, end], …] of free time
+      .filter((r) => Array.isArray(r) && Number.isFinite(r[0]) && Number.isFinite(r[1]) && r[0] < r[1]).slice(0, 2000).map(([a, b]) => [a, b]) };
 }
 
 // --- Nostr --------------------------------------------------------------------------------
@@ -135,10 +148,35 @@ let P = null;       // the open poll, see initPoll
 let draft = null;   // poll being created or edited: {title, notes, tz, slots: [{id, s, e}], final, expire}
 let view = dayOf(Date.now()); // first day the calendar shows
 let drag = null;    // calendar gesture in progress (editor)
+let paint = null;   // grid poll: the rectangle being painted, {on, a, b} (a, b: entries of `shown`)
+let shown = [];     // grid poll: the cells on screen, [{c, col, tod}] (tod: minutes past midnight)
+let shownCols = []; // the days the calendar shows
+let week0 = null;   // weekly poll: the week its times show in (see wrap)
 let cals, busy;     // calendars imported in this browser: [{name, at, busy: [{s, e, t}]}] (never published); all their busy times
 const setCals = (c) => { cals = c; busy = c.flatMap((x) => x.busy); };
-const clashes = (slot) => busy.filter((b) => b.s < slot.e && b.e > slot.s);
-const away = (day) => busy.filter((b) => b.s <= day && b.e >= dayOf(shift(day, 1))); // busy the whole day: vacations, trips
+const cur = () => (mode === 'editor' ? draft : P?.poll); // the poll on screen
+const weekly = () => !!cur()?.weekly;
+const isGrid = () => cur()?.kind === 'grid';
+// A weekly poll keeps real instants, in the week its organizer drew them. They show by weekday:
+// each moves by whole weeks into the week on screen (week0), and a clash is checked against the
+// next four weeks, where only a clash every week rules a time out.
+const wrap = (t) => (weekly() ? into(t, week0) : t);
+/** When a time happens: once, or for a weekly poll in each of the next four weeks. */
+function occurrences({ s, e }) {
+  if (!weekly()) return [{ s, e }];
+  const t = into(s, dayOf(Date.now()));
+  return [0, 1, 2, 3].map((k) => ({ s: shift(t, 7 * k), e: shift(t, 7 * k) + e - s }));
+}
+const overlap = (r) => busy.filter((b) => b.s < r.e && b.e > r.s);
+const clashes = (slot) => [...new Set(occurrences(slot).flatMap(overlap))];
+const blocked = (slot) => occurrences(slot).every((o) => overlap(o).length); // our calendar rules it out
+const away = (day, bz) => bz.filter((b) => b.s <= day && b.e >= dayOf(shift(day, 1))); // busy the whole day: vacations, trips
+/** Our busy times on screen: for a weekly poll, those of the coming 7 days, by weekday. */
+const shownBusy = () => (!weekly() ? busy : busy.filter((b) => b.e > dayOf(Date.now()) && b.s < dayOf(shift(Date.now(), 7)))
+  .map((b) => ({ ...b, s: wrap(b.s), e: wrap(b.s) + b.e - b.s })));
+/** A day's name: its date, or for a weekly poll its weekday. */
+const dayName = (t) => (weekly() ? fWeekday : fDay).format(t);
+const dayShort = (t) => (weekly() ? fWd : fHead).format(t);
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /** Set P to the poll a link token names (format in the header). */
@@ -152,7 +190,7 @@ async function initPoll(token) {
   store(STORE + share, { ...saved, sk: hex(sk), at: Date.now() });
   P = { share, org: hex(raw.subarray(0, 32)), sk, me: getPublicKey(sk), ...(await derive(raw.subarray(32, 48))),
     poll: null, votes: new Map(), events: new Map(), cache: saved.events ?? [], error: null,
-    mine: { name: load(NAME, ''), votes: {} }, dirty: false };
+    mine: { name: load(NAME, ''), votes: {}, avail: [] }, dirty: false };
   $('#name').value = P.mine.name;
 }
 
@@ -325,8 +363,52 @@ setInterval(updateNet, 2000);
 
 // --- rendering ----------------------------------------------------------------------------
 
-const slots = () => [...((mode === 'editor' ? draft : P?.poll)?.slots ?? [])].sort((a, b) => a.s - b.s);
+/** The poll's times, sorted; a weekly poll's moved into the week on screen (same ids). */
+const slots = () => (cur()?.slots ?? []).map((x) => ({ ...x, s: wrap(x.s), e: wrap(x.s) + x.e - x.s })).sort((a, b) => a.s - b.s);
 const others = () => [...P.votes].filter(([pk]) => pk !== P.me).map(([, v]) => v).sort((a, b) => a.name.localeCompare(b.name));
+
+// --- grid polls: cells and painted availability ---
+/** A grid poll's cells: the start of every `step` minutes in its windows, each counted once. */
+function cells(poll) {
+  const step = poll.step * MIN, out = new Set();
+  for (const w of poll.slots) for (let c = w.s; c + step <= w.e; c += step) out.add(c);
+  return [...out].sort((a, b) => a - b);
+}
+/** Cell starts merged into the [[start, end], …] ranges an answer stores. */
+function toRanges(cs, step) {
+  const out = [];
+  for (const c of [...cs].sort((a, b) => a - b)) {
+    if (out.at(-1)?.[1] === c) out.at(-1)[1] = c + step;
+    else out.push([c, c + step]);
+  }
+  return out;
+}
+const isIn = (ranges, t) => ranges.some(([s, e]) => s <= t && t < e);
+/** Who answered a grid poll: us first (unsaved painting included), then everyone else. */
+const people = () => [...(P.votes.has(P.me) || P.mine.avail.length ? [{ ...P.mine, name: P.mine.name.trim() || 'You' }] : []), ...others()];
+/** The cells inside the rectangle being painted, from its first cell to the one under the pointer. */
+function paintSel() {
+  const [c0, c1] = [paint.a.col, paint.b.col].sort((x, y) => x - y), [t0, t1] = [paint.a.tod, paint.b.tod].sort((x, y) => x - y);
+  return shown.filter((x) => x.col >= c0 && x.col <= c1 && x.tod >= t0 && x.tod <= t1).map((x) => x.c);
+}
+/** The best times of a grid poll: runs of consecutive cells the same people can make, most
+ *  people first, then the longest. `who`: indices into `ppl`. */
+function bestTimes(ppl) {
+  const step = P.poll.step * MIN, runs = [];
+  for (const c of cells(P.poll)) {
+    const who = ppl.flatMap((p, i) => (isIn(p.avail, c) ? [i] : [])), key = who.join(), last = runs.at(-1);
+    if (last?.e === c && last.key === key) last.e = c + step;
+    else if (who.length) runs.push({ s: c, e: c + step, who, key });
+  }
+  return runs.sort((a, b) => b.who.length - a.who.length || b.e - b.s - (a.e - a.s) || a.s - b.s).slice(0, 5);
+}
+/** What the info line says about cell c: who's free then. */
+function cellInfo(c) {
+  const ppl = people(), t = wrap(c), free = ppl.filter((p) => isIn(p.avail, c)).map((p) => p.name);
+  const not = ppl.filter((p) => !isIn(p.avail, c)).map((p) => p.name);
+  return `${dayName(t)}, ${fTime.formatRange(t, t + P.poll.step * MIN)}: ${free.length} of ${ppl.length} free`
+    + `${free.length ? ` (${free.join(', ')})` : ''}${not.length ? `. Not: ${not.join(', ')}` : ''}`;
+}
 
 /** Yes / if-need-be counts per slot, counting our unsaved answers; `best` marks the leaders. */
 function tallies() {
@@ -340,6 +422,8 @@ function tallies() {
 
 function render() {
   for (const id of ['home', 'editor', 'poll']) $(`#${id}`).hidden = mode !== id;
+  document.body.dataset.kind = cur()?.kind ?? 'vote'; // shows the .vote-only or .grid-only hints
+  if (mode === 'editor') for (const o of $('#expire').options) if (+o.value) o.textContent = `${o.dataset.n} ${weekly() ? 'after saving' : 'after the last time'}`;
   $('#me').hidden = mode !== 'poll' || !P?.poll;
   $('#board').hidden = mode === 'home' || (mode === 'poll' && !P?.poll);
   if (mode === 'home') renderHome();
@@ -369,15 +453,17 @@ function renderHead() {
   document.title = `${poll.title} · Find a time`;
   $('#title').textContent = poll.title;
   $('#notes').textContent = poll.notes;
-  $('#tz').textContent = `Times are in your time zone, ${TZ}${poll.tz && poll.tz !== TZ ? ` (the organizer is in ${poll.tz})` : ''}.`
+  $('#tz').textContent = `${poll.weekly ? 'This poll is about a weekly event. ' : ''}Times are in your time zone, ${TZ}${poll.tz && poll.tz !== TZ
+    ? ` (the organizer is in ${poll.tz}${poll.weekly ? ', so a daylight-saving change can move them by an hour' : ''})` : ''}.`
     + (p.exp ? ` The poll and all answers are deleted automatically on ${fFull.format(p.exp * 1000)}.` : '');
   $('#editBtn').hidden = p.me !== p.org;
-  const f = poll.slots.find((s) => s.id === poll.final);
+  const f = finalOf(poll);
   $('#final').hidden = !f;
   if (f) {
-    $('#finalTime').textContent = fFull.formatRange(f.s, f.e);
+    $('#finalTime').textContent = poll.weekly ? `every ${fWeekday.format(f.s)}, ${fTime.formatRange(f.s, f.e)}` : fFull.formatRange(f.s, f.e);
+    const [s, e, tz] = when(poll, f);
     $('#gcal').href = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(poll.title)}`
-      + `&dates=${utc(f.s)}/${utc(f.e)}&details=${encodeURIComponent(poll.notes)}`;
+      + `&dates=${s}/${e}&details=${encodeURIComponent(poll.notes)}${tz ? `&ctz=${encodeURIComponent(tz)}&recur=RRULE:FREQ%3DWEEKLY` : ''}`;
   }
   $('#save').disabled = !p.dirty;
   $('#saveState').textContent = p.dirty ? 'Unsaved' : p.votes.has(p.me) ? 'Saved ✓' : '';
@@ -400,12 +486,25 @@ function lanes(segs) {
   flush();
 }
 
+/** A calendar grid for the days `cols`: their headers, the hour gutter, then `body(day, next, i)`
+ *  for each day column (`next`: the following midnight). */
+function gridHtml(cols, head, body) {
+  return `<div class="cal-grid" style="--days:${cols.length}"><div class="corner"></div>${cols.map((d) => head(d)).join('')}`
+    + `<div class="gutter">${Array.from({ length: 23 }, (_, h) => `<span style="top:${(h + 1) * HH}px">${fHour.format(new Date(view).setHours(h + 1))}</span>`).join('')}</div>`
+    + `${cols.map((day, i) => body(day, dayOf(shift(day, 1)), i)).join('')}</div>`;
+}
+
 function renderCal() {
-  const n = days();
+  const n = days(), ss = cur()?.slots ?? [], wk = weekly();
+  week0 = weekOf(ss.length ? Math.min(...ss.map((s) => s.s)) : view);
+  view = dayOf(wrap(view));
   if (n === 7) view = weekOf(view);
-  const cols = Array.from({ length: n }, (_, i) => dayOf(shift(view, i)));
-  $('#range').textContent = fRange.formatRange(cols[0], cols[n - 1]);
-  const all = slots(), t = mode === 'poll' && tallies(), today = dayOf(Date.now());
+  const cols = (shownCols = Array.from({ length: n }, (_, i) => dayOf(wrap(shift(view, i))))); // a weekly 3-day view wraps around
+  $('[data-nav="0"]').hidden = wk;
+  $('[data-nav="-1"]').hidden = $('[data-nav="1"]').hidden = wk && n === 7;
+  $('#range').textContent = wk ? 'Every week' : fRange.formatRange(cols[0], cols[n - 1]);
+  const all = slots(), painting = mode === 'poll' && isGrid(), t = mode === 'poll' && !painting && tallies();
+  const today = !wk && dayOf(Date.now()), bz = shownBusy();
   // editor: an empty day / week offers to copy the latest earlier day / week that has times
   const copyFrom = (t0, unit, span) => mode === 'editor' && !all.some((s) => s.s >= t0 && s.s < dayOf(shift(t0, span)))
     && Math.max(...all.map((s) => unit(s.s)).filter((u) => u < t0));
@@ -415,31 +514,45 @@ function renderCal() {
     weekBtn.textContent = `⧉ Copy week of ${fDate.format(srcWeek)}`;
     Object.assign(weekBtn.dataset, { src: srcWeek, to: week });
   }
-  const head = (d, src = copyFrom(d, dayOf, 1)) => `<div class="dh${d === today ? ' today' : ''}">${fHead.format(d)}${Number.isFinite(src)
-    ? `<button class="copy" data-src="${src}" data-to="${d}" data-span="1" title="Copy the times of ${fDay.format(src)}">⧉ ${fHead.format(src)}</button>` : ''}${
-    mode === 'poll' ? dayNo(d) : ''}${awayNote(d)}</div>`;
-  let html = `<div class="cal-grid" style="--days:${n}"><div class="corner"></div>${cols.map((d) => head(d)).join('')}`
-    + `<div class="gutter">${Array.from({ length: 23 }, (_, h) => `<span style="top:${(h + 1) * HH}px">${fHour.format(new Date(view).setHours(h + 1))}</span>`).join('')}</div>`;
-  for (const day of cols) {
-    const next = dayOf(shift(day, 1));
-    // a slot crossing midnight (possible in another time zone) shows as one segment per day
-    const segs = all.filter((s) => s.s < next && s.e > day).map((s) => ({ slot: s, s: Math.max(s.s, day), e: Math.min(s.e, next) }));
-    // our own busy times: a whole busy day shades the column (named in the header), the rest are blocks
-    const whole = away(day), mine = busy.filter((b) => b.s < next && b.e > day && !whole.includes(b))
-      .map((b) => ({ t: b.t, s: Math.max(b.s, day), e: Math.min(b.e, next) }));
-    lanes(segs);
-    lanes(mine);
-    html += `<div class="day${day === today ? ' today' : ''}${whole.length ? ' away' : ''}" data-day="${day}">`
-      + `${mine.map((g) => `<div class="busy" style="${place(g, next)}">${esc(g.t)}</div>`).join('')}${segs.map((g) => block(g, next, t)).join('')}</div>`;
-  }
+  const head = (d, src = copyFrom(d, dayOf, 1)) => `<div class="dh${d === today ? ' today' : ''}">${dayShort(d)}${Number.isFinite(src)
+    ? `<button class="copy" data-src="${src}" data-to="${d}" data-span="1" title="Copy the times of ${dayName(src)}">⧉ ${dayShort(src)}</button>`
+    : mode === 'editor' ? '<button class="copy ghost" tabindex="-1" aria-hidden="true">⧉</button>' : ''}${ // keeps the header from growing mid-drag
+    mode === 'poll' && !painting ? dayNo(d) : ''}${awayNote(d, bz)}</div>`;
+  const grid = painting ? cells(P.poll) : [], sel = paint && new Set(paintSel());
+  shown = [];
   const top = cal.scrollTop;
-  cal.innerHTML = `${html}</div>`;
+  cal.innerHTML = gridHtml(cols, head, (day, next, col) => {
+    // our own busy times: a whole busy day shades the column (named in the header), the rest are
+    // blocks, under the poll's times or over the cells we paint
+    const whole = painting ? [] : away(day, bz), mine = bz.filter((b) => b.s < next && b.e > day && !whole.includes(b))
+      .map((b) => ({ t: b.t, s: Math.max(b.s, day), e: Math.min(b.e, next) }));
+    lanes(mine);
+    const ours = mine.map((g) => `<div class="busy" style="${place(g, next)}">${esc(g.t)}</div>`).join('');
+    let inner;
+    if (painting) inner = paintCells(grid.filter((c) => wrap(c) >= day && wrap(c) < next), next, col, sel) + ours;
+    else {
+      // a slot crossing midnight (possible in another time zone) shows as one segment per day
+      const segs = all.filter((s) => s.s < next && s.e > day).map((s) => ({ slot: s, s: Math.max(s.s, day), e: Math.min(s.e, next) }));
+      lanes(segs);
+      inner = ours + segs.map((g) => block(g, next, t)).join('');
+    }
+    return `<div class="day${day === today ? ' today' : ''}${whole.length ? ' away' : ''}" data-day="${day}">${inner}</div>`;
+  });
   cal.scrollTop = top;
 }
 
+/** Grid poll: our cells in one day column, painted where we're free (or about to be). */
+function paintCells(cs, next, col, sel) {
+  return cs.map((c) => {
+    const t = wrap(c), d = new Date(t), on = sel?.has(c) ? paint.on : isIn(P.mine.avail, c);
+    shown.push({ c, col, tod: d.getHours() * 60 + d.getMinutes() });
+    return `<div class="cell${on ? ' on' : ''}" data-cell="${c}" style="top:${yOf(t, next)}px;height:${P.poll.step * HH / 60}px"></div>`;
+  }).join('');
+}
+
 /** Day header note naming the events that keep us busy all of `day`. */
-function awayNote(day) {
-  const t = away(day).map((b) => b.t || 'busy').join(', ');
+function awayNote(day, bz) {
+  const t = away(day, bz).map((b) => b.t || 'busy').join(', ');
   return t && `<small class="away" title="${esc(t)}">${esc(t)}</small>`;
 }
 
@@ -453,12 +566,12 @@ function place(g, next) {
 
 /** "clashes with …" for a slot that overlaps our calendar's busy times, else ''. */
 function clashNote(s) {
-  const c = clashes(s);
-  return c.length ? `clashes with ${c.map((b) => b.t || 'busy').join(', ')}` : '';
+  const names = [...new Set(clashes(s).map((b) => b.t || 'busy'))].join(', ');
+  return names && `clashes with ${names}${weekly() ? (blocked(s) ? ' every week' : ' on some weeks') : ''}`;
 }
 
 function block(g, next, t) {
-  const s = g.slot, style = place(g, next), range = fTime.formatRange(s.s, s.e), clash = clashNote(s);
+  const s = g.slot, style = place(g, next), range = fTime.formatRange(s.s, s.e), clash = isGrid() ? '' : clashNote(s); // a window clashes with something anyway
   if (mode === 'editor') {
     return `<div class="blk edit" data-slot="${s.id}" style="${style}" title="${esc(range + (clash && ` · ${clash}`))}"><span>${clash ? '⚠ ' : ''}${range}</span>`
       + `<button class="x" data-del="${s.id}" aria-label="Remove">×</button>`
@@ -473,14 +586,17 @@ function block(g, next, t) {
 function renderList() {
   const all = slots();
   if (mode === 'editor') {
+    const week = Array.from({ length: 7 }, (_, i) => dayOf(shift(week0, i))); // a weekly poll picks weekdays
     list.innerHTML = `<div class="erows">${all.map((s) => `<div class="erow" data-slot="${s.id}">
-      <input type="date" value="${iso(s.s).slice(0, 10)}" required>
+      ${weekly() ? `<select aria-label="Day">${week.map((d) => `<option value="${d}"${d === dayOf(s.s) ? ' selected' : ''}>${fWeekday.format(d)}</option>`).join('')}</select>`
+        : `<input type="date" value="${iso(s.s).slice(0, 10)}" required>`}
       <input type="time" value="${iso(s.s).slice(11, 16)}" step="900" required><span>–</span>
       <input type="time" value="${iso(s.e).slice(11, 16)}" step="900" required>
       <button class="x" data-del="${s.id}" aria-label="Remove">×</button></div>`).join('')
-      || '<p class="muted">No times yet.</p>'}</div><button id="addSlot">＋ Add time</button>`;
+      || `<p class="muted">No ${isGrid() ? 'days' : 'times'} yet.</p>`}</div><button id="addSlot">＋ Add ${isGrid() ? 'day' : 'time'}</button>`;
     return;
   }
+  if (isGrid()) return renderGroup();
   const ppl = others(), t = tallies(), admin = P.me === P.org;
   let html = `<table class="votes"><thead><tr><th class="t">${ppl.length + (P.votes.has(P.me) ? 1 : 0)} answered</th><th>Total</th>`
     + `<th class="you">${esc(P.mine.name.trim() || 'You')}</th>${ppl.map((p) => `<th title="${esc(p.name)}">${esc(p.name)}</th>`).join('')}</tr></thead><tbody>`;
@@ -488,7 +604,7 @@ function renderList() {
   for (const s of all) {
     if (dayOf(s.s) !== lastDay) {
       lastDay = dayOf(s.s);
-      html += `<tr class="dayrow"><th colspan="${3 + ppl.length}"><span>${fDay.format(s.s)} ${dayNo(lastDay)}</span></th></tr>`;
+      html += `<tr class="dayrow"><th colspan="${3 + ppl.length}"><span>${dayName(s.s)} ${dayNo(lastDay)}</span></th></tr>`;
     }
     const x = t.get(s.id), v = P.mine.votes[s.id] ?? '', final = P.poll.final === s.id, clash = clashNote(s);
     html += `<tr data-slot="${s.id}" class="${x.best ? 'best' : ''}${final ? ' final' : ''}">`
@@ -500,19 +616,43 @@ function renderList() {
   list.innerHTML = `${html}</tbody></table>`;
 }
 
+/** Grid poll: everyone's availability as a heat map (same days and scroll as the calendar), the
+ *  best times, and who answered. */
+function renderGroup() {
+  const ppl = people(), f = P.poll.final, h = P.poll.step * HH / 60, grid = cells(P.poll);
+  const heat = (day, next) => `<div class="day">${grid.filter((c) => wrap(c) >= day && wrap(c) < next).map((c) => {
+    const n = ppl.filter((p) => isIn(p.avail, c)).length;
+    return `<div class="heat${f && c >= f.s && c < f.e ? ' final' : ''}" data-cell="${c}" style="top:${yOf(wrap(c), next)}px;height:${h}px;`
+      + `--heat:${ppl.length ? Math.round((100 * n) / ppl.length) : 0}%"></div>`;
+  }).join('')}</div>`;
+  const best = bestTimes(ppl).map((r) => {
+    const t = wrap(r.s), picked = f?.s === r.s && f?.e === r.e, not = ppl.filter((_, i) => !r.who.includes(i)).map((p) => p.name), admin = P.me === P.org;
+    return `<li${picked ? ' class="final"' : ''}><button class="link" data-at="${r.s}" title="Show in calendar">${dayName(t)}, ${fTime.formatRange(t, t + r.e - r.s)}</button>`
+      + ` · ${r.who.length} of ${ppl.length}${not.length ? ` <small class="muted">(not ${esc(not.join(', '))})</small>` : ''}${picked && !admin ? ' 📌' : ''}`
+      + `${admin ? ` <button class="pin" data-pick="${r.s},${r.e}" title="${picked ? 'Unpick' : 'Pick as the final time'}">📌</button>` : ''}</li>`;
+  });
+  list.innerHTML = `<h3>Best times</h3>${best.length ? `<ol class="best">${best.join('')}</ol>` : '<p class="muted">Nobody has painted any times yet.</p>'}`
+    + `<p class="ghead"><b>Everyone</b> · ${plural(ppl.length, 'answer')}${ppl.length ? `: ${esc(ppl.map((p) => p.name).join(', '))}` : ''}`
+    + ` <span class="ramp" title="from nobody to everyone free"></span></p>`
+    + `<p id="ginfo" class="muted">${ppl.length ? 'Point at or tap a time to see who’s free.' : 'Nobody has answered yet.'}</p>`
+    + `<div id="heatmap" class="cal">${gridHtml(shownCols, (d) => `<div class="dh">${dayShort(d)}</div>`, heat)}</div>`;
+  $('#heatmap').scrollTop = cal.scrollTop;
+}
+
 const daySlots = (day) => slots().filter((s) => s.s < dayOf(shift(day, 1)) && s.e > day);
 
 /** Poll view: a toggle that answers ✗ to every time on `day` (not available all day), or clears them. */
 function dayNo(day) {
   const ss = daySlots(day), on = ss.every((s) => P.mine.votes[s.id] === 'n');
   return ss.length ? `<button class="dayno${on ? ' on' : ''}" data-dayno="${day}" aria-pressed="${on}"`
-    + ` title="${on ? 'Clear your answers for' : 'Not available all day: ✗ to every time on'} ${fDay.format(day)}">✗ all day</button>` : '';
+    + ` title="${on ? 'Clear your answers for' : 'Not available all day: ✗ to every time on'} ${dayName(day)}">✗ all day</button>` : '';
 }
 
-/** Bring time t into view in the calendar. */
+/** Bring time t into view in the calendar (the editor's list keeps its focus: it isn't redrawn). */
 function goto(t) {
   view = dayOf(t);
-  renderCal();
+  if (mode === 'editor') renderCal();
+  else render();
   cal.scrollTop = yOf(t, Infinity) - HH;
 }
 
@@ -538,23 +678,48 @@ async function route() {
 }
 
 function startEdit(poll) {
-  draft = structuredClone(poll ?? { title: '', notes: '', slots: [], final: null, expire: 30 }); // new polls: delete a month after
+  // new polls: votes on dates, deleted a month after
+  draft = structuredClone(poll ?? { title: '', notes: '', kind: 'vote', weekly: false, step: 30, slots: [], final: null, expire: 30 });
   $('#eTitle').value = draft.title;
   $('#eNotes').value = draft.notes;
   $('#expire').value = draft.expire;
+  $('#step').value = draft.step;
+  for (const r of document.querySelectorAll('[name=kind], [name=weekly]')) {
+    r.checked = r.value === String(r.name === 'kind' ? draft.kind : draft.weekly);
+    r.disabled = !!poll; // answers depend on them
+  }
   $('#publish').textContent = poll ? 'Save changes' : 'Create poll';
   mode = 'editor';
   render();
   goto(slots()[0]?.s ?? new Date().setHours(8, 0, 0, 0));
 }
 
+/** A grid poll's window for `day`: the hours the editor offers by default, or nothing if they're unusable. */
+function dayWindow(day) {
+  const [s, e] = ['#gFrom', '#gTo'].map((q) => new Date(day).setHours(...$(q).value.split(':')));
+  if (s < e) return { s, e };
+  toast('The day’s hours have to end after they start', true);
+}
+
 function addSlot() {
-  // the day after the latest time, same hours; or tomorrow at 9:00
+  // the day after the latest time (within the week, for a weekly poll), same hours; or tomorrow
   const last = slots().at(-1);
-  const s = last ? shift(last.s, 1) : new Date(shift(Date.now(), 1)).setHours(9, 0, 0, 0);
-  draft.slots.push({ id: newId(), s, e: s + (last ? last.e - last.s : $('#dur').value * MIN) });
+  const s = last ? wrap(shift(last.s, 1)) : new Date(wrap(shift(Date.now(), 1))).setHours(9, 0, 0, 0);
+  const w = last ? { s, e: s + last.e - last.s } : isGrid() ? dayWindow(s) : { s, e: s + $('#dur').value * MIN };
+  if (!w) return;
+  draft.slots.push({ id: newId(), ...w });
   render();
-  goto(s);
+  goto(w.s);
+}
+
+/** Switch the draft between dates and days of the week. Its times fold into the week on screen. */
+function setWeekly(on) {
+  if (on) {
+    const w = weekOf(view), seen = new Set();
+    draft.slots = draft.slots.map((x) => ({ ...x, s: into(x.s, w), e: into(x.s, w) + x.e - x.s }))
+      .filter((x) => !seen.has(`${x.s},${x.e}`) && seen.add(`${x.s},${x.e}`)); // the same time on several dates: once
+  }
+  draft.weekly = on;
 }
 
 /** Duplicate the times starting in the `span` days from `src` onto the days from `to`, at the
@@ -566,13 +731,15 @@ function copyDays(src, to, span) {
 }
 
 async function savePoll() {
-  Object.assign(draft, { title: $('#eTitle').value.trim(), notes: $('#eNotes').value.trim(), tz: TZ, expire: +$('#expire').value });
+  Object.assign(draft, { title: $('#eTitle').value.trim(), notes: $('#eNotes').value.trim(), tz: TZ, expire: +$('#expire').value,
+    step: +$('#step').value });
   if (!draft.title) { $('#eTitle').focus(); return toast('Give the poll a title first', true); }
-  if (!draft.slots.length) return toast('Add at least one time', true);
+  if (!draft.slots.length) return toast(`Add at least one ${isGrid() ? 'day' : 'time'}`, true);
   draft.slots.sort((a, b) => a.s - b.s);
-  if (!draft.slots.some((s) => s.id === draft.final)) draft.final = null;
-  // the expiry follows the last time, so editing the times moves it
-  const exp = draft.expire ? Math.ceil(shift(Math.max(...draft.slots.map((s) => s.e)), draft.expire) / 1000) : null;
+  if (!isGrid() && !draft.slots.some((s) => s.id === draft.final)) draft.final = null;
+  // the expiry follows the last time, so editing the times moves it; a weekly poll's times recur,
+  // so its expiry counts from saving
+  const exp = draft.expire ? Math.ceil(shift(draft.weekly ? Date.now() : Math.max(...draft.slots.map((s) => s.e)), draft.expire) / 1000) : null;
   if (exp && exp * 1000 <= Date.now()) return toast('Every time is long past, so the poll would be deleted at once: add a later time or choose “never”.', true);
   const btn = $('#publish');
   btn.disabled = true;
@@ -613,15 +780,27 @@ async function saveAnswers() {
  *  initial sync: until then our saved answers may still be on their way. */
 function markClashes(p) {
   if (mode !== 'poll' || P !== p || !p.synced || !p.poll) return;
-  const hit = p.poll.slots.filter((s) => !p.mine.votes[s.id] && clashes(s).length);
+  if (isGrid()) return paintFree(p);
+  const hit = p.poll.slots.filter((s) => !p.mine.votes[s.id] && blocked(s));
   if (!hit.length) return;
   for (const s of hit) p.mine.votes[s.id] = 'n';
   p.dirty = true;
   toast(`Marked ${plural(hit.length, 'time')} that clash with your calendar ✗ no. Save answers to send.`);
 }
 
-async function setFinal(id) {
-  const final = P.poll.final === id ? null : id;
+/** Grid poll: a blank answer starts out painted wherever our calendar leaves us free. */
+function paintFree(p) {
+  if (!busy.length || p.mine.avail.length || p.votes.has(p.me)) return;
+  const step = p.poll.step * MIN, free = cells(p.poll).filter((c) => !blocked({ s: c, e: c + step }));
+  if (!free.length) return toast('Your calendar is busy at every time of this poll.');
+  p.mine.avail = toRanges(free, step);
+  p.dirty = true;
+  toast('Painted the times your calendar leaves free. Adjust them, then save your answers.');
+}
+
+/** Pick (or unpick) the final time: a vote poll's slot id, or a grid poll's {s, e} range. */
+async function setFinal(f) {
+  const final = JSON.stringify(P.poll.final) === JSON.stringify(f) ? null : f;
   const n = await publish(P.dPoll, { ...P.poll, final });
   toast(`${final ? 'Final time picked' : 'Final time cleared'} (saved to ${n} relays)`);
 }
@@ -655,11 +834,31 @@ async function openDevice(saved) {
   }
 }
 
+const finalOf = (poll) => (poll.kind === 'grid' ? poll.final : poll.slots.find((s) => s.id === poll.final)) ?? null;
+
+/** iCalendar date-time (YYYYMMDDTHHMMSS) of instant t on the wall clock of IANA zone tz. */
+function wallIn(t, tz) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit',
+    day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(t).map((x) => [x.type, x.value]));
+  return `${p.year}${p.month}${p.day}T${p.hour}${p.minute}${p.second}`;
+}
+/** The final time f for calendars: [start, end] in UTC, or for a weekly poll [start, end, zone]:
+ *  its next occurrence on the organizer's wall clock, which the weekly repeat then keeps across
+ *  DST. Moved by whole dates, so no time zone offset is involved. */
+function when(poll, f) {
+  if (!poll.weekly) return [utc(f.s), utc(f.e)];
+  const tz = poll.tz || TZ, [s, e] = [f.s, f.e].map((t) => wallIn(t, tz));
+  const date = (w) => Date.UTC(w.slice(0, 4), w.slice(4, 6) - 1, w.slice(6, 8));
+  const k = Math.ceil((date(wallIn(Date.now(), tz)) - date(s)) / 864e5 / 7) * 7 * 864e5; // to the coming 7 days
+  const move = (w) => new Date(date(w) + k).toISOString().slice(0, 10).replace(/-/g, '') + w.slice(8);
+  return [move(s), move(e), tz];
+}
+
 function downloadIcs() {
-  const poll = P.poll, f = poll.slots.find((s) => s.id === poll.final);
-  const text = (s) => s.replace(/[\\;,]/g, '\\$&').replace(/\r?\n/g, '\\n');
+  const poll = P.poll, [s, e, tz] = when(poll, finalOf(poll)), at = (w) => (tz ? `;TZID=${tz}:${w}` : `:${w}`);
+  const text = (x) => x.replace(/[\\;,]/g, '\\$&').replace(/\r?\n/g, '\\n');
   const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//tools//find-a-time//EN', 'BEGIN:VEVENT',
-    `UID:${P.dPoll.slice(0, 32)}@find-a-time`, `DTSTAMP:${utc(Date.now())}`, `DTSTART:${utc(f.s)}`, `DTEND:${utc(f.e)}`,
+    `UID:${P.dPoll.slice(0, 32)}@find-a-time`, `DTSTAMP:${utc(Date.now())}`, `DTSTART${at(s)}`, `DTEND${at(e)}`, ...(tz ? ['RRULE:FREQ=WEEKLY'] : []),
     `SUMMARY:${text(poll.title)}`, `DESCRIPTION:${text(poll.notes)}`, 'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
   const a = Object.assign(document.createElement('a'), {
     href: URL.createObjectURL(new Blob([ics], { type: 'text/calendar' })),
@@ -792,6 +991,12 @@ $('#cancel').addEventListener('click', () => {
   render();
 });
 $('#editBtn').addEventListener('click', () => startEdit(P.poll));
+$('#editor').addEventListener('change', (e) => { // the kind of poll, and dates or weekdays
+  if (e.target.name === 'kind') draft.kind = e.target.value;
+  else if (e.target.name === 'weekly') setWeekly(e.target.value === 'true');
+  else return;
+  render();
+});
 $('#shareBtn').addEventListener('click', openShare);
 $('#deviceBtn').addEventListener('click', () => openDevice());
 $('#toDevice').addEventListener('click', () => {
@@ -866,7 +1071,7 @@ $('#device').addEventListener('click', copyLink);
 
 // One click handler for both views: answers, slot removal, copying, final pick, navigation.
 $('#board').addEventListener('click', (e) => {
-  const el = e.target.closest('[data-vote], [data-dayno], [data-del], [data-src], [data-final], [data-goto], [data-nav], #addSlot');
+  const el = e.target.closest('[data-vote], [data-dayno], [data-del], [data-src], [data-final], [data-pick], [data-goto], [data-at], [data-nav], #addSlot');
   const d = el?.dataset ?? {};
   if (d.src) copyDays(+d.src, +d.to, +d.span);
   else if (d.vote) {
@@ -885,10 +1090,15 @@ $('#board').addEventListener('click', (e) => {
     draft.slots = draft.slots.filter((s) => s.id !== d.del);
     render();
   } else if (d.final) setFinal(d.final);
+  else if (d.pick) {
+    const [s, e] = d.pick.split(',').map(Number);
+    setFinal({ s, e });
+  }
   else if (d.goto) goto(P.poll.slots.find((s) => s.id === d.goto).s);
+  else if (d.at) goto(+d.at);
   else if (d.nav) {
     view = +d.nav ? dayOf(shift(view, +d.nav * days())) : dayOf(Date.now());
-    renderCal();
+    render();
   } else if (el) addSlot();
 });
 
@@ -898,28 +1108,64 @@ list.addEventListener('change', (e) => {
   const row = e.target.closest('.erow');
   if (!row) return;
   const slot = draft.slots.find((s) => s.id === row.dataset.slot);
-  const [date, from, to] = row.querySelectorAll('input');
+  const [date, from, to] = row.querySelectorAll('select, input'); // a weekly poll's day is a <select> of weekdays
   if (!date.value || !from.value || !to.value) return; // half-typed
-  const s = +new Date(`${date.value}T${from.value}`);
-  let end = e.target === to ? +new Date(`${date.value}T${to.value}`) : s + (slot.e - slot.s); // moving the start keeps the length
+  const ymd = weekly() ? iso(+date.value).slice(0, 10) : date.value, s = +new Date(`${ymd}T${from.value}`);
+  let end = e.target === to ? +new Date(`${ymd}T${to.value}`) : s + (slot.e - slot.s); // moving the start keeps the length
   if (end <= s) end = shift(end, 1); // an end before the start means past midnight
   Object.assign(slot, { s, e: end });
-  for (const [input, v] of [[date, iso(s).slice(0, 10)], [from, iso(s).slice(11, 16)], [to, iso(end).slice(11, 16)]]) {
+  for (const [input, v] of [[date, weekly() ? String(dayOf(s)) : iso(s).slice(0, 10)], [from, iso(s).slice(11, 16)], [to, iso(end).slice(11, 16)]]) {
     if (input !== e.target) input.value = v;
   }
   goto(s);
 });
 
-// Hovering a time in either view highlights it in both.
+// Hovering a time in either view highlights it in both; on a grid poll, the info line says who's free.
 const highlight = document.head.appendChild(document.createElement('style'));
 $('#board').addEventListener('pointerover', (e) => {
-  const id = e.target.closest('[data-slot]')?.dataset.slot;
-  highlight.textContent = id ? `[data-slot="${CSS.escape(id)}"] { --hl: var(--accent); }` : '';
+  const el = e.target.closest('[data-slot], [data-cell]'), { slot, cell } = el?.dataset ?? {};
+  highlight.textContent = slot ? `[data-slot="${CSS.escape(slot)}"] { --hl: var(--accent); }` : cell ? `[data-cell="${cell}"] { --hl: var(--accent); }` : '';
+  if (cell && $('#ginfo')) $('#ginfo').textContent = cellInfo(+cell);
 });
+// A grid poll's heat map scrolls with the calendar (scroll doesn't bubble, but it can be captured).
+const follow = (a, b) => b && Math.abs(a.scrollTop - b.scrollTop) >= 1 && (b.scrollTop = a.scrollTop);
+cal.addEventListener('scroll', () => follow(cal, $('#heatmap')));
+list.addEventListener('scroll', (e) => e.target.id === 'heatmap' && follow(e.target, cal), true);
 $('#board').addEventListener('pointerleave', () => (highlight.textContent = ''));
 
+// Grid poll: painting. A press on a cell starts a rectangle (across days and hours) that paints
+// cells free, or clears them if that first cell was already free. Cells take touch drags too
+// (touch-action: none); the hour gutter still scrolls.
+const cellAt = (e) => document.elementFromPoint(e.clientX, e.clientY)?.closest('#cal [data-cell]');
+cal.addEventListener('pointerdown', (e) => {
+  const at = mode === 'poll' && !e.button && shown.find((x) => x.c === +cellAt(e)?.dataset.cell);
+  if (!at) return;
+  paint = { on: !isIn(P.mine.avail, at.c), a: at, b: at };
+  cal.setPointerCapture(e.pointerId);
+  e.preventDefault();
+  renderCal();
+});
+cal.addEventListener('pointermove', (e) => {
+  const at = paint && shown.find((x) => x.c === +cellAt(e)?.dataset.cell);
+  if (!at || at.c === paint.b.c) return;
+  paint.b = at;
+  renderCal();
+});
+const endPaint = (e) => {
+  if (!paint) return;
+  if (e.type === 'pointerup') {
+    const sel = new Set(paintSel());
+    P.mine.avail = toRanges(cells(P.poll).filter((c) => (sel.has(c) ? paint.on : isIn(P.mine.avail, c))), P.poll.step * MIN);
+    P.dirty = true;
+  }
+  paint = null;
+  render();
+};
+cal.addEventListener('pointerup', endPaint);
+cal.addEventListener('pointercancel', endPaint);
+
 // Editor gestures. Mouse/pen: drag on empty space draws a time. Any pointer: a tap adds the
-// default length at the nearest half hour, and a block's grip resizes it. Touch drags on empty
+// default length at the nearest half hour (a grid poll: the day's default hours), and a block's grip resizes it. Touch drags on empty
 // space stay with the browser for scrolling (touch-action: pan-y), which cancels the gesture.
 // Pointer capture goes on the static #cal scroller, so it survives the re-render on every move.
 cal.addEventListener('pointerdown', (e) => {
@@ -953,9 +1199,10 @@ const endDrag = (e) => {
   drag = null;
   if (e.type === 'pointercancel') {
     if (!d.grip && d.id) draft.slots = draft.slots.filter((s) => s.id !== d.id);
-  } else if (!d.grip && !d.id) {
-    const s = tAt(d.day, d.y0, 30, Math.floor);
-    draft.slots.push({ id: newId(), s, e: s + $('#dur').value * MIN });
+  } else if (!d.grip && !d.id) { // a tap: a grid poll offers that day's default hours
+    const s = tAt(d.day, d.y0, 30, Math.floor), w = isGrid() ? dayWindow(d.day) : { s, e: s + $('#dur').value * MIN };
+    if (w && draft.slots.some((x) => x.s === w.s && x.e === w.e)) toast(`${dayName(w.s)} already offers ${fTime.formatRange(w.s, w.e)}`, true);
+    else if (w) draft.slots.push({ id: newId(), ...w });
   }
   render();
 };

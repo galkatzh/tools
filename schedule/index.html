@@ -16,7 +16,8 @@
 
   <main>
     <section id="home" hidden>
-      <p class="lead">Doodle-style scheduling polls, end-to-end encrypted over public Nostr relays.
+      <p class="lead">Scheduling polls, end-to-end encrypted over public Nostr relays: vote on times
+        Doodle-style, or paint when you're free crab.fit-style, for dates or a weekly event.
         No accounts, no server: the link is the key.</p>
       <a href="#new" class="btn primary">＋ New poll</a>
       <h2>Your polls</h2>
@@ -27,7 +28,24 @@
       <input id="eTitle" class="title-in" placeholder="What are we scheduling?" maxlength="120">
       <textarea id="eNotes" rows="2" placeholder="Location, agenda, notes (optional)" maxlength="2000"></textarea>
       <div class="bar">
-        <label>Tap adds <select id="dur">
+        <span class="seg" role="radiogroup" aria-label="Kind of poll">
+          <label title="Everyone answers each time: yes, if need be, or no"><input type="radio" name="kind" value="vote"> 🗳 Vote on times</label>
+          <label title="Everyone paints when they're free, inside the hours you offer"><input type="radio" name="kind" value="grid"> 🖌 Paint availability</label>
+        </span>
+        <span class="seg" role="radiogroup" aria-label="Dates or weekdays">
+          <label><input type="radio" name="weekly" value="false"> 📅 Specific dates</label>
+          <label title="For a weekly event: Mondays, not Monday the 3rd"><input type="radio" name="weekly" value="true"> 🔁 Days of the week</label>
+        </span>
+      </div>
+      <div class="bar">
+        <label class="grid-only">Tap a day to offer <input id="gFrom" type="time" value="09:00" step="900" aria-label="From">–<input id="gTo"
+          type="time" value="17:00" step="900" aria-label="To"></label>
+        <label class="grid-only">in cells of <select id="step">
+          <option value="15">15 min</option>
+          <option value="30">30 min</option>
+          <option value="60">1 hour</option>
+        </select></label>
+        <label class="vote-only">Tap adds <select id="dur">
           <option value="15">15 min</option>
           <option value="30">30 min</option>
           <option value="45">45 min</option>
@@ -36,14 +54,15 @@
           <option value="120">2 hours</option>
           <option value="180">3 hours</option>
         </select></label>
-        <span class="muted">Click or drag on the calendar to add times (the strip beside a time adds one that overlaps it); drag a time's bottom edge to resize it.</span>
+        <span class="muted vote-only">Click or drag on the calendar to add times (the strip beside a time adds one that overlaps it); drag a time's bottom edge to resize it.</span>
+        <span class="muted grid-only">Tap the days to offer, or drag to draw other hours; drag a block's bottom edge to resize it. Everyone then paints when they're free inside them.</span>
       </div>
       <div class="bar">
         <label>Delete automatically <select id="expire">
           <option value="0">never</option>
-          <option value="1">1 day after the last time</option>
-          <option value="7">1 week after the last time</option>
-          <option value="30">1 month after the last time</option>
+          <option value="1" data-n="1 day">1 day after the last time</option>
+          <option value="7" data-n="1 week">1 week after the last time</option>
+          <option value="30" data-n="1 month">1 month after the last time</option>
         </select></label>
         <span class="muted">Relays drop the poll and every answer then (NIP-40), and this browser forgets it.</span>
       </div>
@@ -69,7 +88,10 @@
           📌 Final time: <b id="finalTime"></b>
           <span class="bar"><button id="ics">Add to calendar (.ics)</button><a id="gcal" target="_blank" rel="noopener">Google Calendar</a></span>
         </div>
-        <p class="muted">Tap a time, in the calendar or the list, to cycle
+        <p class="muted grid-only">Drag across the calendar to paint the times you're free, over several days at once;
+          start on a painted time to clear instead. <b>📅 My calendar</b> paints the times your calendar leaves free.
+          Everyone's answers add up in the heat map.</p>
+        <p class="muted vote-only">Tap a time, in the calendar or the list, to cycle
           <span class="chip v-y">✓ yes</span> → <span class="chip v-m">(✓) if need be</span> → <span class="chip v-n">✗ no</span>.
           <b>✗ all day</b> says no to a whole day, and <b>📅 My calendar</b> answers ✗ where your own events clash.</p>
       </div>
