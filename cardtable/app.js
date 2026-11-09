@@ -65,6 +65,112 @@ const rand = (n) => [...crypto.getRandomValues(new Uint8Array(n))].map((b) => b.
 const uid = () => rand(4);
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+/** obj[key] only when it's the object's OWN property — never Object.prototype
+ *  via a crafted id like "__proto__" or "constructor". */
+const own = (obj, key) => (key != null && Object.hasOwn(obj, key) ? obj[key] : null);
+/** A finite number from untrusted input, else the fallback. */
+const num = (v, fallback = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
+const normRot = (v) => ((num(v) % 360) + 360) % 360;
+
+// --- trust: who speaks for the host, who owns a seat, what data is safe -----
+// A peer can send anything over the room's channels, so the host is
+// AUTHENTICATED and everything rendered from shared data is SANITIZED:
+//  • Host authenticity: a new room's id IS the fingerprint of the host's ECDSA
+//    public key (first 12 bytes of SHA-256 → 24 hex), and the host signs every
+//    message it sends. Guests check signature + fingerprint against the id in
+//    their invite link, so no other peer can impersonate the host, rewrite the
+//    log, swap card faces, or demote the real host. (Rooms created before this
+//    scheme have 16-hex ids and run unsigned, as they always did.)
+//  • Seat ownership: each player holds a secret key that is only ever sent to
+//    the authenticated host; the host binds it to the seat on first contact,
+//    so a guest can't claim someone else's (publicly visible) player id.
+//  • Data hygiene: decks pass one sanitizer (strict image data-URLs, strict
+//    color grammar, size caps) before anything renders them.
+const ALG = { name: 'ECDSA', namedCurve: 'P-256' }, SIG = { name: 'ECDSA', hash: 'SHA-256' };
+const enc = (s) => new TextEncoder().encode(s);
+const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const fingerprint = async (raw) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', raw))]
+  .slice(0, 12).map((b) => b.toString(16).padStart(2, '0')).join('');
+let signedRoom = false;            // this room's messages must be signed (24-hex id)
+let signKey = null, signPub = '';  // host: private key + base64 raw public key
+let hostKey = null;                // guest: { k, key } once the host's key checked out
+
+/** Creates the signing key for a brand-new room; returns the room id (its fingerprint). */
+async function newHostKey() {
+  const kp = await crypto.subtle.generateKey(ALG, true, ['sign', 'verify']);
+  const id = await fingerprint(await crypto.subtle.exportKey('raw', kp.publicKey));
+  localStorage.setItem(`ct-hostkey-${id}`, JSON.stringify({
+    pub: await crypto.subtle.exportKey('jwk', kp.publicKey), priv: await crypto.subtle.exportKey('jwk', kp.privateKey),
+  }));
+  return id;
+}
+/** Loads this room's host key (host only); false if this browser doesn't hold it. */
+async function useHostKey(id) {
+  const saved = JSON.parse(localStorage.getItem(`ct-hostkey-${id}`) || 'null');
+  if (!saved) return false;
+  signKey = await crypto.subtle.importKey('jwk', saved.priv, ALG, false, ['sign']);
+  signPub = b64(await crypto.subtle.exportKey('raw', await crypto.subtle.importKey('jwk', saved.pub, ALG, true, ['verify'])));
+  return true;
+}
+/** Host → wire: signs the JSON body (unsigned legacy rooms send it as-is). */
+async function seal(body) {
+  if (!signKey) return body;
+  const b = JSON.stringify(body);
+  return { b, s: b64(await crypto.subtle.sign(SIG, signKey, enc(b))), k: signPub };
+}
+/** Wire → guest: the body if the room's host signed it, else null (dropped loudly). */
+async function unseal(m) {
+  if (!signedRoom) return m;
+  try {
+    if (typeof m?.b !== 'string' || typeof m.s !== 'string' || typeof m.k !== 'string') throw new Error('unsigned');
+    if (m.k !== hostKey?.k) {
+      const raw = unb64(m.k);
+      if (await fingerprint(raw) !== roomId) throw new Error('key does not match the room');
+      hostKey = { k: m.k, key: await crypto.subtle.importKey('raw', raw, ALG, false, ['verify']) };
+    }
+    if (!(await crypto.subtle.verify(SIG, hostKey.key, unb64(m.s), enc(m.b)))) throw new Error('bad signature');
+    return JSON.parse(m.b);
+  } catch (err) {
+    console.warn('dropped a message not signed by the host:', err.message);
+    return null;
+  }
+}
+
+const IMG_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+=*$/;
+const COLOR_RE = /^(?:#[0-9a-f]{3,8}|[a-z]{3,20})$/i;
+const safeColor = (v, fallback = '#64748b') => (COLOR_RE.test(v) ? v : fallback);
+const RANKS = new Set(['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'JOKER']);
+const SUITS = new Set(['♠', '♥', '♦', '♣', '🃏']);
+const MAX_DECK_BYTES = 24e6, MAX_DECK_CARDS = 5000;
+const str = (v, n) => (typeof v === 'string' && v ? v.slice(0, n) : undefined);
+
+/** The one gate every deck passes (uploads, scripts, saves, the wire): keeps
+ *  only known fields of the right type, so nothing a peer sends can smuggle
+ *  markup, script URLs or CSS into anyone's page. Throws on unusable decks. */
+function cleanDeck(d) {
+  if (!d || typeof d !== 'object' || !Array.isArray(d.cards) || !d.cards.length) throw new Error('a deck needs at least one card');
+  if (d.cards.length > MAX_DECK_CARDS) throw new Error(`decks are limited to ${MAX_DECK_CARDS} cards`);
+  const imgs = (Array.isArray(d.imgs) ? d.imgs : []).slice(0, MAX_DECK_CARDS).map((s) => (IMG_RE.test(s) ? s : null));
+  let bytes = imgs.reduce((n, s) => n + (s?.length || 0), 0);
+  const cards = d.cards.map((c) => {
+    const o = {};
+    if (!c || typeof c !== 'object') return o;
+    if (RANKS.has(c.r) && SUITS.has(c.s)) Object.assign(o, { r: c.r, s: c.s, c: c.c === 'r' ? 'r' : 'b' });
+    if (IMG_RE.test(c.img)) { o.img = c.img; bytes += c.img.length; }
+    if (Number.isInteger(c.g) && imgs[c.g]) o.g = c.g;
+    for (const [k, n] of [['n', 60], ['txt', 300]]) if (str(c[k], n)) o[k] = str(c[k], n);
+    for (const k of ['col', 'b']) if (COLOR_RE.test(c[k])) o[k] = c[k];
+    if (c.meta !== undefined) {
+      const j = JSON.stringify(c.meta);
+      if (j && j.length <= 2000) o.meta = JSON.parse(j);
+    }
+    return o;
+  });
+  if (bytes > MAX_DECK_BYTES) throw new Error('deck images are too large (24 MB max)');
+  const back = IMG_RE.test(d.back) || COLOR_RE.test(d.back) ? d.back : null;
+  return { name: str(d.name, 24) || 'Deck', back, imgs, cards };
+}
 
 // Optional hash extras after "#room~id~pw": "~cli~PORT-TOKEN" connects this
 // tab to a local terminal bridge (see cli.js / cli.py), "~as~Name" joins as a
@@ -84,6 +190,11 @@ const AS = HASHX.as ? HASHX.as.slice(0, 24) : null;
 const pidKey = AS ? `ct-pid-as-${AS}` : 'ct-pid';
 const pid = localStorage.getItem(pidKey) || rand(8);
 localStorage.setItem(pidKey, pid);
+// The seat's secret: proves to the host that this browser owns `pid` (which
+// everyone can see). Sent to the authenticated host only — see act().
+const seatKey = localStorage.getItem(`${pidKey}-key`) || rand(16);
+localStorage.setItem(`${pidKey}-key`, seatKey);
+const PID_RE = /^[0-9a-f]{16}$/;
 let myName = AS || localStorage.getItem('ct-name') || `Player-${pid.slice(0, 4)}`;
 
 // --- game state -----------------------------------------------------------
@@ -135,8 +246,10 @@ function ensurePlayer(p, name) {
   pl.online = true;
   // Only fill an empty name here — explicit renames go through the 'name'
   // action so they land in the log.
-  if (name && !pl.name) pl.name = String(name).slice(0, 24);
+  if (name && !pl.name) pl.name = cleanName(name);
 }
+/** Player names: plain text, bounded, and never dressed up as the 📜 Rules actor. */
+const cleanName = (s) => String(s).replace(/[\u0000-\u001f]/g, '').replace(/^[\s📜]+/u, '').trim().slice(0, 24);
 
 // --- activity log (host-authored, broadcast to everyone) -------------------
 /** Human name for a card that is public knowledge; never call for hidden cards. */
@@ -175,7 +288,7 @@ function dropIfEmpty(pileId) {
 // Resolve a hand index robustly: guests send both the index and the card they
 // see there; if the hand changed in flight, fall back to the first match.
 function handIdx(pl, a) {
-  if (pl.hand[a.idx]?.d === a.d && pl.hand[a.idx]?.i === a.i) return a.idx;
+  if (Number.isInteger(a.idx) && pl.hand[a.idx]?.d === a.d && pl.hand[a.idx]?.i === a.i) return a.idx;
   return pl.hand.findIndex((c) => c.d === a.d && c.i === a.i);
 }
 
@@ -195,19 +308,19 @@ function bump() {
 
 /** Deals the top card of a pile — to a player's hand ({to}) or onto the table. */
 function opDealTop(actor, pileId, o = {}) {
-  const pile = host.items[pileId];
+  const pile = own(host.items, pileId);
   const c = pile?.k === 'p' && pile.cards.pop();
   if (!c) { console.warn('opDealTop: no card to deal', pileId); return false; }
   let nid = null;
   if (o.to) {
-    const pl = host.players[o.to];
+    const pl = own(host.players, o.to);
     if (!pl) { pile.cards.push(c); console.warn('opDealTop: unknown player', o.to); return false; }
     pl.hand.push({ d: c.d, i: c.i });
     logEvent(actor, `dealt a card from ${itemLabel(pile)} to ${pl.name || 'a player'}`);
   } else {
-    const at = clampToFelt(o.x ?? pile.x + CARD_W + 18, o.y ?? pile.y);
+    const at = clampToFelt(num(o.x, pile.x + CARD_W + 18), num(o.y, pile.y));
     nid = uid();
-    host.items[nid] = { k: 'c', x: at.x, y: at.y, rot: ((o.rot || 0) % 360 + 360) % 360, z: zTop(), d: c.d, i: c.i, up: !!o.up };
+    host.items[nid] = { k: 'c', x: at.x, y: at.y, rot: normRot(o.rot), z: zTop(), d: c.d, i: c.i, up: !!o.up };
     logEvent(actor, `dealt ${o.up ? cardName(c.d, c.i) : 'a card face down'} from ${itemLabel(pile)}`);
     mark(actor, nid);
   }
@@ -218,7 +331,7 @@ function opDealTop(actor, pileId, o = {}) {
 }
 
 function opShuffle(actor, pileId) {
-  const pile = host.items[pileId];
+  const pile = own(host.items, pileId);
   if (pile?.k !== 'p') return false;
   for (let i = pile.cards.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -230,7 +343,7 @@ function opShuffle(actor, pileId) {
 }
 
 function opFlip(actor, id) {
-  const it = host.items[id];
+  const it = own(host.items, id);
   if (!it) return false;
   if (it.k === 'c') {
     it.up = !it.up;
@@ -245,7 +358,7 @@ function opFlip(actor, id) {
 }
 
 function opToPile(actor, cardId, pileId) {
-  const it = host.items[cardId], pile = host.items[pileId];
+  const it = own(host.items, cardId), pile = own(host.items, pileId);
   if (it?.k !== 'c' || pile?.k !== 'p') return false;
   logEvent(actor, `put ${itemLabel(it)} onto ${itemLabel(pile)}`);
   mark(actor, pileId);
@@ -265,7 +378,7 @@ function opNewPile(actor, cards, o = {}) {
 
 /** Moves every card of a player's hand onto a pile, face down. */
 function opTakeHand(actor, p, pileId) {
-  const pl = host.players[p], pile = host.items[pileId];
+  const pl = own(host.players, p), pile = own(host.items, pileId);
   if (!pl || pile?.k !== 'p') return false;
   if (pl.hand.length) {
     logEvent(actor, `returned ${pl.name || 'a player'}'s hand (${pl.hand.length}) to ${itemLabel(pile)}`);
@@ -277,8 +390,8 @@ function opTakeHand(actor, p, pileId) {
 
 /** Applies one action from player `p` to the authoritative state (host only). */
 function apply(p, a) {
-  const items = host.items, pl = host.players[p];
-  const it = a.id != null ? items[a.id] : null;
+  const items = host.items, pl = own(host.players, p);
+  const it = own(items, a.id);
   // Rules veto: an enabled script may block gameplay actions with a reason.
   if (RULED_ACTIONS.has(a.t) && host.rules?.enabled) {
     const reason = runHook('validate', { ...a, p });
@@ -291,30 +404,39 @@ function apply(p, a) {
   }
   switch (a.t) {
     case 'hello': break; // registration + join logging happen in the action handler
-    case 'name':
-      if (pl && a.name) { pl.name = String(a.name).slice(0, 24); logEvent(p, `is now known as "${pl.name}"`); }
+    case 'name': {
+      const name = cleanName(a.name || '');
+      if (pl && name && name !== pl.name) { pl.name = name; logEvent(p, `is now known as "${pl.name}"`); }
       break;
+    }
     case 'addDeck': {
-      decks[a.deckId] = a.deck;
-      dirtyDecks.add(a.deckId);
-      const nid = uid();
+      let deck;
+      try { deck = cleanDeck(a.deck); } catch (err) {
+        console.error('rejected a deck', err);
+        notify(p, `🚫 Deck rejected: ${err.message}`);
+        break;
+      }
+      const deckId = uid(); // host-minted: a peer must not choose (or overwrite) deck ids
+      decks[deckId] = deck;
+      dirtyDecks.add(deckId);
+      const nid = uid(), at = clampToFelt(num(a.x, TABLE_W / 2 - CARD_W / 2), num(a.y, TABLE_H / 2 - CARD_H / 2));
       items[nid] = {
-        k: 'p', x: a.x, y: a.y, rot: 0, z: zTop(), name: a.deck.name,
-        cards: a.deck.cards.map((_, i) => ({ d: a.deckId, i, up: false })),
+        k: 'p', x: at.x, y: at.y, rot: 0, z: zTop(), name: deck.name,
+        cards: deck.cards.map((_, i) => ({ d: deckId, i, up: false })),
       };
-      logEvent(p, `added deck "${a.deck.name}" (${a.deck.cards.length} cards)`);
+      logEvent(p, `added deck "${deck.name}" (${deck.cards.length} cards)`);
       mark(p, nid);
       break;
     }
     case 'move':
       if (it) {
-        ({ x: it.x, y: it.y } = clampToFelt(a.x, a.y));
+        ({ x: it.x, y: it.y } = clampToFelt(num(a.x, it.x), num(a.y, it.y)));
         it.z = zTop();
         logEvent(p, `moved ${itemLabel(it)}`);
         mark(p, a.id);
       }
       break;
-    case 'rot': if (it) { it.rot = ((a.rot % 360) + 360) % 360; logEvent(p, `rotated ${itemLabel(it)}`); mark(p, a.id); } break;
+    case 'rot': if (it) { it.rot = normRot(a.rot); logEvent(p, `rotated ${itemLabel(it)}`); mark(p, a.id); } break;
     case 'flip': if (it) opFlip(p, a.id); break;
     case 'shuffle': if (it?.k === 'p') opShuffle(p, a.id); break;
     case 'draw': {
@@ -327,21 +449,21 @@ function apply(p, a) {
       }
       break;
     }
-    case 'deal': if (it?.k === 'p') opDealTop(p, a.id, { x: a.x, y: a.y, up: a.up, rot: a.rot }); break;
+    case 'deal': if (it?.k === 'p') opDealTop(p, a.id, { x: a.x, y: a.y, up: !!a.up, rot: a.rot }); break;
     case 'play': {
       const idx = pl && handIdx(pl, a);
       if (pl && idx >= 0) {
         const c = pl.hand.splice(idx, 1)[0];
-        const nid = uid(), at = clampToFelt(a.x, a.y);
-        items[nid] = { k: 'c', x: at.x, y: at.y, rot: ((a.rot || 0) % 360 + 360) % 360, z: zTop(), d: c.d, i: c.i, up: a.up };
-        logEvent(p, `played ${a.up ? cardName(c.d, c.i) : 'a card face down'} from hand`);
+        const nid = uid(), at = clampToFelt(num(a.x, TABLE_W / 2), num(a.y, TABLE_H / 2)), up = !!a.up;
+        items[nid] = { k: 'c', x: at.x, y: at.y, rot: normRot(a.rot), z: zTop(), d: c.d, i: c.i, up };
+        logEvent(p, `played ${up ? cardName(c.d, c.i) : 'a card face down'} from hand`);
         mark(p, nid);
       }
       break;
     }
     case 'handPile': {
       const idx = pl && handIdx(pl, a);
-      const pile = items[a.pile];
+      const pile = own(items, a.pile);
       if (pl && idx >= 0 && pile?.k === 'p') {
         const c = pl.hand.splice(idx, 1)[0];
         // A card discarded onto a pile matches the pile's exposed face
@@ -363,8 +485,8 @@ function apply(p, a) {
       break;
     case 'toPile': opToPile(p, a.id, a.pile); break;
     case 'stack': {
-      const b = items[a.onto];
-      if (it?.k === 'c' && b?.k === 'c') {
+      const b = own(items, a.onto);
+      if (it?.k === 'c' && b?.k === 'c' && it !== b) {
         logEvent(p, `stacked ${itemLabel(it)} onto ${itemLabel(b)}`);
         const nid = uid();
         items[nid] = { k: 'p', x: b.x, y: b.y, rot: b.rot, z: zTop(), name: '', cards: [{ d: b.d, i: b.i, up: b.up }, { d: it.d, i: it.i, up: it.up }] };
@@ -375,7 +497,7 @@ function apply(p, a) {
       break;
     }
     case 'merge': {
-      const to = items[a.pile];
+      const to = own(items, a.pile);
       if (it?.k === 'p' && to?.k === 'p' && it !== to) {
         logEvent(p, `merged ${itemLabel(it)} (${it.cards.length} cards) into ${itemLabel(to)}`);
         mark(p, a.pile);
@@ -400,7 +522,7 @@ function apply(p, a) {
     case 'size': {
       // Host-only: the size selector is only shown to the host, and the host
       // applies its own actions, so p must be the host's own player id.
-      const size = TABLE_SIZES[a.size] && a.size;
+      const size = own(TABLE_SIZES, a.size) && +a.size;
       if (p === pid && size && size !== TABLE_W) {
         const shift = (size - TABLE_W) / 2; // items stay centered on the felt
         host.size = size;
@@ -412,7 +534,11 @@ function apply(p, a) {
       }
       break;
     }
-    case 'chat': if (pl && a.msg) logEvent(p, String(a.msg).slice(0, 300), true); break;
+    case 'chat': {
+      const msg = String(a.msg ?? '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 300);
+      if (pl && msg) logEvent(p, msg, true);
+      break;
+    }
     case 'setRules': {
       if (p !== pid) break; // only the host configures rules
       if (a.enabled) {
@@ -440,7 +566,14 @@ function apply(p, a) {
       }
       break;
     }
-    case 'rulesBtn': if (host.rules?.enabled) runHook('onButton', String(a.id), p); break;
+    case 'rulesBtn': {
+      // The engine enforces what the script offered: a button the player
+      // can't see (another player's, or one that just went away) is refused.
+      const b = (host.rules?.enabled && host.rules.public.buttons || []).find((x) => x.id === String(a.id));
+      if (b && (!b.pid || b.pid === p)) runHook('onButton', b.id, p);
+      else { console.warn('refused rules button', a.id, 'from', p); notify(p, '🚫 That button is not available to you right now'); }
+      break;
+    }
     default: console.warn('unknown action', a);
   }
   if (host.rules?.enabled && (RULED_ACTIONS.has(a.t) || a.t === 'chat' || a.t === 'rulesBtn')) {
@@ -451,17 +584,35 @@ function apply(p, a) {
   bump();
 }
 
-/** Routes a local UI action: hosts apply directly, guests send to the room.
- *  Every guest action carries the sender's stable player id + name, so the
- *  host can (re)register a player even if the initial hello got lost.
- *  Actions go targeted to the host once we know who it is — only the host
- *  adjudicates, so shipping them (incl. multi-MB addDeck payloads) to every
- *  guest is pure waste. Until the first state reveals the host, broadcast. */
+/** Routes a local UI action: hosts apply directly, guests send to the host.
+ *  Until a (signed) state has revealed which peer is the host, the only thing
+ *  a guest sends is an anonymous broadcast "hello" knock — identity and the
+ *  seat key go ONLY to the authenticated host, never to the whole room.
+ *  Every later action carries the stable player id + name + seat key, so the
+ *  host can (re)register the player even if the keyed hello got lost.
+ *  Actions taken while (re)connecting — e.g. a click during the host's
+ *  reload — wait in a short queue and go out as soon as the host is back. */
+const pendingActs = [];
 function act(a) {
   if (role === 'host') { apply(pid, a); return; }
-  const target = hostPeer && room?.getPeers()[hostPeer] ? hostPeer : undefined;
-  sendAct({ ...a, _pid: pid, _name: myName }, target)
-    .catch((err) => { console.error('send failed', err); toast('Failed to reach the room'); });
+  if (!room) { console.warn('action before the room is up', a); return; }
+  const target = hostPeer && room.getPeers()[hostPeer] ? hostPeer : null;
+  if (!target) {
+    if (a.t !== 'hello') {
+      pendingActs.push({ a, at: Date.now() });
+      if (pendingActs.length > 30) pendingActs.shift();
+      toast('Reconnecting to the host — your move will be sent when it\'s back');
+    }
+    sendAct({ t: 'hello' }).catch((err) => console.error('hello failed', err));
+    return;
+  }
+  sendAct({ ...a, _pid: pid, _name: myName, _key: seatKey }, target)
+    .catch((err) => { console.error('send failed', err); toast('Failed to reach the host'); });
+}
+/** Sends what was queued while disconnected (moves older than 30 s are stale). */
+function flushPending() {
+  const fresh = pendingActs.splice(0).filter((x) => Date.now() - x.at < 30000);
+  for (const { a } of fresh) act(a);
 }
 
 // --- rules engine (see ENGINE.md) ------------------------------------------
@@ -500,7 +651,7 @@ function runHook(name, ...args) {
 function notify(p, msg) {
   if (p === pid) { toast(msg); return; }
   for (const [peer, mapped] of Object.entries(peerPid)) {
-    if (mapped === p) sendNote({ msg: String(msg).slice(0, 200) }, peer).catch((e) => console.error('note failed', e));
+    if (mapped === p) sendNote({ msg: String(msg).slice(0, 200), to: p }, peer).catch((e) => console.error('note failed', e));
   }
 }
 
@@ -529,14 +680,14 @@ const tApi = {
     .filter(([, pl]) => pl.seat != null)
     .map(([id, pl]) => ({ id, name: pl.name, seat: pl.seat, online: pl.online, handCount: pl.hand.length }))
     .sort((a, b) => a.seat - b.seat),
-  hand: (p) => (host.players[p]?.hand || []).map((c) => ({ ...c })),
+  hand: (p) => (own(host.players, p)?.hand || []).map((c) => ({ ...c })),
   items: () => Object.entries(host.items).map(([id, it]) => structuredClone({ id, ...it })),
   piles() { return this.items().filter((it) => it.k === 'p'); },
   deal: (pileId, o) => opDealTop(RULES, pileId, o),
   dealToAll(pileId, n = 1, o = {}) {
     for (let i = 0; i < n; i++) {
       for (const p of this.players()) {
-        if (o.onlineOnly !== false && !host.players[p.id].online) continue;
+        if (o.onlineOnly !== false && !own(host.players, p.id).online) continue;
         opDealTop(RULES, pileId, { ...o, to: p.id });
       }
     }
@@ -544,18 +695,18 @@ const tApi = {
   draw(p, pileId, n = 1) { for (let i = 0; i < n; i++) opDealTop(RULES, pileId, { to: p }); },
   takeHand: (p, pileId) => opTakeHand(RULES, p, pileId),
   playFromHand(p, idx, o = {}) {
-    const pl = host.players[p];
+    const pl = own(host.players, p);
     const c = pl?.hand.splice(idx, 1)[0];
     if (!c) return false;
     const at = clampToFelt(o.x ?? TABLE_W / 2 - CARD_W / 2, o.y ?? TABLE_H / 2 - CARD_H / 2);
     const nid = uid();
-    host.items[nid] = { k: 'c', x: at.x, y: at.y, rot: ((o.rot || 0) % 360 + 360) % 360, z: zTop(), d: c.d, i: c.i, up: o.up !== false };
+    host.items[nid] = { k: 'c', x: at.x, y: at.y, rot: normRot(o.rot), z: zTop(), d: c.d, i: c.i, up: o.up !== false };
     logEvent(RULES, `played ${o.up !== false ? cardName(c.d, c.i) : 'a card face down'} from ${pl.name || 'a player'}'s hand`);
     mark(RULES, nid);
     return nid;
   },
   toHand(p, cardId) {
-    const it = host.items[cardId], pl = host.players[p];
+    const it = own(host.items, cardId), pl = own(host.players, p);
     if (it?.k !== 'c' || !pl) return false;
     logEvent(RULES, `gave ${itemLabel(it)} to ${pl.name || 'a player'}`);
     mark(RULES, cardId);
@@ -568,7 +719,7 @@ const tApi = {
   toPile: (cardId, pileId) => opToPile(RULES, cardId, pileId),
   newPile: (cards, o) => opNewPile(RULES, cards, o),
   merge(fromId, toId) {
-    const from = host.items[fromId], to = host.items[toId];
+    const from = own(host.items, fromId), to = own(host.items, toId);
     if (from?.k !== 'p' || to?.k !== 'p' || from === to) return false;
     logEvent(RULES, `merged ${itemLabel(from)} (${from.cards.length} cards) into ${itemLabel(to)}`);
     mark(RULES, toId);
@@ -577,7 +728,7 @@ const tApi = {
     return true;
   },
   move(id, x, y) {
-    const it = host.items[id];
+    const it = own(host.items, id);
     if (!it) return false;
     ({ x: it.x, y: it.y } = clampToFelt(x, y));
     it.z = zTop();
@@ -586,14 +737,14 @@ const tApi = {
     return true;
   },
   rot(id, deg) {
-    const it = host.items[id];
+    const it = own(host.items, id);
     if (!it) return false;
-    it.rot = ((deg % 360) + 360) % 360;
+    it.rot = normRot(deg);
     mark(RULES, id);
     return true;
   },
   remove(id) {
-    const it = host.items[id];
+    const it = own(host.items, id);
     if (!it) return false;
     logEvent(RULES, `removed ${itemLabel(it)}${it.k === 'p' ? ` (${it.cards.length} cards)` : ''}`);
     mark(RULES, id);
@@ -605,18 +756,13 @@ const tApi = {
    *  can keep big decks off the table (small piles via t.newPile([{d,i,up}])
    *  keep the broadcast state light). `back` may be a solid color ("#111"). */
   newDeck(def) {
-    const cards = (def.cards || []).slice(0, 5000).map((c) => ({
-      ...(c.name ? { n: String(c.name).slice(0, 60) } : {}),
-      ...(c.text ? { txt: String(c.text).slice(0, 300) } : {}),
-      ...(c.color ? { col: String(c.color).slice(0, 24) } : {}),
-      ...(c.bg ? { b: String(c.bg).slice(0, 24) } : {}),
-      ...(c.meta !== undefined ? { meta: c.meta } : {}),
-    }));
-    if (!cards.length) throw new Error('newDeck needs a cards array');
     const deckId = uid();
-    decks[deckId] = { name: String(def.name || 'Deck').slice(0, 24), back: typeof def.back === 'string' ? def.back : null, cards };
+    decks[deckId] = cleanDeck({
+      name: def.name, back: def.back,
+      cards: (def.cards || []).map((c) => ({ n: c.name, txt: c.text, col: c.color, b: c.bg, meta: c.meta })),
+    });
     dirtyDecks.add(deckId);
-    logEvent(RULES, `defined deck "${decks[deckId].name}" (${cards.length} cards)`);
+    logEvent(RULES, `defined deck "${decks[deckId].name}" (${decks[deckId].cards.length} cards)`);
     return deckId;
   },
   addStandardDeck(o = {}) {
@@ -625,7 +771,7 @@ const tApi = {
     decks[deckId] = deck;
     dirtyDecks.add(deckId);
     const nid = opNewPile(RULES, deck.cards.map((_, i) => ({ d: deckId, i, up: false })), { x: o.x, y: o.y, name: deck.name });
-    host.items[nid].name = deck.name;
+    own(host.items, nid).name = deck.name;
     return nid;
   },
   geom: () => ({ size: TABLE_W, cx: TABLE_W / 2, cy: TABLE_H / 2, r: PLAY_R }),
@@ -719,37 +865,63 @@ function broadcast() {
   const pub = { seq: host.seq, size: host.size, rules, items: host.items, players: publicPlayers(), fx: fxQueue, ann: annQueue };
   fxQueue = [];
   annQueue = [];
+  // Each state is personalized AND addressed (`to`): the signature binds it to
+  // its recipient, so a guest can't replay its own state (hand!) to another.
+  // Peers that haven't introduced themselves yet get the public view only.
   for (const peer of Object.keys(room.getPeers())) {
-    sendState({ ...pub, hand: host.players[peerPid[peer]]?.hand || [] }, peer)
+    const to = peerPid[peer] || null;
+    sendState({ ...pub, to, hand: to ? host.players[to].hand : [] }, peer)
       .catch((e) => console.error('state send failed', e));
   }
 }
 
+let registered = false; // guest: the host has bound our seat (we got a state addressed to us)
+let lastIntro = 0;
+/** Guest: presents identity + seat key to the (authenticated) host. Throttled. */
+function introduce() {
+  if (Date.now() - lastIntro < 2000) return;
+  lastIntro = Date.now();
+  act({ t: 'hello' });
+}
+
 function handleState(s, peer) {
+  if (!s || typeof s !== 'object' || !Number.isFinite(s.seq)) return;
   if (role === 'host') {
     // Two live hosts (a stale resume, or the invite opened twice in the host's
     // browser). The fresher state wins; peerId breaks the tie deterministically.
+    // In a signed room only a holder of this room's key can get this far.
     if (s.seq > host.seq || (s.seq === host.seq && peer < selfId)) {
       console.warn('another host is active — demoting to guest');
-      toast('Another host is active — joined as guest');
+      toast('This table is open in another tab — this one is now a viewer');
       role = 'guest';
       host = null;
       $('size-sel').classList.add('hidden');
     } else { scheduleBroadcast(); return; }
   }
   if (s.seq < view.seq) return; // stale reordering
+  if (s.to && s.to !== pid) return; // addressed to someone else: a replay
   hostPeer = peer;
-  if (s.size && s.size !== TABLE_W) setTableSize(s.size);
-  view = { seq: s.seq, items: s.items, players: s.players, rules: s.rules };
-  myHand = s.hand || [];
+  registered = s.to === pid;
+  if (!registered) introduce(); // the host doesn't know this seat yet
+  if (pendingActs.length) flushPending();
+  if (own(TABLE_SIZES, s.size) && +s.size !== TABLE_W) setTableSize(+s.size);
+  view = { seq: s.seq, items: s.items || {}, players: s.players || {}, rules: s.rules };
+  if (registered) myHand = Array.isArray(s.hand) ? s.hand : [];
   for (const f of s.fx || []) if (f.p !== pid) showFx(f);
   for (const msg of s.ann || []) showAnnounce(msg);
   renderAll();
 }
 
-let helloTimer = 0;
+const refusedAt = {}; // host: peer → last refusal notice (no toast storms)
+/** Host: turns away a peer's action, loudly on both ends. */
+function refuse(peer, reason) {
+  console.warn(`refused an action from ${peer}: ${reason}`);
+  if (Date.now() - (refusedAt[peer] || 0) < 10000) return;
+  refusedAt[peer] = Date.now();
+  sendNote({ msg: `🚫 ${reason}`, to: null }, peer).catch((e) => console.error('note failed', e));
+}
+
 function connect() {
-  clearInterval(helloTimer);
   // window.CARDTABLE_RELAYS overrides the default public Nostr relays (tests, self-hosting).
   // redundancy 10 (default 5): more relays per room = better odds that two
   // peers share a live one when parts of the public infrastructure are down.
@@ -761,25 +933,61 @@ function connect() {
   const logA = room.makeAction('log');
   const noteA = room.makeAction('note');
   const rulesA = room.makeAction('rules');
-  sendAct = (data) => actA.send(data, {});
-  sendState = (data, target) => stateA.send(data, { target });
-  sendDecks = (data, target) => decksA.send(data, target ? { target } : {});
-  sendLog = (data, target) => logA.send(data, target ? { target } : {});
-  sendNote = (data, target) => noteA.send(data, { target });
-  sendRules = (data, target) => rulesA.send(data, target ? { target } : {});
-  noteA.onMessage = (n) => { if (role !== 'host' && n?.msg) toast(String(n.msg)); };
-  rulesA.onMessage = (r) => { if (role !== 'host') { guestRules = { code: String(r.code || ''), name: String(r.name || '') }; } };
+  // Host → guest channels are signed in send order (sealing is async, the
+  // queue keeps it FIFO); guests verify them in arrival order the same way.
+  let sealQ = Promise.resolve();
+  const signed = (send) => (data, target) => {
+    const sealed = sealQ.then(() => seal(data));
+    sealQ = sealed.catch(() => {});
+    return sealed.then((m) => send(m, target));
+  };
+  sendAct = (data, target) => actA.send(data, target ? { target } : {});
+  sendState = signed((m, target) => stateA.send(m, { target }));
+  sendDecks = signed((m, target) => decksA.send(m, target ? { target } : {}));
+  sendLog = signed((m, target) => logA.send(m, target ? { target } : {}));
+  sendNote = signed((m, target) => noteA.send(m, { target }));
+  sendRules = signed((m, target) => rulesA.send(m, target ? { target } : {}));
+  let inbox = Promise.resolve();
+  const fromHost = (fn) => (m, { peerId }) => {
+    inbox = inbox.then(async () => { const d = await unseal(m); if (d != null) fn(d, peerId); })
+      .catch((err) => console.error('message from the host failed', err));
+  };
+  noteA.onMessage = fromHost((n) => { if (role !== 'host' && n?.msg && (!n.to || n.to === pid)) toast(String(n.msg)); });
+  rulesA.onMessage = fromHost((r) => { if (role !== 'host') guestRules = { code: String(r?.code || ''), name: String(r?.name || '') }; });
+  stateA.onMessage = fromHost(handleState);
+  // Deck messages are deltas (or the full map for new joiners) — always merge,
+  // re-sanitized here too (defense in depth, and legacy unsigned rooms).
+  decksA.onMessage = fromHost((d) => {
+    if (role === 'host' || !d || typeof d !== 'object') return;
+    for (const [id, deck] of Object.entries(d)) {
+      if (!/^[0-9a-f]{8}$/.test(id)) { console.warn('ignored a deck with a bad id', id); continue; }
+      try { decks[id] = cleanDeck(deck); } catch (err) { console.error(`deck ${id} rejected`, err); }
+    }
+    renderAll();
+  });
+  logA.onMessage = fromHost((l) => { if (role !== 'host' && Array.isArray(l)) { gameLog = l; renderAll(); } });
 
   actA.onMessage = (a, { peerId: peer }) => {
-    if (role !== 'host') return; // actions are broadcast; only the host adjudicates
-    if (!a?._pid) { console.warn('action without player id ignored', a); return; }
+    if (role !== 'host' || !a || typeof a !== 'object') return; // only the host adjudicates
+    // An anonymous knock: answer with a (signed) public state, so the guest
+    // learns who the authenticated host is before revealing its identity.
+    if (a._pid == null) { if (a.t === 'hello') scheduleBroadcast(); return; }
+    const { _pid: p, _name: name, _key: key, ...action } = a;
+    const reason = p === pid ? 'This seat is already open in another tab'
+      : !PID_RE.test(p) ? 'Invalid player id'
+      : typeof key !== 'string' || key.length < 16 ? 'Missing seat key — please reload'
+      : peerPid[peer] && peerPid[peer] !== p ? 'One seat per connection'
+      : own(host.players, p)?.key && host.players[p].key !== key ? 'That seat belongs to another player'
+      : '';
+    if (reason) { refuse(peer, reason); return; }
     // Register/refresh the sender on EVERY action, not just hello — if the
-    // hello was lost, the first real action still registers the player.
-    const newConn = peerPid[peer] !== a._pid;
-    const known = host.players[a._pid];
-    peerPid[peer] = a._pid;
-    ensurePlayer(a._pid, a._name);
-    if (!known?.online) logEvent(a._pid, known ? 'is back at the table' : 'joined the table');
+    // keyed hello was lost, the first real action still registers the player.
+    const newConn = peerPid[peer] !== p;
+    const known = own(host.players, p);
+    peerPid[peer] = p;
+    ensurePlayer(p, name);
+    host.players[p].key ||= key; // first contact binds the seat (older saves adopt their first claimant)
+    if (!known?.online) logEvent(p, known ? 'is back at the table' : 'joined the table');
     if (newConn) {
       // Fresh connection: hand over the (possibly large) deck images, the
       // log, and the rules code targeted, so regular broadcasts stay light.
@@ -787,28 +995,18 @@ function connect() {
       sendLog(host.log, peer).catch((e) => console.error('log send failed', e));
       if (host.rules) sendRules({ code: host.rules.code, name: host.rules.name }, peer).catch((e) => console.error('rules send failed', e));
     }
-    if (!known?.online && host.rules?.enabled) { runHook('onJoin', a._pid); refreshButtons(); }
-    apply(a._pid, a); // apply() schedules a broadcast, which catches joiners up
+    if (!known?.online && host.rules?.enabled) { runHook('onJoin', p); refreshButtons(); }
+    apply(p, action); // apply() schedules a broadcast, which catches joiners up
   };
-  stateA.onMessage = (s, { peerId: peer }) => handleState(s, peer);
-  // Deck messages are deltas (or the full map for new joiners) — always merge.
-  decksA.onMessage = (d) => { if (role !== 'host') { Object.assign(decks, d); renderAll(); } };
-  logA.onMessage = (l) => { if (role !== 'host') { gameLog = l; renderAll(); } };
 
-  room.onPeerJoin = (peer) => {
+  room.onPeerJoin = () => {
     updateNet();
-    if (role !== 'host') act({ t: 'hello' });
+    if (role === 'host') scheduleBroadcast(); // the newcomer gets a signed public state
+    else act({ t: 'hello' });
   };
-  // Belt and braces: until the first state arrives, keep knocking — covers a
-  // hello lost in the initial connection churn (the host drops actions from
-  // peers it has never registered, so a lost hello used to mean a dead guest).
-  helloTimer = setInterval(() => {
-    if (role === 'guest' && view.seq === 0) act({ t: 'hello' });
-    else clearInterval(helloTimer);
-  }, 3000);
   room.onPeerLeave = (peer) => {
     updateNet();
-    if (peer === hostPeer) hostPeer = null; // fall back to broadcast until a host reappears
+    if (peer === hostPeer) { hostPeer = null; registered = false; } // knock again when a host reappears
     if (role !== 'host') return;
     const p = peerPid[peer];
     delete peerPid[peer];
@@ -820,6 +1018,9 @@ function connect() {
     }
   };
 }
+// Belt and braces: until the host has bound our seat, keep knocking — covers
+// hellos lost in connection churn and a host that comes back after a reload.
+setInterval(() => { if (room && role === 'guest' && !registered) act({ t: 'hello' }); }, 3000);
 window.addEventListener('pagehide', () => { try { room?.leave(); } catch (e) { console.error(e); } });
 
 /** Open WebSockets to signaling relays right now. 0 = we're invisible. */
@@ -900,27 +1101,34 @@ let sel = null, drag = null, handDrag = null, facedown = false;
 let scale = 1;
 
 /** Black or white text for a hex background (naive luminance split). */
-function contrastFor(hex) {
-  const h = hex.replace('#', '');
-  const n = parseInt(h.length === 3 ? h.replace(/./g, '$&$&') : h, 16);
-  return 0.299 * (n >> 16 & 255) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255) < 140 ? '#f8fafc' : '#1e293b';
+const colorCtx = document.createElement('canvas').getContext('2d');
+/** Light or dark text for any CSS background color (the canvas normalizes
+ *  names, #rgb, #rrggbbaa… to #rrggbb for opaque colors). */
+function contrastFor(color) {
+  colorCtx.fillStyle = '#000';
+  colorCtx.fillStyle = color;
+  const m = colorCtx.fillStyle.match(/^#(..)(..)(..)$/);
+  if (!m) return '#1e293b';
+  const [r, g, b] = m.slice(1).map((x) => parseInt(x, 16));
+  return 0.299 * r + 0.587 * g + 0.114 * b < 140 ? '#f8fafc' : '#1e293b';
 }
 function faceHTML(d, i) {
   const deck = decks[d], c = deck?.cards[i];
   if (!c) return '<div class="face loading">🂠</div>'; // deck data not yet received
   const img = c.img ?? (c.g != null ? deck.imgs?.[c.g] : null); // g: shared-image index (copies ship the image once)
-  if (img) return `<img class="face" src="${img}" alt="">`;
+  if (img) return `<img class="face" src="${esc(img)}" alt="">`;
   if (c.r === 'JOKER') return `<div class="face std ${c.c}"><div class="corner">★</div><div class="mid joker">🃏</div><div class="corner br">★</div></div>`;
   if (c.r) return `<div class="face std ${c.c}"><div class="corner">${c.r}\n${c.s}</div><div class="mid"><div class="mr">${c.r}</div><div class="ms">${c.s}</div></div><div class="corner br">${c.r}\n${c.s}</div></div>`;
   // Image-less custom card: rendered from its manifest name/text/colors.
-  const style = `border-color:${esc(c.col || c.b || '#64748b')}${c.b ? `;background:${esc(c.b)};color:${contrastFor(c.b)}` : ''}`;
+  const bg = c.b && safeColor(c.b, null);
+  const style = `border-color:${safeColor(c.col || bg)}${bg ? `;background:${bg};color:${contrastFor(bg)}` : ''}`;
   return `<div class="face txt" style="${style}"><div class="tn">${esc(c.n || '')}</div>${c.txt ? `<div class="tt">${esc(c.txt)}</div>` : ''}</div>`;
 }
 function backHTML(d) {
   const b = decks[d]?.back;
   if (!b) return '<div class="back"></div>';
-  if (b.startsWith('#')) return `<div class="back" style="background:${esc(b)}"></div>`; // solid-color back
-  return `<img class="back" src="${b}" alt="">`;
+  if (IMG_RE.test(b)) return `<img class="back" src="${esc(b)}" alt="">`;
+  return `<div class="back" style="background:${safeColor(b)}"></div>`; // solid-color back
 }
 
 function contentFor(it) {
@@ -1016,7 +1224,7 @@ function renderLog() {
   const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 60;
   logEl.innerHTML = gameLog.map((e) => {
     const who = actorInfo(e.p);
-    const name = `<b style="color:${who.color}">${esc(who.name)}</b>`;
+    const name = `<b style="color:${safeColor(who.color)}">${esc(who.name)}</b>`;
     const time = `<span class="lt">${new Date(e.ts).toTimeString().slice(0, 5)}</span>`;
     return e.c
       ? `<div class="lg chat">${time}${name}: ${esc(e.txt)}</div>`
@@ -2460,7 +2668,11 @@ function becomeHost(saved) {
   role = 'host';
   $('size-sel').classList.remove('hidden'); // table size is the host's call
   if (saved) {
-    decks = saved.decks;
+    // Saves may predate the sanitizer (and could hold a deck a guest crafted).
+    decks = {};
+    for (const [id, d] of Object.entries(saved.decks || {})) {
+      try { decks[id] = cleanDeck(d); } catch (err) { console.error(`saved deck ${id} dropped`, err); }
+    }
     host = saved.state;
     host.log ||= []; // saves from before the log existed
     host.size ||= 1300;
@@ -2660,14 +2872,21 @@ async function boot() {
     [, roomId, password] = m;
     saved = loadSave();
   } else {
-    roomId = rand(8);
+    roomId = await newHostKey(); // the room id IS the host key's fingerprint
     password = rand(8);
     history.replaceState({}, '', `#room~${roomId}~${password}`);
   }
+  signedRoom = roomId.length === 24;
   if (!localStorage.getItem('ct-name') && !AS) await askName();
   // A bot tab is always a guest — even in the host's browser, where the
   // room's save would otherwise make this tab claim the table.
-  if (!AS && (!m || saved)) becomeHost(saved);
+  let hosting = !AS && (!m || saved);
+  if (hosting && signedRoom && !(await useHostKey(roomId))) {
+    console.error('this browser has the save but not the host key for this room');
+    toast('This room\'s host key is missing here — joining as a guest');
+    hosting = false;
+  }
+  if (hosting) becomeHost(saved);
   else role = 'guest';
   if (window.innerWidth <= 820) sideEl.classList.add('hidden');
   layout();
