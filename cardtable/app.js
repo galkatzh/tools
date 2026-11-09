@@ -66,10 +66,25 @@ const uid = () => rand(4);
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-// Stable player identity across reloads (a Trystero peerId changes per page load).
-const pid = localStorage.getItem('ct-pid') || rand(8);
-localStorage.setItem('ct-pid', pid);
-let myName = localStorage.getItem('ct-name') || `Player-${pid.slice(0, 4)}`;
+// Optional hash extras after "#room~id~pw": "~cli~PORT-TOKEN" connects this
+// tab to a local terminal bridge (see cli.js / cli.py), "~as~Name" joins as a
+// separate scripted player (a bot's body) instead of the local identity.
+const HASHX = (() => {
+  const seg = location.hash.split('~').slice(3);
+  const o = {};
+  for (let k = 0; k + 1 < seg.length; k += 2) o[seg[k]] = decodeURIComponent(seg[k + 1]);
+  return o;
+})();
+const CLI = HASHX.cli ? { port: HASHX.cli.split('-')[0], token: HASHX.cli.split('-')[1] || '' } : null;
+const AS = HASHX.as ? HASHX.as.slice(0, 24) : null;
+
+// Stable player identity across reloads (a Trystero peerId changes per page
+// load). "~as~Name" bots get their own identity slot so a bot tab never
+// collides with the human playing in the same browser.
+const pidKey = AS ? `ct-pid-as-${AS}` : 'ct-pid';
+const pid = localStorage.getItem(pidKey) || rand(8);
+localStorage.setItem(pidKey, pid);
+let myName = AS || localStorage.getItem('ct-name') || `Player-${pid.slice(0, 4)}`;
 
 // --- game state -----------------------------------------------------------
 // decks:  {deckId: {name, back: dataURL|null, cards: [{img} | {r,s,c}]}}
@@ -1441,8 +1456,11 @@ nameInput.addEventListener('change', () => {
   act({ t: 'name', name: myName });
 });
 
+// Invites are rebuilt from the room id — never location.href, which may carry
+// this tab's private bridge/bot hash extras.
+const inviteLink = () => `${location.origin}${location.pathname}#room~${roomId}~${password}`;
 $('invite-btn').addEventListener('click', async () => {
-  const link = location.href;
+  const link = inviteLink();
   try {
     await navigator.clipboard.writeText(link);
     toastEl.style.background = '#059669';
@@ -1458,8 +1476,8 @@ $('qr-btn').addEventListener('click', async () => {
   try {
     // Lazy-loaded: the QR library is only fetched when someone actually asks for a code.
     const { toCanvas } = await import('https://cdn.jsdelivr.net/npm/qrcode@1.5.4/+esm');
-    await toCanvas($('qr-canvas'), location.href, { width: 320, margin: 2 });
-    $('qr-link').textContent = location.href;
+    await toCanvas($('qr-canvas'), inviteLink(), { width: 320, margin: 2 });
+    $('qr-link').textContent = inviteLink();
     $('qr-dialog').showModal();
   } catch (err) {
     console.error('QR code failed', err);
@@ -2485,6 +2503,140 @@ function becomeHost(saved) {
   persist();
 }
 
+// --- terminal bridge (opt-in) ---------------------------------------------
+// With "~cli~PORT-TOKEN" in the hash, this tab pairs with a local bridge
+// server (cli.js for Node, cli.py for Python) on 127.0.0.1: it mirrors its
+// view of the table over there and executes the commands it gets back —
+// through the very same act() path as a click, so rules validation, the log
+// and the anti-cheat record all apply unchanged. Plain long-polling HTTP,
+// because localhost is exempt from mixed-content rules and needs no deps on
+// the server side. The token (minted by the CLI) keeps random websites the
+// user visits from driving the table through the same local port.
+const cliMsgs = []; // bridge-only feedback: command errors, peek results
+
+function cliCardInfo(d, i) {
+  const c = decks[d]?.cards[i];
+  return { name: cardName(d, i), ...(c?.txt ? { text: c.txt } : {}), ...(c?.meta !== undefined ? { meta: c.meta } : {}) };
+}
+
+function cliSnapshot() {
+  const rules = role === 'host' ? host?.rules : view.rules;
+  const pub = (rules?.enabled && rules.public) || {};
+  return {
+    pid, name: myName, role, seq: view.seq, room: roomId,
+    hand: myHand.map((c, idx) => ({ idx, ...cliCardInfo(c.d, c.i) })),
+    players: Object.entries(view.players).map(([id, pl]) => ({
+      id, name: pl.name, seat: pl.seat, online: pl.online, cards: pl.handCount,
+      ...(pub.turn === id ? { turn: true } : {}),
+      ...(pub.badges?.[id] ? { badge: pub.badges[id] } : {}),
+      ...(pub.winners?.includes(id) ? { winner: true } : {}),
+    })),
+    items: Object.entries(view.items).map(([id, it]) => (it.k === 'c'
+      ? { id, kind: 'card', x: it.x | 0, y: it.y | 0, up: !!it.up, ...(it.up ? cliCardInfo(it.d, it.i) : {}) }
+      : { id, kind: 'pile', name: it.name || null, count: it.cards.length, x: it.x | 0, y: it.y | 0 })),
+    buttons: ((rules?.enabled && rules.public?.buttons) || [])
+      .filter((b) => !b.pid || b.pid === pid).map((b) => ({ id: b.id, label: b.label })),
+    rules: rules?.enabled ? rules.name : null,
+    log: gameLog.slice(-40).map((e) => ({ who: actorInfo(e.p).name, text: e.txt, ...(e.c ? { chat: true } : {}), ts: e.ts })),
+    msgs: cliMsgs.slice(),
+  };
+}
+
+/** Resolves a command's item reference: an exact id, a pile name, or (for
+ *  pile commands with no ref) the biggest pile on the table. */
+function cliItem(ref, kind) {
+  if (ref != null && view.items[ref] && (!kind || view.items[ref].k === kind)) return String(ref);
+  const ent = Object.entries(view.items).filter(([, it]) => !kind || it.k === kind);
+  const s = String(ref ?? '').toLowerCase();
+  const byName = s && ent.find(([, it]) => (it.name || '').toLowerCase() === s);
+  if (byName) return byName[0];
+  if (ref == null && kind === 'p') {
+    const top = ent.sort((a, b) => (b[1].cards?.length || 0) - (a[1].cards?.length || 0))[0];
+    if (top) return top[0];
+  }
+  throw new Error(`no such ${kind === 'p' ? 'pile' : 'item'}: ${ref}`);
+}
+
+/** Drop spot for terminal plays/deals: explicit x/y, or jittered toward the
+ *  player's own seat (like dropping cards in front of yourself). */
+function cliSpot(c) {
+  if (c.x != null && c.y != null) return clampToFelt(+c.x, +c.y);
+  const seat = ((view.players[pid]?.seat ?? 90) * Math.PI) / 180;
+  const r = PLAY_R * (0.5 + Math.random() * 0.25);
+  return clampToFelt(TABLE_W / 2 + r * Math.cos(seat) - CARD_W / 2, TABLE_H / 2 + r * Math.sin(seat) - CARD_H / 2);
+}
+
+function cliExec(c) {
+  try {
+    switch (c.t) {
+      case 'chat': { const msg = String(c.msg ?? '').slice(0, 300); if (msg) act({ t: 'chat', msg }); break; }
+      case 'play': {
+        const card = myHand[+c.idx];
+        if (!card) throw new Error(`no hand card #${c.idx}`);
+        const at = cliSpot(c);
+        act({ t: 'play', idx: +c.idx, d: card.d, i: card.i, x: at.x, y: at.y, up: c.up !== false, rot: uprightRot() });
+        break;
+      }
+      case 'draw': act({ t: 'draw', id: cliItem(c.id, 'p') }); break;
+      case 'deal': { const at = cliSpot(c); act({ t: 'deal', id: cliItem(c.id, 'p'), up: !!c.up, rot: uprightRot(), x: at.x, y: at.y }); break; }
+      case 'shuffle': act({ t: 'shuffle', id: cliItem(c.id, 'p') }); break;
+      case 'flip': act({ t: 'flip', id: cliItem(c.id) }); break;
+      case 'move': { const at = clampToFelt(+c.x || 0, +c.y || 0); act({ t: 'move', id: cliItem(c.id), x: at.x, y: at.y }); break; }
+      case 'rot': act({ t: 'rot', id: cliItem(c.id), rot: +c.deg || 0 }); break;
+      case 'toHand': act({ t: 'toHand', id: cliItem(c.id) }); break;
+      case 'peek': {
+        const id = cliItem(c.id);
+        const it = view.items[id], ref = it.k === 'p' ? it.cards.at(-1) : it;
+        act({ t: 'peek', id });
+        cliMsgs.push(`peek: ${ref ? cardName(ref.d, ref.i) : '(empty)'}`);
+        break;
+      }
+      case 'btn': act({ t: 'rulesBtn', id: String(c.id) }); break;
+      default: throw new Error(`unknown command: ${c.t}`);
+    }
+  } catch (err) {
+    console.error('bridge command failed', err, c);
+    cliMsgs.push(`error: ${err.message}`);
+  }
+}
+
+function cliConnect() {
+  if (!CLI) return;
+  const base = `http://127.0.0.1:${CLI.port}`;
+  const q = `?token=${encodeURIComponent(CLI.token)}`;
+  let last = '', inflight = false;
+  const push = async () => {
+    if (inflight) return;
+    inflight = true;
+    try {
+      const snap = cliSnapshot();
+      const s = JSON.stringify(snap);
+      if (s === last) return;
+      const r = await fetch(`${base}/state${q}`, { method: 'POST', body: s, headers: { 'Content-Type': 'text/plain' } });
+      if (!r.ok) throw new Error(`bridge rejected state (${r.status})`);
+      last = s;
+      cliMsgs.splice(0, snap.msgs.length); // delivered
+    } finally { inflight = false; }
+  };
+  (async () => {
+    let announced = false;
+    for (;;) {
+      try {
+        await push();
+        const r = await fetch(`${base}/poll${q}`);
+        if (!r.ok) throw new Error(`bridge poll failed (${r.status})`);
+        if (!announced) { announced = true; toast('🖥 Terminal bridge connected'); console.log('terminal bridge connected', base); }
+        for (const c of await r.json()) { cliExec(c); }
+      } catch (err) {
+        if (announced) { announced = false; toast('🖥 Terminal bridge lost — retrying'); }
+        console.error('terminal bridge error', err);
+        await new Promise((res) => setTimeout(res, 2000));
+      }
+    }
+  })();
+  setInterval(() => push().catch((err) => console.error('bridge push failed', err)), 500);
+}
+
 /** First-visit nickname prompt; resolves once the player picked a name. */
 function askName() {
   return new Promise((resolve) => {
@@ -2502,7 +2654,7 @@ function askName() {
 }
 
 async function boot() {
-  const m = location.hash.match(/^#room~([0-9a-f]+)~([0-9a-f]+)$/);
+  const m = location.hash.match(/^#room~([0-9a-f]+)~([0-9a-f]+)(?:~|$)/);
   let saved = null;
   if (m) {
     [, roomId, password] = m;
@@ -2512,12 +2664,15 @@ async function boot() {
     password = rand(8);
     history.replaceState({}, '', `#room~${roomId}~${password}`);
   }
-  if (!localStorage.getItem('ct-name')) await askName();
-  if (!m || saved) becomeHost(saved);
+  if (!localStorage.getItem('ct-name') && !AS) await askName();
+  // A bot tab is always a guest — even in the host's browser, where the
+  // room's save would otherwise make this tab claim the table.
+  if (!AS && (!m || saved)) becomeHost(saved);
   else role = 'guest';
   if (window.innerWidth <= 820) sideEl.classList.add('hidden');
   layout();
   renderAll();
   connect();
+  cliConnect();
 }
 boot().catch((err) => { console.error('boot failed', err); toast(`Failed to start: ${err.message}`); });
