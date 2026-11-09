@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Find a time</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📅</text></svg>">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <a href="#" class="brand">📅 Find a time</a>
+    <span id="net" class="net" hidden>●</span>
+  </header>
+
+  <main>
+    <section id="home" hidden>
+      <p class="lead">Scheduling polls, end-to-end encrypted over public Nostr relays: vote on times
+        Doodle-style, or paint when you're free crab.fit-style, for dates or a weekly event.
+        No accounts, no server: the link is the key.</p>
+      <a href="#new" class="btn primary">＋ New poll</a>
+      <h2>Your polls</h2>
+      <ul id="mine" class="mine"></ul>
+    </section>
+
+    <section id="editor" hidden>
+      <input id="eTitle" class="title-in" placeholder="What are we scheduling?" maxlength="120">
+      <textarea id="eNotes" rows="2" placeholder="Location, agenda, notes (optional)" maxlength="2000"></textarea>
+      <div class="bar">
+        <span class="seg" role="radiogroup" aria-label="Kind of poll">
+          <label title="Everyone answers each time: yes, if need be, or no"><input type="radio" name="kind" value="vote"> 🗳 Vote on times</label>
+          <label title="Everyone paints when they're free, inside the hours you offer"><input type="radio" name="kind" value="grid"> 🖌 Paint availability</label>
+        </span>
+        <span class="seg" role="radiogroup" aria-label="Dates or weekdays">
+          <label><input type="radio" name="weekly" value="false"> 📅 Specific dates</label>
+          <label title="For a weekly event: Mondays, not Monday the 3rd"><input type="radio" name="weekly" value="true"> 🔁 Days of the week</label>
+        </span>
+      </div>
+      <div class="bar">
+        <label class="grid-only">Tap a day to offer <input id="gFrom" type="time" value="09:00" step="900" aria-label="From">–<input id="gTo"
+          type="time" value="17:00" step="900" aria-label="To"></label>
+        <label class="grid-only">in cells of <select id="step">
+          <option value="15">15 min</option>
+          <option value="30">30 min</option>
+          <option value="60">1 hour</option>
+        </select></label>
+        <label class="vote-only">Tap adds <select id="dur">
+          <option value="15">15 min</option>
+          <option value="30">30 min</option>
+          <option value="45">45 min</option>
+          <option value="60" selected>1 hour</option>
+          <option value="90">1½ hours</option>
+          <option value="120">2 hours</option>
+          <option value="180">3 hours</option>
+        </select></label>
+        <span class="muted vote-only">Click or drag on the calendar to add times (the strip beside a time adds one that overlaps it); drag a time's bottom edge to resize it.</span>
+        <span class="muted grid-only">Tap the days to offer, or drag to draw other hours; drag a block's bottom edge to resize it. Everyone then paints when they're free inside them.</span>
+      </div>
+      <div class="bar">
+        <label>Delete automatically <select id="expire">
+          <option value="0">never</option>
+          <option value="1" data-n="1 day">1 day after the last time</option>
+          <option value="7" data-n="1 week">1 week after the last time</option>
+          <option value="30" data-n="1 month">1 month after the last time</option>
+        </select></label>
+        <span class="muted">Relays drop the poll and every answer then (NIP-40), and this browser forgets it.</span>
+      </div>
+      <div class="bar">
+        <button id="publish" class="primary">Create poll</button>
+        <button id="cancel">Cancel</button>
+      </div>
+    </section>
+
+    <section id="poll" hidden>
+      <p id="msg" class="msg"></p>
+      <div id="head" hidden>
+        <div class="bar spread">
+          <h1 id="title"></h1>
+          <span class="bar">
+            <button id="shareBtn">🔗 Share</button>
+            <button id="editBtn" hidden>✏️ Edit poll</button>
+          </span>
+        </div>
+        <p id="notes" class="notes"></p>
+        <p id="tz" class="muted"></p>
+        <div id="final" class="banner" hidden>
+          📌 Final time: <b id="finalTime"></b>
+          <span class="bar"><button id="ics">Add to calendar (.ics)</button><a id="gcal" target="_blank" rel="noopener">Google Calendar</a></span>
+        </div>
+        <p class="muted grid-only">Drag across the calendar to paint the times you're free, over several days at once;
+          start on a painted time to clear instead. <b>📅 My calendar</b> paints the times your calendar leaves free.
+          Everyone's answers add up in the heat map.</p>
+        <p class="muted vote-only">Tap a time, in the calendar or the list, to cycle
+          <span class="chip v-y">✓ yes</span> → <span class="chip v-m">(✓) if need be</span> → <span class="chip v-n">✗ no</span>.
+          <b>✗ all day</b> says no to a whole day, and <b>📅 My calendar</b> answers ✗ where your own events clash.</p>
+      </div>
+    </section>
+
+    <!-- outside #poll so it can stay stuck to the top while scrolling the calendar and list -->
+    <div id="me" class="bar me" hidden>
+      <input id="name" maxlength="60" autocomplete="name" placeholder="Your name" aria-label="Your name">
+      <button id="save" class="primary" disabled>Save answers</button>
+      <span id="saveState" class="muted"></span>
+      <button id="deviceBtn" hidden>📱 Edit on another device</button>
+    </div>
+
+    <div id="board" class="board" hidden>
+      <div class="cal-wrap">
+        <div class="bar">
+          <button data-nav="-1" aria-label="Previous">‹</button>
+          <button data-nav="0">Today</button>
+          <button data-nav="1" aria-label="Next">›</button>
+          <b id="range"></b>
+          <button id="copyWeek" class="copy" data-span="7" title="Copy that week’s times into this week" hidden></button>
+          <button id="calBtn" class="push" title="Show your own events and spot clashes">📅 My calendar</button>
+        </div>
+        <div id="cal" class="cal"></div>
+      </div>
+      <div id="list" class="list"></div>
+    </div>
+  </main>
+
+  <dialog id="share">
+    <h3>Invite link</h3>
+    <p class="muted">Anyone with this link can see the poll and answer. It carries the decryption key, so share it only with participants.</p>
+    <div class="copy"><input id="shareLink" readonly><button data-copy="shareLink">Copy</button></div>
+    <h3>Your other devices</h3>
+    <p class="muted">To answer as you, or edit the poll, on your phone or another computer, open your private link there.</p>
+    <button id="toDevice">📱 Edit on another device…</button>
+    <form method="dialog"><button class="primary">Done</button></form>
+  </dialog>
+
+  <dialog id="device">
+    <h3>📱 Edit on another device</h3>
+    <p id="devSaved" class="saved" hidden>✓ Your answers are saved.</p>
+    <p id="devHint" class="muted"></p>
+    <div id="qr" class="qr"></div>
+    <div class="copy"><input id="privLink" readonly aria-label="Your private link"><button data-copy="privLink">Copy</button></div>
+    <form method="dialog"><button type="button" id="sendLink" hidden>Send to myself…</button> <button class="primary">Done</button></form>
+  </dialog>
+
+  <dialog id="cals">
+    <h3>📅 My calendar</h3>
+    <p class="muted">Add your calendar to see your own events next to the poll’s times. When you answer a poll, times that
+      clash with them are marked ✗ for you. The file is read and kept in this browser only: it’s never uploaded or shared.</p>
+    <ul id="calList" class="mine"></ul>
+    <div class="bar">
+      <button id="calPick" class="primary">Add calendar file…</button>
+      <input id="calFile" type="file" accept=".ics,.zip,text/calendar" multiple hidden>
+      <span class="muted">or drop it anywhere on the page.</span>
+    </div>
+    <p class="muted">What’s added is a snapshot: add the file again when your calendar changes.</p>
+    <details class="muted">
+      <summary>How do I get the file?</summary>
+      <ul>
+        <li><b>Google Calendar</b>, on a computer: ⚙ Settings → Import &amp; export → Export. Add the .zip as it is.</li>
+        <li><b>Apple Calendar</b> on a Mac: select the calendar, then File → Export → Export…</li>
+        <li><b>Outlook</b> on Windows: File → Save Calendar. On the web: Settings → Calendar → Shared calendars → Publish,
+          then open the ICS link to download the file.</li>
+      </ul>
+    </details>
+    <form method="dialog"><button>Done</button></form>
+  </dialog>
+
+  <div id="drop" class="drop" hidden>Drop your calendar file (.ics, or Google’s .zip) to see clashes</div>
+  <div id="toast" class="toast" role="status"></div>
+</body>
+</html>

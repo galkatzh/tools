@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OCR Search</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>OCR Search</h1>
+    <label class="drop" id="drop">
+      <input id="files" type="file" accept="image/*,application/pdf,.pdf" multiple hidden>
+      Drop images / PDFs here or <u>browse</u>
+    </label>
+    <label>Engine
+      <select id="engine">
+        <option value="tesseract">Tesseract</option>
+        <option value="paddle">PaddleOCR</option>
+      </select>
+    </label>
+    <label><span id="lang-label">Language</span>
+      <select id="lang" title="Used for pages not yet recognized; use Re-run OCR to apply it to existing pages"></select>
+    </label>
+  </header>
+
+  <div class="toolbar">
+    <input id="query" type="search" placeholder="Fuzzy search… (Enter = next)" autocomplete="off">
+    <label class="tol">Tolerance <input id="tol" type="range" min="0" max="0.5" step="0.05" value="0.25"> <output id="tol-out">25%</output></label>
+    <span class="nav">
+      <button id="prev" title="Previous match (Shift+Enter)">↑</button>
+      <span id="count">0 / 0</span>
+      <button id="next" title="Next match (Enter)">↓</button>
+    </span>
+    <span class="seg">
+      <button id="view-pages" class="on">Pages</button><button id="view-text">Text</button>
+    </span>
+    <span class="actions">
+      <button id="copy">Copy text</button>
+      <button id="download">Download .txt</button>
+      <button id="export-pdf" title="Searchable PDF: the original pages with an invisible text layer (Tesseract pages only).&#10;Hebrew/Arabic: PDF viewers find single words, but multi-word phrases may not match as typed (a viewer limitation with any right-to-left PDF). Use this app's search for phrases.">Export PDF</button>
+      <button id="rerun">Re-run OCR</button>
+      <button id="clear">Clear</button>
+    </span>
+  </div>
+
+  <div id="status" class="status" aria-live="polite">Add images or PDFs to start.</div>
+
+  <main>
+    <aside><ol id="results"></ol></aside>
+    <section id="pages"></section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

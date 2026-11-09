@@ -1,6 +1,8 @@
 // Melody transcription quiz: play a melody, identify notes via on-screen
 // keyboard (absolute pitch) or scale-degree buttons (relative pitch).
-// Exposes a global `MelodyQuiz` with init(rootEl, getSettings).
+// Exposes a global `MelodyQuiz` with init(rootEl).
+import { createKeyboard } from '../jam/keyboard.js';
+
 (function () {
   'use strict';
 
@@ -9,14 +11,19 @@
   var S = window.Stats;
 
   var state = null;
+  var root = null; // the view the quiz renders into: .mq-top (redrawn on each answer) over .mq-input
+  var kb = null, kbEl = null; // Jam's keyboard and its element, made once (see keyboard())
+
+  function settings() { return window.App.getSettings(); }
+  function keyboardMode() { return settings().melodyInputMode === 'keyboard'; }
 
   /** Reset/build a fresh round based on current settings. */
-  function newRound(settings) {
-    if (settings.randomizePatch) A.randomizePatch();
-    else if (!A.hasSynth()) A.applyPatch(A.defaultPatch());
+  function newRound() {
+    var s = settings();
+    A.newPatch(s.randomizePatch);
     var tonic = T.randomTonic();
-    var length = settings.melodyLength;
-    var scale = settings.melodyScale; // 'major' | 'minor' | 'chromatic'
+    var length = s.melodyLength;
+    var scale = s.melodyScale; // 'major' | 'minor' | 'chromatic'
     var melody = T.generateMelody(tonic, scale, length, { maxJump: 7, spanOctaves: 1 });
 
     state = {
@@ -25,12 +32,11 @@
       melody: melody,
       // Quiz variant maps to which slots are user-answerable:
       // 'first' -> [0]; 'last' -> [length-1]; 'all' -> [0..length-1]
-      variantSlots: variantSlots(settings.melodyVariant, length),
+      variantSlots: variantSlots(s.melodyVariant, length),
       activeSlotIdx: 0,
       answers: new Array(length).fill(null),
       done: false,
-      cadenceOn: !!settings.cadenceOn,
-      inputMode: settings.melodyInputMode || 'degrees' // 'degrees' | 'keyboard'
+      cadenceOn: !!s.cadenceOn
     };
   }
 
@@ -40,21 +46,33 @@
     return Array.from({ length: length }, function (_, i) { return i; });
   }
 
-  /** Render the round into rootEl. */
-  function render(rootEl) {
-    rootEl.innerHTML = '';
+  /** Render the round: the quiz on top, the input below. */
+  function render() {
+    root.innerHTML = '';
+    root.appendChild(el('div', 'mq-top'));
+    root.appendChild(el('div', 'mq-input'));
+    renderTop();
+    renderInput();
+  }
+
+  /** Header, answer slots, playback controls and, once done, the Next button. */
+  function renderTop() {
+    var top = root.querySelector('.mq-top');
+    top.innerHTML = '';
 
     // Header strip
     var head = el('div', 'mq-head');
     head.appendChild(el('div', 'mq-key', 'Key: ' + T.midiToName(state.tonic) + ' ' + state.scale));
     var inputToggle = el('button', 'mq-input-toggle btn-ghost',
-                         'Input: ' + (state.inputMode === 'keyboard' ? 'Keyboard' : 'Degrees'));
+                         'Input: ' + (keyboardMode() ? 'Keyboard' : 'Degrees'));
     inputToggle.addEventListener('click', function () {
-      state.inputMode = state.inputMode === 'keyboard' ? 'degrees' : 'keyboard';
-      render(rootEl);
+      settings().melodyInputMode = keyboardMode() ? 'degrees' : 'keyboard';
+      window.App.saveSettings();
+      renderTop();
+      renderInput();
     });
     head.appendChild(inputToggle);
-    rootEl.appendChild(head);
+    top.appendChild(head);
 
     // Slots row (one per melody note; shows user's answer or '?')
     var slotsRow = el('div', 'mq-slots');
@@ -88,56 +106,58 @@
         var idx = state.variantSlots.indexOf(i);
         if (idx >= 0) {
           state.activeSlotIdx = idx;
-          render(rootEl);
+          renderTop();
         }
       });
       slotsRow.appendChild(slot);
     });
-    rootEl.appendChild(slotsRow);
+    top.appendChild(slotsRow);
 
     // Replay controls
     var ctrl = el('div', 'mq-ctrl');
-    var replayBtn = el('button', 'btn', '▶ Replay melody');
-    replayBtn.addEventListener('click', function () {
-      if (state.cadenceOn) {
-        A.playCadence(state.tonic, state.scale);
-        setTimeout(function () { A.playMelody(state.melody); }, 2200);
-      } else {
-        A.playMelody(state.melody);
-      }
-    });
+    var replayBtn = el('button', 'btn', '▶ Replay');
+    replayBtn.addEventListener('click', function () { withCadence(function () { A.playMelody(state.melody); }); });
     var solutionBtn = el('button', 'btn-ghost', '💡 Solution');
     solutionBtn.title = 'Play the melody and highlight each note as it plays';
-    solutionBtn.addEventListener('click', function () {
-      if (state.cadenceOn) {
-        A.playCadence(state.tonic, state.scale);
-        setTimeout(function () { replayWithHighlight(rootEl); }, 2200);
-      } else {
-        replayWithHighlight(rootEl);
-      }
-    });
-    var tonicBtn = el('button', 'btn-ghost', '🎵 Play tonic');
+    solutionBtn.addEventListener('click', function () { withCadence(replayWithHighlight); });
+    var tonicBtn = el('button', 'btn-ghost', '🎵 Tonic');
+    tonicBtn.title = 'Play the tonic';
     tonicBtn.addEventListener('click', function () { A.playNote(state.tonic, 1.0); });
     ctrl.appendChild(replayBtn);
     ctrl.appendChild(solutionBtn);
     ctrl.appendChild(tonicBtn);
-    rootEl.appendChild(ctrl);
+    top.appendChild(ctrl);
 
-    // Input area: keyboard or degree buttons. Remains visible after the
-    // round is done so the user can use Solution to see highlights and
-    // audition individual notes — followed by the Next button.
-    var inputArea = el('div', 'mq-input');
-    if (state.inputMode === 'keyboard') {
-      inputArea.appendChild(renderKeyboard(rootEl));
-    } else {
-      inputArea.appendChild(renderDegreeButtons(rootEl));
-    }
+    // The input stays usable after the round, to audition notes and follow the Solution.
     if (state.done) {
       var nextBtn = el('button', 'btn btn-primary mq-next', 'Next round →');
-      nextBtn.addEventListener('click', function () { startRound(rootEl); });
-      inputArea.appendChild(nextBtn);
+      nextBtn.addEventListener('click', startRound);
+      top.appendChild(nextBtn);
     }
-    rootEl.appendChild(inputArea);
+  }
+
+  /** Runs `play`, after the I-IV-V-I cadence when that is on. */
+  function withCadence(play) {
+    if (!state.cadenceOn) return play();
+    A.playCadence(state.tonic, state.scale);
+    setTimeout(play, 2200);
+  }
+
+  /** The keyboard (centred on the tonic) or the scale-degree buttons. */
+  function renderInput() {
+    var input = root.querySelector('.mq-input');
+    if (kb) kb.releaseAll(); // the keys may be leaving the page with a finger on them
+    input.innerHTML = '';
+    input.classList.toggle('mq-input-keys', keyboardMode());
+    if (!keyboardMode()) {
+      input.appendChild(renderDegreeButtons());
+      return;
+    }
+    input.appendChild(keyboard());
+    var old = kbEl.querySelector('.key.tonic');
+    if (old) old.classList.remove('tonic');
+    kbEl.querySelector('.key[data-note="' + state.tonic + '"]').classList.add('tonic');
+    kb.show(state.tonic);
   }
 
   function formatNoteForVariant(midi) {
@@ -147,60 +167,46 @@
     return deg + '\n' + T.midiToName(midi);
   }
 
-  /** Render the on-screen piano keyboard centered around the tonic. */
-  function renderKeyboard(rootEl) {
-    // Build a 2-octave keyboard centered on the tonic.
-    var startMidi = state.tonic - 12;
-    var endMidi = state.tonic + 12;
-    var kb = el('div', 'mq-keyboard');
-
-    var whiteKeys = [];
-    for (var m = startMidi; m <= endMidi; m++) {
-      var pc = T.midiToPc(m);
-      var isBlack = [1, 3, 6, 8, 10].indexOf(pc) >= 0;
-      if (!isBlack) {
-        whiteKeys.push(m);
-      }
-    }
-
-    // White keys
-    var whiteRow = el('div', 'mq-white-row');
-    whiteKeys.forEach(function (m) {
-      var k = el('button', 'mq-key-white');
-      k.dataset.midi = String(m);
-      if (m === state.tonic) k.classList.add('mq-key-tonic');
-      k.textContent = T.pcName(T.midiToPc(m));
-      k.addEventListener('click', function () { onKeyPick(rootEl, m); });
-      whiteRow.appendChild(k);
+  /**
+   * Jam's piano: multi-touch, the computer keys and a navigator strip to scroll and resize the
+   * keys. Made the first time it shows and kept for good, as its window listeners last as long
+   * as the page; it answers only while on the page. A finger keeps its first key, as sliding
+   * onto others would answer several slots.
+   */
+  function keyboard() {
+    if (kbEl) return kbEl;
+    kbEl = el('div', 'mq-keyboard');
+    kbEl.innerHTML =
+      '<div class="kb-bar">' +
+        '<button class="kb-shift" data-d="-1" aria-label="Octave down">−</button>' +
+        '<span class="kb-octave" title="Octave the computer keys play"></span>' +
+        '<button class="kb-shift" data-d="1" aria-label="Octave up">+</button>' +
+        '<div class="kb-nav" role="img"></div>' +
+      '</div>' +
+      '<div class="kb-keys"></div>' +
+      '<p class="kb-hint">Play with A–\' and W–P · Z/X: octave −/+ · Drag the strip to scroll, its edges to resize</p>';
+    kb = createKeyboard({
+      keys: kbEl.querySelector('.kb-keys'),
+      octave: kbEl.querySelector('.kb-octave'),
+      nav: kbEl.querySelector('.kb-nav'),
+      view: settings().keyboardView,
+      slide: false
+    }, {
+      onNoteOn: function (note, vel) { A.noteOn(note, vel); onKeyPick(note); },
+      onNoteOff: A.noteOff,
+      onPedal: function () {},
+      onView: function (view) { settings().keyboardView = view; window.App.saveSettings(); }
     });
-    kb.appendChild(whiteRow);
-
-    // Black keys overlay (positioned with flexbox approx).
-    // Compute black key offsets relative to white keys.
-    var blackRow = el('div', 'mq-black-row');
-    whiteKeys.forEach(function (wm, idx) {
-      // Black key sits to the right of white key wm if pc+1 is black.
-      var nextWhite = whiteKeys[idx + 1];
-      var blackMidi = wm + 1;
-      var hasBlack = nextWhite != null && nextWhite > blackMidi
-        && [1, 3, 6, 8, 10].indexOf(T.midiToPc(blackMidi)) >= 0;
-      var spacer = el('div', 'mq-black-spacer');
-      if (hasBlack) {
-        var bk = el('button', 'mq-key-black');
-        bk.dataset.midi = String(blackMidi);
-        if (blackMidi === state.tonic) bk.classList.add('mq-key-tonic');
-        bk.textContent = T.pcName(T.midiToPc(blackMidi));
-        bk.addEventListener('click', function () { onKeyPick(rootEl, blackMidi); });
-        spacer.appendChild(bk);
-      }
-      blackRow.appendChild(spacer);
+    kbEl.querySelectorAll('.kb-shift').forEach(function (b) {
+      b.addEventListener('click', function () { kb.shift(+b.dataset.d); });
     });
-    kb.appendChild(blackRow);
-
-    return kb;
+    // Keys held as the page hides, or another tab replaces the keys, would never be let go.
+    addEventListener('hashchange', kb.releaseAll);
+    document.addEventListener('visibilitychange', function () { if (document.hidden) kb.releaseAll(); });
+    return kbEl;
   }
 
-  function renderDegreeButtons(rootEl) {
+  function renderDegreeButtons() {
     // For chromatic mode, show all 12; for diatonic scales show in-key plus
     // the chromatics dimmed (so you can still get it right if the melody
     // generator picks oddities — but our melody generator stays diatonic).
@@ -215,15 +221,15 @@
       b.dataset.semis = String(s);
       if (!inKey[s]) b.classList.add('mq-degree-out');
       (function (semis) {
-        b.addEventListener('click', function () { onDegreePick(rootEl, semis); });
+        b.addEventListener('click', function () { onDegreePick(semis); });
       }(s));
       row.appendChild(b);
     }
     return row;
   }
 
-  function onKeyPick(rootEl, midi) {
-    A.playNote(midi, 0.6);
+  /** A key went down (the keyboard plays it): answers the active slot. */
+  function onKeyPick(midi) {
     if (state.done) return;
     var slotIdx = state.variantSlots[state.activeSlotIdx];
     var target = state.melody[slotIdx];
@@ -233,10 +239,10 @@
       userMidi: midi,
       userLabel: T.midiToName(midi)
     };
-    advance(rootEl, correct);
+    advance(correct);
   }
 
-  function onDegreePick(rootEl, semitones) {
+  function onDegreePick(semitones) {
     // Audition the picked degree first so it works both during the round
     // and after it ends (when the user is exploring the solution).
     A.playNote(state.tonic + semitones, 0.5);
@@ -250,10 +256,10 @@
       userSemis: semitones,
       userLabel: T.DEGREE_LABELS[semitones]
     };
-    advance(rootEl, correct);
+    advance(correct);
   }
 
-  function advance(rootEl, correct) {
+  function advance(correct) {
     var done = false;
     if (state.activeSlotIdx + 1 < state.variantSlots.length) {
       state.activeSlotIdx++;
@@ -261,7 +267,7 @@
       done = true;
       state.done = true;
     }
-    render(rootEl);
+    renderTop();
 
     if (done) {
       // Compute overall correctness (all asked slots correct).
@@ -282,33 +288,27 @@
     }
   }
 
-/**
+  /**
    * Play the melody and visually highlight each note on the active input UI
    * (keyboard or degree buttons) at its audio onset. Used by the Solution
    * button so the user can see exactly which note lands where.
    */
-  function replayWithHighlight(rootEl) {
-    A.playMelody(state.melody, undefined, undefined, undefined, function (midi) {
-      highlightNote(rootEl, midi);
-    });
+  function replayWithHighlight() {
+    A.playMelody(state.melody, undefined, undefined, undefined, highlightNote);
   }
 
   /**
-   * Add a transient highlight class to the matching keyboard key (in keyboard
-   * mode) or degree button (in degree mode). Class auto-removes so successive
-   * notes don't pile up.
+   * Transiently highlight the note's key (also on the strip, so keys scrolled out of
+   * view show it) or its degree button, so successive notes don't pile up.
    */
-  function highlightNote(rootEl, midi) {
+  function highlightNote(midi) {
     var HOLD_MS = 350;
-    if (state.inputMode === 'keyboard') {
-      var btn = rootEl.querySelector('button[data-midi="' + midi + '"]');
-      if (btn) {
-        btn.classList.add('mq-key-playing');
-        setTimeout(function () { btn.classList.remove('mq-key-playing'); }, HOLD_MS);
-      }
+    if (keyboardMode()) {
+      kb.mark(midi, 'solution', 'var(--accent)');
+      setTimeout(function () { kb.mark(midi, 'solution', null); }, HOLD_MS);
     } else {
       var semis = ((midi - state.tonic) % 12 + 12) % 12;
-      var degBtn = rootEl.querySelector('.mq-degree-btn[data-semis="' + semis + '"]');
+      var degBtn = root.querySelector('.mq-degree-btn[data-semis="' + semis + '"]');
       if (degBtn) {
         degBtn.classList.add('mq-degree-playing');
         setTimeout(function () { degBtn.classList.remove('mq-degree-playing'); }, HOLD_MS);
@@ -317,10 +317,9 @@
   }
 
   /** Public: kick off a fresh round and play it. */
-  function startRound(rootEl) {
-    var settings = window.App.getSettings();
-    newRound(settings);
-    render(rootEl);
+  function startRound() {
+    newRound();
+    render();
     // Slight delay so user is looking at the UI before audio fires.
     setTimeout(function () {
       if (state.cadenceOn) {
@@ -336,7 +335,8 @@
 
   /** Render entry-point: shows a "Start" button if no round is active. */
   function init(rootEl) {
-    rootEl.innerHTML = '';
+    root = rootEl;
+    root.innerHTML = '';
     var welcome = el('div', 'mq-welcome');
     welcome.appendChild(el('h2', '', 'Melody Transcription'));
     welcome.appendChild(el('p', 'muted',
@@ -345,10 +345,10 @@
     var btn = el('button', 'btn btn-primary', '▶ Start round');
     btn.addEventListener('click', function () {
       A.ensureAudio();
-      startRound(rootEl);
+      startRound();
     });
     welcome.appendChild(btn);
-    rootEl.appendChild(welcome);
+    root.appendChild(welcome);
   }
 
   // tiny dom helper
