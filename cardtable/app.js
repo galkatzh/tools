@@ -839,6 +839,7 @@ const tApi = {
     return nid;
   },
   geom: () => ({ size: TABLE_W, cx: TABLE_W / 2, cy: TABLE_H / 2, r: PLAY_R }),
+  hostId: pid, // the host's own player id: for host-only buttons ({pid: t.hostId}) and commands
   say: (msg) => logEvent(RULES, String(msg).slice(0, 300)),
   /** Big banner on every screen (also logged). For "Flop!", "You win", ... */
   announce(msg) {
@@ -1953,32 +1954,57 @@ const RULES_TEMPLATES = {
   name: "Hold'em (chips)",
   // Full no-limit Hold'em with chip tracking: stacks live on the seat labels
   // (💰), blinds post automatically (dealer button rotates), betting rounds
-  // are turn-enforced — buttons for Check/Call/Fold, chat for sizing:
-  // "!bet 50" / "!raise 50" (raise TO 50), "!allin", "!check", "!call",
-  // "!fold". Streets deal themselves when a round closes, all-ins run out
-  // automatically, and the showdown evaluates best-5-of-7, builds side pots,
-  // and pays every pot to the right hands (ties split). Between hands:
-  // "!rebuy" tops a busted stack up, "!blinds 5 10" changes the blinds.
+  // are turn-enforced. The player to act gets buttons — Check/Call, Fold and
+  // quick bets (Min raise, ½ pot, Pot, All-in; each shows the round total it
+  // raises TO) — or types in chat: "!bet 50" / "!raise 50" (raise TO 50),
+  // "!allin", "!check", "!call", "!fold". A short all-in doesn't reopen the
+  // raising for players who already acted. Streets deal themselves when a
+  // round closes, all-ins run out automatically, and the showdown returns an
+  // uncalled bet, evaluates best-5-of-7, builds side pots, and pays every pot
+  // to the right hands (ties split, odd chips left of the button).
+  // Only online players are dealt in; leaving mid-hand folds you (unless
+  // you're all-in). Between hands anyone may deal, "!rebuy" refills a busted
+  // stack and the host sets the blinds ("!blinds 5 10"). Mid-hand only the
+  // host can call the hand off (every bet refunded).
   BUYIN: 1000,
   setup(t) {
     t.data.stacks ||= {};
     t.data.blinds ||= { sb: 5, bb: 10 };
+    t.data.burn ||= []; // (a hand dealt by an older version of this script lacks these)
+    t.data.canRaise ||= [];
     for (const p of t.players()) t.data.stacks[p.id] ??= this.BUYIN;
     this.badges(t);
     t.say("Hold'em: everyone starts with 💰" + this.BUYIN + '. Press New hand.');
   },
   onJoin(t, p) { t.data.stacks ||= {}; t.data.stacks[p] ??= this.BUYIN; this.badges(t); },
+  // A player who still has to act would stall the hand: fold them. An
+  // all-in player has nothing left to decide and stays in to the showdown.
+  onLeave(t, p) {
+    const d = t.data;
+    if (d.stage !== 'hand' || !this.active(t).some((x) => x.id === p)) return;
+    t.say(this.nameOf(t, p) + ' left mid-hand');
+    if (d.turn === p) return this.doAction(t, p, 'fold');
+    this.fold(t, p);
+    t.say(this.nameOf(t, p) + ' folds');
+    d.pending = d.pending.filter((x) => x !== p);
+    if (this.contenders(t).length === 1) this.afterAction(t, p, false); // pays the last one standing
+  },
   badges(t) {
     t.public.badges = Object.fromEntries(t.players().map((p) => [p.id, '💰' + (t.data.stacks[p.id] ?? 0)]));
   },
   nameOf(t, p) { return (t.players().find((x) => x.id === p) || {}).name || '?'; },
   deck(t) { return t.piles().filter((x) => x.id !== t.data.muckId).sort((a, b) => b.cards.length - a.cards.length)[0]; },
-  funded(t) { return t.players().filter((p) => (t.data.stacks[p.id] || 0) > 0 || p.handCount === 2); },
   contenders(t) { return t.players().filter((p) => p.handCount === 2 && !t.data.folded.includes(p.id)); },
   active(t) { return this.contenders(t).filter((p) => t.data.stacks[p.id] > 0); },
+  // The next player in list clockwise from p, by seat. Not t.nextSeat: that
+  // skips offline players, and after a host reload everyone is offline until
+  // they reconnect — the turn must wait for them, not vanish.
   nextFrom(t, p, list) {
-    let q = p;
-    for (let i = 0; i < 16; i++) { q = t.nextSeat(q); if (list.some((x) => x.id === q)) return q; }
+    const ps = t.players(), i = ps.findIndex((x) => x.id === p);
+    for (let k = 1; k <= ps.length; k++) {
+      const q = ps[(i + k) % ps.length].id;
+      if (list.some((x) => x.id === q)) return q;
+    }
     return null;
   },
   put(t, p, amt) {
@@ -1991,19 +2017,50 @@ const RULES_TEMPLATES = {
     this.badges(t);
     return amt;
   },
+  fold(t, p) {
+    const d = t.data;
+    d.folded.push(p);
+    if (!t.items().some((x) => x.id === d.muckId)) {
+      const g = t.geom();
+      d.muckId = t.newPile([], { x: g.cx + 70, y: g.cy - 240, name: 'muck' });
+    }
+    t.takeHand(p, d.muckId);
+  },
+  /** Calls the hand off: every bet goes back to its owner. */
+  abandon(t, msg) {
+    const d = t.data;
+    for (const [p, amt] of Object.entries(d.paid || {})) d.stacks[p] += amt;
+    Object.assign(d, { stage: 'done', paid: {}, pot: 0, turn: null });
+    t.public.turn = null;
+    this.badges(t);
+    t.say(msg);
+  },
   buttons(t) {
-    const d = t.data, btns = [{ id: 'new', label: '🂠 New hand' }];
-    if (d.stage === 'hand' && d.turn) {
-      const owed = d.curBet - (d.bet[d.turn] || 0);
-      btns.push(owed > 0
-        ? { id: 'call', label: 'Call ' + Math.min(owed, d.stacks[d.turn]), pid: d.turn }
-        : { id: 'check', label: 'Check', pid: d.turn });
-      btns.push({ id: 'fold', label: 'Fold', pid: d.turn });
+    const d = t.data, p = d.turn;
+    if (d.stage !== 'hand') return [{ id: 'new', label: '🂠 New hand' }];
+    // Mid-hand only the host may call the hand off: the refund would let
+    // anyone who is losing take their bets back instead of folding.
+    const btns = [{ id: 'new', label: '🂠 Abandon hand (refund)', pid: t.hostId }];
+    if (!p) return btns;
+    const owed = d.curBet - (d.bet[p] || 0), all = (d.bet[p] || 0) + d.stacks[p];
+    btns.push(owed > 0 ? { id: 'call', label: 'Call ' + Math.min(owed, d.stacks[p]), pid: p } : { id: 'check', label: 'Check', pid: p },
+      { id: 'fold', label: 'Fold', pid: p });
+    if (all > d.curBet && d.canRaise.includes(p)) {
+      // Quick raises, as round totals ("r:<total>"). A pot-sized raise is the
+      // call plus the pot after calling. Sizes that aren't legal raises below
+      // the stack are left out: the All-in button covers the rest.
+      const pot = d.pot + owed;
+      const sizes = [['Min raise', d.curBet + d.minRaise], ['½ pot', d.curBet + Math.floor(pot / 2)], ['Pot', d.curBet + pot]];
+      for (const [name, to] of sizes) {
+        if (to - d.curBet >= d.minRaise && to < all && !btns.some((b) => b.id === 'r:' + to)) btns.push({ id: 'r:' + to, label: name + ' → ' + to, pid: p });
+      }
+      btns.push({ id: 'allin', label: 'All-in → ' + all, pid: p });
     }
     return btns;
   },
   onButton(t, id, byPid) {
     if (id === 'new') return this.startHand(t);
+    if (id.startsWith('r:')) return this.doAction(t, byPid, 'bet', +id.slice(2));
     this.doAction(t, byPid, id);
   },
   onChat(t, msg, p) {
@@ -2012,32 +2069,36 @@ const RULES_TEMPLATES = {
     if ((m = /^!(check|call|fold|allin)$/i.exec(msg))) return this.doAction(t, p, m[1].toLowerCase());
     if ((m = /^!(?:bet|raise)\\s+(\\d+)$/i.exec(msg))) return this.doAction(t, p, 'bet', +m[1]);
     if (/^!rebuy$/i.test(msg)) {
-      if (d.stage === 'hand' && this.contenders(t).some((x) => x.id === p)) return t.tell(p, 'After this hand');
-      d.stacks[p] = (d.stacks[p] || 0) + this.BUYIN;
+      if (d.stage === 'hand') return t.tell(p, 'Rebuy after this hand');
+      if ((d.stacks[p] || 0) > 0) return t.tell(p, 'Rebuy is only for a busted (0-chip) stack');
+      d.stacks[p] = this.BUYIN;
       this.badges(t);
       return t.say(this.nameOf(t, p) + ' rebuys for ' + this.BUYIN);
     }
     if ((m = /^!blinds\\s+(\\d+)\\s+(\\d+)$/i.exec(msg))) {
+      if (p !== t.hostId) return t.tell(p, 'Only the host sets the blinds');
       if (d.stage === 'hand') return t.tell(p, 'After this hand');
-      d.blinds = { sb: +m[1], bb: +m[2] };
-      return t.say('Blinds set to ' + m[1] + '/' + m[2]);
+      const sb = +m[1], bb = +m[2];
+      if (!(sb > 0 && sb <= bb)) return t.tell(p, 'Use !blinds SB BB with 0 < SB ≤ BB');
+      d.blinds = { sb, bb };
+      return t.say('Blinds set to ' + sb + '/' + bb);
     }
   },
   startHand(t) {
-    const d = t.data, deckP = this.deck(t);
+    const d = t.data, deckP = this.deck(t), g = t.geom();
+    if (d.stage === 'hand') this.abandon(t, 'Hand abandoned — bets refunded.');
     if (!deckP) return t.say('No deck on the table!');
-    if (d.stage === 'hand') { // abandon the current hand: refund every bet
-      for (const [p, amt] of Object.entries(d.paid || {})) d.stacks[p] += amt;
-      t.say('Hand abandoned — bets refunded.');
-    }
-    const funded = t.players().filter((p) => (d.stacks[p.id] || 0) > 0);
-    if (funded.length < 2) return t.say('Need 2+ players with chips ("!rebuy" if busted).');
+    const funded = t.players().filter((p) => p.online && (d.stacks[p.id] || 0) > 0);
+    if (funded.length < 2) return t.say('Need 2+ online players with chips ("!rebuy" if busted).');
     for (const it of t.items()) if (it.k === 'c') t.toPile(it.id, deckP.id);
     if (d.muckId && t.items().some((x) => x.id === d.muckId)) t.merge(d.muckId, deckP.id);
     for (const p of t.players()) t.takeHand(p.id, deckP.id);
     t.shuffle(deckP.id);
+    // Layout: burns | deck | muck in a row above the board row through the
+    // center — all clear of the hole cards revealed by the seats.
+    t.move(deckP.id, g.cx - 50, g.cy - 240);
     for (const p of funded) { t.deal(deckP.id, { to: p.id }); t.deal(deckP.id, { to: p.id }); }
-    Object.assign(d, { stage: 'hand', comm: [], folded: [], muckId: null, paid: {}, bet: {}, pot: 0 });
+    Object.assign(d, { stage: 'hand', comm: [], burn: [], folded: [], muckId: null, paid: {}, bet: {}, pot: 0 });
     t.public.winners = null;
     d.dealer = d.dealer && funded.some((x) => x.id !== d.dealer) ? this.nextFrom(t, d.dealer, funded) : funded[0].id;
     const sb = funded.length === 2 ? d.dealer : this.nextFrom(t, d.dealer, funded);
@@ -2048,9 +2109,12 @@ const RULES_TEMPLATES = {
     d.minRaise = d.blinds.bb;
     const act = this.active(t);
     d.pending = act.map((x) => x.id);
+    d.canRaise = [...d.pending]; // who may still raise this round (see afterAction)
     d.turn = this.nextFrom(t, bb, act);
     t.public.turn = d.turn;
-    t.announce('New hand — blinds ' + d.blinds.sb + '/' + d.blinds.bb + ' (' + this.nameOf(t, sb) + '/' + this.nameOf(t, bb) + '), ' + this.nameOf(t, d.turn) + ' to act');
+    t.announce('New hand — blinds ' + d.blinds.sb + '/' + d.blinds.bb + ' (' + this.nameOf(t, sb) + '/' + this.nameOf(t, bb) + ')'
+      + (d.turn ? ', ' + this.nameOf(t, d.turn) + ' to act' : ''));
+    if (!d.turn) this.nextStreet(t); // everyone dealt in is all-in from the blinds: run it out
   },
   doAction(t, p, kind, amt) {
     const d = t.data;
@@ -2058,6 +2122,7 @@ const RULES_TEMPLATES = {
     if (p !== d.turn) return t.tell(p, 'Not your turn');
     const name = this.nameOf(t, p);
     const owed = d.curBet - (d.bet[p] || 0);
+    const closed = () => t.tell(p, 'Betting was not reopened — call or fold');
     if (kind === 'check') {
       if (owed > 0) return t.tell(p, 'You must call ' + owed + ' (or raise / fold)');
       t.say(name + ' checks');
@@ -2066,39 +2131,38 @@ const RULES_TEMPLATES = {
       const paid = this.put(t, p, owed);
       t.say(name + ' calls ' + paid + (d.stacks[p] === 0 ? ' (all-in)' : ''));
     } else if (kind === 'fold') {
-      d.folded.push(p);
-      if (!d.muckId || !t.items().some((x) => x.id === d.muckId)) {
-        const g = t.geom();
-        d.muckId = t.newPile([], { x: g.cx - 480, y: g.cy - 400, name: 'muck' });
-      }
-      t.takeHand(p, d.muckId);
+      this.fold(t, p);
       t.say(name + ' folds');
     } else if (kind === 'bet') {
       if (!(amt > 0)) return t.tell(p, 'Say "!bet 50" (the round total to raise to)');
       const maxTotal = (d.bet[p] || 0) + d.stacks[p];
       if (amt >= maxTotal) return this.doAction(t, p, 'allin');
+      if (!d.canRaise.includes(p)) return closed();
       const delta = amt - d.curBet;
       if (delta < d.minRaise) return t.tell(p, 'Min raise to ' + (d.curBet + d.minRaise));
       this.put(t, p, amt - (d.bet[p] || 0));
       d.minRaise = delta;
       d.curBet = amt;
       t.say(name + ' raises to ' + amt);
-      return this.afterAction(t, p, true);
+      return this.afterAction(t, p, true, true);
     } else if (kind === 'allin') {
       const total = (d.bet[p] || 0) + d.stacks[p];
       if (total <= 0) return t.tell(p, 'No chips left — "!rebuy" after the hand');
+      const raised = total > d.curBet, full = total - d.curBet >= d.minRaise;
+      if (raised && !d.canRaise.includes(p)) return closed();
       this.put(t, p, d.stacks[p]);
-      const raised = total > d.curBet;
-      if (raised) { d.minRaise = Math.max(d.minRaise, total - d.curBet); d.curBet = total; }
+      if (raised) { if (full) d.minRaise = total - d.curBet; d.curBet = total; }
       t.say(name + ' is ALL-IN for ' + total);
-      return this.afterAction(t, p, raised);
+      return this.afterAction(t, p, raised, full);
     }
     this.afterAction(t, p, false);
   },
-  afterAction(t, p, raised) {
-    const d = t.data;
-    if (raised) d.pending = this.active(t).map((x) => x.id).filter((id) => id !== p);
-    else d.pending = d.pending.filter((id) => id !== p);
+  // raised: everyone else must respond again. reopen: a full raise, so they
+  // may also re-raise — a short all-in only raises the price (TDA rules).
+  afterAction(t, p, raised, reopen) {
+    const d = t.data, others = () => this.active(t).map((x) => x.id).filter((id) => id !== p);
+    d.pending = raised ? others() : d.pending.filter((id) => id !== p);
+    d.canRaise = reopen ? others() : d.canRaise.filter((id) => id !== p);
     const live = this.contenders(t);
     if (live.length === 1) {
       d.stacks[live[0].id] += d.pot;
@@ -2114,24 +2178,26 @@ const RULES_TEMPLATES = {
     t.public.turn = d.turn;
   },
   nextStreet(t) {
-    const d = t.data, g = t.geom();
+    const d = t.data, g = t.geom(), deckP = this.deck(t);
     d.bet = {};
     d.curBet = 0;
     d.minRaise = d.blinds.bb;
     d.turn = null;
     t.public.turn = null;
     if (d.comm.length === 5) return this.showdown(t);
-    const deckP = this.deck(t);
-    t.deal(deckP.id, { x: g.cx - 480, y: g.cy - 220, up: false }); // burn
+    if (!deckP) return this.abandon(t, 'The deck is gone — hand abandoned, bets refunded');
+    const burn = t.deal(deckP.id, { x: g.cx - 170, y: g.cy - 240, up: false });
+    if (burn) d.burn.push(burn.id);
     const n = d.comm.length === 0 ? 3 : 1;
-    for (let i = 0; i < n; i++) {
-      const c = t.deal(deckP.id, { x: g.cx - 330 + d.comm.length * 115, y: g.cy - 220, up: true });
+    for (let i = 0; i < n; i++) { // the board: one row through the center
+      const c = t.deal(deckP.id, { x: g.cx - 280 + d.comm.length * 115, y: g.cy - 70, up: true });
       if (c) d.comm.push({ d: c.d, i: c.i });
     }
     t.announce((n === 3 ? 'Flop' : d.comm.length === 4 ? 'Turn' : 'River') + ' — pot ' + d.pot);
     const act = this.active(t);
     if (act.length <= 1) return this.nextStreet(t); // all-in run-out
     d.pending = act.map((x) => x.id);
+    d.canRaise = [...d.pending];
     d.turn = this.nextFrom(t, d.dealer, act);
     t.public.turn = d.turn;
   },
@@ -2198,15 +2264,26 @@ const RULES_TEMPLATES = {
   },
   showdown(t) {
     const d = t.data, g = t.geom();
+    // An uncalled bet (the top contributor's excess over everyone else) is
+    // simply returned — it isn't a pot anyone won.
+    const [top, second] = Object.keys(d.paid).sort((a, b) => d.paid[b] - d.paid[a]);
+    const uncalled = d.paid[top] - (d.paid[second] || 0);
+    if (uncalled > 0) {
+      d.paid[top] -= uncalled;
+      d.stacks[top] += uncalled;
+      d.pot -= uncalled;
+      t.say('Uncalled ' + uncalled + ' returned to ' + this.nameOf(t, top));
+    }
     const players = this.contenders(t);
     const scores = {};
     for (const p of players) {
       const hole = t.hand(p.id);
+      // reveal by the seat, outside the board row
       const rad = (p.seat * Math.PI) / 180, tx = -Math.sin(rad), ty = Math.cos(rad);
-      for (let k = t.hand(p.id).length - 1; k >= 0; k--) { // reveal by the seat
+      for (let k = t.hand(p.id).length - 1; k >= 0; k--) {
         t.playFromHand(p.id, k, {
-          x: g.cx + Math.cos(rad) * (g.r - 250) + tx * (k * 72 - 36) - 50,
-          y: g.cy + Math.sin(rad) * (g.r - 250) + ty * (k * 72 - 36) - 70,
+          x: g.cx + Math.cos(rad) * (g.r - 130) + tx * (k * 72 - 36) - 50,
+          y: g.cy + Math.sin(rad) * (g.r - 130) + ty * (k * 72 - 36) - 70,
           up: true, rot: ((p.seat - 90) % 360 + 360) % 360,
         });
       }
@@ -2215,11 +2292,14 @@ const RULES_TEMPLATES = {
     const pots = this.buildPots(d.paid, players.map((p) => p.id));
     const total = pots.reduce((s, x) => s + x.amt, 0);
     if (total < d.pot && pots.length) pots[pots.length - 1].amt += d.pot - total;
+    // odd chips go to the first tied players left of the button
+    const ids = t.players().map((p) => p.id), n = ids.length, di = ids.indexOf(d.dealer);
+    const leftOfButton = (p) => (ids.indexOf(p) - di - 1 + n) % n;
     const winnersAll = new Set(), parts = [];
     pots.forEach((pot, i) => {
       let best = pot.elig[0];
       for (const p of pot.elig) if (this.cmp(scores[p], scores[best]) > 0) best = p;
-      const tied = pot.elig.filter((p) => this.cmp(scores[p], scores[best]) === 0);
+      const tied = pot.elig.filter((p) => this.cmp(scores[p], scores[best]) === 0).sort((a, b) => leftOfButton(a) - leftOfButton(b));
       const share = Math.floor(pot.amt / tied.length);
       let odd = pot.amt - share * tied.length;
       for (const p of tied) { d.stacks[p] += share + (odd-- > 0 ? 1 : 0); winnersAll.add(p); }
@@ -2242,13 +2322,18 @@ const RULES_TEMPLATES = {
     if (['play', 'handPile', 'toHand', 'draw', 'deal', 'addDeck'].includes(a.t)) {
       return 'Hand in progress — act with the buttons or chat (!bet, !fold, ...)';
     }
-    // community & burn cards stay put
-    const isComm = (id) => {
+    // The deck and the muck (folded hole cards) stay closed, the board and
+    // burn cards stay where they are: none of them may be deleted, merged,
+    // shuffled, flipped or stacked mid-hand.
+    const deckId = this.deck(t)?.id;
+    const guarded = (id) => {
+      if (!id) return false;
+      if (id === deckId || id === d.muckId || d.burn.includes(id)) return true;
       const it = t.items().find((x) => x.id === id);
       return it && it.k === 'c' && d.comm.some((c) => c.d === it.d && c.i === it.i);
     };
-    if (['toPile', 'stack', 'del', 'flip'].includes(a.t) && ((a.id && isComm(a.id)) || (a.onto && isComm(a.onto)))) {
-      return 'Community cards stay on the board';
+    if (['del', 'merge', 'toPile', 'stack', 'shuffle', 'flip'].includes(a.t) && [a.id, a.pile, a.onto].some(guarded)) {
+      return 'The deck, muck and board stay put during a hand';
     }
   },
 })`,

@@ -145,10 +145,14 @@ re-enabling the same game after a fix or a Disable keeps its state (chips,
 scores) unless the host ticks *Reset game state*.
 Templates ship for turn order, full **no-limit Hold'em with chips** (stacks
 on the seat labels, automatic blinds with a rotating button, turn-enforced
-betting via buttons and chat — `!bet 50`, `!allin`, `!rebuy` — streets that
-deal themselves when a round closes, all-in run-outs, and an automatic
-showdown that evaluates best-5-of-7, builds side pots, and pays each pot to
-the right hands), **Bridge** (a real chat auction — `!bid 1H`,
+betting via buttons — Check/Call, Fold, and quick bets *Min raise*, *½ pot*,
+*Pot*, *All-in* labelled with their amounts — or chat: `!bet 50`, `!allin`;
+short all-ins don't reopen the raising, streets deal themselves when a round
+closes, all-ins run out, and an automatic showdown returns an uncalled bet,
+evaluates best-5-of-7, builds side pots, and pays each pot to the right
+hands. Only online players are dealt in and leaving mid-hand folds you;
+`!rebuy` refills a busted stack between hands, `!blinds 5 10` is the host's,
+and only the host can abandon a hand in progress, refunding every bet), **Bridge** (a real chat auction — `!bid 1H`,
 `!pass`, `!double`, dealer rotation, insufficiency checks — then enforced
 turns and follow-suit, the dummy laid face-up and played by the declarer,
 trump-aware trick resolution, sweeping, scoring, and a 🏆 for the winning

@@ -133,6 +133,8 @@ A thin wrapper over existing internals in `app.js`:
   `t.schedule(seconds, tag)` → `onTimer` for turn clocks and reveal
   delays (timers persist in `t.data`; a non-numeric delay throws).
 - **Convenience utils** (pure functions, no engine state):
+  `t.hostId` (the host's own player id — for host-only buttons
+  `{pid: t.hostId}` and host-only chat commands),
   `t.nextSeat(pid)` (the next seat clockwise whose player is **online** —
   offline players are skipped, `pid` itself counts even when offline; a
   fixed-partnership game that must wait for a dropped player rotates over
@@ -191,15 +193,21 @@ the default.
    `play`, shows ⏳ on the active seat. A composable base for any game.
 2. **No-limit Hold'em with chips** — stacks tracked per player and shown
    on seat labels (via the generic `public.badges`), automatic blinds with
-   a rotating dealer button, turn-enforced betting rounds (Check/Call/Fold
-   buttons for the actor; `!bet N` / `!raise N` / `!allin` in chat, with
-   min-raise validation), streets that deal themselves when a round
-   closes, automatic all-in run-outs, and a showdown that evaluates each
-   contender's best 5 of 7 (all standard rankings, wheel included), builds
-   main + side pots from the contribution ledger, and pays each pot to the
-   best eligible hand — ties split, odd chips forward. `!rebuy` and
-   `!blinds a b` between hands. Proves a complete money game runs as pure
-   script.
+   a rotating dealer button, turn-enforced betting rounds (buttons for the
+   actor: Check/Call, Fold and quick bets — Min raise, ½ pot, Pot, All-in,
+   each labelled with the total it raises to, illegal sizes left out;
+   `!bet N` / `!raise N` / `!allin` in chat, with min-raise validation and
+   no re-raise after a short all-in), streets that deal themselves when a
+   round closes, automatic all-in run-outs, and a showdown that returns an
+   uncalled bet, evaluates each contender's best 5 of 7 (all standard
+   rankings, wheel included), builds main + side pots from the
+   contribution ledger, and pays each pot to the best eligible hand — ties
+   split, odd chips to the first winners left of the button. Only online
+   players are dealt in; `onLeave` folds a player who still had to act.
+   Between hands anyone deals, `!rebuy` refills a busted stack and the
+   host sets `!blinds a b`; mid-hand the deal button becomes the host's
+   *Abandon hand* (every bet refunded), and the deck, muck, board and burn
+   cards are locked. Proves a complete money game runs as pure script.
 3. **Cards Against Humanity** — the printed rules end to end: 10-card
    hands, a rotating Card Czar (⏳👑), black prompts flipped from a draw
    pile, face-down submissions (validated: the Czar can't answer, answers
