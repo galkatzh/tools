@@ -143,22 +143,28 @@ the game (an action whose `validate` crashed is blocked, not waved through);
 rules, their state, and pending timers survive host reloads — and
 re-enabling the same game after a fix or a Disable keeps its state (chips,
 scores) unless the host ticks *Reset game state*.
-Templates ship for turn order, full **no-limit Hold'em with chips** (stacks
+Templates ship for turn order (skipping anyone offline), full **no-limit Hold'em with chips** (stacks
 on the seat labels, automatic blinds with a rotating button, turn-enforced
 betting via buttons and chat — `!bet 50`, `!allin`, `!rebuy` — streets that
 deal themselves when a round closes, all-in run-outs, and an automatic
 showdown that evaluates best-5-of-7, builds side pots, and pays each pot to
-the right hands), **Bridge** (a real chat auction — `!bid 1H`,
+the right hands), **Bridge** (the four players online at Deal play the hand
+— anyone else watches; a real chat auction — `!bid 1H`,
 `!pass`, `!double`, dealer rotation, insufficiency checks — then enforced
 turns and follow-suit, the dummy laid face-up and played by the declarer,
-trump-aware trick resolution, sweeping, scoring, and a 🏆 for the winning
-side), **Cards Against Humanity** (the printed rules automated: a rotating
-Card Czar flips a black prompt, everyone else answers face down, the columns
-shuffle and reveal anonymously, the Czar crowns the funniest with 👉
-buttons, ⭐ Awesome Points on the seat labels, PICK 2/3 prompts, discard
+trump-aware trick resolution, face-down trick piles, scoring, and a 🏆 for
+the winning side; if a player drops out, the hand waits for them, and
+`!contract 4H <name>` lets the dealer or the host skip the auction),
+**Cards Against Humanity** (the printed rules automated: a rotating
+Card Czar flips a black prompt, everyone else answers face down into an
+*Answers* pile, the answers come back out shuffled and anonymous in
+numbered columns upright for the Czar, who crowns the funniest with 👉
+buttons naming each answer; the result stays up a few seconds before the
+next round; ⏭ *Skip Czar* moves on when the Czar is away; ⭐ Awesome
+Points on the seat labels, PICK 2/3 prompts, discard
 reshuffling, and first-to-the-goal wins — card texts ship in
 `cah-cards.js`, CC BY-NC-SA from Cards Against Humanity LLC's free
-print-and-play PDF), and a simple dealer — all plain scripts on the public
+print-and-play PDF), and a simple dealer that says when the deck runs short — all plain scripts on the public
 API, demos of the engine rather than features of it. The CAH template also
 shows how a script keeps a ~1600-card game light on the wire: the full deck
 is registered once via `t.newDeck` (script-defined text decks), while only

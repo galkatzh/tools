@@ -739,7 +739,7 @@ const tApi = {
   set public(v) { host.rules.public = v || {}; },
   players: () => Object.entries(host.players)
     .filter(([, pl]) => pl.seat != null)
-    .map(([id, pl]) => ({ id, name: pl.name, seat: pl.seat, online: pl.online, handCount: pl.hand.length }))
+    .map(([id, pl]) => ({ id, name: pl.name, seat: pl.seat, online: pl.online, handCount: pl.hand.length, host: id === pid }))
     .sort((a, b) => a.seat - b.seat),
   hand: (p) => (own(host.players, p)?.hand || []).map((c) => ({ ...c })),
   items: () => Object.entries(host.items).map(([id, it]) => structuredClone({ id, ...it })),
@@ -1934,9 +1934,16 @@ const RULES_TEMPLATES = {
   name: 'Turn order',
   setup(t) {
     const ps = t.players();
-    t.data.turn = ps[0]?.id;
+    t.data.turn ??= ps[0]?.id; // a re-enable keeps whose turn it is
+    // never leave the turn with someone who is away (nextSeat skips offline seats)
+    if (!ps.some((p) => p.id === t.data.turn && p.online)) t.data.turn = t.nextSeat(t.data.turn);
     t.public.turn = t.data.turn;
     t.say('Turn order: ' + ps.map((p) => p.name).join(' → '));
+  },
+  onLeave(t, p) {
+    if (p !== t.data.turn) return;
+    t.data.turn = t.public.turn = t.nextSeat(p);
+    t.say('The turn passes on — its player left');
   },
   validate(t, a) {
     const guarded = ['play', 'handPile', 'deal', 'draw', 'toHand'];
@@ -2258,17 +2265,20 @@ const RULES_TEMPLATES = {
   // dealer first, rotating each deal): "!bid 1H" (or "!1H"; strains C D H S NT),
   // "!pass", "!double", "!redouble". Three passes after a bid fix the
   // contract (declarer = first of the winning side to name the strain);
-  // four passes throw the hand in. "!contract 4H <name>" skips the auction
-  // if you bid out loud instead. Then: left of declarer leads, the dummy is
+  // four passes throw the hand in. "!contract 4H <name>" (the dealer or the
+  // host, during the auction) skips it if you bid out loud instead. The four
+  // players online at Deal play the hand in fixed seat order; if one drops,
+  // play waits for them. Then: left of declarer leads, the dummy is
   // laid face up and played by the DECLARER (slide a dummy card to an empty
   // spot in the middle), turns and following suit are enforced, tricks are
   // resolved trump-aware and swept, and the winning side takes the trophy.
   STRAINS: ['C', 'D', 'H', 'S', 'NT'],
   SYMS: { C: '♣', D: '♦', H: '♥', S: '♠', NT: 'NT' },
   setup(t) {
-    t.say(t.players().length === 4
+    const n = t.players().filter((p) => p.online).length;
+    t.say(n === 4
       ? 'Bridge: press Deal, then bid in chat ("!bid 1H", "!pass", ...).'
-      : 'Bridge needs exactly 4 players (' + t.players().length + ' seated).');
+      : 'Bridge needs exactly 4 players online (' + n + ' now) — anyone else watches.');
   },
   buttons: (t) => (t.data.phase === 'play' || t.data.phase === 'bid' ? [] : [{ id: 'deal', label: '🂠 Deal (13 each)' }]),
   deck(t) { return t.piles().sort((a, b) => b.cards.length - a.cards.length)[0]; },
@@ -2277,9 +2287,13 @@ const RULES_TEMPLATES = {
     const r = t.cardName(c).slice(0, -1);
     return { A: 14, K: 13, Q: 12, J: 11 }[r] || parseInt(r, 10) || 0;
   },
-  seats(t) { return t.players().map((p) => p.id); },
+  // The four dealt players, frozen at Deal in seat order: partnerships and
+  // turns never shift when someone joins, leaves or drops (t.nextSeat would
+  // skip an offline player — here the turn waits for them instead).
+  seats(t) { return t.data.seats || t.players().filter((p) => p.online).map((p) => p.id); },
+  nextP(t, p) { const s = this.seats(t); return s[(s.indexOf(p) + 1) % s.length]; },
   sideOf(t, p) { return this.seats(t).indexOf(p) % 2; },
-  sideName(t, s) { const ps = t.players(); return ps[s].name + '–' + ps[s + 2].name; },
+  sideName(t, s) { const q = this.seats(t); return this.nameOf(t, q[s]) + '–' + this.nameOf(t, q[s + 2]); },
   sidePids(t, s) { return this.seats(t).filter((_, i) => i % 2 === s); },
   nameOf(t, p) { return (t.players().find((x) => x.id === p) || {}).name || '?'; },
   inCenter(t, x, y) { const g = t.geom(); return Math.hypot(x + 50 - g.cx, y + 70 - g.cy) < g.r * 0.4; },
@@ -2290,33 +2304,45 @@ const RULES_TEMPLATES = {
   onButton(t, id) {
     if (id !== 'deal') return;
     if (t.data.phase === 'play' || t.data.phase === 'bid') return t.say('Finish the hand first.');
-    const ps = t.players();
-    if (ps.length !== 4) return t.say('Bridge needs exactly 4 players.');
+    const ps = t.players().filter((p) => p.online);
+    if (ps.length !== 4) return t.say('Bridge needs exactly 4 players online (' + ps.length + ' now) — anyone else watches.');
     const deck = this.deck(t);
     if (!deck) return t.say('No deck on the table!');
+    // gather all 52: loose cards, both sides' trick piles, every hand
     for (const it of t.items()) if (it.k === 'c') t.toPile(it.id, deck.id);
-    for (const p of ps) t.takeHand(p.id, deck.id);
+    for (const p of t.piles()) if (p.id !== deck.id) t.merge(p.id, deck.id);
+    for (const p of t.players()) t.takeHand(p.id, deck.id);
     t.shuffle(deck.id);
     t.dealToAll(deck.id, 13);
     const dealerIdx = ((t.data.dealerIdx ?? -1) + 1) % 4; // rotates every deal
     Object.assign(t.data, {
       phase: 'bid', dealerIdx, trump: null, level: null, declarer: null, dummy: null,
       trick: [], tricks: [0, 0], sidePiles: {}, firstLead: false, dummyCards: [],
-      auction: { passes: 0, best: null, first: {}, dbl: '' },
-      turn: this.seats(t)[dealerIdx],
+      auction: { passes: 0, best: null, first: {}, dbl: '' }, away: [],
+      seats: ps.map((p) => p.id), // dealToAll dealt exactly these four
     });
+    t.data.turn = this.seats(t)[dealerIdx];
     t.public = { turn: t.data.turn };
     t.say('Dealt 13 to each (' + this.sideName(t, 0) + ' vs ' + this.sideName(t, 1) + ').');
     t.announce('Auction: ' + this.nameOf(t, t.data.turn) + ' bids first — "!bid 1H", "!pass", ...');
   },
   onChat(t, msg, p) {
     if (t.data.phase === 'bid') return this.onBid(t, msg.trim(), p);
-    // manual override for tables that bid out loud: "!contract 4H Alice"
-    const m = /^!contract\\s*(\\d)?\\s*(NT|[SHDC])\\s+(.+)$/i.exec(msg);
-    if (!m) return;
-    const decl = t.players().find((x) => x.name.toLowerCase().startsWith(m[3].trim().toLowerCase()));
-    if (!decl) return t.say('No player named "' + m[3].trim() + '"');
-    this.startPlay(t, m[1] ? +m[1] : null, m[2].toUpperCase(), decl.id, '');
+    if (/^!contract\\b/i.test(msg.trim())) t.tell(p, '!contract works during the auction, after Deal');
+  },
+  // Manual override for tables that bid out loud: "!contract 4H Alice" —
+  // during the auction only, by the dealer or the host.
+  contract(t, msg, p) {
+    const dealer = this.seats(t)[t.data.dealerIdx];
+    if (p !== dealer && !t.players().some((x) => x.id === p && x.host)) {
+      return t.tell(p, 'Only the dealer (' + this.nameOf(t, dealer) + ') or the host can set the contract');
+    }
+    const m = /^!contract\\s*([1-7])?\\s*(NT|[SHDC])\\s+(.+)$/i.exec(msg);
+    if (!m) return t.tell(p, 'Usage: !contract 4H <declarer>');
+    const name = m[3].trim().toLowerCase();
+    const decl = this.seats(t).find((id) => this.nameOf(t, id).toLowerCase().startsWith(name));
+    if (!decl) return t.tell(p, 'Nobody named "' + m[3].trim() + '" plays this hand');
+    this.startPlay(t, m[1] ? +m[1] : null, m[2].toUpperCase(), decl, '');
   },
   onBid(t, msg, p) {
     const a = t.data.auction;
@@ -2324,8 +2350,7 @@ const RULES_TEMPLATES = {
     const pass = /^!p(?:ass)?$/i.exec(msg);
     const dbl = /^!double$/i.exec(msg) || /^!x$/i.exec(msg);
     const rdbl = /^!redouble$/i.exec(msg) || /^!xx$/i.exec(msg);
-    const contract = /^!contract\\s/i.test(msg);
-    if (contract) { t.data.phase = 'done'; return this.onChat(t, msg, p); }
+    if (/^!contract\\b/i.test(msg)) return this.contract(t, msg, p);
     if (!bid && !pass && !dbl && !rdbl) return; // ordinary chatter
     if (p !== t.data.turn) return t.tell(p, "It's not your turn to bid");
     const side = this.sideOf(t, p);
@@ -2363,19 +2388,19 @@ const RULES_TEMPLATES = {
       t.public.turn = null;
       return t.announce('Passed out — press Deal for a new hand');
     }
-    t.data.turn = t.nextSeat(p);
+    t.data.turn = this.nextP(t, p);
     t.public.turn = t.data.turn;
   },
   startPlay(t, level, strain, declarer, dbl) {
-    const ps = t.players();
+    const s = this.seats(t);
     t.data.level = level;
     t.data.trump = strain === 'NT' ? null : this.SYMS[strain];
     t.data.declarer = declarer;
-    t.data.dummy = ps[(ps.findIndex((x) => x.id === declarer) + 2) % 4].id;
+    t.data.dummy = s[(s.indexOf(declarer) + 2) % 4];
     t.data.phase = 'play';
     t.data.firstLead = true;
     t.data.trick = [];
-    t.data.turn = t.nextSeat(declarer);
+    t.data.turn = this.nextP(t, declarer);
     t.public.turn = t.data.turn;
     t.announce('Contract: ' + (level || '') + this.SYMS[strain] + (dbl ? ' ' + dbl : '') + ' by '
       + this.nameOf(t, declarer) + ' — ' + this.nameOf(t, t.data.turn) + ' leads');
@@ -2453,11 +2478,10 @@ const RULES_TEMPLATES = {
     if (t.data.firstLead) { t.data.firstLead = false; this.showDummy(t); }
     t.data.trick.push(card);
     if (t.data.trick.length === 4) {
-      t.public.turn = null;
+      t.data.turn = t.public.turn = null; // nobody plays until the sweep
       t.schedule(2.5, 'sweep'); // let everyone look at the trick first
     } else {
-      t.data.turn = t.nextSeat(card.p);
-      t.public.turn = t.data.turn;
+      t.data.turn = t.public.turn = this.nextP(t, card.p);
     }
   },
   onAction(t, a) {
@@ -2487,12 +2511,14 @@ const RULES_TEMPLATES = {
     // sweep the four cards into the winning side's face-down trick pile
     let pileId = t.data.sidePiles[side];
     if (!pileId || !t.items().some((it) => it.id === pileId)) {
-      const g = t.geom(), rad = (winner.seat * Math.PI) / 180;
+      // by a hand-holding seat: the dummy's seat is covered by its cards
+      const by = side === this.sideOf(t, t.data.declarer) ? t.data.declarer : win.p;
+      const g = t.geom(), rad = (t.players().find((p) => p.id === by).seat * Math.PI) / 180;
       pileId = t.newPile([], { x: g.cx + Math.cos(rad) * (g.r - 40) - 50, y: g.cy + Math.sin(rad) * (g.r - 40) - 70, name: this.sideName(t, side) + ' tricks' });
       t.data.sidePiles[side] = pileId;
     }
     for (const it of t.items()) {
-      if (it.k === 'c' && trick.some((c) => c.d === it.d && c.i === it.i)) t.toPile(it.id, pileId);
+      if (it.k === 'c' && trick.some((c) => c.d === it.d && c.i === it.i)) { t.flip(it.id); t.toPile(it.id, pileId); }
     }
     t.data.trick = [];
     t.say('Trick to ' + winner.name + ' — ' + this.sideName(t, 0) + ' ' + t.data.tricks[0] + ' : ' + t.data.tricks[1] + ' ' + this.sideName(t, 1));
@@ -2512,23 +2538,41 @@ const RULES_TEMPLATES = {
       t.public.turn = win.p;
     }
   },
+  // A dealt player who drops keeps their seat: their turn waits for them.
+  onLeave(t, p) {
+    const d = t.data;
+    if ((d.phase !== 'bid' && d.phase !== 'play') || !this.seats(t).includes(p)) return;
+    if (d.phase === 'play' && p === d.dummy) return; // the declarer plays the dummy
+    d.away = (d.away || []).concat(p);
+    t.announce(this.nameOf(t, p) + ' dropped out — the hand waits for them to rejoin');
+  },
+  onJoin(t, p) {
+    const d = t.data;
+    if (!(d.away || []).includes(p)) return;
+    d.away = d.away.filter((x) => x !== p);
+    t.say(this.nameOf(t, p) + ' is back — play on');
+  },
 })`,
   cah: `({
   name: 'Cards Against Humanity',
   // The printed rules, automated. Everyone holds 10 white cards. Each round
   // the Card Czar (⏳👑) flips a black prompt; everyone else answers it by
-  // playing the required number of white cards FACE DOWN (toggle 🂠 in the
-  // hand bar). Once everyone has answered, the columns shuffle and reveal,
-  // and the Czar presses 👉 1/2/3… to crown the funniest — the winner takes
-  // an Awesome Point (⭐), everyone draws back to 10, and the Czar rotates.
-  // First to the goal wins ("!goal N" changes it, default 5). The Czar can
-  // press "Judge now" to skip stragglers. PICK 2 prompts take two cards (in
-  // the order you play them); PICK 3 prompts deal everyone 2 extra first.
+  // playing the required number of white cards from their hand (they go
+  // FACE DOWN into the Answers pile — the 🂠 toggle locks on — or drop them
+  // straight onto it). Once everyone has answered, the answers come out of
+  // the pile in shuffled, numbered columns, upright for the Czar, who
+  // presses 👉 1/2/3… to crown the funniest — the winner takes an Awesome
+  // Point (⭐), the result stays up for a few seconds, everyone draws back to
+  // 10, and the Czar rotates. First to the goal wins ("!goal N" changes it,
+  // default 5). The Czar can press "Judge now" to skip stragglers; anyone can
+  // press "Skip Czar" while the Czar is away. PICK 2 prompts take two cards
+  // (in the order you play them); PICK 3 prompts deal everyone 2 extra first.
   // Card texts load from cah-cards.js (CC BY-NC-SA, Cards Against Humanity
   // LLC). Only the draw piles sit on the table; the rest of the ~1300-card
   // deck waits in script state to keep the shared state small.
   HAND: 10,
   CHUNK: 40,
+  COLS: 30, // column markers #1..#30; card COLS of the marker deck is the 🏆
   setup(t) {
     if (!window.CAH_CARDS) throw new Error('cah-cards.js is missing');
     const d = t.data;
@@ -2543,12 +2587,17 @@ const RULES_TEMPLATES = {
       d.bleft = this.shuf(window.CAH_CARDS.black.map((c, i) => i));
       d.wdisc = []; d.bdisc = [];
     }
+    d.nd ||= t.newDeck({ name: 'CAH columns', back: '#fde047',
+      cards: Array.from({ length: this.COLS }, (_, k) => ({ name: '#' + (k + 1), bg: '#fde047' }))
+        .concat({ name: '🏆 Winner', bg: '#22c55e' }) });
     if (t.players().length < 3) t.say('CAH plays best with 3+ players — you can still try it.');
-    d.czar = t.players()[0].id;
-    this.startRound(t);
+    if (!this.online(t, d.czar)) d.czar = (t.players().find((p) => p.online) || t.players()[0]).id;
+    // setup re-runs on every Enable: a game in progress restarts its round
+    if (d.phase !== 'over') { this.clearRound(t); this.startRound(t); }
   },
   shuf(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const x = a[i]; a[i] = a[j]; a[j] = x; } return a; },
   nameOf(t, p) { return (t.players().find((x) => x.id === p) || {}).name || '?'; },
+  online(t, p) { return t.players().some((x) => x.id === p && x.online); },
   // Draw piles hold only a small window of the shuffled deck; refills come
   // from index lists in t.data, and discards reshuffle in when a list runs dry.
   stock(t, kind, need) {
@@ -2561,9 +2610,9 @@ const RULES_TEMPLATES = {
         t.say('reshuffled the ' + (kind === 'w' ? 'white' : 'black') + ' discards back in');
       }
       const idxs = d[kind + 'left'].splice(0, this.CHUNK);
-      const g = t.geom();
+      const g = t.geom(); // both decks in the middle: the Czar's side of the table changes every round
       const nid = t.newPile(idxs.map((i) => ({ d: deckId, i, up: false })),
-        { x: kind === 'w' ? g.cx - 280 : g.cx + 180, y: g.cy - 40, name: kind === 'w' ? 'White deck' : 'Black deck' });
+        { x: kind === 'w' ? g.cx - 110 : g.cx + 10, y: g.cy - 70, name: kind === 'w' ? 'White deck' : 'Black deck' });
       if (pile) t.merge(nid, pile.id); else d[kind + 'pile'] = nid;
       pile = t.piles().find((p) => p.id === d[kind + 'pile']);
     }
@@ -2583,39 +2632,63 @@ const RULES_TEMPLATES = {
     t.public.badges = Object.fromEntries(t.players().map((p) =>
       [p.id, '⭐' + (d.scores[p.id] || 0) + (p.id === d.czar && d.phase !== 'over' ? ' 👑' : '')]));
   },
-  startRound(t) {
+  // A table spot in the Czar's frame, as t.deal options: dx to the Czar's
+  // right, dy toward the Czar (from the center), upright for the Czar.
+  at(t, dx, dy) {
+    const g = t.geom(), s = (t.players().find((x) => x.id === t.data.czar) || { seat: 90 }).seat;
+    const rot = ((s - 90) % 360 + 360) % 360, r = (rot * Math.PI) / 180;
+    return { x: g.cx - 50 + dx * Math.cos(r) - dy * Math.sin(r), y: g.cy - 70 + dx * Math.sin(r) + dy * Math.cos(r), rot, up: true };
+  },
+  // Answer column gi: its #marker (k = -1) on top, then the answer cards
+  // (each overlapping the one before, so the top lines of all stay readable).
+  spot(t, gi, k) {
+    return this.at(t, (gi - (t.data.order.length - 1) / 2) * 110, k < 0 ? 190 : 232 + k * 42);
+  },
+  // Lays cards [{d, i}] face up at the given spots as NEW table items, dealt
+  // from a temporary pile: nothing links them to the items they came from.
+  lay(t, cards, spots) {
+    const tmp = t.newPile(cards.slice().reverse().map((c) => ({ d: c.d, i: c.i, up: true })), spots[0]);
+    return spots.map((o) => t.deal(tmp, o).id);
+  },
+  startRound(t, lead) {
     const d = t.data;
-    d.subs = {}; d.order = null; d.phase = 'submit';
+    d.subs = {}; d.order = null; d.phase = 'submit'; d.round = (d.round || 0) + 1;
     this.refill(t);
-    const g = t.geom();
-    const r = t.deal(this.stock(t, 'b', 1).id, { up: true, x: g.cx - 50, y: g.cy - 230 });
-    d.black = r;
-    d.pick = ((t.card(r) || {}).meta || {}).pick || 1;
+    d.black = t.deal(this.stock(t, 'b', 1).id, this.at(t, 0, -220));
+    d.pick = ((t.card(d.black) || {}).meta || {}).pick || 1;
     d.roundPlayers = t.players().filter((p) => p.online && p.id !== d.czar).map((p) => p.id);
     if (d.pick === 3) for (const p of d.roundPlayers) this.dealWhite(t, p, 2); // the printed rule: draw 2 for PICK 3
     t.public.turn = d.czar;
     t.public.winners = [];
+    t.public.facedown = d.roundPlayers.slice(); // locks their 🂠 toggle on
     this.badges(t);
-    t.announce(this.nameOf(t, d.czar) + ' is the Card Czar — answer with ' + d.pick + ' card' + (d.pick > 1 ? 's' : '') + ', FACE DOWN (🂠)');
+    t.announce((lead ? lead + ' — ' : '') + this.nameOf(t, d.czar) + ' is the Card Czar — answer with '
+      + d.pick + ' card' + (d.pick > 1 ? 's' : '') + ', FACE DOWN (🂠)');
   },
   validate(t, a) {
     const d = t.data;
     if (!d.phase || d.phase === 'over') return;
     if (a.t === 'move' || a.t === 'rot') return; // arranging the table stays free
-    if (a.t !== 'play') return 'The game runs the cards here';
+    if (a.t !== 'play' && !(a.t === 'handPile' && a.pile === d.ans)) return 'The game runs the cards here';
     if (d.phase !== 'submit') return 'Wait for the next black card';
     if (a.p === d.czar) return 'The Card Czar does not answer';
     if (!d.roundPlayers.includes(a.p)) return 'You deal in next round';
     if (a.d !== d.wd) return 'Answer with a white card';
-    if (a.up) return 'Submit FACE DOWN — toggle 🂠 in the hand bar';
+    if (a.t === 'play' && a.up) return 'Submit FACE DOWN — toggle 🂠 in the hand bar';
     if ((d.subs[a.p] || []).length >= d.pick) return 'You already submitted';
   },
   onAction(t, a) {
     const d = t.data;
-    if (a.t !== 'play' || d.phase !== 'submit') return;
-    const it = t.items().find((x) => x.k === 'c' && x.d === a.d && x.i === a.i);
-    if (!it) return;
-    (d.subs[a.p] = d.subs[a.p] || []).push({ id: it.id, d: a.d, i: a.i });
+    if (d.phase !== 'submit' || !(a.t === 'play' || (a.t === 'handPile' && a.pile === d.ans))) return;
+    if (a.t === 'play') {
+      // straight into the face-down Answers pile: left where it was dropped,
+      // the card's spot and item id would tell everyone who played it
+      const it = t.items().find((x) => x.k === 'c' && x.d === a.d && x.i === a.i);
+      if (!it) return;
+      if (!t.piles().some((p) => p.id === d.ans)) d.ans = t.newPile([], { ...this.at(t, 0, 190), name: 'Answers' });
+      t.toPile(it.id, d.ans);
+    }
+    (d.subs[a.p] = d.subs[a.p] || []).push({ d: a.d, i: a.i });
     const waiting = d.roundPlayers.filter((p) => (d.subs[p] || []).length < d.pick);
     if (!waiting.length) this.judge(t);
     else t.say('answers in: ' + (d.roundPlayers.length - waiting.length) + '/' + d.roundPlayers.length);
@@ -2624,16 +2697,16 @@ const RULES_TEMPLATES = {
     const d = t.data;
     // shuffled columns so the Czar cannot tell who played what
     d.order = this.shuf(Object.keys(d.subs).filter((p) => d.subs[p].length === d.pick));
-    if (!d.order.length) { t.announce('No answers came in — new prompt'); return this.endRound(t, null); }
+    if (!d.order.length) return this.endRound(t, null, 'No answers came in — new prompt');
     d.phase = 'judge';
-    const g = t.geom();
-    const x0 = g.cx - 50 - ((d.order.length - 1) * 130) / 2;
+    delete t.public.facedown;
+    t.remove(d.ans); d.ans = null; // the answers come back out as new items
+    const cards = [], spots = [];
     d.order.forEach((p, gi) => {
-      d.subs[p].forEach((c, k) => {
-        t.move(c.id, x0 + gi * 130, g.cy + 170 + k * 42);
-        t.flip(c.id);
-      });
+      cards.push({ d: d.nd, i: gi % this.COLS }); spots.push(this.spot(t, gi, -1));
+      d.subs[p].forEach((c, k) => { cards.push(c); spots.push(this.spot(t, gi, k)); });
     });
+    d.laid = this.lay(t, cards, spots);
     t.announce(this.nameOf(t, d.czar) + ' judges — press 👉 for the funniest answer');
   },
   onButton(t, id, by) {
@@ -2642,33 +2715,60 @@ const RULES_TEMPLATES = {
       d.scores = {}; t.public.winners = []; d.czar = t.nextSeat(d.czar);
       return this.startRound(t);
     }
+    if (id === 'skipczar' && (d.phase === 'submit' || d.phase === 'judge') && !this.online(t, d.czar)) {
+      return this.endRound(t, null, 'The Card Czar is away — new prompt');
+    }
     if (id === 'force' && by === d.czar && d.phase === 'submit') return this.judge(t);
     if (d.phase === 'judge' && by === d.czar && id.indexOf('pick') === 0) {
-      const winner = d.order[+id.slice(4)];
+      const gi = +id.slice(4), winner = d.order[gi];
       if (!winner) return;
       d.scores[winner] = (d.scores[winner] || 0) + 1;
+      // The result stays up a few seconds: 🏆 over the winning column, the
+      // winner on the banner, log and seat — then the next round.
+      d.phase = 'reveal'; d.winner = winner;
+      d.laid.push(...this.lay(t, [{ d: d.nd, i: this.COLS }], [this.spot(t, gi, -1)]));
+      // the column's answers back on top, so the 🏆 heads it as its # did
+      d.laid.slice(gi * (d.pick + 1) + 1, (gi + 1) * (d.pick + 1))
+        .forEach((id, k) => { const o = this.spot(t, gi, k); t.move(id, o.x, o.y); });
+      t.public.winners = [winner];
+      this.badges(t);
       const texts = d.subs[winner].map((c) => (t.card(c) || {}).text).join(' / ');
-      t.announce(this.nameOf(t, winner) + ' wins the round: "' + texts + '" (⭐' + d.scores[winner] + ')');
-      this.endRound(t, winner);
+      t.announce(this.nameOf(t, winner) + ' wins the round with #' + (gi + 1) + ': "' + texts + '" (⭐' + d.scores[winner] + ')');
+      t.schedule(4, 'next' + d.round);
     }
   },
-  endRound(t, winner) {
+  onTimer(t, tag) {
+    if (tag === 'next' + t.data.round && t.data.phase === 'reveal') this.endRound(t, t.data.winner);
+  },
+  // Clears the round's cards off the table into the discards.
+  clearRound(t) {
     const d = t.data;
-    for (const p of Object.keys(d.subs)) for (const c of d.subs[p]) { d.wdisc.push(c.i); t.remove(c.id); }
-    if (d.black) { d.bdisc.push(d.black.i); t.remove(d.black.id); }
-    d.subs = {}; d.black = null;
+    for (const p of Object.keys(d.subs || {})) for (const c of d.subs[p]) d.wdisc.push(c.i);
+    if (d.black) d.bdisc.push(d.black.i);
+    for (const id of [d.ans, d.black && d.black.id].concat(d.laid || [])) if (id) t.remove(id);
+    d.subs = {}; d.black = null; d.ans = null; d.laid = [];
+  },
+  endRound(t, winner, lead) {
+    const d = t.data;
+    this.clearRound(t);
     if (winner && d.scores[winner] >= d.goal) {
-      d.phase = 'over'; t.public.turn = null; this.badges(t);
+      d.phase = 'over'; t.public.turn = null; delete t.public.facedown; this.badges(t);
       return t.win([winner], this.nameOf(t, winner) + ' wins the game with ⭐' + d.scores[winner] + '!');
     }
     d.czar = t.nextSeat(d.czar);
-    this.startRound(t);
+    this.startRound(t, lead);
   },
   buttons(t) {
     const d = t.data;
     if (d.phase === 'over') return [{ id: 'newgame', label: '🔄 New game' }];
+    if ((d.phase === 'submit' || d.phase === 'judge') && !this.online(t, d.czar)) return [{ id: 'skipczar', label: '⏭ Skip Czar' }];
     if (d.phase === 'submit') return [{ id: 'force', label: '⚖️ Judge now', pid: d.czar }];
-    if (d.phase === 'judge') return (d.order || []).map((p, gi) => ({ id: 'pick' + gi, label: '👉 ' + (gi + 1), pid: d.czar }));
+    if (d.phase === 'judge') {
+      return d.order.map((p, gi) => {
+        const s = '👉 ' + (gi + 1) + ': ' + d.subs[p].map((c) => (t.card(c) || {}).text).join(' / ');
+        return { id: 'pick' + gi, label: s.length > 30 ? s.slice(0, 29) + '…' : s, pid: d.czar };
+      });
+    }
     return [];
   },
   onChat(t, msg, p) {
@@ -2683,18 +2783,17 @@ const RULES_TEMPLATES = {
     if (!d.phase || d.phase === 'over') return;
     const pl = t.players().find((x) => x.id === p);
     if (pl && pl.handCount < this.HAND) this.dealWhite(t, p, this.HAND - pl.handCount);
-    t.tell(p, 'You deal in next round');
+    // onJoin also fires on a reconnect: only a newcomer sits this round out
+    if (p !== d.czar && !(d.roundPlayers || []).includes(p)) t.tell(p, 'You deal in next round');
   },
   onLeave(t, p) {
     const d = t.data;
     if (d.phase !== 'submit' && d.phase !== 'judge') return;
-    if (p === d.czar) {
-      t.announce('The Card Czar left — new prompt, next Czar');
-      return this.endRound(t, null);
-    }
+    if (p === d.czar) return this.endRound(t, null, 'The Card Czar left — new prompt');
     if (d.phase === 'submit' && d.roundPlayers.includes(p)) {
+      // their answer is dropped (it stays hidden in the Answers pile until the reveal clears it)
       d.roundPlayers = d.roundPlayers.filter((x) => x !== p);
-      for (const c of d.subs[p] || []) { d.wdisc.push(c.i); t.remove(c.id); }
+      for (const c of d.subs[p] || []) d.wdisc.push(c.i);
       delete d.subs[p];
       const waiting = d.roundPlayers.filter((x) => (d.subs[x] || []).length < d.pick);
       if (d.roundPlayers.length && !waiting.length) this.judge(t);
@@ -2704,9 +2803,12 @@ const RULES_TEMPLATES = {
   dealer: `({
   name: 'Simple dealer',
   buttons: () => [{ id: 'deal1', label: 'Deal 1 to all' }],
-  onButton(t, id) {
+  onButton(t, id, by) {
     const deck = t.piles().sort((a, b) => b.cards.length - a.cards.length)[0];
-    if (deck) t.dealToAll(deck.id, 1);
+    if (!deck) return t.tell(by, 'No deck on the table — add one first');
+    const n = t.players().filter((p) => p.online).length;
+    if (deck.cards.length < n) t.say('The deck is short (' + deck.cards.length + ' left) — the last seats get none');
+    t.dealToAll(deck.id, 1);
   },
 })`,
 };

@@ -85,7 +85,7 @@ select {
 /* scripted rules: button row + toolbar state */
 #rules-btns {
   position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
-  display: flex; gap: 8px; z-index: 9500;
+  display: flex; flex-wrap: wrap; justify-content: center; max-width: calc(100% - 16px); gap: 8px; z-index: 9500;
   background: #0f172ad9; padding: 7px; border-radius: 12px; box-shadow: 0 2px 10px #000a;
 }
 #rules-btns button { background: #7c3aed; }
