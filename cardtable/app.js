@@ -239,14 +239,17 @@ function assignSeat() {
 }
 
 function ensurePlayer(p, name) {
-  const pl = host.players[p] || (host.players[p] = {
-    name: '', color: COLORS[Object.keys(host.players).length % COLORS.length], online: true, hand: [],
-  });
+  const pl = host.players[p] || (host.players[p] = { name: '', color: freeColor(), online: true, hand: [] });
   pl.seat ??= assignSeat();
   pl.online = true;
   // Only fill an empty name here — explicit renames go through the 'name'
   // action so they land in the log.
   if (name && !pl.name) pl.name = cleanName(name);
+}
+/** A color no ONLINE player wears (offline seats don't hold one hostage); cycles once all are taken. */
+function freeColor() {
+  const used = new Set(Object.values(host.players).filter((x) => x.online).map((x) => x.color));
+  return COLORS.find((c) => !used.has(c)) || COLORS[Object.keys(host.players).length % COLORS.length];
 }
 /** Player names: plain text, bounded, and never dressed up as the 📜 Rules actor. */
 const cleanName = (s) => String(s).replace(/[\u0000-\u001f]/g, '').replace(/^[\s📜]+/u, '').trim().slice(0, 24);
@@ -259,6 +262,7 @@ function cardName(d, i) {
   if (c.n) return c.n; // custom decks carry per-card names (manifest or filename)
   if (c.r === 'JOKER') return 'Joker 🃏';
   if (c.r) return c.r + c.s;
+  if (c.txt) return `“${c.txt.length > 40 ? `${c.txt.slice(0, 39)}…` : c.txt}”`; // text-only cards (CAH, t.newDeck)
   return `${deck.name} #${i + 1}`;
 }
 function itemLabel(it) {
@@ -376,6 +380,19 @@ function opNewPile(actor, cards, o = {}) {
   return nid;
 }
 
+/** Stacks card `id` onto card `ontoId`: both become a new pile where `ontoId` lay. Returns its id. */
+function opStack(actor, id, ontoId) {
+  const it = own(host.items, id), b = own(host.items, ontoId);
+  if (it?.k !== 'c' || b?.k !== 'c' || it === b) return false;
+  logEvent(actor, `stacked ${itemLabel(it)} onto ${itemLabel(b)}`);
+  const nid = uid();
+  host.items[nid] = { k: 'p', x: b.x, y: b.y, rot: b.rot, z: zTop(), name: '', cards: [{ d: b.d, i: b.i, up: b.up }, { d: it.d, i: it.i, up: it.up }] };
+  delete host.items[id];
+  delete host.items[ontoId];
+  mark(actor, nid);
+  return nid;
+}
+
 /** Moves every card of a player's hand onto a pile, face down. */
 function opTakeHand(actor, p, pileId) {
   const pl = own(host.players, p), pile = own(host.items, pileId);
@@ -395,13 +412,21 @@ function apply(p, a) {
   // Rules veto: an enabled script may block gameplay actions with a reason.
   if (RULED_ACTIONS.has(a.t) && host.rules?.enabled) {
     const reason = runHook('validate', { ...a, p });
-    if (typeof reason === 'string' && reason) {
-      logEvent(RULES, `blocked ${pl?.name || 'a player'}: ${reason}`);
-      notify(p, `🚫 ${reason}`);
+    // Fail closed: a validate() that throws has just disabled the rules, and
+    // the action that crashed it must not slip through unvalidated.
+    const why = host.rules.enabled ? typeof reason === 'string' && reason : 'rules script error';
+    if (why) {
+      logEvent(RULES, `blocked ${pl?.name || 'a player'}: ${why}`);
+      notify(p, `🚫 ${why}`);
       bump(); // the fresh broadcast reverts the actor's optimistic UI
       return;
     }
   }
+  // Every op that takes effect mark()s it, so fxQueue growing during the
+  // switch is the "it really happened" signal for onAction below: a no-op
+  // (a card not in hand, a vanished item) never reaches the script, and for
+  // the ones that did happen the payload's ids were matched host-side.
+  const fx0 = fxQueue.length;
   switch (a.t) {
     case 'hello': break; // registration + join logging happen in the action handler
     case 'name': {
@@ -484,18 +509,7 @@ function apply(p, a) {
       }
       break;
     case 'toPile': opToPile(p, a.id, a.pile); break;
-    case 'stack': {
-      const b = own(items, a.onto);
-      if (it?.k === 'c' && b?.k === 'c' && it !== b) {
-        logEvent(p, `stacked ${itemLabel(it)} onto ${itemLabel(b)}`);
-        const nid = uid();
-        items[nid] = { k: 'p', x: b.x, y: b.y, rot: b.rot, z: zTop(), name: '', cards: [{ d: b.d, i: b.i, up: b.up }, { d: it.d, i: it.i, up: it.up }] };
-        delete items[a.id];
-        delete items[a.onto];
-        mark(p, nid);
-      }
-      break;
-    }
+    case 'stack': opStack(p, a.id, a.onto); break;
     case 'merge': {
       const to = own(items, a.pile);
       if (it?.k === 'p' && to?.k === 'p' && it !== to) {
@@ -545,19 +559,23 @@ function apply(p, a) {
         try {
           const s = evalRules(a.code);
           if (!s || typeof s !== 'object') throw new Error('script must evaluate to an ({...}) object');
+          // Re-enabling the same game (after a fix, a Disable or a script
+          // error) keeps its state — chips, scores, timers — unless the host
+          // ticked "Reset game state"; setup() runs again either way.
+          const name = String(s.name || 'Rules').slice(0, 40);
+          const prev = host.rules?.name === name ? host.rules : null, keep = prev && !a.reset;
           script = s;
-          host.rules = { code: a.code, name: String(s.name || 'Rules').slice(0, 40), enabled: true, data: {}, public: {} };
+          host.rules = { code: a.code, name, enabled: true, data: keep ? prev.data : {}, public: keep ? prev.public : {} };
           rulesCodeDirty = true;
           lastRulesError = '';
-          logEvent(RULES, `«${host.rules.name}» enabled by ${pl?.name || 'the host'}`);
+          logEvent(RULES, `«${name}» enabled by ${pl?.name || 'the host'}${keep ? ' (game state kept)' : prev ? ' (game state reset)' : ''}`);
           runHook('setup');
           refreshButtons();
         } catch (err) {
+          // Nothing was assigned yet: whatever rules were running keep running.
           console.error('rules script failed to load', err);
           lastRulesError = err.message;
-          toast(`Rules error: ${err.message}`);
-          script = null;
-          if (host.rules) host.rules.enabled = false;
+          toast(`Rules error: ${err.message}${host.rules?.enabled ? ' — the running rules are unchanged' : ''}`);
         }
       } else if (host.rules?.enabled) {
         host.rules.enabled = false;
@@ -576,7 +594,7 @@ function apply(p, a) {
     }
     default: console.warn('unknown action', a);
   }
-  if (host.rules?.enabled && (RULED_ACTIONS.has(a.t) || a.t === 'chat' || a.t === 'rulesBtn')) {
+  if (host.rules?.enabled && (a.t === 'chat' || a.t === 'rulesBtn' || (RULED_ACTIONS.has(a.t) && fxQueue.length > fx0))) {
     if (a.t === 'chat') runHook('onChat', String(a.msg || ''), p);
     runHook('onAction', { ...a, p });
     refreshButtons();
@@ -628,7 +646,8 @@ let rulesCodeDirty = false; // code changed -> resend on next broadcast
 let guestRules = { code: '', name: '' }; // guests: the script text, for reading
 
 function evalRules(code) {
-  return new Function(`"use strict"; return (${code});`)();
+  // The code sits on its own lines so a trailing // comment can't swallow the ")".
+  return new Function(`"use strict"; return (\n${code}\n);`)();
 }
 
 /** Runs one script hook; any throw disables the rules loudly. */
@@ -637,14 +656,18 @@ function runHook(name, ...args) {
   try {
     return script[name](tApi, ...args);
   } catch (err) {
-    console.error(`rules hook ${name}() failed`, err);
-    lastRulesError = `${name}(): ${err.message}`;
-    host.rules.enabled = false;
-    rulesCodeDirty = true;
-    logEvent(RULES, `rules disabled — script error in ${name}()`);
-    toast(`Rules disabled — error in ${name}(): ${err.message}`);
+    hookFailed(name, err);
     return undefined;
   }
+}
+/** A script error: disable the rules, loudly and on the record. */
+function hookFailed(name, err) {
+  console.error(`rules hook ${name}() failed`, err);
+  lastRulesError = `${name}(): ${err.message}`;
+  host.rules.enabled = false;
+  rulesCodeDirty = true;
+  logEvent(RULES, `rules disabled — script error in ${name}()`);
+  toast(`Rules disabled — error in ${name}(): ${err.message}`);
 }
 
 /** Sends a private text notice to a player (toast on their screen). */
@@ -662,11 +685,7 @@ function refreshButtons() {
     const btns = script.buttons(tApi) || [];
     host.rules.public.buttons = btns.map((b) => ({ id: String(b.id), label: String(b.label).slice(0, 30), ...(b.pid ? { pid: b.pid } : {}) }));
   } catch (err) {
-    console.error('rules buttons() failed', err);
-    lastRulesError = `buttons(): ${err.message}`;
-    host.rules.enabled = false;
-    rulesCodeDirty = true;
-    toast(`Rules disabled — error in buttons(): ${err.message}`);
+    hookFailed('buttons', err);
   }
 }
 
@@ -696,8 +715,9 @@ const tApi = {
   takeHand: (p, pileId) => opTakeHand(RULES, p, pileId),
   playFromHand(p, idx, o = {}) {
     const pl = own(host.players, p);
-    const c = pl?.hand.splice(idx, 1)[0];
-    if (!c) return false;
+    // splice() would read -1 (a failed findIndex) as "the last card": refuse it
+    if (!Number.isInteger(idx) || !pl?.hand[idx]) { console.error('t.playFromHand: bad hand index', p, idx); return false; }
+    const c = pl.hand.splice(idx, 1)[0];
     const at = clampToFelt(o.x ?? TABLE_W / 2 - CARD_W / 2, o.y ?? TABLE_H / 2 - CARD_H / 2);
     const nid = uid();
     host.items[nid] = { k: 'c', x: at.x, y: at.y, rot: normRot(o.rot), z: zTop(), d: c.d, i: c.i, up: o.up !== false };
@@ -717,6 +737,7 @@ const tApi = {
   shuffle: (id) => opShuffle(RULES, id),
   flip: (id) => opFlip(RULES, id),
   toPile: (cardId, pileId) => opToPile(RULES, cardId, pileId),
+  stack: (id, ontoId) => opStack(RULES, id, ontoId),
   newPile: (cards, o) => opNewPile(RULES, cards, o),
   merge(fromId, toId) {
     const from = own(host.items, fromId), to = own(host.items, toId);
@@ -740,6 +761,7 @@ const tApi = {
     const it = own(host.items, id);
     if (!it) return false;
     it.rot = normRot(deg);
+    logEvent(RULES, `rotated ${itemLabel(it)}`);
     mark(RULES, id);
     return true;
   },
@@ -789,7 +811,10 @@ const tApi = {
     this.announce(msg || 'Game over!');
   },
   tell: (p, msg) => notify(p, String(msg)),
-  schedule(sec, tag) { (host.rules.data._timers ||= []).push({ at: Date.now() + sec * 1000, tag: String(tag) }); },
+  schedule(sec, tag) {
+    if (!Number.isFinite(sec) || sec < 0) throw new Error(`t.schedule: seconds must be a number ≥ 0, got ${sec}`);
+    (host.rules.data._timers ||= []).push({ at: Date.now() + sec * 1000, tag: String(tag) });
+  },
   nextSeat(p) {
     const ps = this.players().filter((x) => x.online || x.id === p);
     const i = ps.findIndex((x) => x.id === p);
@@ -814,9 +839,10 @@ setInterval(() => {
   if (role !== 'host' || !host?.rules?.enabled) return;
   const timers = host.rules.data._timers;
   if (!timers?.length) return;
-  const due = timers.filter((x) => x.at <= Date.now());
+  const now = Date.now(); // one clock reading, so no timer falls between the two filters
+  const due = timers.filter((x) => x.at <= now);
   if (!due.length) return;
-  host.rules.data._timers = timers.filter((x) => x.at > Date.now());
+  host.rules.data._timers = timers.filter((x) => x.at > now);
   for (const x of due) runHook('onTimer', x.tag);
   refreshButtons();
   bump();
@@ -1258,6 +1284,7 @@ function renderAll() {
   renderHand();
   renderLog();
   renderRulesBtns();
+  renderFacedown();
   updateNet();
 }
 
@@ -1614,7 +1641,7 @@ function moveGhost(e) {
     handDrag.moved = true;
     ghost = document.createElement('div');
     ghost.id = 'ghost';
-    ghost.innerHTML = facedown ? backHTML(handDrag.card.d) : faceHTML(handDrag.card.d, handDrag.card.i);
+    ghost.innerHTML = playFacedown() ? backHTML(handDrag.card.d) : faceHTML(handDrag.card.d, handDrag.card.i);
     document.body.appendChild(ghost);
   }
   ghost.style.left = `${e.clientX - handH * 5 / 14}px`; // center: half of hch*5/7 width
@@ -1637,12 +1664,28 @@ function dropGhost(e) {
   if (!under?.closest('#table')) return;
   const p = toTable(e);
   // rot: cards land upright from the player's (possibly rotated) point of view
-  act({ t: 'play', idx, d: card.d, i: card.i, x: p.x - CARD_W / 2, y: p.y - CARD_H / 2, up: !facedown, rot: uprightRot() });
+  act({ t: 'play', idx, d: card.d, i: card.i, x: p.x - CARD_W / 2, y: p.y - CARD_H / 2, up: !playFacedown(), rot: uprightRot() });
 }
 
+// Face-down mode is the player's own toggle, unless the rules script forces
+// it (public.facedown: true, or a list of pids — ENGINE.md §4), e.g. for
+// secret submissions: then the toggle shows locked on.
+const forcedFacedown = () => {
+  const fd = view.rules?.enabled && view.rules.public?.facedown;
+  return fd === true || (Array.isArray(fd) && fd.includes(pid));
+};
+const playFacedown = () => facedown || forcedFacedown();
+function renderFacedown() {
+  const btn = $('facedown-toggle'), forced = forcedFacedown();
+  btn.classList.toggle('on', facedown || forced);
+  btn.classList.toggle('locked', forced);
+  btn.title = forced ? 'The rules require cards from your hand to be played face down'
+    : 'When on, cards dragged from your hand land face down';
+}
 $('facedown-toggle').addEventListener('click', () => {
+  if (forcedFacedown()) { toast('The rules require face-down plays right now'); return; }
   facedown = !facedown;
-  $('facedown-toggle').classList.toggle('on', facedown);
+  renderFacedown();
 });
 
 // --- resizable hand tray ---------------------------------------------------
@@ -2501,6 +2544,7 @@ function updateRulesDialog() {
   $('rules-status').textContent = meta?.enabled ? `active: ${meta.name}` : 'inactive';
   $('rules-tpl').classList.toggle('hidden', !isHost);
   $('rules-enable').classList.toggle('hidden', !isHost);
+  $('rules-reset-lbl').classList.toggle('hidden', !isHost);
   $('rules-disable').classList.toggle('hidden', !isHost || !meta?.enabled);
   $('rules-code').readOnly = !isHost;
   $('rules-err').textContent = lastRulesError;
@@ -2510,6 +2554,7 @@ $('rules-btn').addEventListener('click', () => {
   const ta = $('rules-code');
   if (role === 'host') {
     if (!ta.value.trim()) ta.value = host?.rules?.code || RULES_TEMPLATES.blank;
+    $('rules-reset').checked = false;
   } else {
     ta.value = guestRules.code || '// The host has not written a rules script yet.';
   }
@@ -2527,8 +2572,8 @@ $('rules-form').addEventListener('submit', (e) => {
   if (e.submitter?.id !== 'rules-enable') return; // Close button
   e.preventDefault();
   lastRulesError = '';
-  act({ t: 'setRules', code: $('rules-code').value, enabled: true });
-  if (host?.rules?.enabled) $('rules-dialog').close();
+  act({ t: 'setRules', code: $('rules-code').value, enabled: true, reset: $('rules-reset').checked });
+  if (!lastRulesError) $('rules-dialog').close();
   else updateRulesDialog(); // keep it open and show the error
 });
 
