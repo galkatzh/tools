@@ -155,7 +155,12 @@ const HELP = `commands:
   chat <msg>              say something (also "!commands" for rules scripts)
   quit`;
 
-function fmtCard(c) { return c.name + (c.text && c.text !== c.name ? ` — ${c.text}` : ''); }
+/** A card for the terminal: a text-only card's name is its (cut) quoted text, so show the full text instead. */
+function fmtCard(c) { return c.text && c.name.startsWith('“') ? `“${c.text}”` : c.name + (c.text && c.text !== c.name ? ` — ${c.text}` : ''); }
+/** Prints table text: names, cards and log lines come from other players, and
+ *  their control characters (ESC sequences: clear screen, set title, OSC 52
+ *  clipboard writes) must never reach the terminal. Newlines stay. */
+const out = (s) => console.log(String(s).replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, ''));
 /** Throws `usage` unless args[0] is present and args[1..n) are finite numbers. */
 function need(args, n, usage) {
   if (args.length < n || args.slice(1, n).some((a) => !Number.isFinite(+a))) throw new Error(usage);
@@ -166,11 +171,11 @@ function repl(bridge) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: '🂡 > ' });
   let logSeen = 0;
   bridge.on((s, prev) => {
-    if (!prev) console.log(`\n✅ tab connected: ${s.name} (${s.role}) in room ${s.room}`);
+    if (!prev) out(`\n✅ tab connected: ${s.name} (${s.role}) in room ${s.room}`);
     const fresh = s.log.filter((e) => e.ts > logSeen);
-    for (const e of fresh) console.log(`  ▸ ${e.who}${e.chat ? ':' : ''} ${e.text}`);
+    for (const e of fresh) out(`  ▸ ${e.who}${e.chat ? ':' : ''} ${e.text}`);
     if (fresh.length) logSeen = Math.max(...s.log.map((e) => e.ts));
-    for (const m of s.msgs || []) console.log(`  ✉ ${m}`);
+    for (const m of s.msgs || []) out(`  ✉ ${m}`);
     rl.prompt(true);
   });
   rl.on('line', (line) => {
@@ -185,26 +190,26 @@ function runCmd(bridge, line) {
   if (!line) return;
   const [cmd, ...args] = line.split(/\s+/);
   const s = bridge.state;
-  if (!s && !['quit', 'help'].includes(cmd)) return console.log('… no tab connected yet');
+  if (!s && !['quit', 'help'].includes(cmd)) return out('… no tab connected yet');
   if (s && bridge.idle() > STALE_MS && !['quit', 'help'].includes(cmd)) {
-    console.log(`⚠ tab not seen for ${Math.round(bridge.idle() / 1000)}s — commands queue until it is back`);
+    out(`⚠ tab not seen for ${Math.round(bridge.idle() / 1000)}s — commands queue until it is back`);
   }
   switch (cmd) {
-    case 'help': return console.log(HELP);
+    case 'help': return out(HELP);
     case 'quit': return process.exit(0);
     case 'hand':
-      if (!s.hand.length) return console.log('(empty hand)');
-      return s.hand.forEach((c) => console.log(` ${String(c.idx).padStart(2)}. ${fmtCard(c)}`));
+      if (!s.hand.length) return out('(empty hand)');
+      return s.hand.forEach((c) => out(` ${String(c.idx).padStart(2)}. ${fmtCard(c)}`));
     case 'table':
-      return s.items.forEach((it) => console.log(it.kind === 'pile'
+      return s.items.forEach((it) => out(it.kind === 'pile'
         ? `  [${it.id}] pile "${it.name || 'stack'}" ×${it.count}${it.top ? ` top: ${fmtCard(it.top)}` : ''} @${it.x},${it.y}`
         : `  [${it.id}] ${it.up ? fmtCard(it) : 'face-down card'} @${it.x},${it.y}`));
     case 'players':
-      return s.players.forEach((p) => console.log(`  ${p.winner ? '🏆' : p.turn ? '⏳' : ' '} ${p.name}${p.id === s.pid ? ' (you)' : ''} 🂠${p.cards}${p.badge ? ' ' + p.badge : ''}${p.online ? '' : ' (offline)'}`));
+      return s.players.forEach((p) => out(`  ${p.winner ? '🏆' : p.turn ? '⏳' : ' '} ${p.name}${p.id === s.pid ? ' (you)' : ''} 🂠${p.cards}${p.badge ? ' ' + p.badge : ''}${p.online ? '' : ' (offline)'}`));
     case 'log':
-      return s.log.slice(-(+args[0] || 15)).forEach((e) => console.log(`  ${e.who}${e.chat ? ':' : ''} ${e.text}`));
+      return s.log.slice(-(+args[0] || 15)).forEach((e) => out(`  ${e.who}${e.chat ? ':' : ''} ${e.text}`));
     case 'buttons':
-      return s.buttons.length ? s.buttons.forEach((b) => console.log(`  [${b.id}] ${b.label}`)) : console.log('(none)');
+      return s.buttons.length ? s.buttons.forEach((b) => out(`  [${b.id}] ${b.label}`)) : out('(none)');
     case 'play': {
       const down = args.includes('--down');
       const idxs = new Set(args.filter((a) => /^\d+$/.test(a)).map(Number));

@@ -22,7 +22,9 @@ from cli import Bridge
 
 
 def czar_id(state):
-    return next((p['id'] for p in state['players'] if p.get('turn')), None)
+    """The Card Czar: the template badges their seat 👑 (its ⏳ turn marker
+    follows whoever the round waits on — the answerers, then the Czar)."""
+    return next((p['id'] for p in state['players'] if '👑' in p.get('badge', '')), None)
 
 
 def rules_lines(state, pattern):

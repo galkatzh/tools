@@ -19,6 +19,7 @@ cah-bot.py for a complete example.
 import argparse
 import json
 import math
+import re
 import secrets
 import select
 import socket
@@ -45,7 +46,7 @@ class Bridge:
         bridge = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *a):  # quiet, but never silent on errors
+            def log_request(self, *a):  # quiet access log; log_error still reaches stderr
                 pass
 
             def _cors(self, code, body=b''):
@@ -191,8 +192,18 @@ HELP = """commands:
 
 
 def fmt_card(c):
+    """A card for the terminal: a text-only card's name is its (cut) quoted text, so show the full text."""
     text = c.get('text')
+    if text and c['name'].startswith('“'):
+        return f'“{text}”'
     return c['name'] + (f' — {text}' if text and text != c['name'] else '')
+
+
+def out(s):
+    """Prints table text: names, cards and log lines come from other players, and
+    their control characters (ESC sequences: clear screen, set title, OSC 52
+    clipboard writes) must never reach the terminal. Newlines stay."""
+    print(re.sub(r'[\x00-\x09\x0b-\x1f\x7f-\x9f]', '', str(s)))
 
 
 def need(args, n, usage):
@@ -214,43 +225,43 @@ def run_cmd(bridge, line):
     cmd, args = parts[0], parts[1:]
     s = bridge.state
     if s is None and cmd not in ('help', 'quit'):
-        print('… no tab connected yet')
+        out('… no tab connected yet')
         return
     if s is not None and bridge.idle() > STALE_S and cmd not in ('help', 'quit'):
-        print(f'⚠ tab not seen for {round(bridge.idle())}s — commands queue until it is back')
+        out(f'⚠ tab not seen for {round(bridge.idle())}s — commands queue until it is back')
     if cmd == 'help':
-        print(HELP)
+        out(HELP)
     elif cmd == 'quit':
         raise SystemExit
     elif cmd == 'hand':
         for c in s['hand']:
-            print(f" {c['idx']:2}. {fmt_card(c)}")
+            out(f" {c['idx']:2}. {fmt_card(c)}")
         if not s['hand']:
-            print('(empty hand)')
+            out('(empty hand)')
     elif cmd == 'table':
         for it in s['items']:
             if it['kind'] == 'pile':
                 top = f" top: {fmt_card(it['top'])}" if it.get('top') else ''
-                print(f"  [{it['id']}] pile \"{it['name'] or 'stack'}\" ×{it['count']}{top} @{it['x']},{it['y']}")
+                out(f"  [{it['id']}] pile \"{it['name'] or 'stack'}\" ×{it['count']}{top} @{it['x']},{it['y']}")
             else:
-                print(f"  [{it['id']}] {fmt_card(it) if it['up'] else 'face-down card'} @{it['x']},{it['y']}")
+                out(f"  [{it['id']}] {fmt_card(it) if it['up'] else 'face-down card'} @{it['x']},{it['y']}")
     elif cmd == 'players':
         for p in s['players']:
             mark = '🏆' if p.get('winner') else ('⏳' if p.get('turn') else ' ')
             you = ' (you)' if p['id'] == s['pid'] else ''
             badge = f" {p['badge']}" if p.get('badge') else ''
             off = '' if p['online'] else ' (offline)'
-            print(f"  {mark} {p['name']}{you} 🂠{p['cards']}{badge}{off}")
+            out(f"  {mark} {p['name']}{you} 🂠{p['cards']}{badge}{off}")
     elif cmd == 'log':
         n = int(args[0]) if args else 15
         for e in s['log'][-n:]:
             sep = ':' if e.get('chat') else ''
-            print(f"  {e['who']}{sep} {e['text']}")
+            out(f"  {e['who']}{sep} {e['text']}")
     elif cmd == 'buttons':
         for b in s['buttons']:
-            print(f"  [{b['id']}] {b['label']}")
+            out(f"  [{b['id']}] {b['label']}")
         if not s['buttons']:
-            print('(none)')
+            out('(none)')
     elif cmd == 'play':
         idxs = list(dict.fromkeys(int(a) for a in args if a.isdigit()))
         if not idxs:
@@ -279,7 +290,7 @@ def run_cmd(bridge, line):
     elif cmd == 'chat':
         bridge.chat(' '.join(args))
     else:
-        print(f'unknown command "{cmd}" — try "help"')
+        out(f'unknown command "{cmd}" — try "help"')
 
 
 def repl(bridge):
@@ -287,14 +298,14 @@ def repl(bridge):
 
     def on_state(s, prev):
         if prev is None:
-            print(f"\n✅ tab connected: {s['name']} ({s['role']}) in room {s['room']}")
+            out(f"\n✅ tab connected: {s['name']} ({s['role']}) in room {s['room']}")
         for e in s['log']:
             if e['ts'] > seen[0]:
                 sep = ':' if e.get('chat') else ''
-                print(f"  ▸ {e['who']}{sep} {e['text']}")
+                out(f"  ▸ {e['who']}{sep} {e['text']}")
         seen[0] = max([seen[0]] + [e['ts'] for e in s['log']])
         for m in s.get('msgs', []):
-            print(f'  ✉ {m}')
+            out(f'  ✉ {m}')
 
     bridge.on(on_state)
     while True:
@@ -309,7 +320,7 @@ def repl(bridge):
         except SystemExit:
             break
         except Exception as e:  # a bad command must not kill the session
-            print(f'✗ {e}')
+            out(f'✗ {e}')
 
 
 def main():

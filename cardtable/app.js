@@ -145,7 +145,12 @@ const safeColor = (v, fallback = '#64748b') => (COLOR_RE.test(v) ? v : fallback)
 const RANKS = new Set(['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'JOKER']);
 const SUITS = new Set(['♠', '♥', '♦', '♣', '🃏']);
 const MAX_DECK_BYTES = 24e6, MAX_DECK_CARDS = 5000;
-const str = (v, n) => (typeof v === 'string' && v ? v.slice(0, n) : undefined);
+const GUEST_DECK_CHARS = 1.5e6; // all decks guests add to one table, together (see apply 'addDeck')
+// Control characters (C0, DEL, C1) never reach a page or the terminal bridge:
+// a peer's ESC sequences could clear or spoof a bridge user's terminal.
+// CTRL_NL spares the newline, for multi-line card texts.
+const CTRL = /[\u0000-\u001f\u007f-\u009f]/g, CTRL_NL = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g;
+const str = (v, n, strip = CTRL) => (typeof v === 'string' && v ? v.replace(strip, '').slice(0, n) : undefined);
 
 /** The one gate every deck passes (uploads, scripts, saves, the wire): keeps
  *  only known fields of the right type, so nothing a peer sends can smuggle
@@ -161,7 +166,7 @@ function cleanDeck(d) {
     if (RANKS.has(c.r) && SUITS.has(c.s)) Object.assign(o, { r: c.r, s: c.s, c: c.c === 'r' ? 'r' : 'b' });
     if (IMG_RE.test(c.img)) { o.img = c.img; bytes += c.img.length; }
     if (Number.isInteger(c.g) && imgs[c.g]) o.g = c.g;
-    for (const [k, n] of [['n', 60], ['txt', 300]]) if (str(c[k], n)) o[k] = str(c[k], n);
+    for (const [k, n, strip] of [['n', 60], ['txt', 300, CTRL_NL]]) if (str(c[k], n, strip)) o[k] = str(c[k], n, strip);
     for (const k of ['col', 'b']) if (COLOR_RE.test(c[k])) o[k] = c[k];
     if (c.meta !== undefined) {
       const j = JSON.stringify(c.meta);
@@ -260,7 +265,7 @@ function freeColor() {
   return COLORS.find((c) => !used.has(c)) || COLORS[Object.keys(host.players).length % COLORS.length];
 }
 /** Player names: plain text, bounded, and never dressed up as the 📜 Rules actor. */
-const cleanName = (s) => String(s).replace(/[\u0000-\u001f]/g, '').replace(/^[\s📜]+/u, '').trim().slice(0, 24);
+const cleanName = (s) => String(s).replace(CTRL, '').replace(/^[\s📜]+/u, '').trim().slice(0, 24);
 
 // --- activity log (host-authored, broadcast to everyone) -------------------
 /** Human name for a card that is public knowledge; never call for hidden cards. */
@@ -288,16 +293,17 @@ function mark(p, id) {
 
 /** Appends to the shared log. Consecutive duplicates (drag/rotate spam) collapse.
  *  Entries render the actor's CURRENT name, unless `as` freezes one (renames).
- *  Actions and talk (chat + renames, the entries carrying `c` or `n`) are
- *  capped separately (200 / 100), so chatter can never push the record of
- *  what someone did (a peek, a palmed card) out of the log. */
-function logEvent(p, txt, chat, as) {
+ *  Three buckets are capped separately: talk (chat + renames, the entries
+ *  carrying `c` or `n`) at 100, on-the-record entries (`loud`, stored as `k`:
+ *  peeks) at 50, and every other action at 200 — so neither chatter nor a
+ *  flood of cheap moves can push the record of a peek out of the log. */
+function logEvent(p, txt, chat, as, loud) {
   const last = host.log.at(-1);
   if (!chat && last && last.p === p && last.txt === txt) return;
-  host.log.push({ p, txt, ts: Date.now(), ...(chat ? { c: 1 } : {}), ...(as ? { n: as } : {}) });
-  const talk = (e) => !!e.c || 'n' in e, mine = talk(host.log.at(-1));
-  const same = host.log.filter((e) => talk(e) === mine);
-  if (same.length > (mine ? 100 : 200)) host.log.splice(host.log.indexOf(same[0]), 1);
+  host.log.push({ p, txt, ts: Date.now(), ...(chat ? { c: 1 } : {}), ...(as ? { n: as } : {}), ...(loud ? { k: 1 } : {}) });
+  const kind = (e) => (e.c || 'n' in e ? 'talk' : e.k ? 'loud' : 'act'), mine = kind(host.log.at(-1));
+  const same = host.log.filter((e) => kind(e) === mine);
+  if (same.length > { talk: 100, loud: 50, act: 200 }[mine]) host.log.splice(host.log.indexOf(same[0]), 1);
   logDirty = true;
 }
 function dropIfEmpty(pileId) {
@@ -407,14 +413,18 @@ function opStack(actor, id, ontoId) {
   return nid;
 }
 
-/** Moves every card of a player's hand onto a pile, face down. */
-function opTakeHand(actor, p, pileId) {
+/** Moves a player's hand onto a pile, face down: every card, or only those
+ *  `only({d, i})` picks (scripts: "my game's deck", leaving others' cards). */
+function opTakeHand(actor, p, pileId, only) {
   const pl = own(host.players, p), pile = own(host.items, pileId);
   if (!pl || pile?.k !== 'p') return false;
-  if (pl.hand.length) {
-    logEvent(actor, `returned ${pl.name || 'a player'}'s hand (${pl.hand.length}) to ${itemLabel(pile)}`);
+  const out = typeof only === 'function' ? pl.hand.filter((c) => only({ d: c.d, i: c.i })) : pl.hand.slice();
+  if (out.length) {
+    const whose = out.length === pl.hand.length ? `${pl.name || 'a player'}'s hand` : `cards from ${pl.name || 'a player'}'s hand`;
+    logEvent(actor, `returned ${whose} (${out.length}) to ${itemLabel(pile)}`);
     mark(actor, pileId);
-    for (const c of pl.hand.splice(0)) pile.cards.push({ d: c.d, i: c.i, up: false });
+    pl.hand = pl.hand.filter((c) => !out.includes(c));
+    for (const c of out) pile.cards.push({ d: c.d, i: c.i, up: false });
   }
   return true;
 }
@@ -463,6 +473,18 @@ function apply(p, a) {
         console.error('rejected a deck', err);
         notify(p, `🚫 Deck rejected: ${err.message}`);
         break;
+      }
+      // Decks are kept (and saved in the host's browser) forever: guests share
+      // one budget for the table, so nobody can fill the host's storage.
+      // (host.guestDeckChars is saved with the table: a reload can't reset it.)
+      if (p !== pid) {
+        const size = JSON.stringify(deck).length, used = host.guestDeckChars || 0;
+        if (used + size > GUEST_DECK_CHARS) {
+          console.warn('guest deck over budget', p, size, used);
+          notify(p, `🚫 Deck rejected: this table's deck budget for guests is full (${Math.round((GUEST_DECK_CHARS - used) / 1e3)} kB left) — ask the host to add it`);
+          break;
+        }
+        host.guestDeckChars = used + size;
       }
       const deckId = uid(); // host-minted: a peer must not choose (or overwrite) deck ids
       decks[deckId] = deck;
@@ -557,7 +579,7 @@ function apply(p, a) {
     case 'peek': {
       const c = it?.k === 'c' ? !it.up && it : it?.k === 'p' && it.cards.at(-1);
       if (!c) break;
-      logEvent(p, it.k === 'c' ? 'peeked at a face-down card' : `peeked at the top card of ${itemLabel(it)}`);
+      logEvent(p, it.k === 'c' ? 'peeked at a face-down card' : `peeked at the top card of ${itemLabel(it)}`, false, undefined, true);
       mark(p, a.id);
       if (p === pid) showPeek(c);
       else for (const [peer, mapped] of Object.entries(peerPid)) {
@@ -581,7 +603,7 @@ function apply(p, a) {
       break;
     }
     case 'chat': {
-      const msg = String(a.msg ?? '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 300);
+      const msg = String(a.msg ?? '').replace(CTRL, ' ').trim().slice(0, 300);
       if (pl && msg) logEvent(p, msg, true);
       break;
     }
@@ -596,11 +618,13 @@ function apply(p, a) {
           // ticked "Reset game state"; setup() runs again either way.
           const name = String(s.name || 'Rules').slice(0, 40);
           const prev = host.rules?.name === name ? host.rules : null, keep = prev && !a.reset;
+          // Another game's state (chips, scores, a hand in progress) is lost: say so.
+          const lost = keep ? ' (game state kept)' : prev ? ' (game state reset)' : host.rules ? ` («${host.rules.name}» game state discarded)` : '';
           script = s;
           host.rules = { code: a.code, name, enabled: true, data: keep ? prev.data : {}, public: keep ? prev.public : {} };
           rulesCodeDirty = true;
           lastRulesError = '';
-          logEvent(RULES, `«${name}» enabled by ${pl?.name || 'the host'}${keep ? ' (game state kept)' : prev ? ' (game state reset)' : ''}`);
+          logEvent(RULES, `«${name}» enabled by ${pl?.name || 'the host'}${lost}`);
           runHook('setup');
           refreshButtons();
         } catch (err) {
@@ -620,8 +644,12 @@ function apply(p, a) {
       // The engine enforces what the script offered: a button the player
       // can't see (another player's, or one that just went away) is refused.
       const b = (host.rules?.enabled && host.rules.public.buttons || []).find((x) => x.id === String(a.id));
-      if (b && (!b.pid || b.pid === p)) runHook('onButton', b.id, p);
-      else { console.warn('refused rules button', a.id, 'from', p); notify(p, '🚫 That button is not available to you right now'); }
+      if (!b || (b.pid && b.pid !== p)) { // nothing happened: no hooks, no new state
+        console.warn('refused rules button', a.id, 'from', p);
+        notify(p, '🚫 That button is not available to you right now');
+        return;
+      }
+      runHook('onButton', b.id, p);
       break;
     }
     default: console.warn('unknown action', a);
@@ -671,7 +699,7 @@ function flushPending() {
 // onTimer) through the same audited ops as human actions. The engine knows
 // no game concepts — all game semantics live in the script.
 const RULES = 'RULES'; // synthetic actor id for script-performed ops
-const RULED_ACTIONS = new Set(['move', 'rot', 'flip', 'shuffle', 'draw', 'deal', 'play', 'handPile', 'toHand', 'toPile', 'stack', 'merge', 'del', 'addDeck']);
+const RULED_ACTIONS = new Set(['move', 'rot', 'flip', 'shuffle', 'draw', 'deal', 'play', 'handPile', 'toHand', 'toPile', 'stack', 'merge', 'del', 'addDeck', 'peek']);
 let script = null;          // evaluated script object (host only)
 let lastRulesError = '';    // shown in the rules dialog
 let rulesCodeDirty = false; // code changed -> resend on next broadcast
@@ -702,14 +730,28 @@ function hookFailed(name, err) {
   toast(`Rules disabled — error in ${name}(): ${err.message}`);
 }
 
-/** Sends a private text notice to a player (toast on their screen). */
+/** Sends a private text notice to a player (toast on their screen). Each
+ *  costs a signature: a guest gets at most a burst of 10, then 5 per second. */
 function notify(p, msg) {
   if (p === pid) { note(msg); return; }
+  if (!flood(notesOf, p, 10, 5)) { console.warn('notice dropped (flood control)', p, msg); return; }
   for (const [peer, mapped] of Object.entries(peerPid)) {
     if (mapped === p) sendNote({ msg: String(msg).slice(0, 200), to: p }, peer).catch((e) => console.error('note failed', e));
   }
 }
 
+/** Token bucket (host flood control): true while `key` may act — a burst of
+ *  `burst`, refilling at `perSec`. `map` keeps each key's {n, at}. */
+function flood(map, key, burst, perSec) {
+  const now = Date.now(), b = map.get(key) || { n: burst, at: now };
+  b.n = Math.min(burst, b.n + ((now - b.at) / 1000) * perSec);
+  b.at = now;
+  map.set(key, b);
+  if (b.n < 1) return false;
+  b.n--;
+  return true;
+}
+const actsOf = new Map(), notesOf = new Map(); // host: player id → token bucket (see flood)
 const talk = new Map(); // host: player id → timestamps of recent chats/renames
 /** Flood control (host): a guest may chat or rename at most 5 times per 5 s.
  *  The host itself is exempt — it is the authority over the log anyway. */
@@ -756,7 +798,7 @@ const tApi = {
     }
   },
   draw(p, pileId, n = 1) { for (let i = 0; i < n; i++) opDealTop(RULES, pileId, { to: p }); },
-  takeHand: (p, pileId) => opTakeHand(RULES, p, pileId),
+  takeHand: (p, pileId, only) => opTakeHand(RULES, p, pileId, only),
   playFromHand(p, idx, o = {}) {
     const pl = own(host.players, p);
     // splice() would read -1 (a failed findIndex) as "the last card": refuse it
@@ -850,9 +892,11 @@ const tApi = {
     annQueue.push(text);
     showAnnounce(text); // the host is a viewer too
   },
-  /** Declares winner(s): 🏆 on their seats (public.winners) + an announcement. */
+  /** Declares winner(s): 🏆 on their seats (public.winners) + an announcement.
+   *  winSeq counts the calls, so each win celebrates, even by the same winners. */
   win(winners, msg) {
     host.rules.public.winners = (Array.isArray(winners) ? winners : [winners]).filter(Boolean);
+    host.rules.public.winSeq = (host.rules.public.winSeq || 0) + 1;
     this.announce(msg || 'Game over!');
   },
   tell: (p, msg) => notify(p, String(msg)),
@@ -1033,7 +1077,7 @@ function connect() {
   let sealQ = Promise.resolve();
   const signed = (send) => (data, target) => {
     const sealed = sealQ.then(() => seal(data));
-    sealQ = sealed.catch(() => {});
+    sealQ = sealed.catch((err) => console.error('signing a host message failed', err)); // keeps the FIFO alive; the caller reports it too
     return sealed.then((m) => send(m, target));
   };
   // States and notes always go to one peer: its connection id (`tp`) is
@@ -1091,6 +1135,9 @@ function connect() {
       : own(host.players, p)?.key && host.players[p].key !== key ? 'That seat belongs to another player'
       : '';
     if (reason) { refuse(peer, reason); return; }
+    // Every action re-renders the host (the one authority): a guest may
+    // send bursts of 40 (a drag, a reconnect's queue), then 20 per second.
+    if (!flood(actsOf, p, 40, 20)) { refuse(peer, 'Too many actions — slow down'); return; }
     // Register/refresh the sender on EVERY action, not just hello — if the
     // keyed hello was lost, the first real action still registers the player.
     const newConn = peerPid[peer] !== p;
@@ -1439,25 +1486,32 @@ function renderItems() {
 
 // Seat labels: everyone sees the same seating, each from their own rotation.
 let seatSig = '';
+/** Whose move the rules wait on: public.turn is one player id or a list of them. */
+const turnOf = () => [].concat((view.rules?.enabled && view.rules.public?.turn) || []);
 function renderPlayers() {
-  const turn = view.rules?.enabled ? view.rules.public?.turn : null;
+  const turn = turnOf();
   const winners = (view.rules?.enabled && view.rules.public?.winners) || [];
   const badges = (view.rules?.enabled && view.rules.public?.badges) || {};
   // Only the host publishes online flags, so a guest marks a departed host itself.
   const hostGone = role === 'guest' && !hostPeer ? view.host : null;
-  const sig = `${JSON.stringify(view.players)}|${turn}|${winners.join()}|${JSON.stringify(badges)}|${hostGone}|${viewAngle.toFixed(1)}|${scale.toFixed(4)}|${panX | 0},${panY | 0}|${wrapEl.clientWidth}x${wrapEl.clientHeight}`;
+  const strip = $('game-strip'); // the "What are we playing?" strip pushes the notices down too
+  const sig = `${JSON.stringify(view.players)}|${turn}|${winners.join()}|${JSON.stringify(badges)}|${hostGone}|${viewAngle.toFixed(1)}|${scale.toFixed(4)}|${panX | 0},${panY | 0}|${wrapEl.clientWidth}x${wrapEl.clientHeight}|${strip.className}`;
   if (sig === seatSig) return;
   seatSig = sig;
   for (const el of wrapEl.querySelectorAll('.seat')) el.remove();
+  // A table drawn small (phones) gets small, see-through labels: full-size
+  // ones would reach into the felt and hide the cards the game puts there.
+  wrapEl.classList.toggle('small-table', scale < 0.4);
   const seats = [];
   for (const [p, pl] of Object.entries(view.players)) {
     if (pl.seat == null) continue;
     const rad = (pl.seat * Math.PI) / 180;
     const [sx, sy] = tableToScreen(TABLE_W / 2 + SEAT_R * Math.cos(rad), TABLE_H / 2 + SEAT_R * Math.sin(rad));
     const el = document.createElement('div');
-    el.className = `seat${pl.online && p !== hostGone ? '' : ' offline'}${p === pid ? ' me' : ''}${p === turn ? ' turn' : ''}${winners.includes(p) ? ' winner' : ''}`;
+    const waited = turn.includes(p);
+    el.className = `seat${pl.online && p !== hostGone ? '' : ' offline'}${p === pid ? ' me' : ''}${waited ? ' turn' : ''}${winners.includes(p) ? ' winner' : ''}`;
     el.style.borderColor = pl.color;
-    el.textContent = `${winners.includes(p) ? '🏆 ' : ''}${p === turn ? '⏳ ' : ''}${pl.name || 'Player'} 🂠${pl.handCount}${badges[p] ? ` ${badges[p]}` : ''}`;
+    el.textContent = `${winners.includes(p) ? '🏆 ' : ''}${waited ? '⏳ ' : ''}${pl.name || 'Player'} 🂠${pl.handCount}${badges[p] ? ` ${badges[p]}` : ''}`;
     seats.push({ p, el, sx, sy });
   }
   wrapEl.append(...seats.map((s) => s.el));
@@ -1478,24 +1532,51 @@ function renderPlayers() {
     // Labels across the top: the banner and toasts start just below them.
     if (y < H / 4) noticeTop = Math.max(noticeTop, y + hh + 4);
   }
+  // (#table-wrap and #notices both start at #main's top: the offsets agree)
+  if (!strip.classList.contains('hidden')) noticeTop = Math.max(noticeTop, strip.offsetTop + strip.offsetHeight + 4);
   $('rules-btns').style.bottom = `${rowBottom}px`;
   $('notices').style.top = `${noticeTop}px`;
+  // A short, wide table area (a phone in landscape) leaves wide empty
+  // margins beside the round felt: the notices move into the left one and
+  // the button row into the right one, so neither covers the cards (CSS .gutters).
+  const gutter = (W - TABLE_W * scale) / 2, main = $('main');
+  main.classList.toggle('gutters', H < 500 && gutter >= 180);
+  main.style.setProperty('--gutter', `${gutter | 0}px`);
 }
 
 let handSig = '';
+let sortHand = false; // ⇅: show the hand sorted (display only — the host's order is untouched)
+try { sortHand = localStorage.getItem('ct-sort') === '1'; } catch (err) { console.error('hand sort setting unreadable', err); }
+const SUIT_ORDER = { '♠': 0, '♥': 1, '♦': 2, '♣': 3, '🃏': 4 };
+/** Hand indices in display order: as held, or (⇅) standard cards by suit,
+ *  high rank first (like the Bridge dummy), other cards after them as held. */
+function handOrder() {
+  const order = myHand.map((_, k) => k);
+  const key = (c) => {
+    const x = decks[c.d]?.cards[c.i];
+    return x?.s ? SUIT_ORDER[x.s] * 100 - (x.r === 'A' ? 14 : [...RANKS].indexOf(x.r) + 1) : 1000;
+  };
+  return sortHand ? order.sort((a, b) => key(myHand[a]) - key(myHand[b]) || a - b) : order;
+}
 function renderHand() {
-  const sig = JSON.stringify(myHand);
+  const sig = JSON.stringify(myHand) + sortHand;
   if (sig === handSig) return;
   handSig = sig;
   handEl.innerHTML = '';
-  myHand.forEach((c, idx) => {
+  $('sort-toggle').classList.toggle('on', sortHand);
+  for (const idx of handOrder()) {
     const el = document.createElement('div');
     el.className = 'hcard';
-    el.dataset.idx = idx;
-    el.innerHTML = faceHTML(c.d, c.i);
+    el.dataset.idx = idx; // the REAL hand index: plays name the card the host holds there
+    el.innerHTML = faceHTML(myHand[idx].d, myHand[idx].i);
     handEl.appendChild(el);
-  });
+  }
 }
+$('sort-toggle').addEventListener('click', () => {
+  sortHand = !sortHand;
+  try { localStorage.setItem('ct-sort', sortHand ? '1' : '0'); } catch (err) { console.error('hand sort setting not saved', err); }
+  renderHand();
+});
 
 /** Display identity for a log/bulb actor (players or the Rules script). */
 function actorInfo(p) {
@@ -1548,12 +1629,14 @@ $('rules-btns').addEventListener('click', (e) => {
 const baseTitle = document.title;
 const CONFETTI = ['🎉', '✨', '🃏', '⭐', '🏆', '💰'];
 let myTurn = false, winSeen = null, cueT = 0;
-/** Vibrates where supported (phones; a no-op elsewhere and before the first tap). */
-const buzz = (pattern) => navigator.vibrate?.(pattern);
+/** Vibrates where supported (phones). Not before the first tap: Chrome would
+ *  log a "blocked" error (e.g. on a reload during your turn). Browsers
+ *  without userActivation just try. */
+const buzz = (pattern) => navigator.userActivation?.hasBeenActive !== false && navigator.vibrate?.(pattern);
 
 function renderCues() {
   const pub = (view.rules?.enabled && view.rules.public) || {};
-  const mine = pub.turn === pid;
+  const mine = turnOf().includes(pid);
   if (mine !== myTurn) {
     myTurn = mine;
     document.title = mine ? `⏳ Your turn · ${baseTitle}` : baseTitle;
@@ -1566,12 +1649,15 @@ function renderCues() {
     }
   }
   const winners = Array.isArray(pub.winners) ? pub.winners : [];
-  // winSeen stays null until the first real state of a running game: joining
-  // (or reloading into) a finished game, or re-enabling a kept one, is not a new win.
+  // A win is a t.win() call (winSeq grew) or a new name in winners (a script
+  // may set them directly). winSeen stays null until the first real state of
+  // a running game: joining (or reloading into) a finished game, or
+  // re-enabling a kept one, is not a new win.
+  const seq = num(pub.winSeq);
   if (!view.rules?.enabled) winSeen = null;
   else {
-    if (winSeen && winners.some((w) => !winSeen.includes(w))) celebrate(winners.includes(pid));
-    if (view.seq) winSeen = winners;
+    if (winSeen && (seq > winSeen.seq || winners.some((w) => !winSeen.ids.includes(w)))) celebrate(winners.includes(pid));
+    if (view.seq) winSeen = { ids: winners, seq };
   }
 }
 
@@ -1594,13 +1680,13 @@ function celebrate(won) {
 function renderAll() {
   applySeatView();
   renderItems();
+  renderGames(); // before the seats: the strip's place moves the notices
   renderPlayers();
   renderHand();
   renderLog();
   renderRulesBtns();
   renderFacedown();
   renderCues();
-  renderGames();
   updateNet();
 }
 
@@ -2050,8 +2136,8 @@ function dropGhost(e) {
   const under = document.elementFromPoint(e.clientX, e.clientY);
   if (under?.closest('#hand-bar')) return; // dropped back into the hand
   const overItem = under?.closest('.item');
-  const tgt = overItem && view.items[overItem.dataset.id];
-  if (tgt?.k === 'p') { act({ t: 'handPile', idx, d: card.d, i: card.i, pile: tgt.id }); return; }
+  const tgt = overItem && view.items[overItem.dataset.id]; // (view items carry no id: it is the key)
+  if (tgt?.k === 'p') { act({ t: 'handPile', idx, d: card.d, i: card.i, pile: overItem.dataset.id }); return; }
   if (!under?.closest('#table')) return;
   const p = toTable(e);
   // rot: cards land upright from the player's (possibly rotated) point of view
@@ -2189,11 +2275,15 @@ const RULES_TEMPLATES = {
   // round closes, all-ins run out automatically, and the showdown returns an
   // uncalled bet, evaluates best-5-of-7, builds side pots, and pays every pot
   // to the right hands (ties split, odd chips left of the button).
-  // Only online players are dealt in; leaving mid-hand folds you (unless
-  // you're all-in). Between hands anyone may deal, "!rebuy" refills a busted
-  // stack and the host sets the blinds ("!blinds 5 10"). Mid-hand only the
-  // host can call the hand off (every bet refunded).
+  // Only online players are dealt in; a player who drops mid-hand has 20 s
+  // to come back before they are folded (unless they're all-in). Between
+  // hands anyone may deal, a busted player gets a "💰 Rebuy" button (or types
+  // "!rebuy") and the host sets the blinds ("!blinds 5 10"). Mid-hand only
+  // the host can call the hand off (every bet refunded): Abandon, pressed twice.
+  // New hand gathers only this game's deck; another deck's cards in a hand
+  // (say, from a game played before) go onto a "Set aside" pile.
   BUYIN: 1000,
+  AWAY: 20, // seconds a dropped player has to return
   setup(t) {
     t.data.stacks ||= {};
     t.data.blinds ||= { sb: 5, bb: 10 };
@@ -2203,12 +2293,32 @@ const RULES_TEMPLATES = {
     this.badges(t);
     t.say("Hold'em: everyone starts with 💰" + this.BUYIN + '. Press New hand.');
   },
-  onJoin(t, p) { t.data.stacks ||= {}; t.data.stacks[p] ??= this.BUYIN; this.badges(t); },
-  // A player who still has to act would stall the hand: fold them. An
-  // all-in player has nothing left to decide and stays in to the showdown.
+  onJoin(t, p) {
+    const d = t.data;
+    d.stacks ||= {};
+    d.stacks[p] ??= this.BUYIN;
+    this.badges(t);
+    if (d.away && d.away[p]) { delete d.away[p]; t.tell(p, "You're back — still in the hand"); }
+    else if (d.stage === 'hand' && (d.awayFolded || []).includes(p)) t.tell(p, 'You were folded: you left mid-hand');
+  },
+  // A player who still has to act would stall the hand, but phones drop
+  // out all the time (a reload, a locked screen): fold them only if they're
+  // still gone after AWAY seconds. An all-in player has nothing left to
+  // decide and stays in to the showdown.
   onLeave(t, p) {
     const d = t.data;
     if (d.stage !== 'hand' || !this.active(t).some((x) => x.id === p)) return;
+    d.awayN = (d.awayN || 0) + 1;
+    d.away = Object.assign({}, d.away, { [p]: d.awayN }); // only this absence's timer may fold them
+    t.schedule(this.AWAY, 'away:' + p + ':' + d.awayN);
+    t.announce(this.nameOf(t, p) + ' disconnected — folding in ' + this.AWAY + ' s unless they return');
+  },
+  onTimer(t, tag) {
+    const d = t.data, [kind, p, n] = tag.split(':');
+    if (kind !== 'away' || !d.away || d.away[p] !== +n) return;
+    delete d.away[p];
+    if (d.stage !== 'hand' || !this.active(t).some((x) => x.id === p)) return;
+    d.awayFolded = (d.awayFolded || []).concat(p);
     t.say(this.nameOf(t, p) + ' left mid-hand');
     if (d.turn === p) return this.doAction(t, p, 'fold');
     this.fold(t, p);
@@ -2220,7 +2330,22 @@ const RULES_TEMPLATES = {
     t.public.badges = Object.fromEntries(t.players().map((p) => [p.id, '💰' + (t.data.stacks[p.id] ?? 0)]));
   },
   nameOf(t, p) { return (t.players().find((x) => x.id === p) || {}).name || '?'; },
-  deck(t) { return t.piles().filter((x) => x.id !== t.data.muckId).sort((a, b) => b.cards.length - a.cards.length)[0]; },
+  // The game's deck: the biggest pile of one standard deck (not the muck,
+  // and not another game's cards).
+  deck(t) {
+    const std = (p) => p.id !== t.data.muckId && p.cards.every((c) => c.d === p.cards[0].d) && '♠♥♦♣'.includes(t.cardName(p.cards[0]).slice(-1));
+    return t.piles().filter(std).sort((a, b) => b.cards.length - a.cards.length)[0];
+  },
+  // Cards of another deck than D leave the hands, onto a pile of their own.
+  aside(t, D) {
+    const g = t.geom();
+    let id = null;
+    for (const p of t.players()) {
+      if (!t.hand(p.id).some((c) => c.d !== D)) continue;
+      id = id || t.newPile([], { x: g.cx + 190, y: g.cy - 240, name: 'Set aside' });
+      t.takeHand(p.id, id, (c) => c.d !== D);
+    }
+  },
   contenders(t) { return t.players().filter((p) => p.handCount === 2 && !t.data.folded.includes(p.id)); },
   active(t) { return this.contenders(t).filter((p) => t.data.stacks[p.id] > 0); },
   // The next player in list clockwise from p, by seat. Not t.nextSeat: that
@@ -2264,11 +2389,16 @@ const RULES_TEMPLATES = {
   },
   buttons(t) {
     const d = t.data, p = d.turn;
-    if (d.stage !== 'hand') return [{ id: 'new', label: '🂠 New hand' }];
+    if (d.stage !== 'hand') { // deal; each busted player sees a Rebuy of their own
+      return [{ id: 'new', label: '🂠 New hand' }].concat(t.players().filter((x) => !(d.stacks[x.id] > 0))
+        .map((x) => ({ id: 'rebuy:' + x.id, label: '💰 Rebuy ' + this.BUYIN, pid: x.id })));
+    }
     // Mid-hand only the host may call the hand off: the refund would let
-    // anyone who is losing take their bets back instead of folding.
-    const btns = [{ id: 'new', label: '🂠 Abandon hand (refund)', pid: t.hostId }];
-    if (!p) return btns;
+    // anyone who is losing take their bets back instead of folding. It comes
+    // last in the row and takes a second press (onButton): a mis-tap beside
+    // Call must not undo the hand.
+    const btns = [], abandon = { id: 'abandon', label: '🂠 Abandon hand (refund)', pid: t.hostId };
+    if (!p) return [abandon];
     const owed = d.curBet - (d.bet[p] || 0), all = (d.bet[p] || 0) + d.stacks[p];
     btns.push(owed > 0 ? { id: 'call', label: 'Call ' + Math.min(owed, d.stacks[p]), pid: p } : { id: 'check', label: 'Check', pid: p },
       { id: 'fold', label: 'Fold', pid: p });
@@ -2283,10 +2413,20 @@ const RULES_TEMPLATES = {
       }
       btns.push({ id: 'allin', label: 'All-in → ' + all, pid: p });
     }
-    return btns;
+    return btns.concat(abandon);
   },
   onButton(t, id, byPid) {
-    if (id === 'new') return this.startHand(t);
+    const d = t.data;
+    if (id === 'new') return this.startHand(t, byPid);
+    if (id === 'abandon') {
+      if (Date.now() - (d.abandonArm || 0) > 4000) {
+        d.abandonArm = Date.now();
+        return t.tell(byPid, 'Press Abandon again to call the hand off (every bet is refunded)');
+      }
+      d.abandonArm = 0;
+      return this.startHand(t, byPid);
+    }
+    if (id.startsWith('rebuy:')) return this.rebuy(t, byPid);
     if (id.startsWith('r:')) return this.doAction(t, byPid, 'bet', +id.slice(2));
     this.doAction(t, byPid, id);
   },
@@ -2295,13 +2435,7 @@ const RULES_TEMPLATES = {
     let m;
     if ((m = /^!(check|call|fold|allin)$/i.exec(msg))) return this.doAction(t, p, m[1].toLowerCase());
     if ((m = /^!(?:bet|raise)\\s+(\\d+)$/i.exec(msg))) return this.doAction(t, p, 'bet', +m[1]);
-    if (/^!rebuy$/i.test(msg)) {
-      if (d.stage === 'hand') return t.tell(p, 'Rebuy after this hand');
-      if ((d.stacks[p] || 0) > 0) return t.tell(p, 'Rebuy is only for a busted (0-chip) stack');
-      d.stacks[p] = this.BUYIN;
-      this.badges(t);
-      return t.say(this.nameOf(t, p) + ' rebuys for ' + this.BUYIN);
-    }
+    if (/^!rebuy$/i.test(msg)) return this.rebuy(t, p);
     if ((m = /^!blinds\\s+(\\d+)\\s+(\\d+)$/i.exec(msg))) {
       if (p !== t.hostId) return t.tell(p, 'Only the host sets the blinds');
       if (d.stage === 'hand') return t.tell(p, 'After this hand');
@@ -2311,21 +2445,34 @@ const RULES_TEMPLATES = {
       return t.say('Blinds set to ' + sb + '/' + bb);
     }
   },
-  startHand(t) {
+  rebuy(t, p) {
+    const d = t.data;
+    if (d.stage === 'hand') return t.tell(p, 'Rebuy after this hand');
+    if ((d.stacks[p] || 0) > 0) return t.tell(p, 'Rebuy is only for a busted (0-chip) stack');
+    d.stacks[p] = this.BUYIN;
+    this.badges(t);
+    t.say(this.nameOf(t, p) + ' rebuys for ' + this.BUYIN);
+  },
+  // by: who pressed (refusals go to them — the log is hidden on phones)
+  startHand(t, by) {
     const d = t.data, deckP = this.deck(t), g = t.geom();
     if (d.stage === 'hand') this.abandon(t, 'Hand abandoned — bets refunded.');
-    if (!deckP) return t.say('No deck on the table!');
+    if (!deckP) return t.tell(by, 'No deck on the table!');
     const funded = t.players().filter((p) => p.online && (d.stacks[p.id] || 0) > 0);
-    if (funded.length < 2) return t.say('Need 2+ online players with chips ("!rebuy" if busted).');
-    for (const it of t.items()) if (it.k === 'c') t.toPile(it.id, deckP.id);
-    if (d.muckId && t.items().some((x) => x.id === d.muckId)) t.merge(d.muckId, deckP.id);
+    if (funded.length < 2) return t.tell(by, 'Need 2+ online players with chips (a busted player presses 💰 Rebuy)');
+    // Gather this deck (D) only: its loose cards (face down — a face-up
+    // card would show on the deck's top), its other piles (the muck), the hands.
+    const D = deckP.cards[0].d, ours = (c) => c.d === D;
+    for (const it of t.items()) if (it.k === 'c' && ours(it)) { if (it.up) t.flip(it.id); t.toPile(it.id, deckP.id); }
+    for (const p of t.piles()) if (p.id !== deckP.id && p.cards.every(ours)) t.merge(p.id, deckP.id);
+    this.aside(t, D);
     for (const p of t.players()) t.takeHand(p.id, deckP.id);
     t.shuffle(deckP.id);
     // Layout: burns | deck | muck in a row above the board row through the
     // center — all clear of the hole cards revealed by the seats.
     t.move(deckP.id, g.cx - 50, g.cy - 240);
     for (const p of funded) { t.deal(deckP.id, { to: p.id }); t.deal(deckP.id, { to: p.id }); }
-    Object.assign(d, { stage: 'hand', comm: [], burn: [], folded: [], muckId: null, paid: {}, bet: {}, pot: 0 });
+    Object.assign(d, { stage: 'hand', comm: [], burn: [], folded: [], muckId: null, paid: {}, bet: {}, pot: 0, away: {}, awayFolded: [], abandonArm: 0 });
     t.public.winners = null;
     d.dealer = d.dealer && funded.some((x) => x.id !== d.dealer) ? this.nextFrom(t, d.dealer, funded) : funded[0].id;
     const sb = funded.length === 2 ? d.dealer : this.nextFrom(t, d.dealer, funded);
@@ -2535,6 +2682,7 @@ const RULES_TEMPLATES = {
         + (pots.length > 1 ? (i === 0 ? ' (main)' : ' (side)') : '') + ' with ' + this.HANDS[scores[best][0]]);
     });
     this.badges(t);
+    for (const p of players) if (d.stacks[p.id] === 0) t.tell(p.id, 'You are out of chips — press 💰 Rebuy to play on');
     d.stage = 'done';
     d.turn = null;
     t.public.turn = null;
@@ -2550,8 +2698,8 @@ const RULES_TEMPLATES = {
       return 'Hand in progress — act with the buttons or chat (!bet, !fold, ...)';
     }
     // The deck and the muck (folded hole cards) stay closed, the board and
-    // burn cards stay where they are: none of them may be deleted, merged,
-    // shuffled, flipped or stacked mid-hand.
+    // burn cards stay where they are: none of them may be peeked at,
+    // deleted, merged, shuffled, flipped or stacked mid-hand.
     const deckId = this.deck(t)?.id;
     const guarded = (id) => {
       if (!id) return false;
@@ -2559,7 +2707,7 @@ const RULES_TEMPLATES = {
       const it = t.items().find((x) => x.id === id);
       return it && it.k === 'c' && d.comm.some((c) => c.d === it.d && c.i === it.i);
     };
-    if (['del', 'merge', 'toPile', 'stack', 'shuffle', 'flip'].includes(a.t) && [a.id, a.pile, a.onto].some(guarded)) {
+    if (['del', 'merge', 'toPile', 'stack', 'shuffle', 'flip', 'peek'].includes(a.t) && [a.id, a.pile, a.onto].some(guarded)) {
       return 'The deck, muck and board stay put during a hand';
     }
   },
@@ -2608,26 +2756,34 @@ const RULES_TEMPLATES = {
     const it = t.items().find((x) => x.id === id);
     return it && it.k === 'c' && (t.data.dummyCards || []).find((c) => c.d === it.d && c.i === it.i);
   },
-  onButton(t, id) {
+  // by: who pressed Deal (a refusal tells them — phones hide the log)
+  onButton(t, id, by) {
     if (id !== 'deal') return;
-    if (t.data.phase === 'play' || t.data.phase === 'bid') return t.say('Finish the hand first.');
+    if (t.data.phase === 'play' || t.data.phase === 'bid') return t.tell(by, 'Finish the hand first.');
     const ps = t.players().filter((p) => p.online);
-    if (ps.length !== 4) return t.say(this.needFour(ps.length));
+    if (ps.length !== 4) return t.announce(this.needFour(ps.length));
     // This game's deck: the one dealt last time while any of it is still
     // around (after a passed-out hand it is all in the hands, with no pile
     // left), else the biggest pile. Other decks' cards and piles stay put.
     const has = (D) => D != null && (t.items().some((it) => it.d === D || (it.cards || []).some((c) => c.d === D))
       || t.players().some((p) => t.hand(p.id).some((c) => c.d === D)));
     const D = has(t.data.deckD) ? t.data.deckD : this.deck(t)?.cards[0].d;
-    if (D == null) return t.say('No deck on the table!');
+    if (D == null) return t.tell(by, 'No deck on the table!');
     const ours = (p) => p.cards.every((c) => c.d === D);
     const g = t.geom(), mine = t.piles().filter(ours).sort((a, b) => b.cards.length - a.cards.length)[0];
     const deckId = mine ? mine.id : t.newPile([], { x: g.cx - 50, y: g.cy - 70, name: 'Deck' });
-    // gather all 52: loose cards, both sides' trick piles, stray stacks, every hand
+    // gather all 52: loose cards, both sides' trick piles, stray stacks, every
+    // hand — after another deck's cards in a hand went onto a pile of their own
     for (const it of t.items()) if (it.k === 'c' && it.d === D) t.toPile(it.id, deckId);
     for (const p of t.piles()) if (p.id !== deckId && ours(p)) t.merge(p.id, deckId);
+    let aside = null;
+    for (const p of t.players()) {
+      if (!t.hand(p.id).some((c) => c.d !== D)) continue;
+      aside = aside || t.newPile([], { x: g.cx + 250, y: g.cy - 390, name: 'Set aside' });
+      t.takeHand(p.id, aside, (c) => c.d !== D);
+    }
     for (const p of t.players()) t.takeHand(p.id, deckId);
-    if (!t.piles().find((p) => p.id === deckId).cards.length) { t.remove(deckId); return t.say('No deck on the table!'); }
+    if (!t.piles().find((p) => p.id === deckId).cards.length) { t.remove(deckId); return t.tell(by, 'No deck on the table!'); }
     t.data.deckD = D;
     t.shuffle(deckId);
     t.dealToAll(deckId, 13);
@@ -2708,6 +2864,9 @@ const RULES_TEMPLATES = {
     t.data.turn = this.nextP(t, p);
     t.public.turn = t.data.turn;
   },
+  // Whose move the table waits on (⏳, the your-turn cue): the DECLARER
+  // plays the dummy's cards. (data.turn stays the seat whose card is due.)
+  pubTurn(t) { const d = t.data; t.public.turn = d.turn && d.turn === d.dummy ? d.declarer : d.turn; },
   startPlay(t, level, strain, declarer, dbl) {
     const s = this.seats(t);
     t.data.level = level;
@@ -2718,7 +2877,8 @@ const RULES_TEMPLATES = {
     t.data.firstLead = true;
     t.data.trick = [];
     t.data.turn = this.nextP(t, declarer);
-    t.public.turn = t.data.turn;
+    this.pubTurn(t);
+    t.public.badges = { [t.data.dummy]: '🃏 dummy' }; // the dummy's seat, once ⏳ no longer lands on it
     t.announce('Contract: ' + (level || '') + this.SYMS[strain] + (dbl ? ' ' + dbl : '') + ' by '
       + this.nameOf(t, declarer) + ' — ' + this.nameOf(t, t.data.turn) + ' leads');
   },
@@ -2798,7 +2958,8 @@ const RULES_TEMPLATES = {
       t.data.turn = t.public.turn = null; // nobody plays until the sweep
       t.schedule(2.5, 'sweep'); // let everyone look at the trick first
     } else {
-      t.data.turn = t.public.turn = this.nextP(t, card.p);
+      t.data.turn = this.nextP(t, card.p);
+      this.pubTurn(t);
     }
   },
   onAction(t, a) {
@@ -2852,7 +3013,7 @@ const RULES_TEMPLATES = {
       t.public.turn = null;
     } else {
       t.data.turn = win.p;
-      t.public.turn = win.p;
+      this.pubTurn(t);
     }
   },
   // A dealt player who drops keeps their seat: their turn waits for them.
@@ -2873,17 +3034,18 @@ const RULES_TEMPLATES = {
   cah: `({
   name: 'Cards Against Humanity',
   // The printed rules, automated. Everyone holds 10 white cards. Each round
-  // the Card Czar (⏳👑) flips a black prompt; everyone else answers it by
+  // the Card Czar (👑) flips a black prompt; everyone else answers it (⏳) by
   // playing the required number of white cards from their hand (they go
   // FACE DOWN into the Answers pile — the 🂠 toggle locks on — or drop them
   // straight onto it). Once everyone has answered, the answers come out of
   // the pile in shuffled, numbered columns, upright for the Czar, who
   // presses 👉 1/2/3… to crown the funniest — the winner takes an Awesome
   // Point (⭐), the result stays up for a few seconds, everyone draws back to
-  // 10, and the Czar rotates. First to the goal wins ("!goal N" changes it,
-  // default 5). The Czar can press "Judge now" to skip stragglers; anyone can
-  // press "Skip Czar" while the Czar is away. PICK 2 prompts take two cards
-  // (in the order you play them); PICK 3 prompts deal everyone 2 extra first.
+  // 10, and the Czar rotates. First to the goal wins (the host's "!goal N"
+  // changes it, default 5). The Czar can press "Judge now" to skip
+  // stragglers; anyone can press "Skip Czar" while the Czar is away. PICK 2
+  // prompts take two cards (in the order you play them); PICK 3 prompts deal
+  // everyone 2 extra first. Another game's cards in a hand are set aside.
   // Card texts load from cah-cards.js (CC BY-NC-SA, Cards Against Humanity
   // LLC). Only the draw piles sit on the table; the rest of the ~1300-card
   // deck waits in script state to keep the shared state small.
@@ -2909,6 +3071,13 @@ const RULES_TEMPLATES = {
         .concat({ name: '🏆 Winner', bg: '#22c55e' }) });
     if (t.players().length < 3) t.say('CAH plays best with 3+ players — you can still try it.');
     if (!this.online(t, d.czar)) d.czar = (t.players().find((p) => p.online) || t.players()[0]).id;
+    // another game's cards (another deck) leave the hands: refill counts only answers
+    let aside = null;
+    for (const p of t.players()) {
+      if (!t.hand(p.id).some((c) => c.d !== d.wd)) continue;
+      aside = aside || t.newPile([], { ...this.at(t, 340, 0), name: 'Set aside' });
+      t.takeHand(p.id, aside, (c) => c.d !== d.wd);
+    }
     // setup re-runs on every Enable: a game in progress restarts its round
     if (d.phase !== 'over') { this.clearRound(t); this.startRound(t); }
   },
@@ -2979,7 +3148,7 @@ const RULES_TEMPLATES = {
     d.pick = ((t.card(d.black) || {}).meta || {}).pick || 1;
     d.roundPlayers = t.players().filter((p) => p.online && p.id !== d.czar).map((p) => p.id);
     if (d.pick === 3) for (const p of d.roundPlayers) this.dealWhite(t, p, 2); // the printed rule: draw 2 for PICK 3
-    t.public.turn = d.czar;
+    t.public.turn = d.roundPlayers.slice(); // ⏳ + the your-turn cue: the answerers now, the Czar when judging
     t.public.winners = [];
     t.public.facedown = d.roundPlayers.slice(); // locks their 🂠 toggle on
     this.badges(t);
@@ -3010,16 +3179,19 @@ const RULES_TEMPLATES = {
       t.toPile(it.id, d.ans);
     }
     (d.subs[a.p] = d.subs[a.p] || []).push({ d: a.d, i: a.i });
-    const waiting = d.roundPlayers.filter((p) => (d.subs[p] || []).length < d.pick);
+    const waiting = this.waiting(t);
+    t.public.turn = waiting;
     if (!waiting.length) this.judge(t);
     else t.say('answers in: ' + (d.roundPlayers.length - waiting.length) + '/' + d.roundPlayers.length);
   },
+  waiting(t) { const d = t.data; return d.roundPlayers.filter((p) => (d.subs[p] || []).length < d.pick); },
   judge(t) {
     const d = t.data;
     // shuffled columns so the Czar cannot tell who played what
     d.order = this.shuf(Object.keys(d.subs).filter((p) => d.subs[p].length === d.pick));
     if (!d.order.length) return this.endRound(t, null, 'No answers came in — new prompt');
     d.phase = 'judge';
+    t.public.turn = d.czar;
     delete t.public.facedown;
     t.remove(d.ans); d.ans = null; // the answers come back out as new items
     const cards = [], spots = [];
@@ -3046,7 +3218,7 @@ const RULES_TEMPLATES = {
       d.scores[winner] = (d.scores[winner] || 0) + 1;
       // The result stays up a few seconds: 🏆 over the winning column, the
       // winner on the banner, log and seat — then the next round.
-      d.phase = 'reveal'; d.winner = winner;
+      d.phase = 'reveal'; d.winner = winner; t.public.turn = null;
       d.laid.push(...this.lay(t, [{ d: d.nd, i: this.COLS }], [this.spot(t, gi, -1)]));
       // the column's answers back on top, so the 🏆 heads it as its # did
       d.laid.slice(gi * (d.pick + 1) + 1, (gi + 1) * (d.pick + 1))
@@ -3095,6 +3267,7 @@ const RULES_TEMPLATES = {
   onChat(t, msg, p) {
     const m = msg.trim().toLowerCase();
     if (m.indexOf('!goal ') === 0) {
+      if (p !== t.hostId) return t.tell(p, 'Only the host sets the goal');
       const n = parseInt(m.slice(6), 10);
       if (n > 0) { t.data.goal = n; t.say('the goal is now ⭐' + n); }
     }
@@ -3116,7 +3289,8 @@ const RULES_TEMPLATES = {
       d.roundPlayers = d.roundPlayers.filter((x) => x !== p);
       for (const c of d.subs[p] || []) d.wdisc.push(c.i);
       delete d.subs[p];
-      const waiting = d.roundPlayers.filter((x) => (d.subs[x] || []).length < d.pick);
+      const waiting = this.waiting(t);
+      t.public.turn = waiting;
       if (d.roundPlayers.length && !waiting.length) this.judge(t);
     }
   },
@@ -3128,7 +3302,7 @@ const RULES_TEMPLATES = {
     const deck = t.piles().sort((a, b) => b.cards.length - a.cards.length)[0];
     if (!deck) return t.tell(by, 'No deck on the table — add one first');
     const n = t.players().filter((p) => p.online).length;
-    if (deck.cards.length < n) t.say('The deck is short (' + deck.cards.length + ' left) — the last seats get none');
+    if (deck.cards.length < n) t.announce('The deck is short (' + deck.cards.length + ' left) — the last seats get none');
     t.dealToAll(deck.id, 1);
   },
 })`,
@@ -3160,11 +3334,15 @@ function renderGames() {
 }
 
 /** Starts game `k` through the same setRules action as the 📜 dialog
- *  (whose act() re-renders, hiding the strip; 'custom' renders itself). */
+ *  (whose act() re-renders, hiding the strip; 'custom' renders itself).
+ *  Switching away from a running game asks first: its state would be lost.
+ *  (The free table only disables the rules: re-enabling keeps the state.) */
 function pickGame(k) {
+  if (host?.rules?.enabled && RULES_TEMPLATES[k] && k !== currentGame()
+    && !confirm(`Stop ${host.rules.name}? Its game state (chips, scores, the hand in progress) will be lost.`)) return;
   askGame = false;
   $('games-dialog').close();
-  if (k === 'custom') { renderGames(); $('rules-btn').click(); }
+  if (k === 'custom') { renderAll(); $('rules-btn').click(); }
   else if (k === 'free') act({ t: 'setRules', enabled: false });
   else {
     lastRulesError = '';
@@ -3187,7 +3365,7 @@ for (const el of [$('games-list'), $('game-strip')]) {
     if (k) pickGame(k);
   });
 }
-$('game-strip-x').addEventListener('click', () => { askGame = false; renderGames(); });
+$('game-strip-x').addEventListener('click', () => { askGame = false; renderAll(); });
 $('game-strip-ask').addEventListener('click', () => $('games-btn').click());
 
 function updateRulesDialog() {
@@ -3464,7 +3642,7 @@ function cliSnapshot() {
     hand: myHand.map((c, idx) => ({ idx, key: `${c.d}:${c.i}`, ...cliCardInfo(c.d, c.i) })),
     players: Object.entries(view.players).map(([id, pl]) => ({
       id, name: pl.name, seat: pl.seat, online: pl.online, cards: pl.handCount,
-      ...(pub.turn === id ? { turn: true } : {}),
+      ...([].concat(pub.turn).includes(id) ? { turn: true } : {}),
       ...(pub.badges?.[id] ? { badge: pub.badges[id] } : {}),
       ...(pub.winners?.includes(id) ? { winner: true } : {}),
     })),
@@ -3523,7 +3701,8 @@ function cliExec(c) {
       case 'play': {
         const idx = cliHandIdx(c), card = myHand[idx];
         const at = cliSpot(c);
-        act({ t: 'play', idx, d: card.d, i: card.i, x: at.x, y: at.y, up: c.up !== false, rot: uprightRot() });
+        // as in the drag path, the rules' face-down hint wins over the default face up
+        act({ t: 'play', idx, d: card.d, i: card.i, x: at.x, y: at.y, up: c.up !== false && !forcedFacedown(), rot: uprightRot() });
         break;
       }
       case 'discard': {

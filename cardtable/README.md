@@ -39,7 +39,8 @@ face down"), but the *fact* that something happened is always on record,
 which is the anti-cheat mechanism: you can palm a card, but everyone sees
 you palm it. **Peek** follows the same rule — you can privately look at a
 face-down card or a pile's top card (the host reveals it to you alone), and
-the log announces to everyone that you looked.
+the log announces to everyone that you looked. (A game's rules may close
+their piles to peeking: Hold'em's deck and muck mid-hand, every CAH pile.)
 
 The table *feels* physical: other players' drags glide instead of jumping,
 dealt cards slide out of the deck, cards played from a hand slide in from
@@ -50,8 +51,12 @@ animated). When a game's rules say it's **your turn**, the tab title reads
 short "Your turn" chip pops up in the hand bar and phones vibrate; a **win** rains emoji
 confetti on every screen and buzzes the winners' phones. On touch screens,
 **press and hold** a face-up card (or pile top) to read it full-screen; let
-go to close. With *reduce motion* set in the OS, nothing glides, flips,
-pulses or falls — the cues still show.
+go to close. Drop a hand card onto a pile to put it on top. The **⇅** button
+in the hand bar sorts your hand by suit and rank, on your screen only (the
+choice is remembered). On a phone held sideways, game notices and the rules'
+buttons move into the margins beside the round table, off the cards. With
+*reduce motion* set in the OS, nothing glides, flips, pulses or falls — the
+cues still show.
 
 ## How it works
 
@@ -85,12 +90,18 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   and guests re-enter with identity and hand intact. Relay redundancy is
   raised to 10 (default 5) so two peers are more likely to share a live one.
 - **Log**: the host authors log entries while adjudicating actions (it's the
-  only peer that can name cards trustworthily), keeps the last 200 actions
-  and the last 100 chat lines and renames in state (separate caps, so chatter can never
-  push the record of a peek or a palmed card out), and pushes them on a
-  dedicated channel only when the log changes; repeated drag/rotate entries
-  collapse so moves don't flood it, and a guest may chat or rename at most
-  5 times per 5 seconds.
+  only peer that can name cards trustworthily), keeps the last 200 actions,
+  the last 50 peeks and the last 100 chat lines and renames in state
+  (separate caps, so neither chatter nor a flood of moves can push the
+  record of a peek out), and pushes them on a dedicated channel only when
+  the log changes; repeated drag/rotate entries collapse so moves don't
+  flood it, and a guest may chat or rename at most 5 times per 5 seconds.
+- **Flood control**: the host is the only authority, so a guest's action
+  burst could freeze the table for everyone: each guest may send a burst
+  of 40 actions, then 20 per second (more are dropped, and they're told to
+  slow down), and the decks guests add share one 1.5M-char budget per
+  table (saved with it), so nobody can fill the host's browser storage.
+  Card and deck names lose their control characters on the way in.
 - **Persistence**: the host throttle-saves the state to `localStorage` keyed
   by room id (`ct-save-<room>`), with the deck images in a separate key
   written only when a deck is added; reopening the invite link in the host's
@@ -149,8 +160,8 @@ same file picker as the images:
 The host can write JavaScript that turns the free-form simulator into an
 enforced, automated game — see [`ENGINE.md`](ENGINE.md) for the full design.
 The engine is game-agnostic: a script object with optional hooks
-(`setup` / `validate` / `onAction` / `onButton` / `onJoin` / `onLeave` /
-`onTimer`) plus a facade `t` exposing every table primitive (deal, draw,
+(`setup` / `validate` / `onAction` / `onButton` / `onChat` / `onJoin` /
+`onLeave` / `onTimer`) plus a facade `t` exposing every table primitive (deal, draw,
 shuffle, flip, piles, hands, …), persistent scratch state (`t.data`),
 broadcast UI state (`t.public`, e.g. the ⏳ turn marker), scripted buttons,
 timers, and player messaging. `validate` can veto any gameplay action with a
@@ -163,7 +174,8 @@ Rules dialog). A script error disables the rules loudly rather than wedging
 the game (an action whose `validate` crashed is blocked, not waved through);
 rules, their state, and pending timers survive host reloads — and
 re-enabling the same game after a fix or a Disable keeps its state (chips,
-scores) unless the host ticks *Reset game state*.
+scores) unless the host ticks *Reset game state*. Switching to another game
+discards the old one's state (the 🎲 picker asks first, and the log says so).
 Templates ship for turn order (skipping anyone offline), full **no-limit Hold'em with chips** (stacks
 on the seat labels, automatic blinds with a rotating button, turn-enforced
 betting via buttons — Check/Call, Fold, and quick bets *Min raise*, *½ pot*,
@@ -171,15 +183,19 @@ betting via buttons — Check/Call, Fold, and quick bets *Min raise*, *½ pot*,
 short all-ins don't reopen the raising, streets deal themselves when a round
 closes, all-ins run out, and an automatic showdown returns an uncalled bet,
 evaluates best-5-of-7, builds side pots, and pays each pot to the right
-hands. Only online players are dealt in and leaving mid-hand folds you;
-`!rebuy` refills a busted stack between hands, `!blinds 5 10` is the host's,
-and only the host can abandon a hand in progress, refunding every bet), **Bridge** (exactly four players online at Deal play the hand
+hands. Only online players are dealt in, and dropping out mid-hand folds you
+unless you're back within 20 s; a busted player gets a *Rebuy* button (or
+types `!rebuy`) between hands, `!blinds 5 10` is the host's, and only the
+host can abandon a hand in progress, refunding every bet (pressed twice, so
+a mis-tap can't); New hand deals from its own deck only, setting another
+game's cards in a hand aside), **Bridge** (exactly four players online at Deal play the hand
 — anyone joining later watches; a real chat auction — `!bid 1H`,
 `!pass`, `!double`, dealer rotation, insufficiency checks — then enforced
 turns and follow-suit, the dummy laid face-up and played by the declarer,
 trump-aware trick resolution, face-down trick piles, scoring, and a 🏆 for
 the winning side; if a player drops out, the hand waits for them, and
-`!contract 4H <name>` lets the dealer or the host skip the auction),
+`!contract 4H <name>` lets the dealer or the host skip the auction; ⏳ is on
+the declarer while the dummy's card is due),
 **Cards Against Humanity** (the printed rules automated: a rotating
 Card Czar flips a black prompt, everyone else answers face down into an
 *Answers* pile, the answers come back out shuffled and anonymous in
@@ -187,7 +203,7 @@ numbered columns upright for the Czar, who crowns the funniest with 👉
 buttons naming each answer; the result stays up a few seconds before the
 next round; ⏭ *Skip Czar* moves on when the Czar is away; ⭐ Awesome
 Points on the seat labels, PICK 2/3 prompts, discard
-reshuffling, and first-to-the-goal wins — card texts ship in
+reshuffling, and first-to-the-goal wins (`!goal N`, the host's) — card texts ship in
 `cah-cards.js`, CC BY-NC-SA from Cards Against Humanity LLC's free
 print-and-play PDF), and a simple dealer that says when the deck runs short — all plain scripts on the public
 API, demos of the engine rather than features of it. The CAH template also
@@ -197,8 +213,8 @@ small draw piles sit on the table — the rest waits as indices in `t.data`. The
 winners and bidding are `onChat` (scripts parse any chat command),
 `t.announce` (banner to all), and `t.win` (🏆 seat markers via
 `public.winners`, plus the confetti). Any script that sets `public.turn`
-gets the your-turn alert for free — the Hold'em player to act and the CAH
-Card Czar included.
+(one player, or a list) gets the your-turn alert for free — the Hold'em
+player to act, the CAH answerers and then the Card Czar included.
 
 ## Terminal bridge & bots (cli.js / cli.py)
 
@@ -246,6 +262,11 @@ connected, lost, unreachable or rejecting its token (a stale URL from an
 earlier CLI run), and re-sends its full state after any bridge error, so a
 restarted bridge catches up at once. The REPL warns when a command is
 queued for a tab it hasn't heard from in 25 s.
+
+A terminal `play` honours the rules' face-down requirement (CAH answers go
+face down without `--down`), text cards print once, in full, and nothing
+other players wrote (names, cards, log lines) can put control characters —
+screen clears, title or clipboard escape sequences — on your terminal.
 
 Security shape: the bridge binds localhost only and every request carries a
 token minted by the CLI — without it, any website you have open could drive

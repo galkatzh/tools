@@ -51,6 +51,7 @@
   <footer id="hand-bar">
     <div id="hand-resize" title="Drag to resize your hand cards"></div>
     <button id="facedown-toggle" title="When on, cards dragged from your hand land face down">🂠<br>face-down</button>
+    <button id="sort-toggle" title="Sort your hand by suit and rank (only on your screen)">⇅<br>sort</button>
     <div id="hand"></div>
     <div id="turn-cue" class="hidden">⏳ Your turn</div>
   </footer>
@@ -62,15 +63,15 @@
         <option value="">Load a template…</option>
         <option value="blank">Blank skeleton</option>
         <option value="turns">Turn order</option>
-        <option value="holdem">Hold'em dealer</option>
-        <option value="bridge">Bridge (play phase)</option>
+        <option value="holdem">Texas Hold'em</option>
+        <option value="bridge">Bridge</option>
         <option value="cah">Cards Against Humanity</option>
         <option value="dealer">Simple dealer</option>
       </select>
       <textarea id="rules-code" spellcheck="false"></textarea>
       <div id="rules-err"></div>
       <menu>
-        <label id="rules-reset-lbl" title="Unticked, re-enabling the same game keeps its state (chips, scores, timers)"><input type="checkbox" id="rules-reset"> Reset game state</label>
+        <label id="rules-reset-lbl" class="radio" title="Unticked, re-enabling the same game keeps its state (chips, scores, timers)"><input type="checkbox" id="rules-reset"> Reset game state</label>
         <button value="cancel" formnovalidate>Close</button>
         <button id="rules-disable" type="button">Disable</button>
         <button id="rules-enable" value="enable">Enable</button>
@@ -137,7 +138,7 @@
       <li>The <b>host</b> can enlarge the table (Table: small / medium / large) when more players join.</li>
       <li><b>🎲 Games</b>: the host starts Hold'em, Cards Against Humanity, Bridge and more in one click (or goes back to a free table).</li>
       <li><b>📜 Rules</b>: the host can write a script that enforces rules (turn order, legal moves) and automates play (auto-dealing, a poker dealer). Everyone can read the active script; everything it does appears in the log as "📜 Rules".</li>
-      <li>Drag from your hand to the table to play it — toggle <b>🂠 face-down</b> to play cards face down.</li>
+      <li>Drag from your hand to the table to play it, or onto a pile to put it on top — toggle <b>🂠 face-down</b> to play cards face down; <b>⇅ sort</b> orders your hand by suit and rank (on your screen only).</li>
       <li><b>Custom decks</b>: upload one image per card — each card is named after its file ("dragon_rider.png" → "dragon rider"). Include a <code>deck.json</code> in the same upload for full control:
         <pre>{ "name": "My Game", "back": "back.png",
   "cards": [
