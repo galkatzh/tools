@@ -201,7 +201,8 @@ let myName = AS || localStorage.getItem('ct-name') || `Player-${pid.slice(0, 4)}
 // decks:  {deckId: {name, back: dataURL|null, cards: [{img} | {r,s,c}]}}
 // items:  {itemId: card {k:'c',x,y,rot,z,d,i,up} | pile {k:'p',x,y,rot,z,name,cards:[{d,i,up}]}}
 // host:   authoritative state (host only): {seq, items, players:{pid:{name,color,online,hand:[{d,i}]}}}
-// view:   what render() consumes — on guests this arrives from the host.
+// view:   what render() consumes — on guests this arrives from the host; its
+//         items are the PUBLIC shape (publicItems: piles {…, n, top}, no hidden ids).
 let role = null, roomId, password, room = null;
 let sendAct, sendState, sendDecks, sendLog, sendNote, sendRules;
 let decks = {};
@@ -274,12 +275,16 @@ function mark(p, id) {
   if (p !== pid) showFx(f); // the host is a viewer too; own actions stay silent
 }
 
-/** Appends to the shared log. Consecutive duplicates (drag/rotate spam) collapse. */
-function logEvent(p, txt, chat) {
+/** Appends to the shared log. Consecutive duplicates (drag/rotate spam) collapse.
+ *  Entries render the actor's CURRENT name, unless `as` freezes one (renames).
+ *  Actions and chat are capped separately (200 / 100), so chatter can never
+ *  push the record of what someone did (a peek, a palmed card) out of the log. */
+function logEvent(p, txt, chat, as) {
   const last = host.log.at(-1);
   if (!chat && last && last.p === p && last.txt === txt) return;
-  host.log.push({ p, txt, ts: Date.now(), ...(chat ? { c: 1 } : {}) });
-  if (host.log.length > 200) host.log.splice(0, host.log.length - 200);
+  host.log.push({ p, txt, ts: Date.now(), ...(chat ? { c: 1 } : {}), ...(as ? { n: as } : {}) });
+  const same = host.log.filter((e) => !e.c === !chat);
+  if (same.length > (chat ? 100 : 200)) host.log.splice(host.log.indexOf(same[0]), 1);
   logDirty = true;
 }
 function dropIfEmpty(pileId) {
@@ -402,11 +407,20 @@ function apply(p, a) {
       return;
     }
   }
+  if ((a.t === 'chat' || a.t === 'name') && !mayTalk(p)) {
+    console.warn(`flood control: dropped a ${a.t} from`, p);
+    notify(p, '🚫 Slow down — at most 5 messages or renames per 5 seconds');
+    return;
+  }
   switch (a.t) {
     case 'hello': break; // registration + join logging happen in the action handler
     case 'name': {
       const name = cleanName(a.name || '');
-      if (pl && name && name !== pl.name) { pl.name = name; logEvent(p, `is now known as "${pl.name}"`); }
+      if (pl && name && name !== pl.name) {
+        const old = pl.name;
+        pl.name = name;
+        logEvent(p, `is now known as "${name}"`, false, old); // shown under the OLD name
+      }
       break;
     }
     case 'addDeck': {
@@ -514,11 +528,20 @@ function apply(p, a) {
       }
       break;
     // Peek is deliberately "loud": the reveal happens on the peeker's screen
-    // only, but the fact of peeking goes on the record for everyone.
-    case 'peek':
-      if (it?.k === 'c' && !it.up) { logEvent(p, 'peeked at a face-down card'); mark(p, a.id); }
-      else if (it?.k === 'p' && it.cards.length) { logEvent(p, `peeked at the top card of ${itemLabel(it)}`); mark(p, a.id); }
+    // only, but the fact of peeking goes on the record for everyone. Guests
+    // never hold hidden identities (see publicItems), so the host answers
+    // with a note addressed to the peeker alone.
+    case 'peek': {
+      const c = it?.k === 'c' ? !it.up && it : it?.k === 'p' && it.cards.at(-1);
+      if (!c) break;
+      logEvent(p, it.k === 'c' ? 'peeked at a face-down card' : `peeked at the top card of ${itemLabel(it)}`);
+      mark(p, a.id);
+      if (p === pid) showPeek(c);
+      else for (const [peer, mapped] of Object.entries(peerPid)) {
+        if (mapped === p) sendNote({ peek: { d: c.d, i: c.i }, to: p }, peer).catch((e) => console.error('peek reply failed', e));
+      }
       break;
+    }
     case 'size': {
       // Host-only: the size selector is only shown to the host, and the host
       // applies its own actions, so p must be the host's own player id.
@@ -653,6 +676,18 @@ function notify(p, msg) {
   for (const [peer, mapped] of Object.entries(peerPid)) {
     if (mapped === p) sendNote({ msg: String(msg).slice(0, 200), to: p }, peer).catch((e) => console.error('note failed', e));
   }
+}
+
+const talk = new Map(); // host: player id → timestamps of recent chats/renames
+/** Flood control (host): a guest may chat or rename at most 5 times per 5 s.
+ *  The host itself is exempt — it is the authority over the log anyway. */
+function mayTalk(p) {
+  if (p === pid) return true;
+  const now = Date.now(), recent = (talk.get(p) || []).filter((ts) => ts > now - 5000);
+  talk.set(p, recent);
+  if (recent.length >= 5) return false;
+  recent.push(now);
+  return true;
 }
 
 /** Refreshes the script-declared button row into the broadcast public data. */
@@ -824,6 +859,7 @@ setInterval(() => {
 
 // --- host <-> guest sync --------------------------------------------------
 let dirtyDecks = new Set(), logDirty = false, bcastT = 0; // deck ids not yet broadcast
+let hostBoot = 0;  // when this tab became host: the state's epoch (see handleState)
 let fxQueue = [];  // action markers accumulated since the last broadcast
 let annQueue = []; // script announcements (banners) since the last broadcast
 
@@ -833,10 +869,25 @@ function publicPlayers() {
   ]));
 }
 
+/** The table as players see it — hidden identities stay on the host. A pile
+ *  becomes {…, n: count, top} (a face-down top keeps only its deck, for the
+ *  back), and a face-down loose card loses its index `i`. Everyone renders
+ *  this one shape, the host included; only host LOGIC reads host.items. */
+function publicItems() {
+  return Object.fromEntries(Object.entries(host.items).map(([id, it]) => {
+    if (it.k === 'p') {
+      const { cards, ...rest } = it, top = cards.at(-1);
+      return [id, { ...rest, n: cards.length, top: top && (top.up ? { ...top } : { d: top.d, up: false }) }];
+    }
+    const { i, ...rest } = it;
+    return [id, it.up ? { ...rest, i } : rest];
+  }));
+}
+
 function refreshView() {
   if (role !== 'host') return;
   view = {
-    seq: host.seq, items: host.items, players: publicPlayers(),
+    seq: host.seq, items: publicItems(), players: publicPlayers(),
     rules: host.rules ? { name: host.rules.name, enabled: host.rules.enabled, public: host.rules.public } : null,
   };
   myHand = host.players[pid]?.hand || [];
@@ -862,7 +913,8 @@ function broadcast() {
     sendRules({ code: host.rules?.code || '', name: host.rules?.name || '' }).catch((e) => console.error('rules send failed', e));
   }
   const rules = host.rules ? { name: host.rules.name, enabled: host.rules.enabled, public: host.rules.public } : null;
-  const pub = { seq: host.seq, size: host.size, rules, items: host.items, players: publicPlayers(), fx: fxQueue, ann: annQueue };
+  // boot: this host instance's epoch (seq restarts lower after a resume), host: whose seat the host is.
+  const pub = { seq: host.seq, boot: hostBoot, host: pid, size: host.size, rules, items: publicItems(), players: publicPlayers(), fx: fxQueue, ann: annQueue };
   fxQueue = [];
   annQueue = [];
   // Each state is personalized AND addressed (`to`): the signature binds it to
@@ -898,14 +950,17 @@ function handleState(s, peer) {
       $('size-sel').classList.add('hidden');
     } else { scheduleBroadcast(); return; }
   }
-  if (s.seq < view.seq) return; // stale reordering
+  // Stale reordering — within one host instance only: a host that restarted
+  // (reload, resume of an older save) counts seq from its save, so a new
+  // epoch (`boot`) is always accepted.
+  if (s.boot === view.boot && s.seq < view.seq) return;
   if (s.to && s.to !== pid) return; // addressed to someone else: a replay
   hostPeer = peer;
   registered = s.to === pid;
   if (!registered) introduce(); // the host doesn't know this seat yet
   if (pendingActs.length) flushPending();
   if (own(TABLE_SIZES, s.size) && +s.size !== TABLE_W) setTableSize(+s.size);
-  view = { seq: s.seq, items: s.items || {}, players: s.players || {}, rules: s.rules };
+  view = { seq: s.seq, boot: s.boot, host: s.host, items: s.items || {}, players: s.players || {}, rules: s.rules };
   if (registered) myHand = Array.isArray(s.hand) ? s.hand : [];
   for (const f of s.fx || []) if (f.p !== pid) showFx(f);
   for (const msg of s.ann || []) showAnnounce(msg);
@@ -952,7 +1007,11 @@ function connect() {
     inbox = inbox.then(async () => { const d = await unseal(m); if (d != null) fn(d, peerId); })
       .catch((err) => console.error('message from the host failed', err));
   };
-  noteA.onMessage = fromHost((n) => { if (role !== 'host' && n?.msg && (!n.to || n.to === pid)) toast(String(n.msg)); });
+  noteA.onMessage = fromHost((n) => {
+    if (role === 'host' || !n || (n.to && n.to !== pid)) return;
+    if (n.msg) toast(String(n.msg));
+    if (n.peek && n.to === pid) showPeek({ d: String(n.peek.d), i: num(n.peek.i, -1) }); // the host's private answer to our peek
+  });
   rulesA.onMessage = fromHost((r) => { if (role !== 'host') guestRules = { code: String(r?.code || ''), name: String(r?.name || '') }; });
   stateA.onMessage = fromHost(handleState);
   // Deck messages are deltas (or the full map for new joiners) — always merge,
@@ -963,6 +1022,7 @@ function connect() {
       if (!/^[0-9a-f]{8}$/.test(id)) { console.warn('ignored a deck with a bad id', id); continue; }
       try { decks[id] = cleanDeck(deck); } catch (err) { console.error(`deck ${id} rejected`, err); }
     }
+    handSig = ''; // the hand may hold placeholders for these decks: redraw it even if the hand didn't change
     renderAll();
   });
   logA.onMessage = fromHost((l) => { if (role !== 'host' && Array.isArray(l)) { gameLog = l; renderAll(); } });
@@ -984,10 +1044,11 @@ function connect() {
     // keyed hello was lost, the first real action still registers the player.
     const newConn = peerPid[peer] !== p;
     const known = own(host.players, p);
+    const back = !known?.online; // read BEFORE ensurePlayer flips the same object online
     peerPid[peer] = p;
     ensurePlayer(p, name);
     host.players[p].key ||= key; // first contact binds the seat (older saves adopt their first claimant)
-    if (!known?.online) logEvent(p, known ? 'is back at the table' : 'joined the table');
+    if (back) logEvent(p, known ? 'is back at the table' : 'joined the table');
     if (newConn) {
       // Fresh connection: hand over the (possibly large) deck images, the
       // log, and the rules code targeted, so regular broadcasts stay light.
@@ -995,7 +1056,12 @@ function connect() {
       sendLog(host.log, peer).catch((e) => console.error('log send failed', e));
       if (host.rules) sendRules({ code: host.rules.code, name: host.rules.name }, peer).catch((e) => console.error('rules send failed', e));
     }
-    if (!known?.online && host.rules?.enabled) { runHook('onJoin', p); refreshButtons(); }
+    if (back && host.rules?.enabled) { runHook('onJoin', p); refreshButtons(); }
+    // Every action carries the sender's current name: a rename the host
+    // never received (made while it was away, or in another room) syncs here,
+    // through the logged rename path.
+    const nm = cleanName(name ?? '');
+    if (known && nm && nm !== known.name && action.t !== 'name') apply(p, { t: 'name', name: nm });
     apply(p, action); // apply() schedules a broadcast, which catches joiners up
   };
 
@@ -1006,7 +1072,11 @@ function connect() {
   };
   room.onPeerLeave = (peer) => {
     updateNet();
-    if (peer === hostPeer) { hostPeer = null; registered = false; } // knock again when a host reappears
+    if (peer === hostPeer) { // the table is paused: say so (hint + host seat greyed), knock again when a host reappears
+      hostPeer = null;
+      registered = false;
+      renderAll();
+    }
     if (role !== 'host') return;
     const p = peerPid[peer];
     delete peerPid[peer];
@@ -1038,8 +1108,10 @@ function updateNet() {
   netEl.textContent = n > 0 ? `● ${n + 1}` : r > 0 ? '● …' : '● ✕';
   netEl.title = `${n + 1} player${n ? 's' : ''} here · ${r} signaling relays connected${r ? '' : ' — searching for relays'}`;
   if (role === 'guest') {
-    hintEl.classList.toggle('hidden', view.seq > 0);
-    hintEl.textContent = 'Waiting for the host…\n(the table lives in the host\'s open tab)';
+    hintEl.classList.toggle('hidden', view.seq > 0 && !!hostPeer);
+    hintEl.textContent = view.seq
+      ? 'The host left — the table is paused until they return'
+      : 'Waiting for the host…\n(the table lives in the host\'s open tab)';
   }
 }
 
@@ -1070,16 +1142,64 @@ setInterval(() => {
 }, 5000);
 
 // --- host persistence -----------------------------------------------------
+// Two keys per room: ct-decks-<room> (the big image data, rewritten only when
+// a deck is added) and ct-save-<room> = {ts, state} (small, throttle-saved).
+// When storage is full, other rooms' saves are deleted oldest first; if this
+// table still can't be saved, a tiny {lost} marker replaces the snapshot, so
+// a reload never quietly rewinds to stale state — it resets the table loudly
+// (and this browser stays the host instead of waiting in its own room).
 let persistT = 0, lastSave = 0, persistWarned = false;
+let savedDecks = -1; // how many decks storage holds: decks are append-only, so a new count means "rewrite"
 function doSave() {
+  if (role !== 'host') return; // a demoted host's pending timer must not clobber the winner's save
   lastSave = Date.now();
-  try {
-    localStorage.setItem(`ct-save-${roomId}`, JSON.stringify({ decks, state: host }));
-  } catch (err) {
-    console.error('failed to persist game', err);
-    if (!persistWarned) { persistWarned = true; toast('Game too large to auto-save (host reload will lose it)'); }
+  let old = null, freed = 0;
+  for (;;) {
+    try {
+      const n = Object.keys(decks).length;
+      if (n !== savedDecks) {
+        savedDecks = -1;
+        localStorage.setItem(`ct-decks-${roomId}`, JSON.stringify(decks));
+        savedDecks = n;
+      }
+      localStorage.setItem(`ct-save-${roomId}`, JSON.stringify({ ts: Date.now(), state: host }));
+      if (freed) toast(`Browser storage was full — deleted ${freed} old table save${freed > 1 ? 's' : ''} to keep this one`);
+      persistWarned = false;
+      return;
+    } catch (err) {
+      if (err.name === 'QuotaExceededError' && (old ??= oldSaves()).length) {
+        const id = old.shift();
+        console.warn('browser storage full — deleting the save of an older room', id);
+        // (its ct-hostkey stays: tiny, and a tab still hosting that room needs it to resume)
+        localStorage.removeItem(`ct-save-${id}`);
+        localStorage.removeItem(`ct-decks-${id}`);
+        freed++;
+        continue;
+      }
+      console.error('failed to persist game', err);
+      const why = err.name === 'QuotaExceededError' ? 'browser storage is full' : `auto-save failed: ${err.message}`;
+      try {
+        localStorage.removeItem(`ct-decks-${roomId}`);
+        localStorage.setItem(`ct-save-${roomId}`, JSON.stringify({ ts: Date.now(), lost: why }));
+      } catch (e) { console.error('could not even mark the save as lost', e); }
+      if (!persistWarned) { persistWarned = true; toast(`Can't save this table (${why}) — reloading the host tab would reset it`); }
+      return;
+    }
   }
 }
+/** Other rooms with saves, oldest first (saves without a ts — older versions — go first). */
+function oldSaves() {
+  return Object.keys(localStorage).filter((k) => k.startsWith('ct-save-') && k !== `ct-save-${roomId}`)
+    .map((k) => {
+      let ts = 0;
+      try { ts = num(JSON.parse(localStorage.getItem(k))?.ts); } catch (err) { console.error('unreadable save', k, err); }
+      return { id: k.slice('ct-save-'.length), ts };
+    })
+    .sort((a, b) => a.ts - b.ts).map((x) => x.id);
+}
+// Another tab of this browser may delete this room's decks (storage-full
+// pruning above): write them again with the next save.
+window.addEventListener('storage', (e) => { if (e.key === `ct-decks-${roomId}` && e.newValue == null) savedDecks = -1; });
 // Throttled (not debounced!) — a busy game must still hit storage regularly.
 function persist() {
   if (role !== 'host' || persistT) return;
@@ -1088,11 +1208,21 @@ function persist() {
 window.addEventListener('pagehide', () => {
   if (role === 'host') { clearTimeout(persistT); persistT = 0; doSave(); }
 });
+/** This room's save: {decks, state}, {lost: why} when it can't be resumed, or null if this browser never hosted it. */
 function loadSave() {
+  const raw = localStorage.getItem(`ct-save-${roomId}`);
+  if (!raw) return null;
   try {
-    const raw = localStorage.getItem(`ct-save-${roomId}`);
-    return raw ? JSON.parse(raw) : null;
-  } catch (err) { console.error('corrupt save discarded', err); return null; }
+    const s = JSON.parse(raw);
+    if (typeof s?.lost === 'string') return s;
+    if (!s?.state?.items || !s.state.players) throw new Error('the save holds no table');
+    s.decks ??= JSON.parse(localStorage.getItem(`ct-decks-${roomId}`) || 'null'); // older saves embed their decks
+    if (!s.decks) throw new Error('the saved decks are missing');
+    return s;
+  } catch (err) {
+    console.error('corrupt save discarded', err);
+    return { lost: `the save is unreadable: ${err.message}` };
+  }
 }
 
 // --- rendering ------------------------------------------------------------
@@ -1131,11 +1261,12 @@ function backHTML(d) {
   return `<div class="back" style="background:${safeColor(b)}"></div>`; // solid-color back
 }
 
+/** Markup for a PUBLIC item (see publicItems: piles carry n + top). */
 function contentFor(it) {
   if (it.k === 'c') return `<div class="cardbox">${it.up ? faceHTML(it.d, it.i) : backHTML(it.d)}</div>`;
-  const top = it.cards.at(-1);
+  const top = it.top;
   const inner = top ? (top.up ? faceHTML(top.d, top.i) : backHTML(top.d)) : '';
-  return `<div class="cardbox">${inner}</div><span class="count">${it.cards.length}</span>${it.name ? `<span class="pname">${esc(it.name)}</span>` : ''}`;
+  return `<div class="cardbox">${inner}</div><span class="count">${num(it.n)}</span>${it.name ? `<span class="pname">${esc(it.name)}</span>` : ''}`;
 }
 
 function renderItems() {
@@ -1152,12 +1283,12 @@ function renderItems() {
     }
     const sig = it.k === 'c'
       ? `c|${it.d}|${it.i}|${it.up}|${!!decks[it.d]}`
-      : `p|${it.cards.length}|${JSON.stringify(it.cards.at(-1))}|${it.name}|${!!decks[it.cards.at(-1)?.d]}`;
+      : `p|${it.n}|${JSON.stringify(it.top)}|${it.name}|${!!decks[it.top?.d]}`;
     if (el.dataset.sig !== sig) {
       el.dataset.sig = sig;
       el.innerHTML = contentFor(it);
       el.classList.toggle('pile', it.k === 'p');
-      el.classList.toggle('multi', it.k === 'p' && it.cards.length > 1);
+      el.classList.toggle('multi', it.k === 'p' && it.n > 1);
     }
     if (drag?.id !== id) { el.style.left = `${it.x}px`; el.style.top = `${it.y}px`; }
     el.style.transform = `rotate(${it.rot}deg)`;
@@ -1175,7 +1306,9 @@ function renderPlayers() {
   const turn = view.rules?.enabled ? view.rules.public?.turn : null;
   const winners = (view.rules?.enabled && view.rules.public?.winners) || [];
   const badges = (view.rules?.enabled && view.rules.public?.badges) || {};
-  const sig = `${JSON.stringify(view.players)}|${turn}|${winners.join()}|${JSON.stringify(badges)}|${viewAngle.toFixed(1)}|${scale.toFixed(4)}|${panX | 0},${panY | 0}|${wrapEl.clientWidth}`;
+  // Only the host publishes online flags, so a guest marks a departed host itself.
+  const hostGone = role === 'guest' && !hostPeer ? view.host : null;
+  const sig = `${JSON.stringify(view.players)}|${turn}|${winners.join()}|${JSON.stringify(badges)}|${hostGone}|${viewAngle.toFixed(1)}|${scale.toFixed(4)}|${panX | 0},${panY | 0}|${wrapEl.clientWidth}`;
   if (sig === seatSig) return;
   seatSig = sig;
   for (const el of wrapEl.querySelectorAll('.seat')) el.remove();
@@ -1184,7 +1317,7 @@ function renderPlayers() {
     const rad = (pl.seat * Math.PI) / 180;
     const [sx, sy] = tableToScreen(TABLE_W / 2 + SEAT_R * Math.cos(rad), TABLE_H / 2 + SEAT_R * Math.sin(rad));
     const el = document.createElement('div');
-    el.className = `seat${pl.online ? '' : ' offline'}${p === pid ? ' me' : ''}${p === turn ? ' turn' : ''}${winners.includes(p) ? ' winner' : ''}`;
+    el.className = `seat${pl.online && p !== hostGone ? '' : ' offline'}${p === pid ? ' me' : ''}${p === turn ? ' turn' : ''}${winners.includes(p) ? ' winner' : ''}`;
     el.style.borderColor = pl.color;
     el.style.left = `${sx}px`;
     el.style.top = `${sy}px`;
@@ -1218,13 +1351,16 @@ function actorInfo(p) {
 let logSig = '';
 function renderLog() {
   const last = gameLog.at(-1);
-  const sig = `${gameLog.length}|${last?.ts}|${last?.txt}`;
+  // Names are resolved live from view.players, which may arrive AFTER the log
+  // (a joiner gets the log first) or change (renames): key on them too.
+  const names = Object.entries(view.players).map(([p, pl]) => p + pl.name + pl.color).join();
+  const sig = `${gameLog.length}|${last?.ts}|${last?.txt}|${names}`;
   if (sig === logSig) return;
   logSig = sig;
   const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 60;
   logEl.innerHTML = gameLog.map((e) => {
     const who = actorInfo(e.p);
-    const name = `<b style="color:${safeColor(who.color)}">${esc(who.name)}</b>`;
+    const name = `<b style="color:${safeColor(who.color)}">${esc(typeof e.n === 'string' ? e.n : who.name)}</b>`;
     const time = `<span class="lt">${new Date(e.ts).toTimeString().slice(0, 5)}</span>`;
     return e.c
       ? `<div class="lg chat">${time}${name}: ${esc(e.txt)}</div>`
@@ -1421,12 +1557,7 @@ barEl.addEventListener('click', (e) => {
     dealup: () => act({ t: 'deal', id: sel, up: true, rot: uprightRot(), ...dealSpot(it) }),
     dealdn: () => act({ t: 'deal', id: sel, up: false, rot: uprightRot(), ...dealSpot(it) }),
     shuffle: () => act({ t: 'shuffle', id: sel }),
-    peek: () => {
-      const c = it.k === 'c' ? it : it.cards.at(-1);
-      if (!c) return;
-      act({ t: 'peek', id: sel }); // announce it before enjoying it
-      showZoom(c.d, c.i, 'Only you can see this — everyone knows you peeked. Click to close.');
-    },
+    peek: () => act({ t: 'peek', id: sel }), // the host logs it, then reveals the card to us alone (showPeek)
     zoom: () => showZoom(it.d, it.i), // face-up card: public info, silent
   };
   cmds[cmd]?.();
@@ -1444,6 +1575,11 @@ function showZoom(d, i, caption) {
   peekEl.classList.remove('hidden');
 }
 peekEl.addEventListener('click', () => peekEl.classList.add('hidden'));
+/** Reveals a peeked card {d, i} to this player only (the host's answer to a peek action). */
+function showPeek(c) {
+  showZoom(c.d, c.i, 'Only you can see this — everyone knows you peeked. Click to close.');
+  if (CLI) cliMsgs.push(`peek: ${cardName(c.d, c.i)}`);
+}
 
 // --- dragging table items / pan / pinch -------------------------------------
 let feltDrag = null; // dragging empty felt = panning MY view
@@ -1453,9 +1589,8 @@ const tPtrs = new Map(); // pointers currently down on the table
 /** Ends an in-flight item drag cleanly (used when a pinch takes over). */
 function cancelItemDrag() {
   if (!drag) return;
-  const it = view.items[drag.id];
   drag.el.classList.remove('dragging');
-  if (drag.moved && it) act({ t: 'move', id: drag.id, x: it.x, y: it.y });
+  if (drag.moved && view.items[drag.id]) act({ t: 'move', id: drag.id, x: drag.x, y: drag.y });
   drag = null;
 }
 
@@ -1499,7 +1634,11 @@ tableEl.addEventListener('pointerdown', (e) => {
   if (!it) return;
   e.preventDefault();
   const p = toTable(e);
-  drag = { id: el.dataset.id, el, dx: p.x - it.x, dy: p.y - it.y, sx: p.x, sy: p.y, moved: false, last: 0 };
+  // The live position lives on the drag record (x, y), never in view.items:
+  // incoming states replace those objects mid-drag (a guest would drop at a
+  // stale spot), and the host must not touch state outside apply() (a vetoed
+  // drop has to snap back).
+  drag = { id: el.dataset.id, el, dx: p.x - it.x, dy: p.y - it.y, sx: p.x, sy: p.y, x: it.x, y: it.y, moved: false, last: 0 };
 });
 
 window.addEventListener('pointermove', (e) => {
@@ -1521,8 +1660,7 @@ window.addEventListener('pointermove', (e) => {
   }
   if (!drag) return;
   const p = toTable(e);
-  const it = view.items[drag.id];
-  if (!it) { drag = null; return; }
+  if (!view.items[drag.id]) { drag = null; return; }
   if (!drag.moved) {
     if (Math.hypot(p.x - drag.sx, p.y - drag.sy) < 5 / scale) return;
     drag.moved = true;
@@ -1530,13 +1668,13 @@ window.addEventListener('pointermove', (e) => {
     drag.el.style.zIndex = 100000; // visually on top; the host assigns the real z on move
     select(null);
   }
-  ({ x: it.x, y: it.y } = clampToFelt(p.x - drag.dx, p.y - drag.dy));
-  drag.el.style.left = `${it.x}px`;
-  drag.el.style.top = `${it.y}px`;
+  ({ x: drag.x, y: drag.y } = clampToFelt(p.x - drag.dx, p.y - drag.dy));
+  drag.el.style.left = `${drag.x}px`;
+  drag.el.style.top = `${drag.y}px`;
   // Throttled live position for the other players; the final one is sent on drop.
   if (role === 'guest' && e.timeStamp - drag.last > 60) {
     drag.last = e.timeStamp;
-    act({ t: 'move', id: drag.id, x: it.x, y: it.y });
+    act({ t: 'move', id: drag.id, x: drag.x, y: drag.y });
   }
 });
 
@@ -1587,7 +1725,7 @@ window.addEventListener('pointerup', (e) => {
   else if (it.k === 'c' && tgt?.k === 'p') act({ t: 'toPile', id: d.id, pile: tgtId });
   else if (it.k === 'c' && tgt?.k === 'c') act({ t: 'stack', id: d.id, onto: tgtId });
   else if (it.k === 'p' && tgt?.k === 'p') act({ t: 'merge', id: d.id, pile: tgtId });
-  else act({ t: 'move', id: d.id, x: it.x, y: it.y });
+  else act({ t: 'move', id: d.id, x: d.x, y: d.y });
 });
 
 tableEl.addEventListener('dblclick', (e) => {
@@ -2666,7 +2804,13 @@ $('deck-form').addEventListener('submit', async (e) => {
 // --- boot -----------------------------------------------------------------
 function becomeHost(saved) {
   role = 'host';
+  hostBoot = Date.now();
   $('size-sel').classList.remove('hidden'); // table size is the host's call
+  if (saved?.lost) {
+    console.error('this table could not be resumed:', saved.lost);
+    toast(`Couldn't resume this table (${saved.lost}) — started a fresh one`);
+    saved = null;
+  }
   if (saved) {
     // Saves may predate the sanitizer (and could hold a deck a guest crafted).
     decks = {};
@@ -2745,11 +2889,11 @@ function cliSnapshot() {
     })),
     items: Object.entries(view.items).map(([id, it]) => (it.k === 'c'
       ? { id, kind: 'card', x: it.x | 0, y: it.y | 0, up: !!it.up, ...(it.up ? cliCardInfo(it.d, it.i) : {}) }
-      : { id, kind: 'pile', name: it.name || null, count: it.cards.length, x: it.x | 0, y: it.y | 0 })),
+      : { id, kind: 'pile', name: it.name || null, count: it.n, x: it.x | 0, y: it.y | 0 })),
     buttons: ((rules?.enabled && rules.public?.buttons) || [])
       .filter((b) => !b.pid || b.pid === pid).map((b) => ({ id: b.id, label: b.label })),
     rules: rules?.enabled ? rules.name : null,
-    log: gameLog.slice(-40).map((e) => ({ who: actorInfo(e.p).name, text: e.txt, ...(e.c ? { chat: true } : {}), ts: e.ts })),
+    log: gameLog.slice(-40).map((e) => ({ who: typeof e.n === 'string' ? e.n : actorInfo(e.p).name, text: e.txt, ...(e.c ? { chat: true } : {}), ts: e.ts })),
     msgs: cliMsgs.slice(),
   };
 }
@@ -2763,7 +2907,7 @@ function cliItem(ref, kind) {
   const byName = s && ent.find(([, it]) => (it.name || '').toLowerCase() === s);
   if (byName) return byName[0];
   if (ref == null && kind === 'p') {
-    const top = ent.sort((a, b) => (b[1].cards?.length || 0) - (a[1].cards?.length || 0))[0];
+    const top = ent.sort((a, b) => (b[1].n || 0) - (a[1].n || 0))[0];
     if (top) return top[0];
   }
   throw new Error(`no such ${kind === 'p' ? 'pile' : 'item'}: ${ref}`);
@@ -2796,11 +2940,10 @@ function cliExec(c) {
       case 'move': { const at = clampToFelt(+c.x || 0, +c.y || 0); act({ t: 'move', id: cliItem(c.id), x: at.x, y: at.y }); break; }
       case 'rot': act({ t: 'rot', id: cliItem(c.id), rot: +c.deg || 0 }); break;
       case 'toHand': act({ t: 'toHand', id: cliItem(c.id) }); break;
-      case 'peek': {
-        const id = cliItem(c.id);
-        const it = view.items[id], ref = it.k === 'p' ? it.cards.at(-1) : it;
-        act({ t: 'peek', id });
-        cliMsgs.push(`peek: ${ref ? cardName(ref.d, ref.i) : '(empty)'}`);
+      case 'peek': { // a face-up card is public; anything else is answered privately by the host (showPeek)
+        const id = cliItem(c.id), it = view.items[id];
+        if (it.k === 'c' && it.up) cliMsgs.push(`peek: ${cardName(it.d, it.i)}`);
+        else act({ t: 'peek', id });
         break;
       }
       case 'btn': act({ t: 'rulesBtn', id: String(c.id) }); break;

@@ -29,8 +29,8 @@ Hidden information stays hidden in the log ("drew a card", "played a card
 face down"), but the *fact* that something happened is always on record,
 which is the anti-cheat mechanism: you can palm a card, but everyone sees
 you palm it. **Peek** follows the same rule — you can privately look at a
-face-down card or a pile's top card, and the log announces to everyone that
-you looked.
+face-down card or a pile's top card (the host reveals it to you alone), and
+the log announces to everyone that you looked.
 
 ## How it works
 
@@ -43,7 +43,10 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
 - **Host as authority** (§3.1 of the design doc): the room opener's tab holds
   the authoritative state. Guests broadcast actions; the host applies them and
   sends each guest a personalized view — the public table, everyone's hand
-  *counts*, and that guest's own hand. Bare actions + full-state broadcast, no
+  *counts*, and that guest's own hand. The public table is redacted: piles
+  travel as a count plus their top card (just its back when it's face down)
+  and face-down cards without their identity, so deck order and hidden
+  cards never leave the host. Bare actions + full-state broadcast, no
   CRDT: state is small and single-writer, and late joiners catch up from the
   host's first broadcast.
 - **Identity**: players get a persistent random id in `localStorage`, so a
@@ -61,13 +64,23 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   and guests re-enter with identity and hand intact. Relay redundancy is
   raised to 10 (default 5) so two peers are more likely to share a live one.
 - **Log**: the host authors log entries while adjudicating actions (it's the
-  only peer that can name cards trustworthily), keeps the last 200 in state,
-  and pushes them on a dedicated channel only when the log changes; repeated
-  drag/rotate entries collapse so moves don't flood it.
-- **Persistence**: the host throttle-saves `{decks, state}` to `localStorage`
-  keyed by room id; reopening the invite link in the host's browser resumes
-  the game. If two hosts ever collide (stale resume, invite opened twice in
-  the host's browser), the one holding older state demotes itself to guest.
+  only peer that can name cards trustworthily), keeps the last 200 actions
+  and the last 100 chat lines in state (separate caps, so chatter can never
+  push the record of a peek or a palmed card out), and pushes them on a
+  dedicated channel only when the log changes; repeated drag/rotate entries
+  collapse so moves don't flood it, and a guest may chat or rename at most
+  5 times per 5 seconds.
+- **Persistence**: the host throttle-saves the state to `localStorage` keyed
+  by room id (`ct-save-<room>`), with the deck images in a separate key
+  written only when a deck is added; reopening the invite link in the host's
+  browser resumes the game. When storage is full, other rooms' saves are
+  deleted oldest first (with a toast saying so); if the table still can't be
+  saved, the stale snapshot is replaced by a "lost" marker, so a reload
+  resets the table loudly instead of silently rewinding it. Each host start
+  is a new state epoch, so guests follow a restarted host even when its
+  counter restarts lower. If two hosts ever collide (stale resume, invite
+  opened twice in the host's browser), the one holding older state demotes
+  itself to guest.
 - **Decks**: the standard 52-card deck renders as DOM/CSS; custom decks are
   uploaded images, downscaled client-side to ≤560px WebP data-URLs so they
   stay cheap to broadcast and persist (~25–50 KB per card on the wire).
@@ -183,12 +196,16 @@ refuse the `https → http://127.0.0.1` fetch.
 
 ## Honest limits
 
-- The game lives in the host's open tab. Host offline = table frozen for
-  guests (state survives in the host's browser). Host migration is possible on
-  this stack (§3.2 of the design doc) but deliberately not built.
-- Hands are genuinely private (never sent to other peers), but face-**down
-  table cards** are identified in the broadcast state — a devtools-level
-  cheat. Fine for friendly play (§3.3: "no secrets" tier).
+- The game lives in the host's open tab. Host offline = table paused for
+  guests (they see a notice; state survives in the host's browser). Host
+  migration is possible on this stack (§3.2 of the design doc) but
+  deliberately not built.
+- Hidden information is hidden from guests, even with devtools: hands go
+  only to their owner, and the broadcast table carries pile sizes but not
+  their order, and face-down cards without their identity (a peek is
+  answered privately by the host). The **host** still sees everything — its
+  tab holds the authoritative state — so the host has to be someone the
+  table trusts, like the dealer at a home game.
 - The table always starts fitted to the smaller screen dimension; zoom and
   pan are per-player remedies, not persisted between reloads.
 - Rules scripts are trusted code on the host's machine: a runaway loop can

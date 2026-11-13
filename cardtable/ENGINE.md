@@ -74,7 +74,8 @@ A thin wrapper over existing internals in `app.js`:
 
 - **Reads**: `t.players()` (id/name/seat/handCount, seat-ordered),
   `t.items()`, `t.piles()`, `t.hand(pid)` (the host already holds all
-  hands).
+  hands, pile orders and face-down identities — guests never receive
+  those, see README "Honest limits").
 - **Scratch state**: `t.data` — a plain object persisted inside
   `host.rules.data` (survives host reload via the existing `persist()`
   path), so turn pointers, phases, and pending timers live there.
