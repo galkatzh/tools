@@ -1330,17 +1330,69 @@ function contentFor(it) {
   return `<div class="cardbox">${inner}</div><span class="count">${num(it.n)}</span>${it.name ? `<span class="pname">${esc(it.name)}</span>` : ''}`;
 }
 
+// --- motion (UX-I1) ----------------------------------------------------------
+// Remote moves glide via a CSS transition on .item left/top (style.css; off
+// while dragging and under prefers-reduced-motion). Here, diffing the last
+// rendered view against the new one: a card that appears where a pile just
+// shrank slides out of it (a deal), one that appears as a player's hand
+// shrank slides in from their seat (a play), a pile that shrank while hands
+// grew sends card backs flying to those seats, and a flip turns the card.
+// Web Animations only: nothing to clean up, no forced reflows.
+const calm = matchMedia('(prefers-reduced-motion: reduce)');
+let shown = { items: {}, players: {} }; // the view renderItems last drew
+let landing = null; // {id, x, y, ox, oy, until}: our own drop (and the drag's origin), held until the host confirms or vetoes it
+const MOTION_MS = 260;
+
+/** A seat's spot on the rim in table coords (top-left of a card centred there). */
+function seatSpot(p) {
+  const rad = (num(view.players[p]?.seat) * Math.PI) / 180;
+  return { x: TABLE_W / 2 + SEAT_R * Math.cos(rad) - CARD_W / 2, y: TABLE_H / 2 + SEAT_R * Math.sin(rad) - CARD_H / 2 };
+}
+
+/** Where the cards that newly appeared came from: piles that shrank (each with
+ *  how many cards left them) and other players whose hands shrank. */
+function motionSources() {
+  const piles = Object.entries(shown.items).filter(([, o]) => o.k === 'p')
+    .map(([id, o]) => ({ o, left: num(o.n) - num(view.items[id]?.n) })).filter((s) => s.left > 0);
+  const hands = Object.entries(shown.players).filter(([p, o]) => p !== pid && num(view.players[p]?.handCount) < num(o.handCount))
+    .map(([p]) => p);
+  return { piles, hands };
+}
+
+/** Sends `n` card backs flying from pile `o` to player `p`'s seat (a deal or draw into a hand). */
+function flyToSeat(o, p, n) {
+  const to = seatSpot(p);
+  for (let k = 0; k < n; k++) {
+    const el = document.createElement('div');
+    el.className = 'fly';
+    el.innerHTML = `<div class="cardbox">${backHTML(o.top?.d)}</div>`;
+    el.style.cssText = `left:${to.x}px;top:${to.y}px;z-index:99999`;
+    tableEl.appendChild(el);
+    el.animate([{ left: `${o.x}px`, top: `${o.y}px`, transform: `rotate(${num(o.rot)}deg)` }, { opacity: 0.2, transform: 'scale(0.6)' }],
+      { duration: MOTION_MS + 120, delay: k * 70, easing: 'ease-in', fill: 'backwards' }).finished
+      .catch((err) => console.error('card flight failed', err)).finally(() => el.remove());
+  }
+}
+
 function renderItems() {
   const seen = new Set();
+  const move = !calm.matches && motionSources();
   for (const [id, it] of Object.entries(view.items)) {
     seen.add(id);
     let el = itemEls.get(id);
+    const prev = shown.items[id];
     if (!el) {
       el = document.createElement('div');
       el.className = 'item';
       el.dataset.id = id;
       tableEl.appendChild(el);
       itemEls.set(id, el);
+      // A brand-new card slides in from where it came from (deal / play).
+      const src = move && it.k === 'c' && !prev && (move.piles.find((s) => s.left > 0) || move.hands.length && { o: seatSpot(move.hands[0]) });
+      if (src) {
+        src.left--;
+        el.animate([{ left: `${src.o.x}px`, top: `${src.o.y}px` }, { left: `${it.x}px`, top: `${it.y}px` }], { duration: MOTION_MS, easing: 'ease-out' });
+      }
     }
     const sig = it.k === 'c'
       ? `c|${it.d}|${it.i}|${it.up}|${!!decks[it.d]}`
@@ -1350,13 +1402,33 @@ function renderItems() {
       el.innerHTML = contentFor(it);
       el.classList.toggle('pile', it.k === 'p');
       el.classList.toggle('multi', it.k === 'p' && it.n > 1);
+      // Flipped (a card, or a pile whose size didn't change): the new side turns in.
+      if (move && prev?.k === it.k && (it.k === 'c' ? prev.up !== it.up : prev.n === it.n && !!prev.top?.up !== !!it.top?.up)) {
+        el.firstChild.animate([{ transform: 'perspective(600px) rotateY(90deg)' }, { transform: 'none' }], { duration: MOTION_MS, easing: 'ease-out' });
+      }
     }
-    if (drag?.id !== id) { el.style.left = `${it.x}px`; el.style.top = `${it.y}px`; }
+    // Our own drop: states the host sent before it applied our final move
+    // carry a stale spot from mid-drag; keep the card where we let go until
+    // the host confirms it (or vetoes it: the card was back at its origin).
+    const at = (x, y) => Math.abs(it.x - x) < 0.5 && Math.abs(it.y - y) < 0.5;
+    if (landing?.id === id && (at(landing.x, landing.y) || at(landing.ox, landing.oy) || Date.now() > landing.until)) landing = null;
+    if (drag?.id !== id && landing?.id !== id) { el.style.left = `${it.x}px`; el.style.top = `${it.y}px`; }
     el.style.transform = `rotate(${it.rot}deg)`;
     el.style.zIndex = it.z;
     el.classList.toggle('selected', sel === id);
   }
   for (const [id, el] of itemEls) if (!seen.has(id)) { el.remove(); itemEls.delete(id); }
+  // Cards a pile lost without landing on the table went into hands: fly them there.
+  if (move) {
+    for (const [p, o] of Object.entries(view.players)) {
+      let gain = shown.players[p] ? num(o.handCount) - num(shown.players[p].handCount) : 0;
+      for (const s of move.piles) {
+        const n = Math.min(gain, s.left);
+        if (n > 0) { flyToSeat(s.o, p, Math.min(n, 3)); s.left -= n; gain -= n; }
+      }
+    }
+  }
+  shown = { items: view.items, players: view.players };
   if (sel && !view.items[sel]) select(null);
   else if (sel) placeBar();
 }
@@ -1448,6 +1520,51 @@ $('rules-btns').addEventListener('click', (e) => {
   if (id) act({ t: 'rulesBtn', id });
 });
 
+// --- table cues: your-turn alert (UX-I2) and win celebration (UX-I4) --------
+// Generic: any script that sets public.turn / public.winners gets them.
+const baseTitle = document.title;
+const CONFETTI = ['🎉', '✨', '🃏', '⭐', '🏆', '💰'];
+let myTurn = false, winSeen = null, cueT = 0;
+/** Vibrates where supported (phones; a no-op elsewhere and before the first tap). */
+const buzz = (pattern) => navigator.vibrate?.(pattern);
+
+function renderCues() {
+  const pub = (view.rules?.enabled && view.rules.public) || {};
+  const mine = pub.turn === pid;
+  if (mine !== myTurn) {
+    myTurn = mine;
+    document.title = mine ? `⏳ Your turn · ${baseTitle}` : baseTitle;
+    $('hand-bar').classList.toggle('myturn', mine);
+    $('turn-cue').classList.toggle('hidden', !mine);
+    clearTimeout(cueT);
+    if (mine) {
+      buzz([60, 40, 60]);
+      cueT = setTimeout(() => $('turn-cue').classList.add('hidden'), 2200);
+    }
+  }
+  const winners = Array.isArray(pub.winners) ? pub.winners : [];
+  // winSeen stays null until the first real state: joining (or reloading
+  // into) a finished game is not a new win.
+  if (winSeen && winners.some((w) => !winSeen.includes(w))) celebrate(winners.includes(pid));
+  if (view.seq) winSeen = winners;
+}
+
+/** An emoji confetti burst over the whole screen (bigger, plus a buzz, for the winners). */
+function celebrate(won) {
+  if (won) buzz([90, 50, 90, 50, 220]);
+  if (calm.matches) return;
+  const box = document.createElement('div');
+  box.className = 'confetti';
+  for (let k = 0; k < (won ? 48 : 24); k++) {
+    const s = document.createElement('span');
+    s.textContent = CONFETTI[k % CONFETTI.length]; // array of whole emoji: never split a surrogate pair
+    s.style.cssText = `left:${Math.random() * 100}%;animation-delay:${Math.random() * 0.4}s;--dx:${Math.random() * 160 - 80}px;--r:${Math.random() * 720 - 360}deg`;
+    box.append(s);
+  }
+  document.body.append(box);
+  setTimeout(() => box.remove(), 2400);
+}
+
 function renderAll() {
   applySeatView();
   renderItems();
@@ -1456,6 +1573,8 @@ function renderAll() {
   renderLog();
   renderRulesBtns();
   renderFacedown();
+  renderCues();
+  renderGames();
   updateNet();
 }
 
@@ -1646,6 +1765,7 @@ function showPeek(c) {
 // --- dragging table items / pan / pinch -------------------------------------
 let feltDrag = null; // dragging empty felt = panning MY view
 let pinch = null;    // two-finger gesture: zoom + rotate + pan in one
+let holdZoom = false; // a long-press zoom is showing: it closes when the finger lifts
 const tPtrs = new Map(); // pointers currently down on the table
 
 /** Ends an in-flight item drag cleanly (used when a pinch takes over). */
@@ -1700,7 +1820,20 @@ tableEl.addEventListener('pointerdown', (e) => {
   // incoming states replace those objects mid-drag (a guest would drop at a
   // stale spot), and the host must not touch state outside apply() (a vetoed
   // drop has to snap back).
-  drag = { id: el.dataset.id, el, dx: p.x - it.x, dy: p.y - it.y, sx: p.x, sy: p.y, x: it.x, y: it.y, moved: false, last: 0 };
+  const d = drag = { id: el.dataset.id, el, dx: p.x - it.x, dy: p.y - it.y, sx: p.x, sy: p.y, x: it.x, y: it.y, ox: it.x, oy: it.y, moved: false, last: 0 };
+  // Touch long-press (≈450 ms without moving) zooms a face-up card or pile
+  // top until the finger lifts (UX-I5); a drag, a pinch or an early lift
+  // cancels it. Release-to-close also swallows the tap the browser may
+  // synthesize on release, which would otherwise land on the overlay.
+  const face = it.k === 'c' ? it.up && it : it.top?.up && it.top;
+  if (face && e.pointerType !== 'mouse') {
+    setTimeout(() => {
+      if (drag !== d || d.moved || pinch) return;
+      drag = null;
+      holdZoom = true;
+      showZoom(face.d, face.i, 'Release to close');
+    }, 450);
+  }
 });
 
 window.addEventListener('pointermove', (e) => {
@@ -1740,8 +1873,17 @@ window.addEventListener('pointermove', (e) => {
   }
 });
 
+/** Closes a long-press zoom (the finger lifted); true if there was one. */
+function endHoldZoom() {
+  if (!holdZoom) return false;
+  holdZoom = false;
+  peekEl.classList.add('hidden');
+  return true;
+}
+
 window.addEventListener('pointercancel', (e) => {
   tPtrs.delete(e.pointerId);
+  endHoldZoom();
   if (tPtrs.size < 2) pinch = null;
   handResize = null;
   feltDrag = null;
@@ -1752,6 +1894,7 @@ window.addEventListener('pointercancel', (e) => {
 
 window.addEventListener('pointerup', (e) => {
   tPtrs.delete(e.pointerId);
+  if (endHoldZoom()) return;
   if (pinch) {
     if (tPtrs.size < 2) pinch = null; // gesture ends; a leftover finger is inert
     return;
@@ -1787,7 +1930,10 @@ window.addEventListener('pointerup', (e) => {
   else if (it.k === 'c' && tgt?.k === 'p') act({ t: 'toPile', id: d.id, pile: tgtId });
   else if (it.k === 'c' && tgt?.k === 'c') act({ t: 'stack', id: d.id, onto: tgtId });
   else if (it.k === 'p' && tgt?.k === 'p') act({ t: 'merge', id: d.id, pile: tgtId });
-  else act({ t: 'move', id: d.id, x: d.x, y: d.y });
+  else {
+    landing = { id: d.id, x: d.x, y: d.y, ox: d.ox, oy: d.oy, until: Date.now() + 1500 };
+    act({ t: 'move', id: d.id, x: d.x, y: d.y });
+  }
 });
 
 tableEl.addEventListener('dblclick', (e) => {
@@ -2711,6 +2857,60 @@ const RULES_TEMPLATES = {
 })`,
 };
 
+// --- game picker (🎲, host only) --------------------------------------------
+/** One entry per shipped template (k = its RULES_TEMPLATES key), plus the
+ *  free table (rules off) and a custom script (the 📜 dialog). */
+const GAMES = [
+  { k: 'holdem', emoji: '🃏', title: "Texas Hold'em", short: "Hold'em", pitch: 'No-limit poker: chips, blinds, betting rounds, automatic showdown', players: '2–8 players' },
+  { k: 'cah', emoji: '😈', title: 'Cards Against Humanity', pitch: 'Fill in the blank; the Card Czar crowns the funniest answer', players: '3+ players' },
+  { k: 'bridge', emoji: '🤝', title: 'Bridge', pitch: 'Partners bid in the chat, then tricks, trumps, the dummy and scoring', players: '4 players' },
+  { k: 'turns', emoji: '🔁', title: 'Turn order', short: 'Turns', pitch: 'Any game you like, one player at a time', players: '2+ players' },
+  { k: 'dealer', emoji: '🤵', title: 'Simple dealer', short: 'Dealer', pitch: 'A "Deal 1 to all" button and nothing enforced', players: 'any number' },
+  { k: 'free', emoji: '🖐', title: 'Free table', pitch: 'No rules: deal, move and flip cards however you like', players: 'any number' },
+  { k: 'custom', emoji: '📜', title: 'Custom script…', short: 'Custom…', pitch: 'Write or paste your own rules', players: '' },
+];
+let askGame = false; // a brand-new table: invite the host to pick a game (the strip)
+
+/** The picker entry matching what the host is running now. */
+const currentGame = () => (!host?.rules?.enabled ? 'free'
+  : GAMES.find((g) => RULES_TEMPLATES[g.k] === host.rules.code)?.k || 'custom');
+
+function renderGames() {
+  const isHost = role === 'host';
+  $('games-btn').classList.toggle('hidden', !isHost);
+  $('game-strip').classList.toggle('hidden', !isHost || !askGame || !!host?.rules);
+}
+
+/** Starts game `k` through the same setRules action as the 📜 dialog. */
+function pickGame(k) {
+  askGame = false;
+  $('games-dialog').close();
+  if (k === 'custom') $('rules-btn').click();
+  else if (k === 'free') act({ t: 'setRules', enabled: false });
+  else {
+    lastRulesError = '';
+    $('rules-code').value = RULES_TEMPLATES[k]; // the 📜 dialog shows what runs
+    act({ t: 'setRules', code: RULES_TEMPLATES[k], enabled: true });
+  }
+  renderGames();
+}
+
+$('game-strip').querySelector('.games').innerHTML = GAMES.map((g) =>
+  `<button data-game="${g.k}" title="${esc(`${g.title}: ${g.pitch}`)}">${g.emoji} ${g.short || g.title}</button>`).join('');
+$('games-btn').addEventListener('click', () => {
+  const cur = currentGame();
+  $('games-list').innerHTML = GAMES.map((g) => `<button data-game="${g.k}"${g.k === cur ? ' class="on"' : ''}>
+    <span class="ge">${g.emoji}</span><span><b>${g.title}</b>${g.k === cur ? ' <i>playing</i>' : ''}<small>${g.pitch}${g.players ? ` · ${g.players}` : ''}</small></span></button>`).join('');
+  $('games-dialog').showModal();
+});
+for (const el of [$('games-list'), $('game-strip')]) {
+  el.addEventListener('click', (e) => {
+    const k = e.target.closest('[data-game]')?.dataset.game;
+    if (k) pickGame(k);
+  });
+}
+$('game-strip-x').addEventListener('click', () => { askGame = false; renderGames(); });
+
 function updateRulesDialog() {
   const isHost = role === 'host';
   const meta = isHost ? host?.rules : view.rules;
@@ -2925,6 +3125,7 @@ function becomeHost(saved) {
     host.seq++;
   } else {
     host = { seq: 1, size: TABLE_W, items: {}, players: {}, log: [] };
+    askGame = true;
     ensurePlayer(pid, myName);
     const deck = standardDeck(false);
     const deckId = uid();
