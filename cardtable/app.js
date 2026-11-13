@@ -1340,7 +1340,7 @@ function contentFor(it) {
 // Web Animations only: nothing to clean up, no forced reflows.
 const calm = matchMedia('(prefers-reduced-motion: reduce)');
 let shown = { items: {}, players: {} }; // the view renderItems last drew
-let landing = null; // {id, x, y, ox, oy, until}: our own drop (and the drag's origin), held until the host confirms or vetoes it
+let landing = null; // {id, x, y, ox, oy}: our own drop (and the drag's origin), held until the host confirms or vetoes it
 const MOTION_MS = 260;
 
 /** A seat's spot on the rim in table coords (top-left of a card centred there). */
@@ -1410,8 +1410,9 @@ function renderItems() {
     // Our own drop: states the host sent before it applied our final move
     // carry a stale spot from mid-drag; keep the card where we let go until
     // the host confirms it (or vetoes it: the card was back at its origin).
+    // Anything else (a script moved it on) is shown once the hold times out.
     const at = (x, y) => Math.abs(it.x - x) < 0.5 && Math.abs(it.y - y) < 0.5;
-    if (landing?.id === id && (at(landing.x, landing.y) || at(landing.ox, landing.oy) || Date.now() > landing.until)) landing = null;
+    if (landing?.id === id && (at(landing.x, landing.y) || at(landing.ox, landing.oy))) landing = null;
     if (drag?.id !== id && landing?.id !== id) { el.style.left = `${it.x}px`; el.style.top = `${it.y}px`; }
     el.style.transform = `rotate(${it.rot}deg)`;
     el.style.zIndex = it.z;
@@ -1543,10 +1544,13 @@ function renderCues() {
     }
   }
   const winners = Array.isArray(pub.winners) ? pub.winners : [];
-  // winSeen stays null until the first real state: joining (or reloading
-  // into) a finished game is not a new win.
-  if (winSeen && winners.some((w) => !winSeen.includes(w))) celebrate(winners.includes(pid));
-  if (view.seq) winSeen = winners;
+  // winSeen stays null until the first real state of a running game: joining
+  // (or reloading into) a finished game, or re-enabling a kept one, is not a new win.
+  if (!view.rules?.enabled) winSeen = null;
+  else {
+    if (winSeen && winners.some((w) => !winSeen.includes(w))) celebrate(winners.includes(pid));
+    if (view.seq) winSeen = winners;
+  }
 }
 
 /** An emoji confetti burst over the whole screen (bigger, plus a buzz, for the winners). */
@@ -1836,6 +1840,10 @@ tableEl.addEventListener('pointerdown', (e) => {
   }
 });
 
+// Android's long-press image menu ("Download image…") would cover or cancel
+// the long-press zoom on image-deck cards (iOS: -webkit-touch-callout).
+tableEl.addEventListener('contextmenu', (e) => { if (e.target.closest('.item')) e.preventDefault(); });
+
 window.addEventListener('pointermove', (e) => {
   if (tPtrs.has(e.pointerId)) tPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (pinch) { if (tPtrs.size >= 2) updatePinch(); return; }
@@ -1931,7 +1939,11 @@ window.addEventListener('pointerup', (e) => {
   else if (it.k === 'c' && tgt?.k === 'c') act({ t: 'stack', id: d.id, onto: tgtId });
   else if (it.k === 'p' && tgt?.k === 'p') act({ t: 'merge', id: d.id, pile: tgtId });
   else {
-    landing = { id: d.id, x: d.x, y: d.y, ox: d.ox, oy: d.oy, until: Date.now() + 1500 };
+    // The hold heals itself: with no confirming state (a script moved the
+    // card elsewhere, a veto left it mid-drag, coalescing merged the state
+    // away) we show where the host has it after 1.5 s, quiet table or not.
+    const L = landing = { id: d.id, x: d.x, y: d.y, ox: d.ox, oy: d.oy };
+    setTimeout(() => { if (landing === L) { landing = null; renderItems(); } }, 1500);
     act({ t: 'move', id: d.id, x: d.x, y: d.y });
   }
 });
@@ -2879,20 +2891,21 @@ function renderGames() {
   const isHost = role === 'host';
   $('games-btn').classList.toggle('hidden', !isHost);
   $('game-strip').classList.toggle('hidden', !isHost || !askGame || !!host?.rules);
+  $('game-strip').classList.toggle('compact', Object.keys(view.players).length > 1);
 }
 
-/** Starts game `k` through the same setRules action as the 📜 dialog. */
+/** Starts game `k` through the same setRules action as the 📜 dialog
+ *  (whose act() re-renders, hiding the strip; 'custom' renders itself). */
 function pickGame(k) {
   askGame = false;
   $('games-dialog').close();
-  if (k === 'custom') $('rules-btn').click();
+  if (k === 'custom') { renderGames(); $('rules-btn').click(); }
   else if (k === 'free') act({ t: 'setRules', enabled: false });
   else {
     lastRulesError = '';
     $('rules-code').value = RULES_TEMPLATES[k]; // the 📜 dialog shows what runs
     act({ t: 'setRules', code: RULES_TEMPLATES[k], enabled: true });
   }
-  renderGames();
 }
 
 $('game-strip').querySelector('.games').innerHTML = GAMES.map((g) =>
@@ -2910,6 +2923,7 @@ for (const el of [$('games-list'), $('game-strip')]) {
   });
 }
 $('game-strip-x').addEventListener('click', () => { askGame = false; renderGames(); });
+$('game-strip-ask').addEventListener('click', () => $('games-btn').click());
 
 function updateRulesDialog() {
   const isHost = role === 'host';

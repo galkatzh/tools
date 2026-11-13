@@ -9,7 +9,8 @@ Open the page → pick a nickname → you're hosting a room → **Copy invite**
 (or show the invite as a **QR** code for phones to scan) → friends open the
 link, pick their nickname, and everyone plays on the same live table. A
 brand-new table asks the host *What are we playing?* in a slim strip along
-its top edge (never a pop-up): one click starts Hold'em, Cards Against
+its top edge (never a pop-up; once friends sit down it shrinks to a 🎲 chip
+in the corner, clear of their seats): one click starts Hold'em, Cards Against
 Humanity, Bridge, turn order or a simple dealer, keeps the free table, or
 opens the 📜 script editor; the **🎲 Games** button offers the same picker
 any time.
@@ -43,7 +44,7 @@ that player's seat, cards dealt or drawn into hands fly to their owner's
 seat as card backs, and flips turn the card over (your own drag is never
 animated). When a game's rules say it's **your turn**, the tab title reads
 "⏳ Your turn", your seat label pulses, your hand bar gets an amber edge, a
-short "Your turn" chip pops up and phones vibrate; a **win** rains emoji
+short "Your turn" chip pops up in the hand bar and phones vibrate; a **win** rains emoji
 confetti on every screen and buzzes the winners' phones. On touch screens,
 **press and hold** a face-up card (or pile top) to read it full-screen; let
 go to close. With *reduce motion* set in the OS, nothing glides, flips,
