@@ -97,7 +97,8 @@ if it ever matters.
 
 A thin wrapper over existing internals in `app.js`:
 
-- **Reads**: `t.players()` (id/name/seat/handCount, seat-ordered),
+- **Reads**: `t.players()` (id/name/seat/online/handCount, seat-ordered;
+  `host: true` marks the host's own seat, for host-only commands),
   `t.items()`, `t.piles()`, `t.hand(pid)` (the host already holds all
   hands, pile orders and face-down identities — guests never receive
   those, see README "Honest limits").
@@ -190,7 +191,11 @@ for script authors. A "blank" template with the commented hook skeleton is
 the default.
 
 1. **Turn order** — locks play/deal/draw to the current turn, advances on
-   `play`, shows ⏳ on the active seat. A composable base for any game.
+   `play`, shows ⏳ on the active seat, and never leaves the turn with an
+   offline player (skipped at setup, passed on when they leave, or — after
+   a host reload, which fires no `onLeave` — once a `t.schedule`d grace
+   period after anyone rejoins runs out). A
+   composable base for any game.
 2. **No-limit Hold'em with chips** — stacks tracked per player and shown
    on seat labels (via the generic `public.badges`), automatic blinds with
    a rotating dealer button, turn-enforced betting rounds (buttons for the
@@ -209,15 +214,27 @@ the default.
    *Abandon hand* (every bet refunded), and the deck, muck, board and burn
    cards are locked. Proves a complete money game runs as pure script.
 3. **Cards Against Humanity** — the printed rules end to end: 10-card
-   hands, a rotating Card Czar (⏳👑), black prompts flipped from a draw
-   pile, face-down submissions (validated: the Czar can't answer, answers
-   must be white cards, face down, at most PICK of them), anonymous
-   shuffled reveal columns, Czar-only 👉 judging buttons, ⭐ scores as
-   badges, PICK 2/3 handling, discard reshuffling, join/leave handling,
-   and a win at the goal (`!goal N`). Demonstrates `t.newDeck` +
-   windowed draw piles for a ~1600-card game.
-4. **War / simple dealer** — deal N to all, flip top on a button; the
-   minimal-script example.
+   hands, a rotating Card Czar (⏳👑, always an online player), black
+   prompts flipped from a draw pile, face-down submissions into an
+   *Answers* pile (`public.facedown` locks the answerers' 🂠 toggle on;
+   validated: the Czar can't answer, answers must be white cards, face
+   down, at most PICK of them), an anonymous reveal — the answers are
+   re-dealt as new items from a temporary pile, in shuffled numbered
+   columns upright for the Czar — Czar-only 👉 buttons naming each
+   answer, a result that stays up (🏆 on the winning column) until a
+   `t.schedule`d next round, ⭐ scores as badges, PICK 2/3 handling,
+   discard reshuffling, join/leave handling (⏭ *Skip Czar* when the Czar
+   is away), and a win at the goal (`!goal N`). Demonstrates
+   `t.newDeck` + windowed draw piles for a ~1600-card game.
+4. **Bridge** — a chat auction, then enforced turns over the four players
+   frozen at Deal (a fixed rotation that waits for a dropped player
+   rather than `t.nextSeat`), follow-suit, the dummy, trump-aware tricks
+   swept face down, `!contract` for the dealer or the host
+   (`t.players()`'s `host` flag), and a Deal that regathers its own 52
+   from hands, piles and loose cards (even after a passed-out hand left
+   no pile) while other decks stay put.
+5. **Simple dealer** — deal 1 to all on a button, saying so when the
+   deck is short or gone; the minimal-script example.
 
 ## What it deliberately does NOT do
 
