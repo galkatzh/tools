@@ -148,8 +148,8 @@ on the seat labels, automatic blinds with a rotating button, turn-enforced
 betting via buttons and chat — `!bet 50`, `!allin`, `!rebuy` — streets that
 deal themselves when a round closes, all-in run-outs, and an automatic
 showdown that evaluates best-5-of-7, builds side pots, and pays each pot to
-the right hands), **Bridge** (the four players online at Deal play the hand
-— anyone else watches; a real chat auction — `!bid 1H`,
+the right hands), **Bridge** (exactly four players online at Deal play the hand
+— anyone joining later watches; a real chat auction — `!bid 1H`,
 `!pass`, `!double`, dealer rotation, insufficiency checks — then enforced
 turns and follow-suit, the dummy laid face-up and played by the declarer,
 trump-aware trick resolution, face-down trick piles, scoring, and a 🏆 for

@@ -1940,9 +1940,13 @@ const RULES_TEMPLATES = {
     t.public.turn = t.data.turn;
     t.say('Turn order: ' + ps.map((p) => p.name).join(' → '));
   },
-  onLeave(t, p) {
-    if (p !== t.data.turn) return;
-    t.data.turn = t.public.turn = t.nextSeat(p);
+  onLeave(t, p) { if (p === t.data.turn) this.passOn(t); },
+  // After a host reload a turn holder who never comes back gets no onLeave:
+  // whenever someone (re)joins, give an absent turn holder 10 s to return.
+  onJoin(t) { t.schedule(10, 'away'); },
+  onTimer(t) { if (!t.players().some((p) => p.id === t.data.turn && p.online)) this.passOn(t); },
+  passOn(t) {
+    t.data.turn = t.public.turn = t.nextSeat(t.data.turn);
     t.say('The turn passes on — its player left');
   },
   validate(t, a) {
@@ -2276,10 +2280,12 @@ const RULES_TEMPLATES = {
   SYMS: { C: '♣', D: '♦', H: '♥', S: '♠', NT: 'NT' },
   setup(t) {
     const n = t.players().filter((p) => p.online).length;
-    t.say(n === 4
-      ? 'Bridge: press Deal, then bid in chat ("!bid 1H", "!pass", ...).'
-      : 'Bridge needs exactly 4 players online (' + n + ' now) — anyone else watches.');
+    t.say(n === 4 ? 'Bridge: press Deal, then bid in chat ("!bid 1H", "!pass", ...).' : this.needFour(n));
   },
+  // Everyone online holds a seat, so extras must leave before the deal.
+  needFour: (n) => n < 4
+    ? 'Bridge deals to exactly 4 online players (' + n + ' online) — waiting for ' + (4 - n) + ' more.'
+    : 'Bridge deals to exactly 4 online players (' + n + ' online) — extra players must leave before the deal; anyone who joins later watches.',
   buttons: (t) => (t.data.phase === 'play' || t.data.phase === 'bid' ? [] : [{ id: 'deal', label: '🂠 Deal (13 each)' }]),
   deck(t) { return t.piles().sort((a, b) => b.cards.length - a.cards.length)[0]; },
   suitOf(t, c) { return t.cardName(c).slice(-1); },
@@ -2305,15 +2311,25 @@ const RULES_TEMPLATES = {
     if (id !== 'deal') return;
     if (t.data.phase === 'play' || t.data.phase === 'bid') return t.say('Finish the hand first.');
     const ps = t.players().filter((p) => p.online);
-    if (ps.length !== 4) return t.say('Bridge needs exactly 4 players online (' + ps.length + ' now) — anyone else watches.');
-    const deck = this.deck(t);
-    if (!deck) return t.say('No deck on the table!');
-    // gather all 52: loose cards, both sides' trick piles, every hand
-    for (const it of t.items()) if (it.k === 'c') t.toPile(it.id, deck.id);
-    for (const p of t.piles()) if (p.id !== deck.id) t.merge(p.id, deck.id);
-    for (const p of t.players()) t.takeHand(p.id, deck.id);
-    t.shuffle(deck.id);
-    t.dealToAll(deck.id, 13);
+    if (ps.length !== 4) return t.say(this.needFour(ps.length));
+    // This game's deck: the one dealt last time while any of it is still
+    // around (after a passed-out hand it is all in the hands, with no pile
+    // left), else the biggest pile. Other decks' cards and piles stay put.
+    const has = (D) => D != null && (t.items().some((it) => it.d === D || (it.cards || []).some((c) => c.d === D))
+      || t.players().some((p) => t.hand(p.id).some((c) => c.d === D)));
+    const D = has(t.data.deckD) ? t.data.deckD : this.deck(t)?.cards[0].d;
+    if (D == null) return t.say('No deck on the table!');
+    const ours = (p) => p.cards.every((c) => c.d === D);
+    const g = t.geom(), mine = t.piles().filter(ours).sort((a, b) => b.cards.length - a.cards.length)[0];
+    const deckId = mine ? mine.id : t.newPile([], { x: g.cx - 50, y: g.cy - 70, name: 'Deck' });
+    // gather all 52: loose cards, both sides' trick piles, stray stacks, every hand
+    for (const it of t.items()) if (it.k === 'c' && it.d === D) t.toPile(it.id, deckId);
+    for (const p of t.piles()) if (p.id !== deckId && ours(p)) t.merge(p.id, deckId);
+    for (const p of t.players()) t.takeHand(p.id, deckId);
+    if (!t.piles().find((p) => p.id === deckId).cards.length) { t.remove(deckId); return t.say('No deck on the table!'); }
+    t.data.deckD = D;
+    t.shuffle(deckId);
+    t.dealToAll(deckId, 13);
     const dealerIdx = ((t.data.dealerIdx ?? -1) + 1) % 4; // rotates every deal
     Object.assign(t.data, {
       phase: 'bid', dealerIdx, trump: null, level: null, declarer: null, dummy: null,
@@ -2610,9 +2626,8 @@ const RULES_TEMPLATES = {
         t.say('reshuffled the ' + (kind === 'w' ? 'white' : 'black') + ' discards back in');
       }
       const idxs = d[kind + 'left'].splice(0, this.CHUNK);
-      const g = t.geom(); // both decks in the middle: the Czar's side of the table changes every round
       const nid = t.newPile(idxs.map((i) => ({ d: deckId, i, up: false })),
-        { x: kind === 'w' ? g.cx - 110 : g.cx + 10, y: g.cy - 70, name: kind === 'w' ? 'White deck' : 'Black deck' });
+        { ...this.pileAt(t, kind), name: kind === 'w' ? 'White deck' : 'Black deck' });
       if (pile) t.merge(nid, pile.id); else d[kind + 'pile'] = nid;
       pile = t.piles().find((p) => p.id === d[kind + 'pile']);
     }
@@ -2639,6 +2654,10 @@ const RULES_TEMPLATES = {
     const rot = ((s - 90) % 360 + 360) % 360, r = (rot * Math.PI) / 180;
     return { x: g.cx - 50 + dx * Math.cos(r) - dy * Math.sin(r), y: g.cy - 70 + dx * Math.sin(r) + dy * Math.cos(r), rot, up: true };
   },
+  // The draw piles flank the center across the Czar's view (|dy| ≤ 70): clear
+  // of a standard deck in the very center, the prompt (dy -220) and the
+  // columns (dy ≥ 120). startRound moves them along when the Czar changes.
+  pileAt(t, kind) { const o = this.at(t, kind === 'w' ? -170 : 170, 0); return { x: o.x, y: o.y }; },
   // Answer column gi: its #marker (k = -1) on top, then the answer cards
   // (each overlapping the one before, so the top lines of all stay readable).
   spot(t, gi, k) {
@@ -2655,6 +2674,7 @@ const RULES_TEMPLATES = {
     d.subs = {}; d.order = null; d.phase = 'submit'; d.round = (d.round || 0) + 1;
     this.refill(t);
     d.black = t.deal(this.stock(t, 'b', 1).id, this.at(t, 0, -220));
+    for (const k of ['w', 'b']) { const o = this.pileAt(t, k); t.move(d[k + 'pile'], o.x, o.y); }
     d.pick = ((t.card(d.black) || {}).meta || {}).pick || 1;
     d.roundPlayers = t.players().filter((p) => p.online && p.id !== d.czar).map((p) => p.id);
     if (d.pick === 3) for (const p of d.roundPlayers) this.dealWhite(t, p, 2); // the printed rule: draw 2 for PICK 3

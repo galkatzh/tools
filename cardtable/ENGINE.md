@@ -190,7 +190,9 @@ the default.
 
 1. **Turn order** — locks play/deal/draw to the current turn, advances on
    `play`, shows ⏳ on the active seat, and never leaves the turn with an
-   offline player (skipped at setup, passed on when they leave). A
+   offline player (skipped at setup, passed on when they leave, or — after
+   a host reload, which fires no `onLeave` — once a `t.schedule`d grace
+   period after anyone rejoins runs out). A
    composable base for any game.
 2. **No-limit Hold'em with chips** — stacks tracked per player and shown
    on seat labels (via the generic `public.badges`), automatic blinds with
@@ -219,8 +221,10 @@ the default.
 4. **Bridge** — a chat auction, then enforced turns over the four players
    frozen at Deal (a fixed rotation that waits for a dropped player
    rather than `t.nextSeat`), follow-suit, the dummy, trump-aware tricks
-   swept face down, and `!contract` for the dealer or the host
-   (`t.players()`'s `host` flag).
+   swept face down, `!contract` for the dealer or the host
+   (`t.players()`'s `host` flag), and a Deal that regathers its own 52
+   from hands, piles and loose cards (even after a passed-out hand left
+   no pile) while other decks stay put.
 5. **Simple dealer** — deal 1 to all on a button, saying so when the
    deck is short or gone; the minimal-script example.
 
