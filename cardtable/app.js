@@ -1375,8 +1375,7 @@ function renderPlayers() {
   if (sig === seatSig) return;
   seatSig = sig;
   for (const el of wrapEl.querySelectorAll('.seat')) el.remove();
-  const W = wrapEl.clientWidth, H = wrapEl.clientHeight;
-  let rowBottom = 12; // #rules-btns' default spot (CSS)
+  const seats = [];
   for (const [p, pl] of Object.entries(view.players)) {
     if (pl.seat == null) continue;
     const rad = (pl.seat * Math.PI) / 180;
@@ -1385,18 +1384,28 @@ function renderPlayers() {
     el.className = `seat${pl.online && p !== hostGone ? '' : ' offline'}${p === pid ? ' me' : ''}${p === turn ? ' turn' : ''}${winners.includes(p) ? ' winner' : ''}`;
     el.style.borderColor = pl.color;
     el.textContent = `${winners.includes(p) ? '🏆 ' : ''}${p === turn ? '⏳ ' : ''}${pl.name || 'Player'} 🂠${pl.handCount}${badges[p] ? ` ${badges[p]}` : ''}`;
-    wrapEl.appendChild(el);
+    seats.push({ p, el, sx, sy });
+  }
+  wrapEl.append(...seats.map((s) => s.el));
+  // All sizes are read before any position is written: one layout for all the
+  // labels, not one per seat (this runs on every pan/zoom/pinch frame).
+  for (const s of seats) { s.hw = s.el.offsetWidth / 2 + 4; s.hh = s.el.offsetHeight / 2 + 2; }
+  const W = wrapEl.clientWidth, H = wrapEl.clientHeight;
+  let rowBottom = 12, noticeTop = 10; // #rules-btns' and #notices' default spots (CSS)
+  for (const { p, el, sx, sy, hw, hh } of seats) {
     // Keep the whole label on screen (side seats sit on the rim, which a
     // phone's fit zoom puts right at the screen edge).
-    const hw = el.offsetWidth / 2 + 4, hh = el.offsetHeight / 2 + 2;
     const y = clamp(sy, hh, H - hh);
     el.style.left = `${clamp(sx, hw, W - hw)}px`;
     el.style.top = `${y}px`;
     // Your own label in the lower half: lift the rules button row just above
     // it, so the row never hides your name, ⏳, chips or score.
     if (p === pid && y > H / 2) rowBottom = Math.max(rowBottom, H - (y - hh) + 6);
+    // Labels across the top: the banner and toasts start just below them.
+    if (y < H / 4) noticeTop = Math.max(noticeTop, y + hh + 4);
   }
   $('rules-btns').style.bottom = `${rowBottom}px`;
+  $('notices').style.top = `${noticeTop}px`;
 }
 
 let handSig = '';
@@ -2895,15 +2904,18 @@ async function manifestDeck(m, images) {
   return deck;
 }
 
+// Building a big image deck takes seconds: one build at a time, and closing
+// the dialog meanwhile (Cancel/Escape) abandons that build — its result is
+// dropped even if the player has reopened the dialog since.
+let deckBuild = 0; // bumped on every close: a build that started before is stale
+const deckBtn = (busy) => { $('deck-add').disabled = busy; $('deck-add').textContent = busy ? 'Building…' : 'Add deck'; };
+$('deck-dialog').addEventListener('close', () => { deckBuild++; deckBtn(false); });
 $('deck-form').addEventListener('submit', async (e) => {
   if (e.submitter?.value !== 'add') return;
   e.preventDefault();
-  // Building a big image deck takes seconds: one build at a time, and a
-  // Cancel/Escape meanwhile drops the result instead of adding it anyway.
-  const btn = $('deck-add');
-  if (btn.disabled) return;
-  btn.disabled = true;
-  btn.textContent = 'Building…';
+  if ($('deck-add').disabled) return;
+  const run = deckBuild;
+  deckBtn(true);
   const kind = document.querySelector('input[name="deck-kind"]:checked').value;
   const name = $('deck-name').value.trim();
   try {
@@ -2927,7 +2939,7 @@ $('deck-form').addEventListener('submit', async (e) => {
       if (backFile) deck.back = await fileToDataURL(backFile);
       if (name) deck.name = name;
     }
-    if (!$('deck-dialog').open) return; // the player cancelled while it was building
+    if (run !== deckBuild) return; // the player cancelled while it was building
     act({ t: 'addDeck', deckId: uid(), deck, x: TABLE_W / 2 - CARD_W / 2, y: TABLE_H / 2 - CARD_H / 2 });
     $('deck-dialog').close();
     $('deck-form').reset();
@@ -2935,8 +2947,7 @@ $('deck-form').addEventListener('submit', async (e) => {
     console.error('failed to build deck', err);
     toast(`Failed to build deck: ${err.message}`);
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Add deck';
+    if (run === deckBuild) deckBtn(false); // else the close already reset it (maybe for a new build)
   }
 });
 
