@@ -36,7 +36,9 @@ select {
 
 /* --- main area: table + log panel --- */
 #main { flex: 1; display: flex; min-height: 0; position: relative; }
-#table-wrap { flex: 1; position: relative; overflow: hidden; background: #0b1120; }
+/* isolation: the z-indexes inside (seats, bulbs, rules row, action bar) stay
+   inside the table, so the phone's overlaid log panel (#side) paints above them. */
+#table-wrap { flex: 1; position: relative; overflow: hidden; background: #0b1120; isolation: isolate; }
 
 #side {
   width: 280px; flex-shrink: 0; display: flex; flex-direction: column;
@@ -75,14 +77,20 @@ select {
 /* scripted announcement banner (t.announce / t.win) */
 #announce {
   position: fixed; top: 18%; left: 50%; transform: translateX(-50%);
+  width: max-content; /* else left: 50% shrink-wraps it to half the screen */
   max-width: 80vw; text-align: center; z-index: 400000; pointer-events: none;
   background: #0f172af0; border: 2px solid #a78bfa; border-radius: 14px;
   padding: 14px 26px; font-size: 22px; font-weight: 700; color: #ede9fe;
   box-shadow: 0 8px 30px #000c; transition: opacity 0.7s;
 }
 #announce.fade { opacity: 0; }
+/* Phones: a compact banner (about 2 lines) instead of a block over the table. */
+@media (max-width: 480px), (max-height: 500px) {
+  #announce { font-size: 16px; padding: 8px 14px; max-width: 92vw; }
+}
 
 /* scripted rules: button row + toolbar state */
+/* bottom is moved up by renderPlayers() so the row sits above your own seat label */
 #rules-btns {
   position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
   display: flex; gap: 8px; z-index: 9500;
@@ -140,8 +148,11 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 }
 
 /* --- action bar --- */
+/* max-content + wrap: on a narrow screen the bar wraps into rows instead of
+   running off the edge (placeBar() clamps it by its real size). */
 #action-bar {
   position: absolute; display: flex; gap: 4px; padding: 5px;
+  width: max-content; max-width: calc(100% - 8px); flex-wrap: wrap; justify-content: center;
   background: #0f172af0; border-radius: 10px; box-shadow: 0 2px 10px #000a;
   z-index: 100000; transform: translateX(-50%);
 }
@@ -170,7 +181,9 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 .hcard, #ghost { width: calc(var(--hch) * 5 / 7); height: var(--hch); border-radius: 7px; overflow: hidden; background: #fff; }
 .hcard {
   position: relative; flex: 0 0 auto; box-shadow: 0 2px 5px #0007;
-  cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
+  /* pan-x: a sideways swipe scrolls the hand (the browser cancels our
+     pointer); only a vertical drag pulls a card out to play it */
+  cursor: grab; touch-action: pan-x; user-select: none; -webkit-user-select: none;
 }
 .hcard .mid .mr, #ghost .mid .mr { font-size: calc(var(--hch) * 0.27); }
 .hcard .mid .ms, #ghost .mid .ms { font-size: calc(var(--hch) * 0.17); }
@@ -249,8 +262,19 @@ dialog ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 14px; }
 #qr-canvas { display: block; margin: 0 auto; border-radius: 8px; background: #fff; max-width: 100%; }
 #qr-link { font-size: 11px; color: #94a3b8; overflow-wrap: anywhere; margin: 8px 0 0; max-width: 320px; }
 
+/* At the top of the table area (lives in #main), click-through: it never
+   blocks the rules buttons, the hand or your seat underneath. */
 #toast {
-  position: fixed; bottom: 150px; left: 50%; transform: translateX(-50%);
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
   background: #dc2626; color: #fff; padding: 10px 16px; border-radius: 10px;
-  box-shadow: 0 4px 14px #000a; z-index: 999999; max-width: 80vw; font-size: 14px;
+  box-shadow: 0 4px 14px #000a; z-index: 999999; max-width: 92%; font-size: 14px;
+  pointer-events: none; text-align: center;
+}
+#toast.ok { background: #059669; }
+
+/* Short screens (phone landscape): give the table every pixel we can. */
+@media (max-height: 500px) {
+  #logo { display: none; }
+  #toolbar { padding: 3px 8px; }
+  #hand-bar { padding: 4px 8px; min-height: calc(var(--hch) + 8px); }
 }

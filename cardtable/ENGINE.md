@@ -121,8 +121,10 @@ A thin wrapper over existing internals in `app.js`:
   script can set up its own material from scratch. Anything a human can do, a script can
   do — that is the operational definition of "can run arbitrary games".
   Ops performed by scripts act as a synthetic **"📜 Rules"** actor: they go
-  through `logEvent`/`mark`, so automations are visible in the table log
-  and as name bulbs — the same anti-cheat property as human actions.
+  through `logEvent`/`mark`, so automations are visible in the table log —
+  the same anti-cheat property as human actions. (Name bulbs over the
+  table are for human actors only: a single deal or judge does several
+  ops, and a bulb per op would just pile up.)
 - **Player interaction**: `t.say(msg)` (log line as Rules),
   `t.tell(pid, msg)` (targeted toast — a bridged tab also hands it to its
   terminal/bot as `note: …`), `t.announce(msg)` (a big banner on
