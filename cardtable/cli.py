@@ -18,10 +18,14 @@ cah-bot.py for a complete example.
 """
 import argparse
 import json
+import math
 import secrets
+import select
+import socket
 import sys
 import threading
 import time
+import traceback
 import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -35,6 +39,8 @@ class Bridge:
         self.state = None
         self._cmds = []
         self._cv = threading.Condition()
+        self._poll = 0     # generation of the tab's newest pending long-poll
+        self._seen = 0.0   # when the tab last called in
         self._listeners = []
         bridge = self
 
@@ -49,15 +55,33 @@ class Bridge:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _gone(self):
+                """True once the tab hung up (a reload aborts its pending poll)."""
+                try:
+                    ready = select.select([self.connection], [], [], 0)[0]
+                    return bool(ready) and not self.connection.recv(1, socket.MSG_PEEK)
+                except OSError as e:
+                    print(f'bridge: poll connection lost: {e}', file=sys.stderr)
+                    return True
+
             def do_GET(self):
                 url = urllib.parse.urlparse(self.path)
                 q = urllib.parse.parse_qs(url.query)
                 if q.get('token', [''])[0] != bridge.token:
                     return self._cors(403, b'"bad token"')
+                bridge._seen = time.time()
                 if url.path == '/poll':
+                    # Newest poll wins (see cli.js): only the tab's latest poll
+                    # takes commands, and only while its socket is still open,
+                    # so a reloaded tab's aborted poll can't swallow them. A
+                    # demoted poll just answers [] at its timeout.
+                    out = []
                     with bridge._cv:
-                        bridge._cv.wait_for(lambda: bridge._cmds, timeout=20)
-                        out, bridge._cmds = bridge._cmds, []
+                        bridge._poll += 1
+                        me = bridge._poll
+                        take = lambda: bridge._cmds and bridge._poll == me and not self._gone()
+                        if bridge._cv.wait_for(take, timeout=20):
+                            out, bridge._cmds = bridge._cmds, []
                     return self._cors(200, json.dumps(out).encode())
                 self._cors(404, b'"not found"')
 
@@ -66,6 +90,7 @@ class Bridge:
                 q = urllib.parse.parse_qs(url.query)
                 if q.get('token', [''])[0] != bridge.token:
                     return self._cors(403, b'"bad token"')
+                bridge._seen = time.time()
                 if url.path == '/state':
                     body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
                     try:
@@ -73,9 +98,15 @@ class Bridge:
                     except ValueError as e:
                         print(f'bad state payload: {e}', file=sys.stderr)
                         return self._cors(400, b'"bad json"')
+                    self._cors(200, b'"ok"')
+                    # A throwing subscriber is the bot's bug, not the tab's:
+                    # report it and keep the others (and the tab) going.
                     for fn in list(bridge._listeners):
-                        fn(bridge.state, prev)
-                    return self._cors(200, b'"ok"')
+                        try:
+                            fn(bridge.state, prev)
+                        except Exception:
+                            traceback.print_exc()
+                    return
                 self._cors(404, b'"not found"')
 
         self._server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
@@ -85,15 +116,22 @@ class Bridge:
     def url_for(self, invite_url, as_name=None):
         base = invite_url.split('~cli~')[0]
         url = f'{base}~cli~{self.port}-{self.token}'
-        if as_name:
-            url += f'~as~{urllib.parse.quote(as_name)}'
+        if as_name:  # '~' separates hash fields, so it must be escaped too
+            url += f"~as~{urllib.parse.quote(as_name, safe='').replace('~', '%7E')}"
         return url
 
     def send(self, **cmd):
         """Queues a command for the tab, e.g. send(t='play', idx=0, up=False)."""
+        # NaN/inf would come out as bare NaN/Infinity — invalid JSON that loses
+        # the tab the whole poll batch — so refuse them here (raises ValueError).
+        json.dumps(cmd, allow_nan=False)
         with self._cv:
             self._cmds.append(cmd)
             self._cv.notify_all()
+
+    def idle(self):
+        """Seconds since the tab last called in (inf before it ever did)."""
+        return time.time() - self._seen if self._seen else float('inf')
 
     def on(self, fn):
         """Subscribes fn(state, prev_state); returns an unsubscribe function."""
@@ -101,7 +139,8 @@ class Bridge:
         return lambda: self._listeners.remove(fn)
 
     def wait(self, pred, timeout=30):
-        """Blocks until the state matches pred; returns it (raises on timeout)."""
+        """Blocks until the state matches pred; returns it (raises on timeout,
+        or whatever pred raises)."""
         deadline = time.time() + timeout
         while time.time() < deadline:
             s = self.state
@@ -112,7 +151,19 @@ class Bridge:
 
     # convenience wrappers for bot code
     def chat(self, msg): self.send(t='chat', msg=msg)
-    def play(self, idx, up=True, **kw): self.send(t='play', idx=idx, up=up, **kw)
+
+    def play(self, card, up=True, **kw):
+        """Plays a hand card, sent by identity (key) so the tab's state lag
+        can't shift which card goes: a card dict from a state you hold
+        (safest), a key, or an index — resolved against `state` as it is when
+        you call."""
+        if isinstance(card, int):
+            hand = (self.state or {}).get('hand', [])
+            card = hand[card] if 0 <= card < len(hand) else {'idx': card}
+        elif isinstance(card, str):
+            card = {'key': card}
+        self.send(t='play', idx=card.get('idx'), key=card.get('key'), up=up, **kw)
+
     def draw(self, pile=None): self.send(t='draw', id=pile)
     def btn(self, bid): self.send(t='btn', id=bid)
 
@@ -123,11 +174,12 @@ class Bridge:
 # ---------------------------------------------------------------------------
 HELP = """commands:
   hand                    your cards, with indices
-  table                   piles and face-up cards
+  table                   piles (with a face-up top card) and table cards
   players                 who sits where (⏳ turn, ⭐ badges, 🏆)
   log [n]                 last n log lines (default 15)
   buttons                 rules buttons you can press
   play <idx...> [--down]  play hand card(s) at your seat (--down = face down)
+  discard <idx> [pile]    put a hand card onto a pile (default: biggest)
   draw [pile]             draw from a pile (default: biggest; id or name)
   deal [pile] [--up]      deal the top card onto the table
   shuffle [pile]          shuffle a pile
@@ -143,6 +195,20 @@ def fmt_card(c):
     return c['name'] + (f' — {text}' if text and text != c['name'] else '')
 
 
+def need(args, n, usage):
+    """Raises `usage` unless args[0] is present and args[1:n] are finite numbers."""
+    try:
+        nums = [float(a) for a in args[1:n]]
+        if len(args) < n or not all(map(math.isfinite, nums)):
+            raise ValueError
+        return nums
+    except ValueError:
+        raise ValueError(usage) from None
+
+
+STALE_S = 25  # a live tab re-polls at least every 20 s
+
+
 def run_cmd(bridge, line):
     parts = line.split()
     cmd, args = parts[0], parts[1:]
@@ -150,6 +216,8 @@ def run_cmd(bridge, line):
     if s is None and cmd not in ('help', 'quit'):
         print('… no tab connected yet')
         return
+    if s is not None and bridge.idle() > STALE_S and cmd not in ('help', 'quit'):
+        print(f'⚠ tab not seen for {round(bridge.idle())}s — commands queue until it is back')
     if cmd == 'help':
         print(HELP)
     elif cmd == 'quit':
@@ -162,7 +230,8 @@ def run_cmd(bridge, line):
     elif cmd == 'table':
         for it in s['items']:
             if it['kind'] == 'pile':
-                print(f"  [{it['id']}] pile \"{it['name'] or 'stack'}\" ×{it['count']} @{it['x']},{it['y']}")
+                top = f" top: {fmt_card(it['top'])}" if it.get('top') else ''
+                print(f"  [{it['id']}] pile \"{it['name'] or 'stack'}\" ×{it['count']}{top} @{it['x']},{it['y']}")
             else:
                 print(f"  [{it['id']}] {fmt_card(it) if it['up'] else 'face-down card'} @{it['x']},{it['y']}")
     elif cmd == 'players':
@@ -183,11 +252,17 @@ def run_cmd(bridge, line):
         if not s['buttons']:
             print('(none)')
     elif cmd == 'play':
-        idxs = sorted((int(a) for a in args if a.isdigit()), reverse=True)
+        idxs = list(dict.fromkeys(int(a) for a in args if a.isdigit()))
         if not idxs:
             raise ValueError('play <idx...> — see "hand"')
-        for idx in idxs:  # high→low so earlier plays don't shift later indices
-            bridge.play(idx, up='--down' not in args)
+        for idx in idxs:  # the cards the user saw
+            bridge.play(s['hand'][idx] if idx < len(s['hand']) else idx, up='--down' not in args)
+    elif cmd == 'discard':
+        if not args or not args[0].isdigit():
+            raise ValueError('discard <idx> [pile]')
+        idx = int(args[0])
+        key = s['hand'][idx].get('key') if idx < len(s['hand']) else None
+        bridge.send(t='discard', idx=idx, key=key, pile=' '.join(args[1:]) or None)
     elif cmd == 'draw':
         bridge.draw(' '.join(args) or None)
     elif cmd == 'deal':
@@ -195,14 +270,12 @@ def run_cmd(bridge, line):
         bridge.send(t='deal', id=pile, up='--up' in args)
     elif cmd == 'shuffle':
         bridge.send(t='shuffle', id=' '.join(args) or None)
-    elif cmd in ('flip', 'peek'):
-        bridge.send(t=cmd, id=args[0])
-    elif cmd == 'tohand':
-        bridge.send(t='toHand', id=args[0])
+    elif cmd in ('flip', 'peek', 'tohand', 'btn'):
+        need(args, 1, f'{cmd} <id>')
+        bridge.send(t='toHand' if cmd == 'tohand' else cmd, id=args[0])
     elif cmd == 'move':
-        bridge.send(t='move', id=args[0], x=int(args[1]), y=int(args[2]))
-    elif cmd == 'btn':
-        bridge.btn(args[0])
+        x, y = need(args, 3, 'move <id> <x> <y>')
+        bridge.send(t='move', id=args[0], x=x, y=y)
     elif cmd == 'chat':
         bridge.chat(' '.join(args))
     else:

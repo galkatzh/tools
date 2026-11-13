@@ -178,11 +178,16 @@ function cleanDeck(d) {
 const HASHX = (() => {
   const seg = location.hash.split('~').slice(3);
   const o = {};
-  for (let k = 0; k + 1 < seg.length; k += 2) o[seg[k]] = decodeURIComponent(seg[k + 1]);
+  for (let k = 0; k + 1 < seg.length; k += 2) {
+    try { o[seg[k]] = decodeURIComponent(seg[k + 1]); } catch (err) {
+      console.error('bad hash extra', seg[k], err);
+      toast(`Ignored a malformed "~${seg[k]}~" in the URL`);
+    }
+  }
   return o;
 })();
 const CLI = HASHX.cli ? { port: HASHX.cli.split('-')[0], token: HASHX.cli.split('-')[1] || '' } : null;
-const AS = HASHX.as ? HASHX.as.slice(0, 24) : null;
+const AS = HASHX.as ? [...HASHX.as].slice(0, 24).join('') : null; // code points: never split an emoji
 
 // Stable player identity across reloads (a Trystero peerId changes per page
 // load). "~as~Name" bots get their own identity slot so a bot tab never
@@ -644,13 +649,13 @@ function act(a) {
     if (a.t !== 'hello') {
       pendingActs.push({ a, at: Date.now() });
       if (pendingActs.length > 30) pendingActs.shift();
-      toast('Reconnecting to the host — your move will be sent when it\'s back');
+      note('Reconnecting to the host — your move will be sent when it\'s back');
     }
     sendAct({ t: 'hello' }).catch((err) => console.error('hello failed', err));
     return;
   }
   sendAct({ ...a, _pid: pid, _name: myName, _key: seatKey }, target)
-    .catch((err) => { console.error('send failed', err); toast('Failed to reach the host'); });
+    .catch((err) => { console.error('send failed', err); note('Failed to reach the host'); });
 }
 /** Sends what was queued while disconnected (moves older than 30 s are stale). */
 function flushPending() {
@@ -697,7 +702,7 @@ function hookFailed(name, err) {
 
 /** Sends a private text notice to a player (toast on their screen). */
 function notify(p, msg) {
-  if (p === pid) { toast(msg); return; }
+  if (p === pid) { note(msg); return; }
   for (const [peer, mapped] of Object.entries(peerPid)) {
     if (mapped === p) sendNote({ msg: String(msg).slice(0, 200), to: p }, peer).catch((e) => console.error('note failed', e));
   }
@@ -1052,7 +1057,7 @@ function connect() {
   };
   noteA.onMessage = fromHost((n) => {
     if (role === 'host' || !n || (n.to && n.to !== pid)) return;
-    if (n.msg) toast(String(n.msg));
+    if (n.msg) note(String(n.msg)); // toast + the terminal bridge
     if (n.peek && n.to === pid) showPeek({ d: String(n.peek.d), i: num(n.peek.i, -1) }); // the host's private answer to our peek
   }, true);
   rulesA.onMessage = fromHost((r) => { if (role !== 'host') guestRules = { code: String(r?.code || ''), name: String(r?.name || '') }; });
@@ -1871,7 +1876,7 @@ nameInput.value = myName;
 nameInput.addEventListener('change', () => {
   myName = nameInput.value.trim() || myName;
   nameInput.value = myName;
-  localStorage.setItem('ct-name', myName);
+  if (!AS) localStorage.setItem('ct-name', myName); // a bot tab never renames the human
   act({ t: 'name', name: myName });
 });
 
@@ -2943,7 +2948,15 @@ function becomeHost(saved) {
 // because localhost is exempt from mixed-content rules and needs no deps on
 // the server side. The token (minted by the CLI) keeps random websites the
 // user visits from driving the table through the same local port.
-const cliMsgs = []; // bridge-only feedback: command errors, peek results
+const cliMsgs = []; // bridge-only feedback: command errors, peek results, notices
+
+/** A private notice for this player (a veto, t.tell, a failed send): a toast,
+ *  and on a bridged tab the terminal/bot gets it too — nobody may be
+ *  watching that browser. */
+function note(msg) {
+  toast(msg);
+  if (CLI) cliMsgs.push(`note: ${msg}`);
+}
 
 function cliCardInfo(d, i) {
   const c = decks[d]?.cards[i];
@@ -2955,7 +2968,8 @@ function cliSnapshot() {
   const pub = (rules?.enabled && rules.public) || {};
   return {
     pid, name: myName, role, seq: view.seq, room: roomId,
-    hand: myHand.map((c, idx) => ({ idx, ...cliCardInfo(c.d, c.i) })),
+    // key names the card itself: a stable handle while indices shift (see cliExec 'play')
+    hand: myHand.map((c, idx) => ({ idx, key: `${c.d}:${c.i}`, ...cliCardInfo(c.d, c.i) })),
     players: Object.entries(view.players).map(([id, pl]) => ({
       id, name: pl.name, seat: pl.seat, online: pl.online, cards: pl.handCount,
       ...(pub.turn === id ? { turn: true } : {}),
@@ -2964,11 +2978,16 @@ function cliSnapshot() {
     })),
     items: Object.entries(view.items).map(([id, it]) => (it.k === 'c'
       ? { id, kind: 'card', x: it.x | 0, y: it.y | 0, up: !!it.up, ...(it.up ? cliCardInfo(it.d, it.i) : {}) }
-      : { id, kind: 'pile', name: it.name || null, count: it.n, x: it.x | 0, y: it.y | 0 })),
+      : { id, kind: 'pile', name: it.name || null, count: it.n, x: it.x | 0, y: it.y | 0,
+        ...(it.top?.up ? { top: cliCardInfo(it.top.d, it.top.i) } : {}) })),
     buttons: ((rules?.enabled && rules.public?.buttons) || [])
       .filter((b) => !b.pid || b.pid === pid).map((b) => ({ id: b.id, label: b.label })),
     rules: rules?.enabled ? rules.name : null,
-    log: gameLog.slice(-40).map((e) => ({ who: typeof e.n === 'string' ? e.n : actorInfo(e.p).name, text: e.txt, ...(e.c ? { chat: true } : {}), ts: e.ts })),
+    // rules: true marks script lines — a player can NAME itself "📜 Rules", but can't fake this
+    log: gameLog.slice(-40).map((e) => ({
+      who: typeof e.n === 'string' ? e.n : actorInfo(e.p).name, text: e.txt,
+      ...(e.c ? { chat: true } : {}), ...(e.p === RULES ? { rules: true } : {}), ts: e.ts,
+    })),
     msgs: cliMsgs.slice(),
   };
 }
@@ -2997,15 +3016,27 @@ function cliSpot(c) {
   return clampToFelt(TABLE_W / 2 + r * Math.cos(seat) - CARD_W / 2, TABLE_H / 2 + r * Math.sin(seat) - CARD_H / 2);
 }
 
+/** The hand index a command means: by card `key` when given (on the host
+ *  seat myHand is live, so indices shift between two queued plays), else idx. */
+function cliHandIdx(c) {
+  const idx = c.key ? myHand.findIndex((h) => `${h.d}:${h.i}` === c.key) : +c.idx;
+  if (!myHand[idx]) throw new Error(`no hand card ${c.key || `#${c.idx}`}`);
+  return idx;
+}
+
 function cliExec(c) {
   try {
     switch (c.t) {
       case 'chat': { const msg = String(c.msg ?? '').slice(0, 300); if (msg) act({ t: 'chat', msg }); break; }
       case 'play': {
-        const card = myHand[+c.idx];
-        if (!card) throw new Error(`no hand card #${c.idx}`);
+        const idx = cliHandIdx(c), card = myHand[idx];
         const at = cliSpot(c);
-        act({ t: 'play', idx: +c.idx, d: card.d, i: card.i, x: at.x, y: at.y, up: c.up !== false, rot: uprightRot() });
+        act({ t: 'play', idx, d: card.d, i: card.i, x: at.x, y: at.y, up: c.up !== false, rot: uprightRot() });
+        break;
+      }
+      case 'discard': {
+        const idx = cliHandIdx(c), card = myHand[idx];
+        act({ t: 'handPile', idx, d: card.d, i: card.i, pile: cliItem(c.pile, 'p') });
         break;
       }
       case 'draw': act({ t: 'draw', id: cliItem(c.id, 'p') }); break;
@@ -3035,6 +3066,10 @@ function cliConnect() {
   const base = `http://127.0.0.1:${CLI.port}`;
   const q = `?token=${encodeURIComponent(CLI.token)}`;
   let last = '', inflight = false;
+  /** fetch() to the bridge. Only fetch itself failing means nobody answered
+   *  (it rejects with a TypeError); such errors are tagged `unreachable`. */
+  const call = (path, init) => fetch(`${base}${path}${q}`, init)
+    .catch((err) => { err.unreachable = true; throw err; });
   const push = async () => {
     if (inflight) return;
     inflight = true;
@@ -3042,24 +3077,33 @@ function cliConnect() {
       const snap = cliSnapshot();
       const s = JSON.stringify(snap);
       if (s === last) return;
-      const r = await fetch(`${base}/state${q}`, { method: 'POST', body: s, headers: { 'Content-Type': 'text/plain' } });
+      const r = await call('/state', { method: 'POST', body: s, headers: { 'Content-Type': 'text/plain' } });
       if (!r.ok) throw new Error(`bridge rejected state (${r.status})`);
       last = s;
       cliMsgs.splice(0, snap.msgs.length); // delivered
     } finally { inflight = false; }
   };
   (async () => {
-    let announced = false;
+    // status: '' until the first outcome, then 'ok' or the failure last shown —
+    // each change is toasted once, so a bridge that never answers is visible too.
+    let status = '';
     for (;;) {
       try {
         await push();
-        const r = await fetch(`${base}/poll${q}`);
+        const r = await call('/poll');
         if (!r.ok) throw new Error(`bridge poll failed (${r.status})`);
-        if (!announced) { announced = true; toast('🖥 Terminal bridge connected'); console.log('terminal bridge connected', base); }
+        if (status !== 'ok') { status = 'ok'; toast('🖥 Terminal bridge connected'); console.log('terminal bridge connected', base); }
         for (const c of await r.json()) { cliExec(c); }
       } catch (err) {
-        if (announced) { announced = false; toast('🖥 Terminal bridge lost — retrying'); }
         console.error('terminal bridge error', err);
+        // Only a bridge that didn't answer is "lost"/"not reachable"; anything
+        // else (a bad reply, a bug in this tab) is shown as the error it is.
+        const msg = /\(403\)/.test(err.message) ? '🖥 Terminal bridge rejected this tab\'s token — open the URL the CLI printed'
+          : !err.unreachable ? `🖥 Terminal bridge error: ${err.message}`
+            : status === 'ok' ? '🖥 Terminal bridge lost — retrying'
+              : `🖥 Terminal bridge not reachable on 127.0.0.1:${CLI.port} — is cli.js / cli.py running?`;
+        if (msg !== status) { status = msg; toast(msg); }
+        last = ''; // a restarted bridge has no state yet: the next push is a full one
         await new Promise((res) => setTimeout(res, 2000));
       }
     }
