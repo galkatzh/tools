@@ -7,7 +7,13 @@ games the way a physical table does.
 
 Open the page → pick a nickname → you're hosting a room → **Copy invite**
 (or show the invite as a **QR** code for phones to scan) → friends open the
-link, pick their nickname, and everyone plays on the same live table.
+link, pick their nickname, and everyone plays on the same live table. A
+brand-new table asks the host *What are we playing?* in a slim strip along
+its top edge (never a pop-up; once friends sit down it shrinks to a 🎲 chip
+in the corner, clear of their seats): one click starts Hold'em, Cards Against
+Humanity, Bridge, turn order or a simple dealer, keeps the free table, or
+opens the 📜 script editor; the **🎲 Games** button offers the same picker
+any time.
 
 The table is **round** and everyone gets a **seat** on the rim (host-assigned
 into the largest empty arc, so two players sit opposite, a third between
@@ -34,6 +40,18 @@ which is the anti-cheat mechanism: you can palm a card, but everyone sees
 you palm it. **Peek** follows the same rule — you can privately look at a
 face-down card or a pile's top card (the host reveals it to you alone), and
 the log announces to everyone that you looked.
+
+The table *feels* physical: other players' drags glide instead of jumping,
+dealt cards slide out of the deck, cards played from a hand slide in from
+that player's seat, cards dealt or drawn into hands fly to their owner's
+seat as card backs, and flips turn the card over (your own drag is never
+animated). When a game's rules say it's **your turn**, the tab title reads
+"⏳ Your turn", your seat label pulses, your hand bar gets an amber edge, a
+short "Your turn" chip pops up in the hand bar and phones vibrate; a **win** rains emoji
+confetti on every screen and buzzes the winners' phones. On touch screens,
+**press and hold** a face-up card (or pile top) to read it full-screen; let
+go to close. With *reduce motion* set in the OS, nothing glides, flips,
+pulses or falls — the cues still show.
 
 ## How it works
 
@@ -178,7 +196,9 @@ is registered once via `t.newDeck` (script-defined text decks), while only
 small draw piles sit on the table — the rest waits as indices in `t.data`. The generic engine primitives behind
 winners and bidding are `onChat` (scripts parse any chat command),
 `t.announce` (banner to all), and `t.win` (🏆 seat markers via
-`public.winners`).
+`public.winners`, plus the confetti). Any script that sets `public.turn`
+gets the your-turn alert for free — the Hold'em player to act and the CAH
+Card Czar included.
 
 ## Terminal bridge & bots (cli.js / cli.py)
 

@@ -168,8 +168,12 @@ actions.
   exact code being enforced** in a read-only view — the same
   everything-on-the-record philosophy as the table log.
 - `public` is script-controlled JSON for UI: `{ turn: pid }` highlights
-  that player's **seat label** (⏳ + glow) on every screen; `winners`
-  renders 🏆; `badges` ({pid: text}) appends per-player text to seat
+  that player's **seat label** (⏳ + glow) on every screen and alerts that
+  player (tab title "⏳ Your turn", pulsing own seat, amber hand bar, a
+  short "Your turn" chip, a vibration on phones) whenever the turn becomes
+  theirs; `winners` renders 🏆, and every time it gains a name everyone gets
+  an emoji confetti burst and the winners' phones buzz (not on joining or
+  reloading into a finished game); `badges` ({pid: text}) appends per-player text to seat
   labels (chip stacks, scores, tricks won — any game's counters);
   `buttons` renders a scripted-button row (visibility per button), and
   clicks route back to `onButton` via a `rulesBtn` action;
@@ -180,7 +184,11 @@ actions.
   has to reject a face-up play.
 - Host UI: a "📜 Rules" toolbar button → dialog with name, a monospace
   `<textarea>` editor, an examples dropdown, Enable / Disable, and a live
-  error line. Guests: the same dialog, read-only.
+  error line. Guests: the same dialog, read-only. "🎲 Games" (host only, and
+  as a strip on a brand-new table) enables a shipped template in one click
+  through the same `setRules` action — its catalog (emoji, title, pitch,
+  player count) is `GAMES`, next to `RULES_TEMPLATES` — or disables the
+  rules ("Free table"), or opens the 📜 dialog ("Custom script…").
 - The log announces lifecycle: "«Hold'em dealer» enabled by Alice"
   (+ "(game state kept)" / "(game state reset)" on a re-enable), "rules
   disabled — script error in onAction()", "Rules blocked Bob: not your
