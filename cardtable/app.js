@@ -1571,7 +1571,18 @@ function renderHand() {
     el.innerHTML = faceHTML(myHand[idx].d, myHand[idx].i);
     handEl.appendChild(el);
   }
+  fitHand();
 }
+/** Fans a crowded hand: the cards overlap just enough to all fit, like a
+ *  hand of real cards (each keeps at least 40% showing, its corner index
+ *  readable); a hand too big even for that scrolls sideways. */
+function fitHand() {
+  const n = handEl.children.length, cw = handEl.firstElementChild?.offsetWidth || 0, gap = 8;
+  const over = n * cw + (n - 1) * gap - (handEl.clientWidth - 4); // 4: #hand's side padding
+  const ov = n > 1 && over > 0 ? Math.min(Math.ceil(over / (n - 1)), cw * 0.6 + gap) : 0;
+  handEl.style.setProperty('--hov', `${ov}px`);
+}
+new ResizeObserver(fitHand).observe(handEl); // window, side panel and hand-bar changes
 $('sort-toggle').addEventListener('click', () => {
   sortHand = !sortHand;
   try { localStorage.setItem('ct-sort', sortHand ? '1' : '0'); } catch (err) { console.error('hand sort setting not saved', err); }
@@ -1977,6 +1988,7 @@ window.addEventListener('pointermove', (e) => {
   if (handResize) {
     handH = clamp(handResize.h + (handResize.y - e.clientY), 60, 340);
     document.documentElement.style.setProperty('--hch', `${handH}px`);
+    fitHand();
     return;
   }
   if (handDrag) { moveGhost(e); return; }
@@ -2333,7 +2345,7 @@ const RULES_TEMPLATES = {
   // The game's deck: the biggest pile of one standard deck (not the muck,
   // and not another game's cards).
   deck(t) {
-    const std = (p) => p.id !== t.data.muckId && p.cards.every((c) => c.d === p.cards[0].d) && '♠♥♦♣'.includes(t.cardName(p.cards[0]).slice(-1));
+    const std = (p) => p.id !== t.data.muckId && p.cards.length && p.cards.every((c) => c.d === p.cards[0].d) && !!(t.card(p.cards[0]) || {}).rank;
     return t.piles().filter(std).sort((a, b) => b.cards.length - a.cards.length)[0];
   },
   // Cards of another deck than D leave the hands, onto a pile of their own.
@@ -2944,7 +2956,10 @@ const RULES_TEMPLATES = {
       return;
     }
     if (a.t !== 'play') return; // arranging the table is otherwise free
-    if (a.p !== t.data.turn) return "It's not your turn";
+    if (a.p !== t.data.turn) {
+      return a.p === t.data.declarer && t.data.turn === t.data.dummy
+        ? "Dummy's turn: slide one of the dummy's cards to the middle" : "It's not your turn";
+    }
     if (!a.up) return 'Play your card face up';
     const led = t.data.trick[0] && this.suitOf(t, t.data.trick[0]);
     if (led && this.suitOf(t, a) !== led && t.hand(a.p).some((c) => this.suitOf(t, c) === led)) {
@@ -3338,7 +3353,9 @@ function renderGames() {
  *  Switching away from a running game asks first: its state would be lost.
  *  (The free table only disables the rules: re-enabling keeps the state.) */
 function pickGame(k) {
-  if (host?.rules?.enabled && RULES_TEMPLATES[k] && k !== currentGame()
+  // Another game's state (chips, scores, a hand) is discarded by setRules —
+  // even while the rules are off ("Free table" keeps it for re-enabling).
+  if (RULES_TEMPLATES[k] && host?.rules && host.rules.code !== RULES_TEMPLATES[k]
     && !confirm(`Stop ${host.rules.name}? Its game state (chips, scores, the hand in progress) will be lost.`)) return;
   askGame = false;
   $('games-dialog').close();

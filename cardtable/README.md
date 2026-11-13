@@ -22,7 +22,8 @@ and each player's view auto-rotates so their own seat is at the bottom —
 opponents genuinely face each other. Each player also has a private zoom and
 pan: scroll to zoom about the cursor, drag empty felt to pan, and on touch
 screens a two-finger pinch zooms, rotates and pans in one anchored gesture;
-🧭 resets everything back to the seat view. On a phone, swipe the hand
+🧭 resets everything back to the seat view. A big hand fans out so every
+card's corner shows (a 13-card Bridge hand fits a desktop bar); on a phone, swipe the hand
 sideways to scroll through it and drag a card upward out of it to play;
 tap a card to enlarge it (Esc or a click closes the enlarged card and the
 action buttons on a desktop). Cards you play or deal land

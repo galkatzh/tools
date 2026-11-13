@@ -198,7 +198,7 @@ select {
 .item.dragging { pointer-events: none; cursor: grabbing; transition: none; }
 @media (hover: hover) { /* touch screens keep :hover after a tap: no stuck lift */
   .item:hover .cardbox { box-shadow: 0 3px 6px #0006, 0 10px 22px #0005; }
-  .hcard:hover { transform: translateY(-4px); box-shadow: 0 8px 14px #0008; }
+  .hcard:hover { transform: translateY(-4px); box-shadow: 0 8px 14px #0008; z-index: 1; } /* a fanned card shows whole */
 }
 /* a card back flying from a pile into a player's hand */
 .fly { position: absolute; width: var(--cw); height: var(--ch); pointer-events: none; }
@@ -266,6 +266,11 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 }
 #hand-resize:hover::after { background: #94a3b8; }
 #facedown-toggle, #sort-toggle { font-size: 12px; line-height: 1.3; }
+/* phones: icon-only toggles leave the hand the room (the titles still explain) */
+@media (max-width: 480px) {
+  #facedown-toggle, #sort-toggle { font-size: 17px; padding: 8px 7px; }
+  #facedown-toggle span, #sort-toggle span { display: none; }
+}
 #facedown-toggle.on { background: #b45309; }
 #sort-toggle.on { background: #0f766e; }
 #facedown-toggle.locked { cursor: not-allowed; box-shadow: inset 0 0 0 2px #fbbf24; }
@@ -279,6 +284,8 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
   cursor: grab; touch-action: pan-x; user-select: none; -webkit-user-select: none;
   transition: transform 0.12s ease-out, box-shadow 0.12s;
 }
+/* a crowded hand fans out (fitHand sets --hov): later cards overlap earlier ones */
+.hcard + .hcard { margin-left: calc(-1 * var(--hov, 0px)); }
 .hcard .mid .mr, #ghost .mid .mr { font-size: calc(var(--hch) * 0.27); }
 .hcard .mid .ms, #ghost .mid .ms { font-size: calc(var(--hch) * 0.17); }
 .hcard .corner, #ghost .corner { font-size: calc(var(--hch) * 0.12); }
