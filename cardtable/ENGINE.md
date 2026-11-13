@@ -37,21 +37,21 @@ A rules script is a JS object literal the host writes in a dialog:
 ```js
 ({
   name: 'Turn order + auto-deal',
-  setup(t) {            // runs once when the host enables the rules
-    t.data.turn = t.players()[0].id;
-    t.dealToAll(deckPileId, 2, { toHand: true });
+  setup(t) {            // runs each time the host enables the rules
+    t.data.turn ??= t.players()[0].id;
+    t.dealToAll(deckPileId, 2);
   },
   validate(t, a) {      // veto: return a string to block the action
     if (PLAY_ACTIONS.includes(a.t) && a.p !== t.data.turn)
       return "It's not your turn";
   },
-  onAction(t, a) {      // automation: react after an action applies
+  onAction(t, a) {      // automation: react after an action took effect
     if (a.t === 'play') t.data.turn = t.nextSeat(t.data.turn);
   },
   buttons: (t) => [{ id: 'flop', label: 'Deal flop' }],
   onButton(t, id, byPid) { ... },   // scripted UI buttons
   onChat(t, text, byPid) { ... },   // chat commands: bids, raises, votes, ...
-  onJoin(t, pid) { ... },           // player joins/rejoins mid-game
+  onJoin(t, pid) { ... },           // player joins/rejoins mid-game (see below)
   onLeave(t, pid) { ... },          // player disconnects
   onTimer(t, tag) { ... },          // fired by t.schedule(seconds, tag)
 })
@@ -61,9 +61,34 @@ Every hook is optional; a script implements only what its game needs. The
 hook set — action veto, action react, UI events, join/leave, timers — is
 sufficient to express arbitrary turn-based tabletop games.
 
-Evaluated with `new Function('return (' + code + ')')()` wrapped in
-try/catch. Any hook that throws: `console.error` + toast + **auto-disable
-the rules** (fail loudly, never wedge the game). No worker/WASM sandbox in
+Hook semantics worth knowing:
+
+- **`setup` runs on every Enable.** Re-enabling a script with the same
+  `name` (after fixing a bug, a Disable, or a script error) **keeps
+  `t.data` and `t.public`** — chips, scores, pending timers — unless the
+  host ticks *Reset game state* in the dialog; the log says which
+  happened. So write `setup` idempotently (`t.data.stacks ||= {}`), and
+  give a script a new `name` when its state shape changes.
+- **`onAction` only sees actions that took effect.** A no-op — playing a
+  card that isn't in the hand, drawing from a pile that is gone — never
+  reaches it, so the ids in `a` (`a.d`/`a.i` of a `play`, …) have been
+  matched against the host's state. (It also runs after `chat` and
+  `rulesBtn` actions.)
+- **`validate` fails closed**: if it throws, the action is blocked and
+  the rules disable themselves (an input that crashes the validator must
+  not slip through unvalidated).
+- **`onJoin` also fires on reconnect after a host reload**, without a
+  preceding `onLeave`: a resumed host marks everyone offline, and each
+  player's first message after the resume is a (re)join. A script that
+  tracks who is "in" should treat `onJoin` of a player it already knows
+  as a reconnect, not a newcomer.
+
+Evaluated with `new Function('return (\n' + code + '\n)')()` (so a
+trailing `// comment` is fine) wrapped in try/catch. A script that fails
+to evaluate on Enable changes nothing — the running rules keep running
+and the error shows in the dialog. Any hook that throws: `console.error`
++ toast + log line + **auto-disable the rules** (fail loudly, never wedge
+the game). No worker/WASM sandbox in
 v1 — an infinite loop can freeze the host tab; documented limitation, with
 quickjs-emscripten (interrupt-handler loop protection) as the upgrade path
 if it ever matters.
@@ -83,9 +108,10 @@ A thin wrapper over existing internals in `app.js`:
   do (the switch bodies get refactored into named helpers — `opDeal`,
   `opShuffle`, … — used by both the switch and this API):
   `t.deal(pileId, {to: pid} | {x,y,up,rot})`, `t.dealToAll`,
-  `t.draw(pid, pileId, n)`, `t.playFromHand(pid, idx, …)`,
-  `t.toHand(pid, cardId)`, `t.shuffle`, `t.flip`, `t.move`, `t.rot`,
-  `t.toPile`, `t.stack`, `t.merge`, `t.newPile(cards, {x,y,name})`,
+  `t.draw(pid, pileId, n)`, `t.playFromHand(pid, idx, …)` (`false` for an
+  index that isn't a card in the hand), `t.toHand(pid, cardId)`,
+  `t.shuffle`, `t.flip`, `t.move`, `t.rot`, `t.toPile`,
+  `t.stack(cardId, ontoCardId)`, `t.merge`, `t.newPile(cards, {x,y,name})`,
   `t.remove`, `t.addStandardDeck({jokers, x, y})`, and
   `t.newDeck({name, cards, back})` — registering a script-defined deck of
   image-less cards (`{name, text, color, bg, meta}` each; `back` may be a
@@ -104,9 +130,13 @@ A thin wrapper over existing internals in `app.js`:
   labels — the generic way any game declares its outcome), scripted
   `buttons` (global, per-player, or host-only), and
   `t.schedule(seconds, tag)` → `onTimer` for turn clocks and reveal
-  delays (timers persist in `t.data`).
+  delays (timers persist in `t.data`; a non-numeric delay throws).
 - **Convenience utils** (pure functions, no engine state):
-  `t.nextSeat(pid)` (next occupied seat clockwise), `t.cardName(ref)`, and
+  `t.nextSeat(pid)` (the next seat clockwise whose player is **online** —
+  offline players are skipped, `pid` itself counts even when offline; a
+  fixed-partnership game that must wait for a dropped player rotates over
+  `t.players()` itself), `t.cardName(ref)` (rank+suit, the card's name,
+  or its quoted text), and
   `t.card(ref)` → `{name, rank, suit, text, meta, deck}` — `meta` being the
   free-form JSON a custom deck's `deck.json` manifest attached to the card,
   so scripts key game logic on `meta.cost`/`meta.type` instead of parsing
@@ -135,12 +165,19 @@ actions.
   renders 🏆; `badges` ({pid: text}) appends per-player text to seat
   labels (chip stacks, scores, tricks won — any game's counters);
   `buttons` renders a scripted-button row (visibility per button), and
-  clicks route back to `onButton` via a `rulesBtn` action.
+  clicks route back to `onButton` via a `rulesBtn` action;
+  `facedown` (`true`, or a list of pids) forces those players' hand-play
+  face-down mode on — their 🂠 toggle shows locked (🔒, tooltip "the rules
+  require…") — for secret plays such as CAH submissions; unset, the
+  toggle is the player's own. It is a client-side hint: `validate` still
+  has to reject a face-up play.
 - Host UI: a "📜 Rules" toolbar button → dialog with name, a monospace
   `<textarea>` editor, an examples dropdown, Enable / Disable, and a live
   error line. Guests: the same dialog, read-only.
-- The log announces lifecycle: "Alice enabled rules «Hold'em dealer»",
-  "Rules blocked Bob: not your turn".
+- The log announces lifecycle: "«Hold'em dealer» enabled by Alice"
+  (+ "(game state kept)" / "(game state reset)" on a re-enable), "rules
+  disabled — script error in onAction()", "Rules blocked Bob: not your
+  turn".
 
 ## 5. Example scripts (dialog dropdown — demos, not engine features)
 
@@ -205,8 +242,9 @@ Nostr relay):
    on any table, the guest gets a "not your turn" toast, the log records
    the block.
 3. The in-turn player plays → succeeds; the indicator advances.
-4. Host loads **Poker dealer**, presses *New hand* → every hand count
-   becomes 2 (dealt by "Rules" in the log); *Flop* → 3 face-up cards on
+4. Host loads **Hold'em dealer**, presses *New hand* → every hand count
+   becomes 2 (dealt by "Rules" in the log), blinds post themselves; once
+   the betting round closes, the flop (3 face-up cards) deals itself on
    both screens.
 5. Host reloads → rules (code + enabled + data) survive via the save;
    enforcement still active.
@@ -214,5 +252,6 @@ Nostr relay):
    template) — e.g. `onJoin` auto-deals a joining player 3 cards and
    `t.schedule` flips a card after 2s — and verifies both behaviors,
    demonstrating the engine runs code it has never seen.
-7. A script with a syntax error → loud toast, rules stay disabled, the
-   game is unaffected. Existing suites pass as regression.
+7. A script with a syntax error → loud toast, the error shows in the
+   dialog, the running rules (if any) are untouched, the game is
+   unaffected. Existing suites pass as regression.

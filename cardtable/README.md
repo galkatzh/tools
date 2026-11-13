@@ -139,7 +139,10 @@ script does is logged and bulb-marked as the "📜 Rules" actor.
 Scripts run **on the host only** — guests receive data, never code — and
 everyone can read the exact script being enforced (read-only view in the
 Rules dialog). A script error disables the rules loudly rather than wedging
-the game; rules, their state, and pending timers survive host reloads.
+the game (an action whose `validate` crashed is blocked, not waved through);
+rules, their state, and pending timers survive host reloads — and
+re-enabling the same game after a fix or a Disable keeps its state (chips,
+scores) unless the host ticks *Reset game state*.
 Templates ship for turn order, full **no-limit Hold'em with chips** (stacks
 on the seat labels, automatic blinds with a rotating button, turn-enforced
 betting via buttons and chat — `!bet 50`, `!allin`, `!rebuy` — streets that
