@@ -27,7 +27,8 @@ class Bridge {
     this.token = token;
     this.state = null;
     this.cmds = [];              // queued for the tab
-    this.waiters = [];           // pending long-polls from the tab
+    this.waiter = null;          // the tab's newest pending long-poll
+    this.seen = 0;               // when the tab last called in (ms)
     this.listeners = new Set();  // state subscribers: fn(state, prevState)
     this.server = http.createServer((req, res) => this.route(req, res));
     this.ready = new Promise((resolve) => {
@@ -35,32 +36,51 @@ class Bridge {
     });
   }
   urlFor(inviteUrl, asName) {
-    return inviteUrl.replace(/~cli~.*$/, '') + `~cli~${this.port}-${this.token}` + (asName ? `~as~${encodeURIComponent(asName)}` : '');
+    // '~' separates hash fields but is URL-safe, so encodeURIComponent keeps it.
+    return inviteUrl.replace(/~cli~.*$/, '') + `~cli~${this.port}-${this.token}` + (asName ? `~as~${encodeURIComponent(asName).replace(/~/g, '%7E')}` : '');
   }
   /** Subscribes to state updates; returns an unsubscribe function. */
   on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   send(cmd) {
     this.cmds.push(cmd);
-    const w = this.waiters.splice(0);
-    for (const res of w) this.flush(res);
+    const res = this.waiter;
+    this.waiter = null;
+    if (res) this.flush(res);
   }
-  flush(res) {
+  /** Answers a long-poll with every queued command (or `[]`). */
+  flush(res, cmds = this.cmds.splice(0)) {
+    if (res.writableEnded) return;
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-    res.end(JSON.stringify(this.cmds.splice(0)));
+    res.end(JSON.stringify(cmds));
   }
+  /** ms since the tab last called in (Infinity before it ever did). */
+  idle() { return this.seen ? Date.now() - this.seen : Infinity; }
+  // convenience wrappers for bot code (same as cli.py)
+  chat(msg) { this.send({ t: 'chat', msg }); }
+  /** Plays hand card #idx of the CURRENT state: it's sent by identity (key),
+   *  so later plays and the tab's own state lag can't shift which card goes. */
+  play(idx, up = true, extra = {}) { this.send({ t: 'play', idx, key: this.state?.hand?.[idx]?.key, up, ...extra }); }
+  draw(pile) { this.send({ t: 'draw', id: pile }); }
+  btn(id) { this.send({ t: 'btn', id }); }
   route(req, res) {
     const url = new URL(req.url, 'http://x');
     if (url.searchParams.get('token') !== this.token) {
       res.writeHead(403, { 'Access-Control-Allow-Origin': '*' });
       return res.end('bad token');
     }
+    this.seen = Date.now();
     if (url.pathname === '/poll') {
       if (this.cmds.length) return this.flush(res);
-      this.waiters.push(res);
-      // Cap the long-poll so the tab re-arms regularly (and dead sockets clear).
+      // Newest poll wins: a tab keeps one poll in flight, so an older one is
+      // from a reloaded tab (an aborted socket would swallow commands). It is
+      // only demoted — answered [] at its timeout — so two tabs on one URL
+      // take turns instead of re-polling each other in a hot loop.
+      this.waiter = res;
+      res.on('close', () => { if (this.waiter === res) this.waiter = null; });
+      // Cap the long-poll so the tab re-arms regularly.
       setTimeout(() => {
-        const i = this.waiters.indexOf(res);
-        if (i >= 0) { this.waiters.splice(i, 1); this.flush(res); }
+        if (this.waiter === res) this.waiter = null;
+        this.flush(res, []);
       }, 20000).unref();
       return;
     }
@@ -68,16 +88,20 @@ class Bridge {
       let body = '';
       req.on('data', (c) => { body += c; });
       req.on('end', () => {
+        const prev = this.state;
         try {
-          const prev = this.state;
           this.state = JSON.parse(body);
-          for (const fn of [...this.listeners]) fn(this.state, prev);
-          res.writeHead(200, { 'Access-Control-Allow-Origin': '*' });
-          res.end('ok');
         } catch (err) {
           console.error('bad state payload', err.message);
           res.writeHead(400, { 'Access-Control-Allow-Origin': '*' });
-          res.end('bad json');
+          return res.end('bad json');
+        }
+        res.writeHead(200, { 'Access-Control-Allow-Origin': '*' });
+        res.end('ok');
+        // A throwing subscriber is the bot's bug, not the tab's: report it and
+        // keep the others (and the tab's push/poll loop) going.
+        for (const fn of [...this.listeners]) {
+          try { fn(this.state, prev); } catch (err) { console.error('bridge listener failed', err); }
         }
       });
       return;
@@ -85,12 +109,17 @@ class Bridge {
     res.writeHead(404, { 'Access-Control-Allow-Origin': '*' });
     res.end('not found');
   }
-  /** Resolves when the state matches pred (or rejects on timeout). */
+  /** Resolves when the state matches pred (rejects on timeout, or if pred throws). */
   wait(pred, timeoutMs = 30000) {
     return new Promise((resolve, reject) => {
       if (this.state && pred(this.state)) return resolve(this.state);
-      const off = this.on((s) => { if (pred(s)) { off(); clearTimeout(tm); resolve(s); } });
-      const tm = setTimeout(() => { off(); reject(new Error('wait() timed out')); }, timeoutMs);
+      const done = (fn, v) => { off(); clearTimeout(tm); fn(v); };
+      const off = this.on((s) => {
+        let hit;
+        try { hit = pred(s); } catch (err) { return done(reject, err); }
+        if (hit) done(resolve, s);
+      });
+      const tm = setTimeout(() => done(reject, new Error('wait() timed out')), timeoutMs);
       tm.unref();
     });
   }
@@ -101,11 +130,12 @@ class Bridge {
 // REPL
 const HELP = `commands:
   hand                    your cards, with indices
-  table                   piles and face-up cards
+  table                   piles (with a face-up top card) and table cards
   players                 who sits where (⏳ turn, ⭐ badges, 🏆)
   log [n]                 last n log lines (default 15)
   buttons                 rules buttons you can press
   play <idx...> [--down]  play hand card(s) at your seat (--down = face down)
+  discard <idx> [pile]    put a hand card onto a pile (default: biggest)
   draw [pile]             draw from a pile (default: biggest; id or name)
   deal [pile] [--up]      deal the top card onto the table
   shuffle [pile]          shuffle a pile
@@ -116,6 +146,11 @@ const HELP = `commands:
   quit`;
 
 function fmtCard(c) { return c.name + (c.text && c.text !== c.name ? ` — ${c.text}` : ''); }
+/** Throws `usage` unless args[0] is present and args[1..] (if listed) are numbers. */
+function need(args, n, usage) {
+  if (args.length < n || args.slice(1, n).some((a) => isNaN(a))) throw new Error(usage);
+}
+const STALE_MS = 25000; // a live tab re-polls at least every 20 s
 
 function repl(bridge) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: '🂡 > ' });
@@ -141,6 +176,9 @@ function runCmd(bridge, line) {
   const [cmd, ...args] = line.split(/\s+/);
   const s = bridge.state;
   if (!s && !['quit', 'help'].includes(cmd)) return console.log('… no tab connected yet');
+  if (s && bridge.idle() > STALE_MS && !['quit', 'help'].includes(cmd)) {
+    console.log(`⚠ tab not seen for ${Math.round(bridge.idle() / 1000)}s — commands queue until it is back`);
+  }
   switch (cmd) {
     case 'help': return console.log(HELP);
     case 'quit': return process.exit(0);
@@ -149,7 +187,7 @@ function runCmd(bridge, line) {
       return s.hand.forEach((c) => console.log(` ${String(c.idx).padStart(2)}. ${fmtCard(c)}`));
     case 'table':
       return s.items.forEach((it) => console.log(it.kind === 'pile'
-        ? `  [${it.id}] pile "${it.name || 'stack'}" ×${it.count} @${it.x},${it.y}`
+        ? `  [${it.id}] pile "${it.name || 'stack'}" ×${it.count}${it.top ? ` top: ${fmtCard(it.top)}` : ''} @${it.x},${it.y}`
         : `  [${it.id}] ${it.up ? fmtCard(it) : 'face-down card'} @${it.x},${it.y}`));
     case 'players':
       return s.players.forEach((p) => console.log(`  ${p.winner ? '🏆' : p.turn ? '⏳' : ' '} ${p.name}${p.id === s.pid ? ' (you)' : ''} 🂠${p.cards}${p.badge ? ' ' + p.badge : ''}${p.online ? '' : ' (offline)'}`));
@@ -159,20 +197,23 @@ function runCmd(bridge, line) {
       return s.buttons.length ? s.buttons.forEach((b) => console.log(`  [${b.id}] ${b.label}`)) : console.log('(none)');
     case 'play': {
       const down = args.includes('--down');
-      const idxs = args.filter((a) => /^\d+$/.test(a)).map(Number);
-      if (!idxs.length) throw new Error('play <idx...> — see "hand"');
-      // Send high→low so earlier plays don't shift later indices.
-      for (const idx of [...idxs].sort((a, b) => b - a)) bridge.send({ t: 'play', idx, up: !down });
+      const idxs = new Set(args.filter((a) => /^\d+$/.test(a)).map(Number));
+      if (!idxs.size) throw new Error('play <idx...> — see "hand"');
+      for (const idx of idxs) bridge.play(idx, !down);
       return;
     }
+    case 'discard':
+      if (!/^\d+$/.test(args[0] || '')) throw new Error('discard <idx> [pile]');
+      return bridge.send({ t: 'discard', idx: +args[0], key: s.hand[+args[0]]?.key, pile: args.slice(1).join(' ') || undefined });
     case 'draw': return bridge.send({ t: 'draw', id: args.join(' ') || undefined });
     case 'deal': return bridge.send({ t: 'deal', id: args.filter((a) => a !== '--up').join(' ') || undefined, up: args.includes('--up') });
     case 'shuffle': return bridge.send({ t: 'shuffle', id: args.join(' ') || undefined });
-    case 'flip': return bridge.send({ t: 'flip', id: args[0] });
-    case 'peek': return bridge.send({ t: 'peek', id: args[0] });
-    case 'tohand': return bridge.send({ t: 'toHand', id: args[0] });
-    case 'move': return bridge.send({ t: 'move', id: args[0], x: +args[1], y: +args[2] });
-    case 'btn': return bridge.send({ t: 'btn', id: args[0] });
+    case 'flip': case 'peek': case 'tohand': case 'btn':
+      need(args, 1, `${cmd} <id>`);
+      return bridge.send({ t: cmd === 'tohand' ? 'toHand' : cmd, id: args[0] });
+    case 'move':
+      need(args, 3, 'move <id> <x> <y>');
+      return bridge.send({ t: 'move', id: args[0], x: +args[1], y: +args[2] });
     case 'chat': return bridge.send({ t: 'chat', msg: args.join(' ') });
     default: throw new Error(`unknown command "${cmd}" — try "help"`);
   }

@@ -156,8 +156,9 @@ port, but it can happily connect out to one: `node cli.js <invite-url>` (or
 `python3 cli.py <invite-url>`, both dependency-free) starts a tiny bridge
 server on `127.0.0.1` and prints a URL. Open it in a tab and the tab pairs
 with your terminal: it mirrors its view over (hand with indices, table,
-players, live log) and executes commands it gets back — `hand`, `play 2
---down`, `draw`, `chat !bid 1H`, `btn pick0`, … Every command goes through
+players, live log, the face-up top of each pile) and executes commands it
+gets back — `hand`, `play 2 --down`, `discard 0 [pile]`, `draw`,
+`chat !bid 1H`, `btn pick0`, … Every command goes through
 the exact same `act()` path as a click, so rules validation, the table log
 and the anti-cheat record all apply unchanged. Two modes:
 
@@ -169,9 +170,29 @@ and the anti-cheat record all apply unchanged. Two modes:
   body; your script is its brain.
 
 Scripting: `require('./cli.js')` / `from cli import Bridge` exposes the
-bridge as a small API (`state`, `send`, `wait`, `on`). `cah-bot.py` is a
-complete example — a Cards Against Humanity player that answers prompts
-with random white cards and, when it's the Card Czar, judges on its own.
+bridge as a small API — the same in both languages: `state`, `send`,
+`wait`, `on`, plus `chat`, `play`, `draw`, `btn`. `play(idx)` names the
+card by its `key` (each hand card has one), resolved when you call it, so
+`play(0); play(1)` plays the two cards you saw at #0 and #1 whatever the
+tab's state lag. Feedback meant for the player — rules vetoes, `t.tell`
+notices, failed sends, command errors, peeks — arrives in `state.msgs`
+(`note: …` / `error: …` / `peek: …`), not only as a toast nobody watches.
+Log lines written by the rules script carry `rules: true`; key bot logic
+on that, since anyone can chat (or rename themselves to) the same words.
+A throwing `on()` listener is logged and skipped, and a `wait()` whose
+predicate throws fails with that error. `cah-bot.py` is a complete
+example — a Cards Against Humanity player that answers prompts with random
+white cards (re-sending any that didn't land), and, as Card Czar, judges
+on its own and presses "Judge now" after `--patience` seconds (default
+60) so an idle player can't stall the round.
+
+Reliability: the tab keeps one long-poll open, and the newest poll always
+wins, so commands sent while a tab reloads wait for its next poll instead
+of vanishing into the dead one. The tab toasts whether the bridge is
+connected, lost, unreachable or rejecting its token (a stale URL from an
+earlier CLI run), and re-sends its full state after any bridge error, so a
+restarted bridge catches up at once. The REPL warns when a command is
+queued for a tab it hasn't heard from in 25 s.
 
 Security shape: the bridge binds localhost only and every request carries a
 token minted by the CLI — without it, any website you have open could drive

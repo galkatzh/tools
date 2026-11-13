@@ -97,7 +97,8 @@ A thin wrapper over existing internals in `app.js`:
   through `logEvent`/`mark`, so automations are visible in the table log
   and as name bulbs — the same anti-cheat property as human actions.
 - **Player interaction**: `t.say(msg)` (log line as Rules),
-  `t.tell(pid, msg)` (targeted toast), `t.announce(msg)` (a big banner on
+  `t.tell(pid, msg)` (targeted toast — a bridged tab also hands it to its
+  terminal/bot as `note: …`), `t.announce(msg)` (a big banner on
   every screen, also logged), `t.win(winners, msg)` (sets
   `public.winners`, rendered by the engine as 🏆 on the winners' seat
   labels — the generic way any game declares its outcome), scripted
@@ -116,7 +117,8 @@ A thin wrapper over existing internals in `app.js`:
 In `apply(p, a)`: before the switch, if rules are enabled and `validate`
 returns a reason — and the actor is not the host-script itself — skip the
 mutation and send the actor a targeted `note` message (new tiny Trystero
-action) → toast on their screen. The next state broadcast reverts their
+action) → toast on their screen (and, on a terminal-bridged tab, a
+`note: …` in the bridge's `msgs`). The next state broadcast reverts their
 optimistic drag automatically (the same mechanism that reconciles any
 rejected move today). Exempt from validation: `hello`, `name`, `chat`,
 `peek` (peeking stays a social action), and the host-only `size`/`setRules`
