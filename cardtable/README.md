@@ -65,7 +65,7 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   raised to 10 (default 5) so two peers are more likely to share a live one.
 - **Log**: the host authors log entries while adjudicating actions (it's the
   only peer that can name cards trustworthily), keeps the last 200 actions
-  and the last 100 chat lines in state (separate caps, so chatter can never
+  and the last 100 chat lines and renames in state (separate caps, so chatter can never
   push the record of a peek or a palmed card out), and pushes them on a
   dedicated channel only when the log changes; repeated drag/rotate entries
   collapse so moves don't flood it, and a guest may chat or rename at most
@@ -74,7 +74,9 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   by room id (`ct-save-<room>`), with the deck images in a separate key
   written only when a deck is added; reopening the invite link in the host's
   browser resumes the game. When storage is full, other rooms' saves are
-  deleted oldest first (with a toast saying so); if the table still can't be
+  deleted oldest first (with a toast saying so; saves another tab wrote in
+  the last 30 s are spared, and none are deleted when the table wouldn't fit
+  even then); if the table still can't be
   saved, the stale snapshot is replaced by a "lost" marker, so a reload
   resets the table loudly instead of silently rewinding it. Each host start
   is a new state epoch, so guests follow a restarted host even when its
@@ -203,9 +205,11 @@ refuse the `https → http://127.0.0.1` fetch.
 - Hidden information is hidden from guests, even with devtools: hands go
   only to their owner, and the broadcast table carries pile sizes but not
   their order, and face-down cards without their identity (a peek is
-  answered privately by the host). The **host** still sees everything — its
-  tab holds the authoritative state — so the host has to be someone the
-  table trusts, like the dealer at a home game.
+  answered privately by the host; host messages are signed and addressed to
+  one connection, so no peer can relay them to pose as the host and collect
+  seat keys). The **host** still sees everything — its tab holds the
+  authoritative state — so the host has to be someone the table trusts,
+  like the dealer at a home game.
 - The table always starts fitted to the smaller screen dimension; zoom and
   pan are per-player remedies, not persisted between reloads.
 - Rules scripts are trusted code on the host's machine: a runaway loop can

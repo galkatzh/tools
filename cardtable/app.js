@@ -277,14 +277,16 @@ function mark(p, id) {
 
 /** Appends to the shared log. Consecutive duplicates (drag/rotate spam) collapse.
  *  Entries render the actor's CURRENT name, unless `as` freezes one (renames).
- *  Actions and chat are capped separately (200 / 100), so chatter can never
- *  push the record of what someone did (a peek, a palmed card) out of the log. */
+ *  Actions and talk (chat + renames, the entries carrying `c` or `n`) are
+ *  capped separately (200 / 100), so chatter can never push the record of
+ *  what someone did (a peek, a palmed card) out of the log. */
 function logEvent(p, txt, chat, as) {
   const last = host.log.at(-1);
   if (!chat && last && last.p === p && last.txt === txt) return;
   host.log.push({ p, txt, ts: Date.now(), ...(chat ? { c: 1 } : {}), ...(as ? { n: as } : {}) });
-  const same = host.log.filter((e) => !e.c === !chat);
-  if (same.length > (chat ? 100 : 200)) host.log.splice(host.log.indexOf(same[0]), 1);
+  const talk = (e) => !!e.c || 'n' in e, mine = talk(host.log.at(-1));
+  const same = host.log.filter((e) => talk(e) === mine);
+  if (same.length > (mine ? 100 : 200)) host.log.splice(host.log.indexOf(same[0]), 1);
   logDirty = true;
 }
 function dropIfEmpty(pileId) {
@@ -948,12 +950,16 @@ function handleState(s, peer) {
       role = 'guest';
       host = null;
       $('size-sel').classList.add('hidden');
-    } else { scheduleBroadcast(); return; }
+    } else {
+      hostBoot = Date.now(); // a fresh epoch: guests that followed the rival (a newer boot) accept us again
+      scheduleBroadcast();
+      return;
+    }
   }
-  // Stale reordering — within one host instance only: a host that restarted
-  // (reload, resume of an older save) counts seq from its save, so a new
-  // epoch (`boot`) is always accepted.
-  if (s.boot === view.boot && s.seq < view.seq) return;
+  // Stale reordering: a host that restarted (reload, resume of an older save)
+  // counts seq from its save, so a NEWER epoch (`boot`, the host's start time)
+  // is always accepted — an older one never is (that would be a replay).
+  if (s.boot < view.boot || (s.boot === view.boot && s.seq < view.seq)) return;
   if (s.to && s.to !== pid) return; // addressed to someone else: a replay
   hostPeer = peer;
   registered = s.to === pid;
@@ -996,24 +1002,35 @@ function connect() {
     sealQ = sealed.catch(() => {});
     return sealed.then((m) => send(m, target));
   };
+  // States and notes always go to one peer: its connection id (`tp`) is
+  // signed into the body, so a copy relayed to anyone else is dropped.
+  const bound = (send) => (data, target) => send({ ...data, tp: target }, target);
   sendAct = (data, target) => actA.send(data, target ? { target } : {});
-  sendState = signed((m, target) => stateA.send(m, { target }));
+  sendState = bound(signed((m, target) => stateA.send(m, { target })));
   sendDecks = signed((m, target) => decksA.send(m, target ? { target } : {}));
   sendLog = signed((m, target) => logA.send(m, target ? { target } : {}));
-  sendNote = signed((m, target) => noteA.send(m, { target }));
+  sendNote = bound(signed((m, target) => noteA.send(m, { target })));
   sendRules = signed((m, target) => rulesA.send(m, target ? { target } : {}));
+  // A signature proves the host wrote a message, not who delivers it: any
+  // peer could relay one (e.g. to pose as the host and harvest seat keys).
+  // So states and notes must name THIS connection (`tp`, see bound()), and the
+  // other channels must come from the peer whose state we accepted.
   let inbox = Promise.resolve();
-  const fromHost = (fn) => (m, { peerId }) => {
-    inbox = inbox.then(async () => { const d = await unseal(m); if (d != null) fn(d, peerId); })
-      .catch((err) => console.error('message from the host failed', err));
+  const fromHost = (fn, isBound) => (m, { peerId }) => {
+    inbox = inbox.then(async () => {
+      const d = await unseal(m);
+      if (d == null) return;
+      if (isBound ? d.tp !== selfId : peerId !== hostPeer) { console.warn('dropped a host message relayed by', peerId); return; }
+      fn(d, peerId);
+    }).catch((err) => console.error('message from the host failed', err));
   };
   noteA.onMessage = fromHost((n) => {
     if (role === 'host' || !n || (n.to && n.to !== pid)) return;
     if (n.msg) toast(String(n.msg));
     if (n.peek && n.to === pid) showPeek({ d: String(n.peek.d), i: num(n.peek.i, -1) }); // the host's private answer to our peek
-  });
+  }, true);
   rulesA.onMessage = fromHost((r) => { if (role !== 'host') guestRules = { code: String(r?.code || ''), name: String(r?.name || '') }; });
-  stateA.onMessage = fromHost(handleState);
+  stateA.onMessage = fromHost(handleState, true);
   // Deck messages are deltas (or the full map for new joiners) — always merge,
   // re-sanitized here too (defense in depth, and legacy unsigned rooms).
   decksA.onMessage = fromHost((d) => {
@@ -1058,10 +1075,10 @@ function connect() {
     }
     if (back && host.rules?.enabled) { runHook('onJoin', p); refreshButtons(); }
     // Every action carries the sender's current name: a rename the host
-    // never received (made while it was away, or in another room) syncs here,
-    // through the logged rename path.
+    // never received (made while it was away, or in another room) syncs on
+    // the next connection, through the logged (and rate-limited) rename path.
     const nm = cleanName(name ?? '');
-    if (known && nm && nm !== known.name && action.t !== 'name') apply(p, { t: 'name', name: nm });
+    if (known && nm && nm !== known.name && newConn && action.t !== 'name') apply(p, { t: 'name', name: nm });
     apply(p, action); // apply() schedules a broadcast, which catches joiners up
   };
 
@@ -1109,9 +1126,11 @@ function updateNet() {
   netEl.title = `${n + 1} player${n ? 's' : ''} here · ${r} signaling relays connected${r ? '' : ' — searching for relays'}`;
   if (role === 'guest') {
     hintEl.classList.toggle('hidden', view.seq > 0 && !!hostPeer);
-    hintEl.textContent = view.seq
-      ? 'The host left — the table is paused until they return'
-      : 'Waiting for the host…\n(the table lives in the host\'s open tab)';
+    // Blame the host only when we can still reach the room: with no peers
+    // and no relays, it's OUR connection that dropped.
+    hintEl.textContent = !view.seq ? 'Waiting for the host…\n(the table lives in the host\'s open tab)'
+      : n === 0 && r === 0 ? 'Connection lost — reconnecting…'
+        : 'The host left — the table is paused until they return';
   }
 }
 
@@ -1144,30 +1163,32 @@ setInterval(() => {
 // --- host persistence -----------------------------------------------------
 // Two keys per room: ct-decks-<room> (the big image data, rewritten only when
 // a deck is added) and ct-save-<room> = {ts, state} (small, throttle-saved).
-// When storage is full, other rooms' saves are deleted oldest first; if this
-// table still can't be saved, a tiny {lost} marker replaces the snapshot, so
-// a reload never quietly rewinds to stale state — it resets the table loudly
-// (and this browser stays the host instead of waiting in its own room).
+// When storage is full, other rooms' saves are deleted oldest first (see
+// oldSaves()); if this table still can't be saved, a tiny {lost} marker
+// replaces the snapshot, so a reload never quietly rewinds to stale state —
+// it resets the table loudly (and this browser stays the host instead of
+// waiting in its own room).
 let persistT = 0, lastSave = 0, persistWarned = false;
 let savedDecks = -1; // how many decks storage holds: decks are append-only, so a new count means "rewrite"
 function doSave() {
   if (role !== 'host') return; // a demoted host's pending timer must not clobber the winner's save
   lastSave = Date.now();
+  const n = Object.keys(decks).length, deckJson = n !== savedDecks ? JSON.stringify(decks) : '';
+  const saveJson = JSON.stringify({ ts: Date.now(), state: host });
   let old = null, freed = 0;
   for (;;) {
     try {
-      const n = Object.keys(decks).length;
       if (n !== savedDecks) {
         savedDecks = -1;
-        localStorage.setItem(`ct-decks-${roomId}`, JSON.stringify(decks));
+        localStorage.setItem(`ct-decks-${roomId}`, deckJson);
         savedDecks = n;
       }
-      localStorage.setItem(`ct-save-${roomId}`, JSON.stringify({ ts: Date.now(), state: host }));
+      localStorage.setItem(`ct-save-${roomId}`, saveJson);
       if (freed) toast(`Browser storage was full — deleted ${freed} old table save${freed > 1 ? 's' : ''} to keep this one`);
       persistWarned = false;
       return;
     } catch (err) {
-      if (err.name === 'QuotaExceededError' && (old ??= oldSaves()).length) {
+      if (err.name === 'QuotaExceededError' && (old ??= oldSaves(deckJson.length + saveJson.length)).length) {
         const id = old.shift();
         console.warn('browser storage full — deleting the save of an older room', id);
         // (its ct-hostkey stays: tiny, and a tab still hosting that room needs it to resume)
@@ -1180,6 +1201,7 @@ function doSave() {
       const why = err.name === 'QuotaExceededError' ? 'browser storage is full' : `auto-save failed: ${err.message}`;
       try {
         localStorage.removeItem(`ct-decks-${roomId}`);
+        savedDecks = -1; // the next save that fits must write the decks again, or the state alone would "resume" without them
         localStorage.setItem(`ct-save-${roomId}`, JSON.stringify({ ts: Date.now(), lost: why }));
       } catch (e) { console.error('could not even mark the save as lost', e); }
       if (!persistWarned) { persistWarned = true; toast(`Can't save this table (${why}) — reloading the host tab would reset it`); }
@@ -1187,15 +1209,23 @@ function doSave() {
     }
   }
 }
-/** Other rooms with saves, oldest first (saves without a ts — older versions — go first). */
-function oldSaves() {
-  return Object.keys(localStorage).filter((k) => k.startsWith('ct-save-') && k !== `ct-save-${roomId}`)
+/** Other rooms' saves that pruning may delete to fit `need` more chars,
+ *  oldest first (saves without a ts — older versions — go first). Spared:
+ *  saves written in the last 30 s (another tab is hosting that room right
+ *  now — evicting each other would be endless), and all of them when even
+ *  deleting every one couldn't make room (unrelated tables lost for nothing). */
+function oldSaves(need) {
+  const old = Object.keys(localStorage).filter((k) => k.startsWith('ct-save-') && k !== `ct-save-${roomId}`)
     .map((k) => {
+      const id = k.slice('ct-save-'.length), raw = localStorage.getItem(k);
       let ts = 0;
-      try { ts = num(JSON.parse(localStorage.getItem(k))?.ts); } catch (err) { console.error('unreadable save', k, err); }
-      return { id: k.slice('ct-save-'.length), ts };
+      try { ts = num(JSON.parse(raw)?.ts); } catch (err) { console.error('unreadable save', k, err); }
+      return { id, ts, size: raw.length + (localStorage.getItem(`ct-decks-${id}`)?.length || 0) };
     })
-    .sort((a, b) => a.ts - b.ts).map((x) => x.id);
+    .filter((x) => x.ts < Date.now() - 30000);
+  const bytes = old.reduce((sum, x) => sum + x.size, 0);
+  if (bytes < need) { console.warn(`not pruning other saves: this table (${need} chars) is bigger than all of them (${bytes})`); return []; }
+  return old.sort((a, b) => a.ts - b.ts).map((x) => x.id);
 }
 // Another tab of this browser may delete this room's decks (storage-full
 // pruning above): write them again with the next save.
