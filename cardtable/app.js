@@ -1579,7 +1579,8 @@ function renderHand() {
 function fitHand() {
   const n = handEl.children.length, cw = handEl.firstElementChild?.offsetWidth || 0, gap = 8;
   const over = n * cw + (n - 1) * gap - (handEl.clientWidth - 4); // 4: #hand's side padding
-  const ov = n > 1 && over > 0 ? Math.min(Math.ceil(over / (n - 1)), cw * 0.6 + gap) : 0;
+  // keep ≥ 40% of a card AND ≥ 28px showing: small cards stay tappable
+  const ov = n > 1 && over > 0 ? Math.min(Math.ceil(over / (n - 1)), Math.min(cw * 0.6, cw - 28) + gap) : 0;
   handEl.style.setProperty('--hov', `${ov}px`);
 }
 new ResizeObserver(fitHand).observe(handEl); // window, side panel and hand-bar changes
@@ -3355,8 +3356,11 @@ function renderGames() {
 function pickGame(k) {
   // Another game's state (chips, scores, a hand) is discarded by setRules —
   // even while the rules are off ("Free table" keeps it for re-enabling).
-  if (RULES_TEMPLATES[k] && host?.rules && host.rules.code !== RULES_TEMPLATES[k]
-    && !confirm(`Stop ${host.rules.name}? Its game state (chips, scores, the hand in progress) will be lost.`)) return;
+  // setRules keeps the state of a script with the same name: compare names too.
+  const tplName = /\bname: (['"])(.*?)\1/.exec(RULES_TEMPLATES[k] || '')?.[2];
+  if (RULES_TEMPLATES[k] && host?.rules && host.rules.name !== tplName && !confirm(host.rules.enabled
+    ? `Stop ${host.rules.name}? Its game state (chips, scores, the hand in progress) will be lost.`
+    : `Discard the kept ${host.rules.name} game state (chips, scores)?`)) return;
   askGame = false;
   $('games-dialog').close();
   if (k === 'custom') { renderAll(); $('rules-btn').click(); }

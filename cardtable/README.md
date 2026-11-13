@@ -49,7 +49,7 @@ that player's seat, cards dealt or drawn into hands fly to their owner's
 seat as card backs, and flips turn the card over (your own drag is never
 animated). When a game's rules say it's **your turn**, the tab title reads
 "⏳ Your turn", your seat label pulses, your hand bar gets an amber edge, a
-short "Your turn" chip pops up in the hand bar and phones vibrate; a **win** rains emoji
+short "Your turn" chip pops up just above the hand bar and phones vibrate; a **win** rains emoji
 confetti on every screen and buzzes the winners' phones. On touch screens,
 **press and hold** a face-up card (or pile top) to read it full-screen; let
 go to close. Drop a hand card onto a pile to put it on top. The **⇅** button
