@@ -19,6 +19,7 @@
     <button id="add-deck-btn">+ Deck</button>
     <button id="invite-btn">Copy invite</button>
     <button id="qr-btn" title="Show the invite link as a QR code">QR</button>
+    <button id="games-btn" class="hidden" title="Pick a game to play">🎲 <span class="lbl">Games</span></button>
     <button id="rules-btn" title="Game rules script">📜</button>
     <button id="view-btn" title="Reset your view to your seat">🧭</button>
     <button id="log-btn" title="Table log & chat">💬</button>
@@ -33,6 +34,7 @@
       </div>
       <div id="action-bar" class="hidden"></div>
       <div id="rules-btns" class="hidden"></div>
+      <div id="game-strip" class="hidden"><button id="game-strip-ask" title="All games, with what they are">🎲<span> What are we playing?</span></button><span class="games"></span><button id="game-strip-x" title="Dismiss">✕</button></div>
     </div>
     <aside id="side">
       <div id="side-head">Table log</div>
@@ -42,12 +44,16 @@
         <button title="Send">➤</button>
       </form>
     </aside>
+    <!-- click-through top-centre column: the banner, then a toast below it -->
+    <div id="notices"><div id="announce" class="hidden"></div><div id="toast" class="hidden"></div></div>
   </main>
 
   <footer id="hand-bar">
     <div id="hand-resize" title="Drag to resize your hand cards"></div>
-    <button id="facedown-toggle" title="When on, cards dragged from your hand land face down">🂠<br>face-down</button>
+    <button id="facedown-toggle" title="When on, cards dragged from your hand land face down">🂠<span><br>face-down</span></button>
+    <button id="sort-toggle" title="Sort your hand by suit and rank (only on your screen)">⇅<span><br>sort</span></button>
     <div id="hand"></div>
+    <div id="turn-cue" class="hidden">⏳ Your turn</div>
   </footer>
 
   <dialog id="rules-dialog">
@@ -57,19 +63,26 @@
         <option value="">Load a template…</option>
         <option value="blank">Blank skeleton</option>
         <option value="turns">Turn order</option>
-        <option value="holdem">Hold'em dealer</option>
-        <option value="bridge">Bridge (play phase)</option>
+        <option value="holdem">Texas Hold'em</option>
+        <option value="bridge">Bridge</option>
         <option value="cah">Cards Against Humanity</option>
         <option value="dealer">Simple dealer</option>
       </select>
       <textarea id="rules-code" spellcheck="false"></textarea>
       <div id="rules-err"></div>
       <menu>
+        <label id="rules-reset-lbl" class="radio" title="Unticked, re-enabling the same game keeps its state (chips, scores, timers)"><input type="checkbox" id="rules-reset"> Reset game state</label>
         <button value="cancel" formnovalidate>Close</button>
         <button id="rules-disable" type="button">Disable</button>
         <button id="rules-enable" value="enable">Enable</button>
       </menu>
     </form>
+  </dialog>
+
+  <dialog id="games-dialog">
+    <h3>🎲 What are we playing?</h3>
+    <div id="games-list"></div>
+    <form method="dialog"><menu><button>Close</button></menu></form>
   </dialog>
 
   <dialog id="qr-dialog">
@@ -117,13 +130,15 @@
       <li><b>Double-click</b> a card to flip it; double-click a pile to draw into your hand.</li>
       <li>Drop a card <b>onto a pile</b> to place it on top; onto <b>another card</b> to start a pile; drop a <b>pile onto a pile</b> to merge them.</li>
       <li>Drag a card to the <b>bottom bar</b> to take it into your hand (hands are private). Drag the bar's <b>top edge</b> to resize your hand cards.</li>
-      <li><b>Click</b> a card in your hand — or <b>🔍</b> on a face-up table card — to see it enlarged.</li>
+      <li><b>Click</b> a card in your hand — or <b>🔍</b> on a face-up table card — to see it enlarged (a click or <b>Esc</b> closes it; Esc also dismisses the action buttons). On a touch screen, <b>press and hold</b> a face-up table card to read it; let go to close.</li>
+      <li>A big hand <b>fans out</b> so every card's corner shows. On touch screens, <b>swipe</b> your hand sideways to scroll it; drag a card <b>upward</b> out of it to play it.</li>
       <li><b>Peek</b> shows you a face-down card (or the top of a pile) privately — but everyone sees in the log <i>that</i> you peeked.</li>
       <li>Everyone gets a <b>seat</b> around the table, and the table auto-turns so your seat is at the bottom. Cards you play land facing you.</li>
       <li><b>Scroll</b> to zoom, <b>drag empty felt</b> to pan; on touch screens, <b>pinch with two fingers</b> to zoom, rotate and pan at once. Your view is yours alone — <b>🧭</b> resets it to your seat.</li>
       <li>The <b>host</b> can enlarge the table (Table: small / medium / large) when more players join.</li>
+      <li><b>🎲 Games</b>: the host starts Hold'em, Cards Against Humanity, Bridge and more in one click (or goes back to a free table).</li>
       <li><b>📜 Rules</b>: the host can write a script that enforces rules (turn order, legal moves) and automates play (auto-dealing, a poker dealer). Everyone can read the active script; everything it does appears in the log as "📜 Rules".</li>
-      <li>Drag from your hand to the table to play it — toggle <b>🂠 face-down</b> to play cards face down.</li>
+      <li>Drag from your hand to the table to play it, or onto a pile to put it on top — toggle <b>🂠 face-down</b> to play cards face down; <b>⇅ sort</b> orders your hand by suit and rank (on your screen only).</li>
       <li><b>Custom decks</b>: upload one image per card — each card is named after its file ("dragon_rider.png" → "dragon rider"). Include a <code>deck.json</code> in the same upload for full control:
         <pre>{ "name": "My Game", "back": "back.png",
   "cards": [
@@ -138,9 +153,7 @@
     <form method="dialog"><menu><button>Close</button></menu></form>
   </dialog>
 
-  <div id="announce" class="hidden"></div>
   <div id="peek" class="hidden"><div id="peek-inner"></div><div id="peek-cap"></div></div>
-  <div id="toast" class="hidden"></div>
   <!-- Card texts for the CAH rules template (CC BY-NC-SA, Cards Against Humanity LLC). -->
   <script src="cah-cards.js"></script>
   <script type="module" src="app.js"></script>

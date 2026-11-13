@@ -11,8 +11,11 @@ body {
 button {
   background: #334155; color: #e2e8f0; border: none; border-radius: 8px;
   padding: 6px 10px; font-size: 14px; cursor: pointer;
+  transition: background-color 0.15s, transform 0.08s;
 }
 button:hover { background: #475569; }
+button:active { transform: translateY(1px); }
+button:focus-visible { outline: 2px solid #fbbf24; outline-offset: 2px; }
 input[type="text"], input:not([type]) {
   background: #0f172a; color: #e2e8f0; border: 1px solid #475569;
   border-radius: 8px; padding: 6px 8px; font-size: 14px;
@@ -26,8 +29,12 @@ select {
 #toolbar {
   display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
   padding: 6px 10px; background: #1e293b; z-index: 10;
+  border-bottom: 1px solid #334155; box-shadow: 0 2px 10px #0006;
 }
-#logo { font-weight: 600; white-space: nowrap; }
+#logo { font-weight: 700; white-space: nowrap; color: #fde68a; letter-spacing: 0.2px; }
+#games-btn { background: #0f766e; }
+#games-btn:hover { background: #0d9488; }
+@media (max-width: 820px) { #games-btn .lbl { display: none; } }
 .spacer { flex: 1; }
 #name-input { width: 110px; }
 #net-status { color: #f59e0b; font-size: 13px; white-space: nowrap; }
@@ -36,7 +43,9 @@ select {
 
 /* --- main area: table + log panel --- */
 #main { flex: 1; display: flex; min-height: 0; position: relative; }
-#table-wrap { flex: 1; position: relative; overflow: hidden; background: #0b1120; }
+/* isolation: the z-indexes inside (seats, bulbs, rules row, action bar) stay
+   inside the table, so the phone's overlaid log panel (#side) paints above them. */
+#table-wrap { flex: 1; position: relative; overflow: hidden; background: #0b1120; isolation: isolate; }
 
 #side {
   width: 280px; flex-shrink: 0; display: flex; flex-direction: column;
@@ -55,9 +64,14 @@ select {
 #table {
   position: absolute; width: 1300px; height: 1300px; transform-origin: 50% 50%;
   touch-action: none; /* two-finger gestures are ours, not the browser's */
-  background: radial-gradient(circle at 50% 44%, #1d6b45 0%, #14532d 62%, #0d3b21 100%);
-  border-radius: 50%; border: 16px solid #4a2e1b;
-  box-shadow: inset 0 0 90px #0009, 0 0 40px #000a;
+  /* felt + a faint printed ring; a wooden rail with a highlight and a dark lip */
+  background: radial-gradient(circle at 50% 42%, #22774c 0%, #17603a 55%, #0d3b21 100%);
+  border-radius: 50%; border: 16px solid #5a3820;
+  box-shadow: inset 0 0 0 3px #2b1a0e, inset 0 0 90px #0009, 0 0 0 3px #7a4f2c, 0 0 0 5px #2b1a0e, 0 0 44px #000c;
+}
+#table::before {
+  content: ""; position: absolute; inset: 44px; border-radius: 50%;
+  border: 2px solid #ffffff14; pointer-events: none;
 }
 
 /* seat name labels around the rim (screen space, one per player) */
@@ -68,27 +82,106 @@ select {
   pointer-events: none; z-index: 9000; white-space: nowrap; box-shadow: 0 2px 8px #0009;
 }
 .seat.offline { opacity: 0.45; }
+/* a table drawn small (phones, .small-table set by renderPlayers): small,
+   see-through labels, so the cards under the rim stay readable */
+.small-table .seat { font-size: 10.5px; padding: 1px 6px; background: #0f172a8c; }
 .seat.me { box-shadow: 0 0 0 2.5px #fbbf2466, 0 2px 8px #0009; }
 .seat.turn { box-shadow: 0 0 0 3px #f59e0bcc, 0 2px 10px #0009; }
 .seat.winner { box-shadow: 0 0 0 3px #fbbf24, 0 0 18px #fbbf2488; }
+/* your turn (UX-I2): your own label pulses, the hand bar gets an amber edge */
+.seat.me.turn { animation: seat-pulse 1.1s ease-in-out infinite; }
+@keyframes seat-pulse { 50% { box-shadow: 0 0 0 5px #f59e0b, 0 0 22px #f59e0bcc; } }
+#hand-bar.myturn { box-shadow: inset 0 3px 0 #f59e0b; }
+/* the "Your turn" chip sits just above the hand bar's right corner: in the
+   bar's stacking context (no table banner, button row or seat covers it) yet
+   off the fanned cards' corner indexes */
+#turn-cue {
+  position: absolute; bottom: calc(100% + 8px); right: 12px; z-index: 12;
+  background: #f59e0b; color: #1c1917; font-weight: 700; font-size: 15px;
+  padding: 6px 16px; border-radius: 999px; box-shadow: 0 4px 14px #000a; pointer-events: none;
+  animation: cue-pop 0.35s ease-out;
+}
+@keyframes cue-pop { from { opacity: 0; transform: translateY(-12px) scale(0.9); } }
 
+/* win celebration (UX-I4): emoji confetti, never in the way of a click */
+.confetti { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 450000; }
+.confetti span { position: absolute; top: -2em; font-size: 24px; animation: fall 1.9s ease-in forwards; }
+@keyframes fall { to { transform: translate(var(--dx), 110vh) rotate(var(--r)); opacity: 0.85; } }
+
+/* "What are we playing?" strip for a brand-new table (UX-I3): a non-modal
+   bar along the top edge — clear of the felt centre, the hand and toolbar.
+   Once others are seated it shrinks to a corner chip (.compact), off the
+   rim where their seat labels sit; its 🎲 opens the full picker. */
+#game-strip {
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 9700;
+  display: flex; align-items: center; gap: 6px; max-width: calc(100% - 16px);
+  background: #0f172ae6; padding: 6px 6px 6px 12px; border-radius: 12px; box-shadow: 0 2px 12px #000a;
+  font-size: 14px; white-space: nowrap;
+}
+#game-strip .games { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+@media (max-width: 760px) { /* the row scrolls sideways on phones: fade its edge as a hint */
+  #game-strip .games { mask-image: linear-gradient(90deg, #000 85%, #0000); -webkit-mask-image: linear-gradient(90deg, #000 85%, #0000); }
+}
+#game-strip .games button { flex: 0 0 auto; background: #1e3a5f; padding: 5px 9px; font-size: 13px; }
+#game-strip .games button:hover { background: #2563eb; }
+#game-strip-ask { background: none; font-weight: 700; padding: 4px 6px; }
+#game-strip-x { background: none; color: #94a3b8; padding: 4px 8px; }
+#game-strip.compact { left: 8px; transform: none; padding-left: 6px; }
+#game-strip.compact .games { display: none; }
+@media (max-width: 600px) { #game-strip-ask span { display: none; } }
+#games-list { display: flex; flex-direction: column; gap: 6px; }
+#games-list button { display: flex; align-items: center; gap: 12px; text-align: left; padding: 9px 12px; background: #273449; }
+#games-list button:hover { background: #334155; }
+#games-list button.on { box-shadow: inset 0 0 0 2px #2dd4bf; }
+#games-list .ge { font-size: 26px; width: 34px; text-align: center; }
+#games-list b { font-size: 15px; }
+#games-list i { color: #2dd4bf; font-size: 12px; }
+#games-list small { display: block; color: #94a3b8; font-size: 12.5px; margin-top: 2px; }
+
+/* Notices (index.html #notices): the banner and a toast stack in one
+   click-through column at the top of the table area instead of overlapping.
+   renderPlayers() moves `top` below the seat labels at the top of the table. */
+#notices {
+  position: absolute; top: 10px; left: 0; right: 0; z-index: 999999; pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+}
+/* desktop with the log panel open: centred over the table, not over the panel
+   (≤ 820px the panel is an overlay, and the full width is right) */
+@media (min-width: 821px) { #side:not(.hidden) ~ #notices { right: 280px; } }
 /* scripted announcement banner (t.announce / t.win) */
 #announce {
-  position: fixed; top: 18%; left: 50%; transform: translateX(-50%);
-  max-width: 80vw; text-align: center; z-index: 400000; pointer-events: none;
+  max-width: 80%; text-align: center;
   background: #0f172af0; border: 2px solid #a78bfa; border-radius: 14px;
   padding: 14px 26px; font-size: 22px; font-weight: 700; color: #ede9fe;
   box-shadow: 0 8px 30px #000c; transition: opacity 0.7s;
 }
 #announce.fade { opacity: 0; }
+/* Phones: a compact banner (about 2 lines) instead of a block over the table. */
+@media (max-width: 480px), (max-height: 500px) {
+  #notices { gap: 4px; }
+  #announce { font-size: 16px; padding: 8px 14px; max-width: 92%; }
+}
 
 /* scripted rules: button row + toolbar state */
+/* bottom is moved up by renderPlayers() so the row sits above your own seat label */
 #rules-btns {
   position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
   display: flex; gap: 8px; z-index: 9500;
+  width: max-content; max-width: calc(100% - 8px); flex-wrap: wrap; justify-content: center;
   background: #0f172ad9; padding: 7px; border-radius: 12px; box-shadow: 0 2px 10px #000a;
 }
 #rules-btns button { background: #7c3aed; }
+/* short screens (phone landscape): a compact row, one line even for Hold'em's
+   seven buttons, clear of the side seats' labels and the board */
+@media (max-height: 500px) {
+  #rules-btns { gap: 5px; padding: 5px; }
+  #rules-btns button { padding: 5px 8px; font-size: 13px; }
+}
+/* a phone in landscape (.gutters, set by renderPlayers): the round felt leaves
+   wide margins — the notices go in the left one, the button row in the right */
+.gutters #notices { right: auto; width: var(--gutter); }
+.gutters #rules-btns { left: auto; right: 8px; transform: none; max-width: calc(var(--gutter) - 16px); }
+#main.gutters ~ #hand-bar #turn-cue { right: auto; left: 12px; } /* the button row owns the right margin */
 #rules-btns button:hover { background: #8b5cf6; }
 #rules-btn.on { background: #7c3aed; }
 #table-hint {
@@ -101,19 +194,29 @@ select {
 .item {
   position: absolute; width: var(--cw); height: var(--ch);
   cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
+  -webkit-touch-callout: none; /* iOS: a long-press zooms the card, no image callout */
+  transition: left 0.18s ease-out, top 0.18s ease-out; /* remote moves glide (UX-I1) */
 }
-.item.dragging { pointer-events: none; cursor: grabbing; }
+.item.dragging { pointer-events: none; cursor: grabbing; transition: none; }
+@media (hover: hover) { /* touch screens keep :hover after a tap: no stuck lift */
+  .item:hover .cardbox { box-shadow: 0 3px 6px #0006, 0 10px 22px #0005; }
+  /* no z-index: in a fanned hand a raised card would hide its neighbour's slice */
+  .hcard:hover { transform: translateY(-4px); box-shadow: 0 8px 14px #0008; }
+}
+/* a card back flying from a pile into a player's hand */
+.fly { position: absolute; width: var(--cw); height: var(--ch); pointer-events: none; }
 .item.selected .cardbox { outline: 3px solid #fbbf24; outline-offset: 1px; }
 .cardbox {
   position: absolute; inset: 0; border-radius: 8px; overflow: hidden;
-  background: #fff; box-shadow: 0 2px 6px #0006;
+  background: #fff; box-shadow: 0 1px 2px #0006, 0 4px 10px #0004; transition: box-shadow 0.15s;
 }
 .item.multi .cardbox { box-shadow: 2px 2px 0 #cbd5e1, 4px 4px 0 #94a3b8, 5px 5px 8px #0007; }
 .face, .back { position: absolute; inset: 0; }
 img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: block; }
 .back {
-  background: repeating-linear-gradient(45deg, #7f1d1d 0 7px, #9f1239 7px 14px);
-  border: 5px solid #f8fafc;
+  background: radial-gradient(circle, #ffffff1a 0 30%, #0000 31%) 0 0 / 14px 14px,
+    repeating-linear-gradient(45deg, #7f1d1d 0 7px, #9f1239 7px 14px);
+  border: 5px solid #f8fafc; box-shadow: inset 0 0 0 2px #fde68a66;
 }
 .face.loading { display: flex; align-items: center; justify-content: center; font-size: 30px; background: #e2e8f0; }
 /* Image-less custom cards (manifest-only decks): name + rule text on a plain face. */
@@ -140,8 +243,11 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 }
 
 /* --- action bar --- */
+/* max-content + wrap: on a narrow screen the bar wraps into rows instead of
+   running off the edge (placeBar() clamps it by its real size). */
 #action-bar {
   position: absolute; display: flex; gap: 4px; padding: 5px;
+  width: max-content; max-width: calc(100% - 8px); flex-wrap: wrap; justify-content: center;
   background: #0f172af0; border-radius: 10px; box-shadow: 0 2px 10px #000a;
   z-index: 100000; transform: translateX(-50%);
 }
@@ -162,14 +268,27 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
   width: 64px; height: 4px; border-radius: 999px; background: #475569;
 }
 #hand-resize:hover::after { background: #94a3b8; }
-#facedown-toggle { font-size: 12px; line-height: 1.3; }
+#facedown-toggle, #sort-toggle { font-size: 12px; line-height: 1.3; }
+/* phones: icon-only toggles leave the hand the room (the titles still explain) */
+@media (max-width: 480px) {
+  #facedown-toggle, #sort-toggle { font-size: 17px; padding: 8px 7px; }
+  #facedown-toggle span, #sort-toggle span { display: none; }
+}
 #facedown-toggle.on { background: #b45309; }
+#sort-toggle.on { background: #0f766e; }
+#facedown-toggle.locked { cursor: not-allowed; box-shadow: inset 0 0 0 2px #fbbf24; }
+#facedown-toggle.locked::after { content: ' 🔒'; }
 #hand { display: flex; gap: 8px; overflow-x: auto; flex: 1; padding: 4px 2px; }
 .hcard, #ghost { width: calc(var(--hch) * 5 / 7); height: var(--hch); border-radius: 7px; overflow: hidden; background: #fff; }
 .hcard {
   position: relative; flex: 0 0 auto; box-shadow: 0 2px 5px #0007;
-  cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
+  /* pan-x: a sideways swipe scrolls the hand (the browser cancels our
+     pointer); only a vertical drag pulls a card out to play it */
+  cursor: grab; touch-action: pan-x; user-select: none; -webkit-user-select: none;
+  transition: transform 0.12s ease-out, box-shadow 0.12s;
 }
+/* a crowded hand fans out (fitHand sets --hov): later cards overlap earlier ones */
+.hcard + .hcard { margin-left: calc(-1 * var(--hov, 0px)); }
 .hcard .mid .mr, #ghost .mid .mr { font-size: calc(var(--hch) * 0.27); }
 .hcard .mid .ms, #ghost .mid .ms { font-size: calc(var(--hch) * 0.17); }
 .hcard .corner, #ghost .corner { font-size: calc(var(--hch) * 0.12); }
@@ -238,6 +357,7 @@ dialog ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 14px; }
   background: #0f172a; color: #e2e8f0; border: 1px solid #475569; border-radius: 8px; padding: 8px;
 }
 #rules-code[readonly] { opacity: 0.8; }
+#rules-reset-lbl { margin-right: auto; align-self: center; font-size: 13px; }
 #rules-err { color: #f87171; font-size: 12.5px; min-height: 1.2em; white-space: pre-wrap; }
 #rules-status { font-size: 13px; color: #94a3b8; font-weight: 400; }
 #rules-enable { background: #7c3aed; }
@@ -246,8 +366,27 @@ dialog ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 14px; }
 #qr-canvas { display: block; margin: 0 auto; border-radius: 8px; background: #fff; max-width: 100%; }
 #qr-link { font-size: 11px; color: #94a3b8; overflow-wrap: anywhere; margin: 8px 0 0; max-width: 320px; }
 
+/* in #notices (below the banner): click-through, clear of the rules buttons,
+   the hand and your seat */
 #toast {
-  position: fixed; bottom: 150px; left: 50%; transform: translateX(-50%);
   background: #dc2626; color: #fff; padding: 10px 16px; border-radius: 10px;
-  box-shadow: 0 4px 14px #000a; z-index: 999999; max-width: 80vw; font-size: 14px;
+  box-shadow: 0 4px 14px #000a; max-width: 92%; font-size: 14px; text-align: center;
+}
+#toast.ok { background: #059669; }
+@media (max-width: 480px), (max-height: 500px) { #toast { font-size: 13px; padding: 6px 12px; } }
+
+/* Short screens (phone landscape): give the table every pixel we can. */
+@media (max-height: 500px) {
+  #logo { display: none; }
+  #toolbar { padding: 3px 8px; }
+  #hand-bar { padding: 4px 8px; min-height: calc(var(--hch) + 8px); }
+}
+
+/* Reduced motion: nothing glides, flips, pulses or falls (the JS side skips
+   its Web Animations and the confetti); the cues themselves still show. */
+@media (prefers-reduced-motion: reduce) {
+  .item, .hcard, button, .cardbox { transition: none; }
+  .seat.me.turn { animation: none; box-shadow: 0 0 0 4px #f59e0b, 0 0 16px #f59e0b99; }
+  #turn-cue { animation: none; }
+  .hcard:hover { transform: none; }
 }
