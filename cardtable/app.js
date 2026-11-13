@@ -48,7 +48,9 @@ function clampToFelt(x, y) {
 
 // --- loud error reporting -------------------------------------------------
 let toastT = 0;
-function toast(msg) {
+/** Shows a 5s notice: red (a problem) unless `ok` marks it as good news. */
+function toast(msg, ok) {
+  toastEl.classList.toggle('ok', !!ok);
   toastEl.textContent = msg;
   toastEl.classList.remove('hidden');
   clearTimeout(toastT);
@@ -1370,10 +1372,11 @@ function renderPlayers() {
   const badges = (view.rules?.enabled && view.rules.public?.badges) || {};
   // Only the host publishes online flags, so a guest marks a departed host itself.
   const hostGone = role === 'guest' && !hostPeer ? view.host : null;
-  const sig = `${JSON.stringify(view.players)}|${turn}|${winners.join()}|${JSON.stringify(badges)}|${hostGone}|${viewAngle.toFixed(1)}|${scale.toFixed(4)}|${panX | 0},${panY | 0}|${wrapEl.clientWidth}`;
+  const sig = `${JSON.stringify(view.players)}|${turn}|${winners.join()}|${JSON.stringify(badges)}|${hostGone}|${viewAngle.toFixed(1)}|${scale.toFixed(4)}|${panX | 0},${panY | 0}|${wrapEl.clientWidth}x${wrapEl.clientHeight}`;
   if (sig === seatSig) return;
   seatSig = sig;
   for (const el of wrapEl.querySelectorAll('.seat')) el.remove();
+  const seats = [];
   for (const [p, pl] of Object.entries(view.players)) {
     if (pl.seat == null) continue;
     const rad = (pl.seat * Math.PI) / 180;
@@ -1381,11 +1384,29 @@ function renderPlayers() {
     const el = document.createElement('div');
     el.className = `seat${pl.online && p !== hostGone ? '' : ' offline'}${p === pid ? ' me' : ''}${p === turn ? ' turn' : ''}${winners.includes(p) ? ' winner' : ''}`;
     el.style.borderColor = pl.color;
-    el.style.left = `${sx}px`;
-    el.style.top = `${sy}px`;
     el.textContent = `${winners.includes(p) ? '🏆 ' : ''}${p === turn ? '⏳ ' : ''}${pl.name || 'Player'} 🂠${pl.handCount}${badges[p] ? ` ${badges[p]}` : ''}`;
-    wrapEl.appendChild(el);
+    seats.push({ p, el, sx, sy });
   }
+  wrapEl.append(...seats.map((s) => s.el));
+  // All sizes are read before any position is written: one layout for all the
+  // labels, not one per seat (this runs on every pan/zoom/pinch frame).
+  for (const s of seats) { s.hw = s.el.offsetWidth / 2 + 4; s.hh = s.el.offsetHeight / 2 + 2; }
+  const W = wrapEl.clientWidth, H = wrapEl.clientHeight;
+  let rowBottom = 12, noticeTop = 10; // #rules-btns' and #notices' default spots (CSS)
+  for (const { p, el, sx, sy, hw, hh } of seats) {
+    // Keep the whole label on screen (side seats sit on the rim, which a
+    // phone's fit zoom puts right at the screen edge).
+    const y = clamp(sy, hh, H - hh);
+    el.style.left = `${clamp(sx, hw, W - hw)}px`;
+    el.style.top = `${y}px`;
+    // Your own label in the lower half: lift the rules button row just above
+    // it, so the row never hides your name, ⏳, chips or score.
+    if (p === pid && y > H / 2) rowBottom = Math.max(rowBottom, H - (y - hh) + 6);
+    // Labels across the top: the banner and toasts start just below them.
+    if (y < H / 4) noticeTop = Math.max(noticeTop, y + hh + 4);
+  }
+  $('rules-btns').style.bottom = `${rowBottom}px`;
+  $('notices').style.top = `${noticeTop}px`;
 }
 
 let handSig = '';
@@ -1488,6 +1509,7 @@ function layout() {
   tableEl.style.transform = `translate(${panX}px, ${panY}px) rotate(${viewAngle}deg) scale(${scale})`;
   hintEl.style.transform = `rotate(${-viewAngle}deg)`; // keep the hint readable
   if (sel) placeBar();
+  for (const b of bulbs.values()) placeFx(b);
   renderPlayers(); // seat labels live in screen space and track the view
 }
 new ResizeObserver(layout).observe(wrapEl);
@@ -1554,8 +1576,10 @@ function placeBar() {
   if (!it) return;
   const [sx, sy] = tableToScreen(it.x + CARD_W / 2, it.y + CARD_H / 2);
   const half = CARD_H * 0.6 * scale; // covers rotated cards too
-  const yAbove = sy - half - 42;
-  barEl.style.left = `${clamp(sx, 90, wrapEl.clientWidth - 90)}px`;
+  // The bar's real size: it wraps into rows on a narrow screen.
+  const hw = barEl.offsetWidth / 2, bh = barEl.offsetHeight;
+  const yAbove = sy - half - bh - 4;
+  barEl.style.left = `${clamp(sx, hw + 4, wrapEl.clientWidth - hw - 4)}px`;
   barEl.style.top = `${yAbove >= 4 ? yAbove : sy + half + 8}px`;
 }
 
@@ -1573,11 +1597,20 @@ function showAnnounce(msg) {
 }
 
 // --- transient "who did that" bulbs ----------------------------------------
-const bulbs = new Map(); // "pid|itemId" -> {el, timer}
+const bulbs = new Map(); // "pid|itemId" -> {el, timer, f}
+/** Puts a bulb over its item (or the spot the item left), in screen space —
+ *  re-run by layout() so bulbs follow pan, zoom, rotation and resizes. */
+function placeFx(b) {
+  const it = b.f.id && view.items[b.f.id];
+  const [sx, sy] = tableToScreen((it ? it.x : b.f.x) + CARD_W / 2, (it ? it.y : b.f.y) + CARD_H / 2);
+  b.el.style.left = `${clamp(sx, 30, wrapEl.clientWidth - 30)}px`;
+  b.el.style.top = `${Math.max(20, sy - CARD_H * 0.55 * scale)}px`;
+}
 function showFx(f) {
+  // Script ops are credited "📜 Rules" in the log; a bulb per op would just
+  // pile up (a single deal or judge does several).
+  if (f.p === RULES) return;
   const who = actorInfo(f.p);
-  const it = f.id && view.items[f.id];
-  const [sx, sy] = tableToScreen((it ? it.x : f.x) + CARD_W / 2, (it ? it.y : f.y) + CARD_H / 2);
   const key = `${f.p}|${f.id}`;
   let b = bulbs.get(key);
   if (!b) {
@@ -1587,10 +1620,10 @@ function showFx(f) {
     b = { el, timer: 0 };
     bulbs.set(key, b);
   }
+  b.f = f;
   b.el.textContent = who.name;
   b.el.style.borderColor = who.color;
-  b.el.style.left = `${clamp(sx, 30, wrapEl.clientWidth - 30)}px`;
-  b.el.style.top = `${Math.max(20, sy - CARD_H * 0.55 * scale)}px`;
+  placeFx(b);
   b.el.classList.remove('fade');
   clearTimeout(b.timer);
   b.timer = setTimeout(() => {
@@ -1638,6 +1671,13 @@ function showZoom(d, i, caption) {
   peekEl.classList.remove('hidden');
 }
 peekEl.addEventListener('click', () => peekEl.classList.add('hidden'));
+// Escape closes the zoom/peek overlay, else dismisses the action bar. An open
+// <dialog> keeps Escape for itself (the browser closes it).
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || document.querySelector('dialog[open]')) return;
+  if (!peekEl.classList.contains('hidden')) peekEl.classList.add('hidden');
+  else select(null);
+});
 /** Reveals a peeked card {d, i} to this player only (the host's answer to a peek action). */
 function showPeek(c) {
   showZoom(c.d, c.i, 'Only you can see this — everyone knows you peeked. Click to close.');
@@ -1708,7 +1748,7 @@ window.addEventListener('pointermove', (e) => {
   if (tPtrs.has(e.pointerId)) tPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (pinch) { if (tPtrs.size >= 2) updatePinch(); return; }
   if (handResize) {
-    handH = clamp(handResize.h + (handResize.y - e.clientY), 80, 340);
+    handH = clamp(handResize.h + (handResize.y - e.clientY), 60, 340);
     document.documentElement.style.setProperty('--hch', `${handH}px`);
     return;
   }
@@ -1799,19 +1839,37 @@ tableEl.addEventListener('dblclick', (e) => {
 });
 
 // --- dragging out of the hand (a plain click zooms the card instead) -------
-let ghost = null;
+// Touch: .hcard is `touch-action: pan-x`, so a sideways swipe scrolls the hand
+// (the browser takes it over and sends pointercancel); only a mostly vertical
+// drag pulls a card out. A mouse drags out in any direction.
+let ghost = null, handDragged = false; // handDragged: the last press became a drag
 handEl.addEventListener('pointerdown', (e) => {
   const el = e.target.closest('.hcard');
   if (!el || e.button !== 0) return;
   e.preventDefault();
   const idx = +el.dataset.idx;
   if (!myHand[idx]) return;
-  handDrag = { idx, card: myHand[idx], sx: e.clientX, sy: e.clientY, moved: false };
+  handDragged = false;
+  handDrag = { idx, card: myHand[idx], sx: e.clientX, sy: e.clientY, moved: false, touch: e.pointerType !== 'mouse' };
 });
+// The zoom opens on click, not pointerup: a tap's click would otherwise land on
+// the overlay that just opened under the finger and close it at once.
+handEl.addEventListener('click', (e) => {
+  const el = e.target.closest('.hcard');
+  const c = el && myHand[+el.dataset.idx];
+  if (c && !handDragged) showZoom(c.d, c.i); // a drag dropped back on its card isn't a click
+});
+// A mouse wheel scrolls the hand sideways (it has no vertical scroll).
+handEl.addEventListener('wheel', (e) => {
+  if (e.shiftKey || !e.deltaY) return;
+  handEl.scrollLeft += e.deltaY;
+  e.preventDefault();
+}, { passive: false });
 
 function moveGhost(e) {
   if (!handDrag.moved) {
-    if (Math.hypot(e.clientX - handDrag.sx, e.clientY - handDrag.sy) < 6) return;
+    const dx = e.clientX - handDrag.sx, dy = e.clientY - handDrag.sy;
+    if (Math.hypot(dx, dy) < 6 || (handDrag.touch && Math.abs(dx) > Math.abs(dy))) return;
     handDrag.moved = true;
     ghost = document.createElement('div');
     ghost.id = 'ghost';
@@ -1826,7 +1884,8 @@ function moveGhost(e) {
 function dropGhost(e) {
   const { idx, card, moved } = handDrag;
   handDrag = null;
-  if (!moved) { showZoom(card.d, card.i); return; } // click, not drag: enlarge
+  if (!moved) return; // a click, not a drag: the click handler enlarges it
+  handDragged = true;
   ghost.remove();
   ghost = null;
   $('hand-bar').classList.remove('droppable');
@@ -1863,7 +1922,8 @@ $('facedown-toggle').addEventListener('click', () => {
 });
 
 // --- resizable hand tray ---------------------------------------------------
-let handH = clamp(parseInt(localStorage.getItem('ct-handh'), 10) || 120, 80, 340);
+// Default: smaller cards on short screens (phone landscape), so the table keeps room.
+let handH = clamp(parseInt(localStorage.getItem('ct-handh'), 10) || (innerHeight < 500 ? 76 : 120), 60, 340);
 let handResize = null;
 document.documentElement.style.setProperty('--hch', `${handH}px`);
 $('hand-resize').addEventListener('pointerdown', (e) => {
@@ -1888,9 +1948,7 @@ $('invite-btn').addEventListener('click', async () => {
   const link = inviteLink();
   try {
     await navigator.clipboard.writeText(link);
-    toastEl.style.background = '#059669';
-    toast('Invite link copied — send it to your friends');
-    setTimeout(() => { toastEl.style.background = ''; }, 5000);
+    toast('Invite link copied — send it to your friends', true);
   } catch (err) {
     console.error('clipboard unavailable', err);
     window.prompt('Share this invite link:', link);
@@ -3053,9 +3111,18 @@ async function manifestDeck(m, images) {
   return deck;
 }
 
+// Building a big image deck takes seconds: one build at a time, and closing
+// the dialog meanwhile (Cancel/Escape) abandons that build — its result is
+// dropped even if the player has reopened the dialog since.
+let deckBuild = 0; // bumped on every close: a build that started before is stale
+const deckBtn = (busy) => { $('deck-add').disabled = busy; $('deck-add').textContent = busy ? 'Building…' : 'Add deck'; };
+$('deck-dialog').addEventListener('close', () => { deckBuild++; deckBtn(false); });
 $('deck-form').addEventListener('submit', async (e) => {
   if (e.submitter?.value !== 'add') return;
   e.preventDefault();
+  if ($('deck-add').disabled) return;
+  const run = deckBuild;
+  deckBtn(true);
   const kind = document.querySelector('input[name="deck-kind"]:checked').value;
   const name = $('deck-name').value.trim();
   try {
@@ -3079,12 +3146,15 @@ $('deck-form').addEventListener('submit', async (e) => {
       if (backFile) deck.back = await fileToDataURL(backFile);
       if (name) deck.name = name;
     }
+    if (run !== deckBuild) return; // the player cancelled while it was building
     act({ t: 'addDeck', deckId: uid(), deck, x: TABLE_W / 2 - CARD_W / 2, y: TABLE_H / 2 - CARD_H / 2 });
     $('deck-dialog').close();
     $('deck-form').reset();
   } catch (err) {
     console.error('failed to build deck', err);
     toast(`Failed to build deck: ${err.message}`);
+  } finally {
+    if (run === deckBuild) deckBtn(false); // else the close already reset it (maybe for a new build)
   }
 });
 
@@ -3299,7 +3369,7 @@ function cliConnect() {
         await push();
         const r = await call('/poll');
         if (!r.ok) throw new Error(`bridge poll failed (${r.status})`);
-        if (status !== 'ok') { status = 'ok'; toast('🖥 Terminal bridge connected'); console.log('terminal bridge connected', base); }
+        if (status !== 'ok') { status = 'ok'; toast('🖥 Terminal bridge connected', true); console.log('terminal bridge connected', base); }
         for (const c of await r.json()) { cliExec(c); }
       } catch (err) {
         console.error('terminal bridge error', err);

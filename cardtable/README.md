@@ -16,7 +16,10 @@ and each player's view auto-rotates so their own seat is at the bottom —
 opponents genuinely face each other. Each player also has a private zoom and
 pan: scroll to zoom about the cursor, drag empty felt to pan, and on touch
 screens a two-finger pinch zooms, rotates and pans in one anchored gesture;
-🧭 resets everything back to the seat view. Cards you play or deal land
+🧭 resets everything back to the seat view. On a phone, swipe the hand
+sideways to scroll through it and drag a card upward out of it to play;
+tap a card to enlarge it (Esc or a click closes the enlarged card and the
+action buttons on a desktop). Cards you play or deal land
 facing you, so your tableau reads upright to you and upside-down to the
 player across, like a physical table. A circle makes all of this work:
 rotation never changes how the table fits the screen. The **host** can grow
@@ -134,7 +137,7 @@ shuffle, flip, piles, hands, …), persistent scratch state (`t.data`),
 broadcast UI state (`t.public`, e.g. the ⏳ turn marker), scripted buttons,
 timers, and player messaging. `validate` can veto any gameplay action with a
 reason (the actor gets a toast; the block goes in the log); everything a
-script does is logged and bulb-marked as the "📜 Rules" actor.
+script does is logged as the "📜 Rules" actor.
 
 Scripts run **on the host only** — guests receive data, never code — and
 everyone can read the exact script being enforced (read-only view in the

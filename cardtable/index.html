@@ -42,6 +42,8 @@
         <button title="Send">➤</button>
       </form>
     </aside>
+    <!-- click-through top-centre column: the banner, then a toast below it -->
+    <div id="notices"><div id="announce" class="hidden"></div><div id="toast" class="hidden"></div></div>
   </main>
 
   <footer id="hand-bar">
@@ -118,7 +120,8 @@
       <li><b>Double-click</b> a card to flip it; double-click a pile to draw into your hand.</li>
       <li>Drop a card <b>onto a pile</b> to place it on top; onto <b>another card</b> to start a pile; drop a <b>pile onto a pile</b> to merge them.</li>
       <li>Drag a card to the <b>bottom bar</b> to take it into your hand (hands are private). Drag the bar's <b>top edge</b> to resize your hand cards.</li>
-      <li><b>Click</b> a card in your hand — or <b>🔍</b> on a face-up table card — to see it enlarged.</li>
+      <li><b>Click</b> a card in your hand — or <b>🔍</b> on a face-up table card — to see it enlarged (a click or <b>Esc</b> closes it; Esc also dismisses the action buttons).</li>
+      <li>On touch screens, <b>swipe</b> your hand sideways to scroll it; drag a card <b>upward</b> out of it to play it.</li>
       <li><b>Peek</b> shows you a face-down card (or the top of a pile) privately — but everyone sees in the log <i>that</i> you peeked.</li>
       <li>Everyone gets a <b>seat</b> around the table, and the table auto-turns so your seat is at the bottom. Cards you play land facing you.</li>
       <li><b>Scroll</b> to zoom, <b>drag empty felt</b> to pan; on touch screens, <b>pinch with two fingers</b> to zoom, rotate and pan at once. Your view is yours alone — <b>🧭</b> resets it to your seat.</li>
@@ -139,9 +142,7 @@
     <form method="dialog"><menu><button>Close</button></menu></form>
   </dialog>
 
-  <div id="announce" class="hidden"></div>
   <div id="peek" class="hidden"><div id="peek-inner"></div><div id="peek-cap"></div></div>
-  <div id="toast" class="hidden"></div>
   <!-- Card texts for the CAH rules template (CC BY-NC-SA, Cards Against Humanity LLC). -->
   <script src="cah-cards.js"></script>
   <script type="module" src="app.js"></script>
