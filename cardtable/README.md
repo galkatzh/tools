@@ -171,10 +171,12 @@ and the anti-cheat record all apply unchanged. Two modes:
 
 Scripting: `require('./cli.js')` / `from cli import Bridge` exposes the
 bridge as a small API — the same in both languages: `state`, `send`,
-`wait`, `on`, plus `chat`, `play`, `draw`, `btn`. `play(idx)` names the
-card by its `key` (each hand card has one), resolved when you call it, so
-`play(0); play(1)` plays the two cards you saw at #0 and #1 whatever the
-tab's state lag. Feedback meant for the player — rules vetoes, `t.tell`
+`wait`, `on`, plus `chat`, `play`, `draw`, `btn`. `play()` names the card
+by its `key` (each hand card has one), so the tab's own state lag can't
+change which card goes. Pass it the card itself — `play(s.hand[i])` from
+a state you hold — when you play several: a bare index is resolved
+against `state` as it is when you call, and a state push between two calls
+shifts the indices. Feedback meant for the player — rules vetoes, `t.tell`
 notices, failed sends, command errors, peeks — arrives in `state.msgs`
 (`note: …` / `error: …` / `peek: …`), not only as a toast nobody watches.
 Log lines written by the rules script carry `rules: true`; key bot logic

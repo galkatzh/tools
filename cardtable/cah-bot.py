@@ -28,9 +28,11 @@ def czar_id(state):
 def rules_lines(state, pattern):
     """(ts, match) for the rules script's own log lines matching pattern. A
     player can chat — or rename itself to — the same words, but only script
-    lines carry the `rules` flag."""
+    lines carry the `rules` flag. The LAST match in a line counts: a line can
+    start with a player's name ("<czar> is the Card Czar — …"), and that name
+    may itself read "answer with 9 cards"."""
     return [(e['ts'], m) for e in state['log'] if e.get('rules')
-            for m in [re.search(pattern, e['text'])] if m]
+            for m in list(re.finditer(pattern, e['text']))[-1:]]
 
 
 def main():
@@ -81,8 +83,8 @@ def main():
             hand = len(s['hand'])
             if hand > keep >= 0 and tries < 3 and time.time() - sent > 5:
                 tries, sent = tries + 1, time.time()
-                for idx in random.sample(range(hand), hand - keep):
-                    bridge.play(idx, up=False)  # by card identity, so order is free
+                for card in random.sample(s['hand'], hand - keep):
+                    bridge.play(card, up=False)  # the cards of THIS snapshot, by key
                 print(f'answered with {hand - keep} card(s)' if tries == 1
                       else f'answer incomplete — re-sent {hand - keep} card(s)')
             continue

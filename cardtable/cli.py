@@ -18,6 +18,7 @@ cah-bot.py for a complete example.
 """
 import argparse
 import json
+import math
 import secrets
 import select
 import socket
@@ -121,6 +122,9 @@ class Bridge:
 
     def send(self, **cmd):
         """Queues a command for the tab, e.g. send(t='play', idx=0, up=False)."""
+        # NaN/inf would come out as bare NaN/Infinity — invalid JSON that loses
+        # the tab the whole poll batch — so refuse them here (raises ValueError).
+        json.dumps(cmd, allow_nan=False)
         with self._cv:
             self._cmds.append(cmd)
             self._cv.notify_all()
@@ -148,13 +152,17 @@ class Bridge:
     # convenience wrappers for bot code
     def chat(self, msg): self.send(t='chat', msg=msg)
 
-    def play(self, idx, up=True, **kw):
-        """Plays hand card #idx of the CURRENT state: it's sent by identity
-        (key), so later plays and the tab's own state lag can't shift which
-        card goes."""
-        hand = (self.state or {}).get('hand', [])
-        key = hand[idx].get('key') if 0 <= idx < len(hand) else None
-        self.send(t='play', idx=idx, key=key, up=up, **kw)
+    def play(self, card, up=True, **kw):
+        """Plays a hand card, sent by identity (key) so the tab's state lag
+        can't shift which card goes: a card dict from a state you hold
+        (safest), a key, or an index — resolved against `state` as it is when
+        you call."""
+        if isinstance(card, int):
+            hand = (self.state or {}).get('hand', [])
+            card = hand[card] if 0 <= card < len(hand) else {'idx': card}
+        elif isinstance(card, str):
+            card = {'key': card}
+        self.send(t='play', idx=card.get('idx'), key=card.get('key'), up=up, **kw)
 
     def draw(self, pile=None): self.send(t='draw', id=pile)
     def btn(self, bid): self.send(t='btn', id=bid)
@@ -188,11 +196,12 @@ def fmt_card(c):
 
 
 def need(args, n, usage):
-    """Raises `usage` unless args[0] is present and args[1:n] are numbers."""
+    """Raises `usage` unless args[0] is present and args[1:n] are finite numbers."""
     try:
-        if len(args) < n:
+        nums = [float(a) for a in args[1:n]]
+        if len(args) < n or not all(map(math.isfinite, nums)):
             raise ValueError
-        return [float(a) for a in args[1:n]]
+        return nums
     except ValueError:
         raise ValueError(usage) from None
 
@@ -246,8 +255,8 @@ def run_cmd(bridge, line):
         idxs = list(dict.fromkeys(int(a) for a in args if a.isdigit()))
         if not idxs:
             raise ValueError('play <idx...> — see "hand"')
-        for idx in idxs:
-            bridge.play(idx, up='--down' not in args)
+        for idx in idxs:  # the cards the user saw
+            bridge.play(s['hand'][idx] if idx < len(s['hand']) else idx, up='--down' not in args)
     elif cmd == 'discard':
         if not args or not args[0].isdigit():
             raise ValueError('discard <idx> [pile]')

@@ -42,24 +42,34 @@ class Bridge {
   /** Subscribes to state updates; returns an unsubscribe function. */
   on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   send(cmd) {
+    // NaN/Infinity aren't JSON (they'd arrive as null): refuse them here, like cli.py.
+    JSON.stringify(cmd, (k, v) => {
+      if (typeof v === 'number' && !Number.isFinite(v)) throw new Error(`send(): ${k} is not a finite number`);
+      return v;
+    });
     this.cmds.push(cmd);
     const res = this.waiter;
     this.waiter = null;
     if (res) this.flush(res);
   }
-  /** Answers a long-poll with every queued command (or `[]`). */
-  flush(res, cmds = this.cmds.splice(0)) {
-    if (res.writableEnded) return;
+  /** Answers a long-poll with every queued command (or `[]`). A poll whose
+   *  tab already hung up takes nothing: the commands stay for the next one. */
+  flush(res, cmds) {
+    if (res.destroyed || res.writableEnded) return;
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-    res.end(JSON.stringify(cmds));
+    res.end(JSON.stringify(cmds ?? this.cmds.splice(0)));
   }
   /** ms since the tab last called in (Infinity before it ever did). */
   idle() { return this.seen ? Date.now() - this.seen : Infinity; }
   // convenience wrappers for bot code (same as cli.py)
   chat(msg) { this.send({ t: 'chat', msg }); }
-  /** Plays hand card #idx of the CURRENT state: it's sent by identity (key),
-   *  so later plays and the tab's own state lag can't shift which card goes. */
-  play(idx, up = true, extra = {}) { this.send({ t: 'play', idx, key: this.state?.hand?.[idx]?.key, up, ...extra }); }
+  /** Plays a hand card, sent by identity (key) so the tab's state lag can't
+   *  shift which card goes: a card object from a state you hold (safest), a
+   *  key, or an index — resolved against `state` as it is when you call. */
+  play(card, up = true, extra = {}) {
+    const c = typeof card === 'number' ? this.state?.hand?.[card] ?? { idx: card } : typeof card === 'string' ? { key: card } : card;
+    this.send({ t: 'play', idx: c.idx ?? null, key: c.key ?? null, up, ...extra });
+  }
   draw(pile) { this.send({ t: 'draw', id: pile }); }
   btn(id) { this.send({ t: 'btn', id }); }
   route(req, res) {
@@ -146,9 +156,9 @@ const HELP = `commands:
   quit`;
 
 function fmtCard(c) { return c.name + (c.text && c.text !== c.name ? ` — ${c.text}` : ''); }
-/** Throws `usage` unless args[0] is present and args[1..] (if listed) are numbers. */
+/** Throws `usage` unless args[0] is present and args[1..n) are finite numbers. */
 function need(args, n, usage) {
-  if (args.length < n || args.slice(1, n).some((a) => isNaN(a))) throw new Error(usage);
+  if (args.length < n || args.slice(1, n).some((a) => !Number.isFinite(+a))) throw new Error(usage);
 }
 const STALE_MS = 25000; // a live tab re-polls at least every 20 s
 
@@ -199,7 +209,7 @@ function runCmd(bridge, line) {
       const down = args.includes('--down');
       const idxs = new Set(args.filter((a) => /^\d+$/.test(a)).map(Number));
       if (!idxs.size) throw new Error('play <idx...> — see "hand"');
-      for (const idx of idxs) bridge.play(idx, !down);
+      for (const idx of idxs) bridge.play(s.hand[idx] ?? idx, !down); // the cards the user saw
       return;
     }
     case 'discard':

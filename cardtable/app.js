@@ -2798,7 +2798,7 @@ function cliSpot(c) {
  *  seat myHand is live, so indices shift between two queued plays), else idx. */
 function cliHandIdx(c) {
   const idx = c.key ? myHand.findIndex((h) => `${h.d}:${h.i}` === c.key) : +c.idx;
-  if (!myHand[idx]) throw new Error(`no hand card #${c.idx}${c.key ? ` (${c.key})` : ''}`);
+  if (!myHand[idx]) throw new Error(`no hand card ${c.key || `#${c.idx}`}`);
   return idx;
 }
 
@@ -2845,6 +2845,10 @@ function cliConnect() {
   const base = `http://127.0.0.1:${CLI.port}`;
   const q = `?token=${encodeURIComponent(CLI.token)}`;
   let last = '', inflight = false;
+  /** fetch() to the bridge. Only fetch itself failing means nobody answered
+   *  (it rejects with a TypeError); such errors are tagged `unreachable`. */
+  const call = (path, init) => fetch(`${base}${path}${q}`, init)
+    .catch((err) => { err.unreachable = true; throw err; });
   const push = async () => {
     if (inflight) return;
     inflight = true;
@@ -2852,7 +2856,7 @@ function cliConnect() {
       const snap = cliSnapshot();
       const s = JSON.stringify(snap);
       if (s === last) return;
-      const r = await fetch(`${base}/state${q}`, { method: 'POST', body: s, headers: { 'Content-Type': 'text/plain' } });
+      const r = await call('/state', { method: 'POST', body: s, headers: { 'Content-Type': 'text/plain' } });
       if (!r.ok) throw new Error(`bridge rejected state (${r.status})`);
       last = s;
       cliMsgs.splice(0, snap.msgs.length); // delivered
@@ -2865,15 +2869,18 @@ function cliConnect() {
     for (;;) {
       try {
         await push();
-        const r = await fetch(`${base}/poll${q}`);
+        const r = await call('/poll');
         if (!r.ok) throw new Error(`bridge poll failed (${r.status})`);
         if (status !== 'ok') { status = 'ok'; toast('🖥 Terminal bridge connected'); console.log('terminal bridge connected', base); }
         for (const c of await r.json()) { cliExec(c); }
       } catch (err) {
         console.error('terminal bridge error', err);
+        // Only a bridge that didn't answer is "lost"/"not reachable"; anything
+        // else (a bad reply, a bug in this tab) is shown as the error it is.
         const msg = /\(403\)/.test(err.message) ? '🖥 Terminal bridge rejected this tab\'s token — open the URL the CLI printed'
-          : status === 'ok' ? '🖥 Terminal bridge lost — retrying'
-            : `🖥 Terminal bridge not reachable on 127.0.0.1:${CLI.port} — is cli.js / cli.py running?`;
+          : !err.unreachable ? `🖥 Terminal bridge error: ${err.message}`
+            : status === 'ok' ? '🖥 Terminal bridge lost — retrying'
+              : `🖥 Terminal bridge not reachable on 127.0.0.1:${CLI.port} — is cli.js / cli.py running?`;
         if (msg !== status) { status = msg; toast(msg); }
         last = ''; // a restarted bridge has no state yet: the next push is a full one
         await new Promise((res) => setTimeout(res, 2000));
