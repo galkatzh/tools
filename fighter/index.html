@@ -13,6 +13,7 @@
       <button id="start">Start camera</button>
       <button id="calibrate" disabled title="C">Calibrate</button>
       <button id="drill" disabled title="D">Record drill ▶</button>
+      <button id="hooks" disabled title="H">Record hook drill ▶</button>
       <button id="negatives" disabled title="N">Record negatives ▶</button>
       <button id="stop" disabled title="S">Stop &amp; save ■</button>
       <label class="file">Evaluate recordings… <input id="eval" type="file" accept=".json" multiple></label>
@@ -55,6 +56,8 @@
   <footer>
     Stand back until your hips are in frame. <b>Record drill</b> calibrates, then prompts random moves
     (left/right = your own body side) and saves the landmarks with the prompts as labels;
+    <b>Record hook drill</b> is mostly hooks, plus uppercuts, leans and in-guard fidgeting, all from guard:
+    training data for a learned hook classifier.
     <b>Record negatives</b> captures you moving without attacking, to measure false fires.
     Load recordings into <b>Evaluate</b> to score the recogniser. Tune live from the console via
     <code>fighter.cfg</code>. While recording, press <b>J</b> whenever the skeleton jitters.

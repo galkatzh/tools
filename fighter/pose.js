@@ -260,7 +260,8 @@ export function evaluate(sessions, cfg = { ...DEFAULTS }) {
     // "Idle" = away from any prompt, including the get-ready / guard-up lead-in before GO.
     const quick = [...DISCRETE, ...PEAK];
     const busy = s.prompts.filter((p) => !['calibrate', 'jitter'].includes(p.label))
-      .map((p) => [p.t - readyMs, p.end ?? p.t + (quick.includes(p.label) ? attackMs : hold[1])]);
+      // A recorded `end` bounds the prompt, but never cuts an attack's scoring window short.
+      .map((p) => [p.t - readyMs, quick.includes(p.label) ? Math.max(p.end ?? 0, p.t + attackMs) : p.end ?? p.t + hold[1]]);
     for (const fr of s.frames) {
       while (calibs.length && calibs[0].t <= fr.t) rec.startCalibration(calibs.shift().t);
       const { events, posture } = rec.update(unpack(fr.w), unpack(fr.i), fr.t, s.aspect);

@@ -12,6 +12,7 @@ const MODEL = (v) => `https://storage.googleapis.com/mediapipe-models/pose_landm
 const PRETTY = {
   hook_L: 'LEFT HOOK', hook_R: 'RIGHT HOOK', uppercut_L: 'LEFT UPPERCUT', uppercut_R: 'RIGHT UPPERCUT',
   guard: 'GUARD UP (hold)', duck: 'DUCK!', lean_L: 'LEAN LEFT (hold)', lean_R: 'LEAN RIGHT (hold)',
+  fidget: 'FIDGET — NO PUNCHES',
 };
 // How to perform each move, shown under the drill prompt. A straight punch at the
 // camera is foreshortened into "fist rises", which is why there is no jab.
@@ -20,7 +21,16 @@ const HOW = {
   uppercut: 'dip, then drive the fist straight up in front of your chin',
   guard: 'both fists up by your cheeks', duck: 'quick dodge: drop your head fast, then come back up',
   lean: 'shift your shoulders sideways over your hips',
+  fidget: 'stay in guard: bob, shift your weight, adjust your hands — just don\'t punch',
 };
+/** Prompt decks per recording mode. The hook drill gathers training data for a learned
+ *  hook classifier: mostly hooks, plus the moves hooks get confused with (uppercuts) and
+ *  the in-guard motion that falsely fired them (fidgeting, leaning). */
+const DECKS = {
+  drill: [...DISCRETE, ...CONTINUOUS],
+  hooks: ['hook_L', 'hook_L', 'hook_L', 'hook_R', 'hook_R', 'hook_R', 'uppercut_L', 'uppercut_R', 'fidget', 'lean_L', 'lean_R'],
+};
+const RECORD_BUTTONS = ['calibrate', 'drill', 'hooks', 'negatives'];
 const $ = (id) => /** @type {any} */ (document.getElementById(id));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -80,7 +90,7 @@ async function start() {
   aspect = video.videoWidth / video.videoHeight;
   $('stage').style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
   drawer = new vision.DrawingUtils(ctx);
-  for (const id of ['calibrate', 'drill', 'negatives']) $(id).disabled = false;
+  for (const id of RECORD_BUTTONS) $(id).disabled = false;
   video.requestVideoFrameCallback(onFrame);
 }
 
@@ -167,16 +177,17 @@ function showPrompt(text, go = false, how = '') {
   if (how) $('prompt').insertAdjacentHTML('beforeend', `<small>${how}</small>`);
 }
 
-/** Record a session. `drill` prompts random moves; `negatives` records non-attack movement only. */
+/** Record a session. `drill` prompts every move; `hooks` mostly hooks plus their look-alikes,
+ *  all from guard; `negatives` records non-attack movement only. */
 async function record(mode) {
   const s = session = { version: 1, mode, aspect, start: performance.now(), startedAt: new Date().toISOString(), frames: [], prompts: [] };
-  for (const id of ['calibrate', 'drill', 'negatives']) $(id).disabled = true;
+  for (const id of RECORD_BUTTONS) $(id).disabled = true;
   $('stop').disabled = false;
   if (!(await calibrate(s))) return;
   if (mode === 'negatives') return showPrompt('Move around, talk, stretch, reset your stance — just don\'t attack');
   let deck = [];
   while (session === s) {
-    if (!deck.length) deck = [...DISCRETE, ...CONTINUOUS].sort(() => Math.random() - 0.5);
+    if (!deck.length) deck = [...DECKS[mode]].sort(() => Math.random() - 0.5);
     const label = deck.pop(), attack = DISCRETE.includes(label), how = HOW[label.split('_')[0]];
     const ready = { t: performance.now() - s.start, label: 'ready', end: 0 };
     s.prompts.push(ready);
@@ -196,10 +207,14 @@ async function record(mode) {
     }
     showPrompt(PRETTY[label], true, how);
     ready.end = performance.now() - s.start;
-    s.prompts.push({ t: ready.end, label });
+    const prompt = { t: ready.end, label };
+    s.prompts.push(prompt);
     await sleep(attack || PEAK.includes(label) ? 1500 : SCORING.hold[1]);
-    showPrompt('Relax — hands down is fine');
-    await sleep(2500 + Math.random() * 1500);
+    // `end` lets evaluate() keep held prompts (e.g. fidget, an unscored label) out of "idle".
+    prompt.end = performance.now() - s.start;
+    // The hook drill stays in guard between prompts, for pace (~8 hooks/min).
+    if (mode === 'hooks') { showPrompt('Back to guard'); await sleep(1200 + Math.random() * 800); }
+    else { showPrompt('Relax — hands down is fine'); await sleep(2500 + Math.random() * 1500); }
   }
 }
 
@@ -216,7 +231,7 @@ function stop() {
   URL.revokeObjectURL(a.href);
   showPrompt('');
   $('recStatus').textContent = `saved ${s.frames.length} frames`;
-  for (const id of ['calibrate', 'drill', 'negatives']) $(id).disabled = false;
+  for (const id of RECORD_BUTTONS) $(id).disabled = false;
   $('stop').disabled = true;
 }
 
@@ -243,6 +258,7 @@ const run = (fn) => (...args) => fn(...args).catch((e) => { console.error(e); sh
 $('start').onclick = run(async () => { try { await start(); } catch (e) { $('start').disabled = false; throw e; } });
 $('calibrate').onclick = run(() => calibrate());
 $('drill').onclick = run(() => record('drill'));
+$('hooks').onclick = run(() => record('hooks'));
 $('negatives').onclick = run(() => record('negatives'));
 $('stop').onclick = stop;
 $('eval').onchange = run(async (e) => { await evaluateFiles(e.target.files); e.target.value = ''; });
@@ -258,6 +274,6 @@ window.addEventListener('keydown', (e) => {
     session.prompts.push({ t: performance.now() - session.start, label: 'jitter' });
     return flash('jitter marked');
   }
-  const id = { c: 'calibrate', d: 'drill', n: 'negatives', s: 'stop' }[e.key.toLowerCase()];
+  const id = { c: 'calibrate', d: 'drill', h: 'hooks', n: 'negatives', s: 'stop' }[e.key.toLowerCase()];
   if (id && !$(id).disabled && !e.metaKey && !e.ctrlKey) $(id).click();
 });
