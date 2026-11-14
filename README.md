@@ -25,6 +25,7 @@ Or gunzip a file and load it with the page's **Evaluate recordings…** button.
 | negatives_2026-09-26 (×2), 09-27 | early negatives, hands mostly down |
 | negatives_2026-10-29T23-01 | partly in guard |
 | negatives_2026-10-29T23-07 | in guard, includes walking back (false ducks/hooks) |
+| drill_2026-11-14T23-18 | landscape, from guard; slow hooks (peak 1.6–2.9 torso/s), hooks 1/6 |
 
 Missing (lost in a container reset, not re-uploaded): drill 09-27, drill 09-29
 (first from-guard hooks), holdout drill 09-30 (other room).
