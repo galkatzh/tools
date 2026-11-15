@@ -12,7 +12,7 @@ const MODEL = (v) => `https://storage.googleapis.com/mediapipe-models/pose_landm
 const PRETTY = {
   hook_L: 'LEFT HOOK', hook_R: 'RIGHT HOOK', uppercut_L: 'LEFT UPPERCUT', uppercut_R: 'RIGHT UPPERCUT',
   guard: 'GUARD UP (hold)', duck: 'DUCK!', lean_L: 'LEAN LEFT (hold)', lean_R: 'LEAN RIGHT (hold)',
-  fidget: 'FIDGET — NO PUNCHES',
+  fidget: 'WAIT IN GUARD — NO PUNCHES',
 };
 // How to perform each move, shown under the drill prompt. A straight punch at the
 // camera is foreshortened into "fist rises", which is why there is no jab.
@@ -21,7 +21,7 @@ const HOW = {
   uppercut: 'dip, then drive the fist straight up in front of your chin',
   guard: 'both fists up by your cheeks', duck: 'quick dodge: drop your head fast, then come back up',
   lean: 'shift your shoulders sideways over your hips',
-  fidget: 'stay in guard: bob, shift your weight, adjust your hands — just don\'t punch',
+  fidget: 'relaxed, like waiting for an opening: small weight shifts and hand adjustments, nothing fast',
 };
 /** Prompt decks per recording mode. The hook drill gathers training data for a learned
  *  hook classifier: mostly hooks, plus the moves hooks get confused with (uppercuts) and
