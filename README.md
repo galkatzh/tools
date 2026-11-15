@@ -26,6 +26,7 @@ Or gunzip a file and load it with the page's **Evaluate recordings…** button.
 | negatives_2026-10-29T23-01 | partly in guard |
 | negatives_2026-10-29T23-07 | in guard, includes walking back (false ducks/hooks) |
 | drill_2026-11-14T23-18 | landscape, from guard; slow hooks (peak 1.6–2.9 torso/s), hooks 1/6 |
+| hooks_2026-11-14T23-51 | hook drill, 7.6 min: 62 hooks, 22 uppercuts, 11 fidget, 20 leans; rule: hooks 97/87%, uppercuts 45/9% |
 
 Missing (lost in a container reset, not re-uploaded): drill 09-27, drill 09-29
 (first from-guard hooks), holdout drill 09-30 (other room).
