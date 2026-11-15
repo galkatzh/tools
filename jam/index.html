@@ -58,6 +58,12 @@
 
     <section id="synth" class="pane">
       <h2>
+        Instrument
+        <select id="instrument" aria-label="Instrument"></select>
+        <button id="edit-instrument" title="Change this instrument's code">Edit</button>
+        <button id="new-instrument" title="Write an instrument of your own">New</button>
+      </h2>
+      <h2>
         Sound
         <span id="engine" class="segmented" role="radiogroup" aria-label="Engine">
           <label><input type="radio" name="engine" value="sub"><span>Analog</span></label>
@@ -70,7 +76,7 @@
 
     <footer>
       <div id="kb-bar">
-        <button id="synth-toggle" class="icon" aria-controls="synth" aria-expanded="false" aria-label="Sound">
+        <button id="synth-toggle" class="icon" aria-controls="synth" aria-expanded="false" aria-label="Instrument and sound">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3v14M10 3v14M16 3v14"/><circle cx="4" cy="12" r="2"/><circle cx="10" cy="6" r="2"/><circle cx="16" cy="13" r="2"/></svg>
         </button>
         <button id="oct-down" aria-label="Octave down">−</button>
@@ -84,7 +90,40 @@
           <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="7" r="3"/><path d="M1.5 17c.5-3.5 2.6-5 5.5-5s5 1.5 5.5 5"/><circle cx="14.5" cy="7.5" r="2.3"/><path d="M14 12c2.6 0 4.1 1.4 4.5 4.5"/></svg>
         </button>
       </div>
+      <section id="editor" aria-label="Instrument code" hidden>
+        <div id="editor-bar">
+          <input id="inst-name" aria-label="Name" maxlength="40" autocomplete="off" spellcheck="false">
+          <button id="inst-run" title="Ctrl+Enter">Save and run</button>
+          <button id="inst-delete">Delete</button>
+          <span id="inst-error" role="status"></span>
+          <button id="inst-close" aria-label="Close the code">✕</button>
+        </div>
+        <details id="api">
+          <summary>How it works</summary>
+          <p>An instrument is a little web page, HTML, CSS and JavaScript, played where the keys are. It runs
+            sandboxed: it can't reach Jam or anything saved on this site (<code>localStorage</code> included), only
+            play through <code>jam</code>. It is kept in this browser and never sent: the others hear the notes it plays.</p>
+          <dl>
+            <dt><code>jam.noteOn(note, velocity = 0.8)</code></dt>
+            <dd>Starts a MIDI note (60 is middle C) at a velocity from 0 to 1. A note started twice sounds once, until stopped twice.</dd>
+            <dt><code>jam.noteOff(note)</code></dt>
+            <dd>Stops it.</dd>
+            <dt><code>jam.pedal(down)</code></dt>
+            <dd>Holds the sustain pedal down (true) or lets go.</dd>
+            <dt><code>jam.set(param, value)</code></dt>
+            <dd>Turns a knob of your sound, as in <code>jam.set('cutoff', 800)</code>. Names and ranges are in
+              <a href="synth.js" target="_blank">PARAMS in synth.js</a>.</dd>
+            <dt><code>jam.onbeat = ({ beat, bpi, bpm }) => …</code></dt>
+            <dd>Called on every beat, with the click: beat 0 starts an interval of bpi beats.</dd>
+          </dl>
+          <p>Keys an instrument doesn't <code>preventDefault()</code> play the piano as usual, and Space holds the
+            sustain. <code>var(--me)</code> is your color. Errors show up here and in the console.
+            Ctrl+Enter saves and runs.</p>
+        </details>
+        <textarea id="inst-code" aria-label="Code" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off"></textarea>
+      </section>
       <div id="keys"></div>
+      <div id="stage" hidden></div>
       <p id="rotate">
         <span aria-hidden="true">⟲</span> Turn your phone sideways for more keys
         <button aria-label="Dismiss">✕</button>

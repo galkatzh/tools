@@ -1,0 +1,42 @@
+<!--
+  A new instrument: a row of pads, one note each. Make it your own.
+  "How it works", above, lists what Jam gives you; the templates show what it can do.
+-->
+<div id="pads"></div>
+
+<style>
+  #pads { display: flex; gap: 8px; height: 100%; padding: 8px; }
+  .pad {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    border-radius: 12px;
+    background: var(--panel);
+    color: var(--dim);
+    font-size: 20px;
+  }
+  .pad.down { background: var(--me); color: var(--bg); }
+</style>
+
+<script>
+  const NAMES = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B']
+  const NOTES = [60, 62, 64, 67, 69, 72, 74, 76] // C major pentatonic, from middle C
+
+  for (const note of NOTES) {
+    const pad = document.querySelector('#pads').appendChild(document.createElement('div'))
+    pad.className = 'pad'
+    pad.textContent = NAMES[note % 12]
+    // Pointer events cover the mouse, pens and every finger on its own
+    const fingers = new Set()
+    pad.onpointerdown = e => {
+      fingers.add(e.pointerId)
+      jam.noteOn(note, 0.8)
+      pad.classList.add('down')
+    }
+    pad.onpointerup = pad.onpointercancel = pad.onpointerleave = e => {
+      if (!fingers.delete(e.pointerId)) return
+      jam.noteOff(note)
+      pad.classList.toggle('down', fingers.size > 0)
+    }
+  }
+</script>

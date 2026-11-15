@@ -26,13 +26,14 @@ body {
 
 a { color: var(--accent); }
 button, input, select { font: inherit; color: inherit; touch-action: manipulation; }
-button, select, input[type=number], #lobby input {
+button, select, input[type=number], #lobby input, #editor input, #editor textarea {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 5px 10px;
 }
 button { cursor: pointer; }
+button:disabled, select:disabled { opacity: 0.45; cursor: default; }
 @media (hover: hover) { /* touch screens would keep a tapped control lit */
   button:hover, select:hover { border-color: var(--accent); }
   #algs label:hover { border-color: var(--line); }
@@ -55,7 +56,8 @@ input[type=range] { width: 100%; margin: 0; accent-color: var(--accent); }
 #app {
   height: 100dvh;
   display: grid;
-  grid-template: auto auto minmax(0, 1fr) auto / minmax(236px, 296px) minmax(0, 1fr); /* with #mixer's gutter */
+  /* with #mixer's gutter; the footer may grow (the code editor) as far as the window lets it */
+  grid-template: auto auto minmax(0, 1fr) minmax(0, auto) / minmax(236px, 296px) minmax(0, 1fr);
   column-gap: 16px;
 }
 #session { display: contents; } /* its parts take their own places */
@@ -163,7 +165,8 @@ h2 {
   letter-spacing: 0.08em;
   color: var(--dim);
 }
-h2 select { text-transform: none; letter-spacing: 0; color: var(--text); }
+h2 select, h2 button { text-transform: none; letter-spacing: 0; color: var(--text); }
+#synth h2:first-child { margin-bottom: 14px; }
 
 /* ── Players (mixer) ── */
 
@@ -259,7 +262,15 @@ fieldset:has(#algs) { grid-column: 1 / -1; grid-template-columns: repeat(auto-fi
 
 /* ── Keyboard ── */
 
-footer { position: relative; border-top: 1px solid var(--line); background: #0b0b10; padding-bottom: env(safe-area-inset-bottom); }
+footer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+  background: #0b0b10;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+footer > * { flex-shrink: 0; } /* but the code editor, which gives way */
 #kb-bar { display: flex; align-items: center; gap: 8px; padding-block: 6px; }
 #oct-down, #oct-up { width: 36px; padding: 4px 0; }
 #octave { min-width: 2.2em; text-align: center; font-variant-numeric: tabular-nums; }
@@ -283,11 +294,11 @@ footer { position: relative; border-top: 1px solid var(--line); background: #0b0
 #nav .box::after { right: -4px; }
 #count { min-width: 3.4em; text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
 
+#keys, #stage { margin: 0 max(var(--gutter), env(safe-area-inset-right)) 10px max(var(--gutter), env(safe-area-inset-left)); }
 #keys {
   position: relative;
   overflow: hidden;
   height: clamp(110px, 28dvh, 220px);
-  margin: 0 max(var(--gutter), env(safe-area-inset-right)) 10px max(var(--gutter), env(safe-area-inset-left));
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
@@ -333,6 +344,33 @@ footer { position: relative; border-top: 1px solid var(--line); background: #0b0
 .key.down { background: var(--me) !important; }
 .key .note { color: #555; font-weight: 600; }
 
+/* A scripted instrument, in place of the keys: the piano's own controls go */
+#stage { height: clamp(150px, 38dvh, 380px); }
+#stage iframe { display: block; width: 100%; height: 100%; border: 0; border-radius: 8px; }
+#app[data-instrument] :is(#oct-down, #octave, #oct-up, #nav, .hint) { display: none; }
+#app[data-instrument] #count { margin-left: auto; }
+
+/* The code of an instrument, above it, so a change can be tried out at once */
+#editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 1 min(52dvh, 560px);
+  min-height: 140px;
+  padding: 0 max(var(--gutter), env(safe-area-inset-right)) 10px max(var(--gutter), env(safe-area-inset-left));
+}
+#editor-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+#inst-name { flex: 0 1 15em; min-width: 8em; }
+#inst-error { flex: 1; min-width: 0; color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
+#inst-close { margin-left: auto; }
+#api { max-height: 45%; overflow-y: auto; font-size: 12px; color: var(--dim); }
+#api summary { cursor: pointer; width: max-content; }
+#api p, #api dl { margin-top: 6px; max-width: 80ch; }
+#api dt { margin-top: 4px; }
+#api dd { margin-left: 16px; }
+#api code { color: var(--text); }
+#inst-code { flex: 1; min-height: 4em; resize: none; font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; tab-size: 2; }
+
 #resume {
   position: absolute;
   inset: 0;
@@ -350,7 +388,7 @@ footer { position: relative; border-top: 1px solid var(--line); background: #0b0
 }
 
 @media (pointer: coarse) {
-  select, input[type=number] { font-size: 16px; } /* iOS zooms in on smaller fields */
+  select, input[type=number], #editor :is(input, textarea) { font-size: 16px; } /* iOS zooms in on smaller fields */
   #kb-bar button { min-height: 40px; }
 }
 
@@ -365,7 +403,7 @@ footer { position: relative; border-top: 1px solid var(--line); background: #0b0
   #mixer { padding-bottom: 0; }
   #synth { grid-row: 4; padding-top: 12px; }
   footer { grid-row: 5; position: sticky; bottom: 0; }
-  #keys { margin-inline: max(4px, env(safe-area-inset-left)) max(4px, env(safe-area-inset-right)); margin-bottom: 6px; }
+  #keys, #stage { margin-inline: max(4px, env(safe-area-inset-left)) max(4px, env(safe-area-inset-right)); margin-bottom: 6px; }
 }
 
 /* A narrow synth panel: in a narrow window, or a phone's pane */
@@ -401,11 +439,12 @@ footer { position: relative; border-top: 1px solid var(--line); background: #0b0
   .icon { display: grid; }
   #nav, #count { display: block; }
   #sustain { padding-inline: 10px; }
-  #keys {
+  #keys, #stage, #editor {
     flex: 1;
     height: auto;
     margin: 4px max(4px, env(safe-area-inset-right)) max(4px, env(safe-area-inset-bottom)) max(4px, env(safe-area-inset-left));
   }
+  #editor { min-height: 0; padding: 0; margin-bottom: 0; }
   #toasts { top: calc(var(--bar-h) + 6px); }
 
   #synth, #session {
@@ -443,8 +482,8 @@ footer { position: relative; border-top: 1px solid var(--line); background: #0b0
 
 /* A phone on its side: the keys move out of the way of an open pane, so all the keys shown play */
 @media (pointer: coarse) and (max-height: 500px) and (orientation: landscape) {
-  #app[data-pane=synth] #keys { margin-left: var(--synth-w); }
-  #app[data-pane=session] #keys { margin-right: var(--session-w); }
+  #app[data-pane=synth] :is(#keys, #stage) { margin-left: var(--synth-w); }
+  #app[data-pane=session] :is(#keys, #stage) { margin-right: var(--session-w); }
 }
 
 /* A phone held upright suggests turning it */
