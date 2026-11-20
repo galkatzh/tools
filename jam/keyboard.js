@@ -319,6 +319,12 @@ export function createKeyboard({ keys: el, octave: octaveLabel, nav, view, slide
   return {
     shift,
 
+    /** Plays notes from another source, such as a scripted instrument: held counts are shared. */
+    press,
+    release,
+    /** Holds the sustain pedal down (or lets go) on behalf of a named source. */
+    pedal: setPedal,
+
     /**
      * Brings a note into view: the computer keys move to its octave, and a window the strip sized
      * centres on it (fitting the width, the window shows the computer keys, as always).

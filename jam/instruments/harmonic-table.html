@@ -1,0 +1,82 @@
+<!--
+  Harmonic table: an isomorphic keyboard of hexagons. Up is a fifth, up-right a major third and
+  down-right a minor third, so every chord has the same shape in every key: a major triad is a
+  triangle pointing right, a minor one a triangle pointing left. Colors follow the circle of
+  fifths, middle C is ringed, and a note's other places light up with it. Slide to play in turn.
+-->
+<svg></svg>
+
+<style>
+  svg { display: block; width: 100%; height: 100%; }
+  polygon { stroke: var(--bg); stroke-width: 2; }
+  .c polygon { stroke: #fff9; }
+  text { font-size: 12px; font-weight: 600; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+  .down polygon { fill: var(--me); }
+  .down text { fill: var(--bg); }
+</style>
+
+<script>
+  const NAMES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B']
+  const SIZE = 30 // a hexagon's radius, px
+  const svg = document.querySelector('svg')
+  const fingers = new Map() // pointer → the note under it, or null
+
+  /**
+   * Tiles the window with flat-topped hexagons in axial coordinates (q across, r down its column):
+   * the note at (q, r) is 60 − 3q − 7r, counted from middle C in the middle.
+   */
+  function build() {
+    const w = innerWidth, h = innerHeight, dx = 1.5 * SIZE, dy = Math.sqrt(3) * SIZE
+    const q0 = Math.round(w / 2 / dx), r0 = Math.round(h / 2 / dy - q0 / 2)
+    const corners = [0, 1, 2, 3, 4, 5].map(k => [Math.cos(k * Math.PI / 3), Math.sin(k * Math.PI / 3)])
+    let html = ''
+    for (let q = 0; q * dx < w + SIZE; q++) {
+      for (let r = Math.floor(-q / 2) - 1; dy * (r + q / 2) < h + dy; r++) {
+        const x = q * dx, y = dy * (r + q / 2), note = 60 - 3 * (q - q0) - 7 * (r - r0)
+        if (note < 21 || note > 108) continue // past a piano's keys
+        const pc = note % 12, hue = pc * 7 % 12 * 30 // neighbours on the circle of fifths, neighbours in hue
+        html += `<g data-note="${note}" class="${note === 60 ? 'c' : ''}">
+          <polygon points="${corners.map(([cx, cy]) => `${x + cx * (SIZE - 1)},${y + cy * (SIZE - 1)}`).join(' ')}"
+            fill="hsl(${hue} 45% ${pc === 0 ? 42 : 26}%)"/>
+          <text x="${x}" y="${y}" fill="hsl(${hue} 80% 82%)">${NAMES[pc]}</text></g>`
+      }
+    }
+    svg.innerHTML = html
+    light()
+  }
+
+  /** Lights every hexagon of each note held. */
+  function light() {
+    const held = new Set(fingers.values())
+    for (const g of svg.children) g.classList.toggle('down', held.has(+g.dataset.note))
+  }
+
+  const noteAt = e => {
+    const g = document.elementFromPoint(e.clientX, e.clientY)?.closest('g')
+    return g ? +g.dataset.note : null
+  }
+
+  /** Moves a pointer onto a note (or off them all, null), letting go of the one it was on. */
+  function touch(id, note) {
+    const was = fingers.get(id)
+    if (was === note) return
+    if (was != null) jam.noteOff(was)
+    if (note != null) jam.noteOn(note, 0.8)
+    fingers.set(id, note)
+    light()
+  }
+
+  svg.onpointerdown = e => {
+    svg.setPointerCapture(e.pointerId)
+    touch(e.pointerId, noteAt(e))
+  }
+  svg.onpointermove = e => fingers.has(e.pointerId) && touch(e.pointerId, noteAt(e))
+  svg.onpointerup = svg.onpointercancel = e => {
+    touch(e.pointerId, null)
+    fingers.delete(e.pointerId)
+    light()
+  }
+
+  addEventListener('resize', build)
+  build()
+</script>

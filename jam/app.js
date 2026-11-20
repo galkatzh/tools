@@ -1,6 +1,7 @@
 import { joinRoom, selfId } from 'https://cdn.jsdelivr.net/npm/trystero@0.26.0/+esm'
 import { Synth, PARAMS, PRESETS, ALGS, fmt, createReverb } from './synth.js'
 import { createKeyboard } from './keyboard.js'
+import { createInstruments } from './instrument.js'
 
 /*
  * NINJAM-style jamming over WebRTC.
@@ -46,7 +47,7 @@ const $$ = s => document.querySelectorAll(s)
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x))
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)')
 
-let ctx, bus, hall, clickBus, net, kb, me, echo
+let ctx, bus, hall, clickBus, net, kb, me, echo, instruments
 let heard = false // whether another player has spoken to us yet
 const players = new Map() // id → { id, name, since, hue, color, gain, wet, li, synth }; includes me
 /**
@@ -62,7 +63,7 @@ let clockOffset = 0 // ms to add to Date.now() to read the shared clock
 let leaderId = selfId
 let queue = [] // events waiting for their turn: { at: shared ms on session `from`'s grid, from, id, e }
 let nextClick = null // shared time of the next metronome click to schedule
-let lastClick = 0 // AudioContext time of the last click scheduled
+let lastBeat = 0 // AudioContext time of the last beat scheduled
 let ctxBase = null // shared time (ms) at AudioContext time 0
 const controls = {} // synth param → { input, value }: its control and where its value is shown
 const groups = {} // synth panel fieldsets by group name
@@ -162,6 +163,20 @@ function join(name, roomId) {
     onView: view => save('view', view),
   })
   buildSynthUI()
+  instruments = createInstruments({
+    select: $('#instrument'), edit: $('#edit-instrument'), add: $('#new-instrument'),
+    keys: $('#keys'), stage: $('#stage'), editor: $('#editor'),
+  }, {
+    press: kb.press, release: kb.release, pedal: kb.pedal, color: me.color, toast, load, save,
+    set(key, value) { // a knob the instrument turns
+      if (!Object.hasOwn(PARAMS, key)) throw new Error(`there's no sound parameter “${key}”`)
+      setParam(key, value)
+      if (!controls[key]) showPatch() // the engine and the algorithm have their own controls
+      save('patch', me.synth.patch)
+    },
+    onShow: custom => $('#app').toggleAttribute('data-instrument', custom),
+    onEdit: () => togglePane(''), // the editor takes a phone's screen
+  })
 
   const room = joinRoom({ appId: APP_ID, maxReceiveBytes: 1 << 16 }, roomId, { onJoinError }) // real messages are ~2 KB
   net = {
@@ -185,7 +200,10 @@ function join(name, roomId) {
   addEventListener('pagehide', () => room.leave())
   addEventListener('pageshow', e => e.persisted && location.reload()) // back from the bfcache, out of the room
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) return kb.releaseAll()
+    if (document.hidden) {
+      kb.releaseAll()
+      return instruments.releaseAll()
+    }
     keepAwake()
     resume()
   })
@@ -523,7 +541,11 @@ function tick() {
     const { s, o } = position(nextClick)
     const t = toCtx(nextClick)
     // Beats are at least 200 ms apart: anything closer was already scheduled before a re-sync
-    if (live && metronome.checked && t > lastClick + 0.1) click(lastClick = t, Math.round(o * s.bpm / 60000) % s.bpi === 0)
+    if (!live || t <= lastBeat + 0.1) continue
+    lastBeat = t
+    const beat = Math.round(o * s.bpm / 60000) % s.bpi
+    if (metronome.checked) click(t, beat === 0)
+    instruments.beat({ beat, bpi: s.bpi, bpm: s.bpm }, nextClick - T)
   }
 
   const due = []

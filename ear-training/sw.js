@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ear-training-v6';
+const CACHE_NAME = 'ear-training-v7';
 const STATIC_ASSETS = [
   './',
   './index.html',

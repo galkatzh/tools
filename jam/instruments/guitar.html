@@ -1,0 +1,176 @@
+<!--
+  Guitar: tap the fretboard to play a note, and slide along a string to slide. Strum or pick the
+  strings over the sound hole, on the right: they sound the chord you picked above, or the frets
+  your fingers hold. Each string plays one note at a time. The strings lie as you'd see them
+  looking down at a guitar on your lap: the low E on top, so a downstroke goes down.
+-->
+<div id="chords"></div>
+<div id="neck"><div id="hole"></div></div>
+
+<style>
+  body { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+  #chords { display: flex; flex-wrap: wrap; gap: 6px; }
+  #chords button {
+    flex: 1;
+    min-width: 42px;
+    padding: 5px 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    font-weight: 600;
+  }
+  #chords button.on { background: var(--me); border-color: var(--me); color: var(--bg); }
+  #neck {
+    position: relative;
+    flex: 1;
+    border-radius: 6px;
+    overflow: hidden;
+    background: linear-gradient(90deg, #2a1c12, #4a3020 40%, #3a2618 78%, #191512 78%);
+  }
+  #hole { position: absolute; inset: 0 0 0 78%; background: radial-gradient(circle at 60% 50%, #050505 0 34%, #2b2219 35% 37%, transparent 38%); }
+  #neck > i { position: absolute; transform: translate(-50%, -50%); } /* strings, frets, inlays and dots, placed in % */
+  .fret { width: 2px; height: 100%; background: linear-gradient(90deg, #8d877c, #d8d2c4); }
+  .nut { width: 6px; background: #ece4d0; }
+  .inlay { width: 10px; height: 10px; border-radius: 50%; background: #ffffff38; }
+  .string { width: 100%; background: linear-gradient(#f2ecdc, #9c968a); }
+  .dot {
+    width: 24px;
+    height: 24px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--bg);
+    font-weight: 700;
+    pointer-events: none;
+  }
+  .dot.open { background: none; border: 2px solid var(--accent); }
+  .dot.muted { background: none; color: var(--dim); }
+  .dot.held { background: var(--me); }
+</style>
+
+<script>
+  const TUNING = [40, 45, 50, 55, 59, 64] // E2 A2 D3 G3 B3 E4, top to bottom
+  const FRETS = 12
+  const COLUMN = 78 / (FRETS + 1) // % of the neck's width per fret; the open strings get the first
+  const RING = 2500 // ms a strummed string sounds
+  // Shapes, low E first: a fret per string, x for a string not played
+  const CHORDS = { C: 'x32010', G: '320003', D: 'xx0232', A: 'x02220', E: '022100', Am: 'x02210', Em: '022000', Dm: 'xx0231', F: '133211', B7: 'x21202' }
+
+  const neck = document.querySelector('#neck')
+  let chord = null // the picked shape: a fret per string, null for a muted one
+  const taps = new Map() // pointer on the fretboard → { string, fret }
+  const picks = new Map() // pointer over the sound hole → the string it was last over
+  const sounding = [] // per string: { note, owner: the tapping pointer, or null with a timer while ringing }
+
+  /** Places a new element on the neck at x, y (in % of it). */
+  function place(className, x, y, text = '') {
+    const el = neck.appendChild(document.createElement('i'))
+    Object.assign(el, { className, textContent: text })
+    Object.assign(el.style, { left: `${x}%`, top: `${y}%` })
+    return el
+  }
+  const stringY = i => (i + 0.5) / 6 * 100
+  const fretX = fret => (fret + 0.5) * COLUMN // the middle of a fret's space
+
+  // The neck: frets, inlays and strings, thicker towards the low E
+  for (let fret = 0; fret <= FRETS; fret++) place(fret ? 'fret' : 'fret nut', (fret + 1) * COLUMN, 50)
+  for (const fret of [3, 5, 7, 9]) place('inlay', fretX(fret), 50)
+  for (const y of [33, 67]) place('inlay', fretX(12), y)
+  const strings = TUNING.map((_, i) => {
+    const el = place('string', 50, stringY(i))
+    el.style.height = `${3.5 - i * 0.45}px`
+    return el
+  })
+
+  /** Where a strum finds string i: under the highest finger on it, else on the chord's shape, else open (null: muted). */
+  function fretted(i) {
+    const held = [...taps.values()].filter(t => t.string === i).map(t => t.fret)
+    return held.length ? Math.max(...held) : chord ? chord[i] : 0
+  }
+
+  /** Plays string i at a fret, cutting short what it sounded: held by a tapping pointer, or ringing a while. */
+  function play(i, fret, owner = null) {
+    mute(i)
+    if (fret === null) return
+    const note = TUNING[i] + fret
+    jam.noteOn(note, owner === null ? 0.8 : 0.7)
+    sounding[i] = { note, owner, timer: owner === null ? setTimeout(() => mute(i), RING) : null }
+    strings[i].animate({ translate: ['0 -1.5px', '0 1.5px', '0 -1px', '0 0'] }, 160)
+  }
+
+  function mute(i) {
+    if (!sounding[i]) return
+    clearTimeout(sounding[i].timer)
+    jam.noteOff(sounding[i].note)
+    sounding[i] = null
+  }
+
+  /** Shows the chord's shape, and the fingers on the fretboard over it. */
+  function draw() {
+    for (const el of neck.querySelectorAll('.dot')) el.remove()
+    TUNING.forEach((_, i) => {
+      const held = [...taps.values()].filter(t => t.string === i)
+      for (const { fret } of held) place('dot held', fretX(fret), stringY(i))
+      if (held.length || !chord) return
+      if (chord[i] === null) place('dot muted', fretX(0), stringY(i), '×')
+      else place(chord[i] ? 'dot' : 'dot open', fretX(chord[i]), stringY(i))
+    })
+  }
+
+  /** The string and fret (or FRETS + 1 and beyond: the sound hole) under a pointer. */
+  function at(e) {
+    const r = neck.getBoundingClientRect()
+    const clamp = (x, hi) => Math.min(hi, Math.max(0, Math.floor(x)))
+    return { string: clamp((e.clientY - r.top) / r.height * 6, 5), column: clamp((e.clientX - r.left) / r.width * 100 / COLUMN, 99) }
+  }
+
+  neck.onpointerdown = e => {
+    neck.setPointerCapture(e.pointerId)
+    const { string, column } = at(e)
+    if (column <= FRETS) {
+      taps.set(e.pointerId, { string, fret: column })
+      play(string, column, e.pointerId)
+      draw()
+    } else {
+      picks.set(e.pointerId, string)
+      play(string, fretted(string))
+    }
+  }
+
+  neck.onpointermove = e => {
+    const { string, column } = at(e)
+    const tap = taps.get(e.pointerId), fret = Math.min(column, FRETS)
+    if (tap && (tap.string !== string || tap.fret !== fret)) { // a slide, or onto another string
+      if (sounding[tap.string]?.owner === e.pointerId) mute(tap.string)
+      Object.assign(tap, { string, fret })
+      play(string, fret, e.pointerId)
+      draw()
+    } else if (picks.has(e.pointerId)) { // a strum: every string crossed sounds, however fast
+      const from = picks.get(e.pointerId), step = Math.sign(string - from)
+      for (let i = from + step; step && i !== string + step; i += step) play(i, fretted(i))
+      picks.set(e.pointerId, string)
+    }
+  }
+
+  neck.onpointerup = neck.onpointercancel = e => {
+    const tap = taps.get(e.pointerId)
+    if (tap && sounding[tap.string]?.owner === e.pointerId) mute(tap.string)
+    picks.delete(e.pointerId)
+    if (taps.delete(e.pointerId)) draw()
+  }
+
+  // Chord buttons: pick a shape, or pick it again to strum open strings
+  for (const [name, shape] of Object.entries(CHORDS)) {
+    const button = document.querySelector('#chords').appendChild(document.createElement('button'))
+    button.textContent = name
+    button.onpointerdown = e => {
+      e.preventDefault() // keeps the focus, so Space stays the sustain pedal
+      const on = !button.classList.contains('on')
+      document.querySelector('#chords .on')?.classList.remove('on')
+      button.classList.toggle('on', on)
+      chord = on ? [...shape].map(c => c === 'x' ? null : +c) : null
+      draw()
+    }
+  }
+</script>

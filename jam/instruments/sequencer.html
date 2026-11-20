@@ -1,0 +1,96 @@
+<!--
+  Step sequencer: a bar of sixteenths that loops in time with the jam (it starts over with every
+  interval). Tap a cell to set a note, drag to set (or clear) several. Rows are A minor
+  pentatonic, high at the top. It plays along with the click: it needs the sound running.
+-->
+<div id="grid"></div>
+<div id="bar">
+  <button id="clear">Clear</button>
+  <button id="random">Random</button>
+  <span id="status">Waiting for the beat…</span>
+</div>
+
+<style>
+  body { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+  #grid { flex: 1; display: grid; grid-template: repeat(8, 1fr) / repeat(16, 1fr); gap: 3px; }
+  #grid i { border-radius: 4px; background: var(--panel); }
+  #grid i.beat { background: #22222e; } /* the first sixteenth of each beat */
+  #grid i.on { background: var(--me); }
+  #grid i.now { filter: brightness(1.7); outline: 1px solid #ffffff40; }
+  #bar { display: flex; align-items: center; gap: 8px; }
+  #bar button { padding: 4px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  #status { margin-left: auto; color: var(--dim); font-variant-numeric: tabular-nums; }
+</style>
+
+<script>
+  const NOTES = [74, 72, 69, 67, 64, 62, 60, 57] // D5 C5 A4 G4 E4 D4 C4 A3
+  const STEPS = 16, PER_BEAT = 4
+  const grid = document.querySelector('#grid')
+  const cells = NOTES.map(() => []) // [row][step] → its element; set notes have class "on"
+  let column = 0 // the step playing
+
+  NOTES.forEach((_, row) => {
+    for (let step = 0; step < STEPS; step++) {
+      const cell = grid.appendChild(document.createElement('i'))
+      cell.classList.toggle('beat', step % PER_BEAT === 0)
+      Object.assign(cell.dataset, { row, step })
+      cells[row].push(cell)
+    }
+  })
+
+  // A groove to start from: [row, step]
+  for (const [row, step] of [[7, 0], [5, 2], [4, 3], [6, 6], [3, 8], [5, 10], [4, 11], [2, 12], [6, 14], [7, 15]]) {
+    cells[row][step].classList.add('on')
+  }
+
+  // Painting: the first cell flips, and the rest a finger crosses follow it
+  const painting = new Map() // pointer → whether it sets notes (or clears them)
+  const cellAt = e => document.elementFromPoint(e.clientX, e.clientY)?.closest('#grid i')
+  grid.onpointerdown = e => {
+    const cell = cellAt(e)
+    if (!cell) return
+    grid.setPointerCapture(e.pointerId)
+    painting.set(e.pointerId, !cell.classList.contains('on'))
+    grid.onpointermove(e)
+  }
+  grid.onpointermove = e => {
+    if (painting.has(e.pointerId)) cellAt(e)?.classList.toggle('on', painting.get(e.pointerId))
+  }
+  grid.onpointerup = grid.onpointercancel = e => painting.delete(e.pointerId)
+
+  const clear = () => grid.querySelectorAll('.on').forEach(c => c.classList.remove('on'))
+  function random() {
+    clear()
+    for (let step = 0; step < STEPS; step++) {
+      if (Math.random() < 0.6) cells[Math.floor(Math.random() * NOTES.length)][step].classList.add('on')
+    }
+  }
+  // Acting on pointerdown keeps the focus off the buttons: Space must stay the sustain pedal, not press one again
+  for (const [button, fn] of [['#clear', clear], ['#random', random]]) {
+    document.querySelector(button).onpointerdown = e => {
+      e.preventDefault()
+      fn()
+    }
+  }
+
+  /** Plays a step's notes, each for most of a sixteenth, and moves the playhead there. */
+  function play(step, length) {
+    for (const row of cells) {
+      row[column].classList.remove('now')
+      row[step].classList.add('now')
+    }
+    column = step
+    NOTES.forEach((note, row) => {
+      if (!cells[row][step].classList.contains('on')) return
+      jam.noteOn(note, step % PER_BEAT ? 0.65 : 0.85) // accents on the beat
+      setTimeout(() => jam.noteOff(note), length * 0.8)
+    })
+  }
+
+  // Each beat brings its four sixteenths, the first right away
+  jam.onbeat = ({ beat, bpi, bpm }) => {
+    const sixteenth = 60000 / bpm / PER_BEAT
+    for (let i = 0; i < PER_BEAT; i++) setTimeout(() => play((beat * PER_BEAT + i) % STEPS, sixteenth), i * sixteenth)
+    document.querySelector('#status').textContent = `${bpm} BPM · beat ${beat + 1}/${bpi}`
+  }
+</script>

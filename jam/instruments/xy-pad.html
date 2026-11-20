@@ -1,0 +1,117 @@
+<!--
+  XY pad: across is pitch, on a scale, and up is brightness: it turns your sound's Cutoff (Analog)
+  and Brightness (FM) knobs, which the others hear too. Every finger plays its own note, and leaves
+  a trail. Set some Glide in the Sound panel for slides.
+-->
+<canvas></canvas>
+<select aria-label="Scale"></select>
+
+<style>
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  select { position: absolute; top: 8px; right: 8px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+</style>
+
+<script>
+  const SCALES = {
+    'Minor pentatonic': [0, 3, 5, 7, 10], 'Major pentatonic': [0, 2, 4, 7, 9], Blues: [0, 3, 5, 6, 7, 10],
+    Dorian: [0, 2, 3, 5, 7, 9, 10], 'Harmonic minor': [0, 2, 3, 5, 7, 8, 11], Chromatic: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+  }
+  const LOW = 45, OCTAVES = 3 // from A2
+  const TRAIL = 700 // ms a trail lasts
+  const canvas = document.querySelector('canvas'), g = canvas.getContext('2d'), scale = document.querySelector('select')
+  const me = getComputedStyle(document.documentElement).getPropertyValue('--me').trim()
+  const fingers = new Map() // pointer → { note, x, y, trail: [{ x, y, t }] }
+  let notes = [] // the scale's notes across the pad, low to high
+  let fading = [] // trails of lifted fingers, still fading
+
+  scale.append(...Object.keys(SCALES).map(name => new Option(name)))
+  scale.onchange = () => {
+    notes = []
+    for (let n = LOW; n <= LOW + 12 * OCTAVES; n++) if (SCALES[scale.value].includes((n - LOW) % 12)) notes.push(n)
+    draw()
+  }
+
+  const noteAt = x => notes[Math.min(notes.length - 1, Math.floor(x / innerWidth * notes.length))]
+
+  /** Height turns brightness: cutoff 150 Hz to 13 kHz, a little more steeply up top; FM brightness 0 to 2. */
+  function brighten(y) {
+    const up = 1 - y / innerHeight
+    jam.set('cutoff', 150 * 2 ** (6.4 * up))
+    jam.set('fmBright', 2 * up)
+  }
+
+  canvas.onpointerdown = e => {
+    canvas.setPointerCapture(e.pointerId)
+    const note = noteAt(e.clientX)
+    fingers.set(e.pointerId, { note, trail: [] })
+    brighten(e.clientY)
+    jam.noteOn(note, 0.8)
+    canvas.onpointermove(e)
+  }
+  canvas.onpointermove = e => {
+    const f = fingers.get(e.pointerId)
+    if (!f) return
+    Object.assign(f, { x: e.clientX, y: e.clientY })
+    f.trail.push({ x: f.x, y: f.y, t: performance.now() })
+    brighten(e.clientY)
+    const note = noteAt(e.clientX)
+    if (note !== f.note) { // legato: the new note starts as the old one stops
+      jam.noteOn(note, 0.8)
+      jam.noteOff(f.note)
+      f.note = note
+    }
+    draw()
+  }
+  canvas.onpointerup = canvas.onpointercancel = e => {
+    const f = fingers.get(e.pointerId)
+    if (!f) return
+    jam.noteOff(f.note)
+    fingers.delete(e.pointerId)
+    fading.push(f.trail)
+  }
+
+  /** The lanes of the scale's notes (roots brighter), and the trails; redraws itself while they fade. */
+  let frame = 0
+  function draw() {
+    cancelAnimationFrame(frame)
+    const dpr = devicePixelRatio, w = innerWidth, h = innerHeight, now = performance.now()
+    if (canvas.width !== w * dpr || canvas.height !== h * dpr) Object.assign(canvas, { width: w * dpr, height: h * dpr })
+    g.setTransform(dpr, 0, 0, dpr, 0, 0)
+    g.clearRect(0, 0, w, h)
+    const lane = w / notes.length, sounding = new Set([...fingers.values()].map(f => f.note))
+    notes.forEach((note, i) => {
+      g.fillStyle = sounding.has(note) ? '#ffffff22' : (note - LOW) % 12 ? (i % 2 ? '#15151c' : '#191922') : '#262636'
+      g.fillRect(i * lane, 0, lane - 1, h)
+    })
+    for (const f of fingers.values()) f.trail = f.trail.filter(p => now - p.t < TRAIL)
+    fading = fading.map(trail => trail.filter(p => now - p.t < TRAIL)).filter(trail => trail.length)
+    const trails = [...[...fingers.values()].map(f => f.trail), ...fading]
+    g.strokeStyle = g.fillStyle = me
+    g.lineCap = 'butt' // round caps would bead where the see-through segments overlap
+    for (const trail of trails) {
+      trail.forEach((p, i) => {
+        if (!i) return
+        const q = trail[i - 1]
+        g.globalAlpha = 1 - (now - p.t) / TRAIL
+        g.lineWidth = 2 + 10 * g.globalAlpha
+        g.beginPath()
+        g.moveTo(q.x, q.y)
+        g.lineTo(p.x, p.y)
+        g.stroke()
+      })
+    }
+    g.globalAlpha = 1
+    g.shadowColor = me
+    g.shadowBlur = 24
+    for (const f of fingers.values()) {
+      g.beginPath()
+      g.arc(f.x, f.y, 18, 0, 2 * Math.PI)
+      g.fill()
+    }
+    g.shadowBlur = 0
+    if (trails.some(t => t.length)) frame = requestAnimationFrame(draw)
+  }
+
+  addEventListener('resize', draw)
+  scale.onchange()
+</script>

@@ -1,0 +1,120 @@
+<!--
+  Omnichord: hold a chord button to sound the chord, and brush across the strum plate to harp it.
+  The plate keeps the last chord picked. Chords run around the circle of fifths, as on the real one.
+-->
+<div id="chords"></div>
+<div id="plate"></div>
+
+<style>
+  body { display: flex; gap: 10px; padding: 10px; }
+  #chords { flex: 3; display: grid; grid-template: repeat(3, 1fr) / repeat(8, 1fr); gap: 6px; }
+  #chords button {
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    font-weight: 600;
+  }
+  #chords button[data-kind=m] { background: #20202b; color: #c5c5d6; }
+  #chords button[data-kind="7"] { background: #262433; color: #d9c9ff; }
+  #chords button.picked { border-color: var(--me); box-shadow: inset 0 0 0 1px var(--me); }
+  #chords button.down { background: var(--me); color: var(--bg); }
+  #plate {
+    flex: 2;
+    display: flex;
+    border-radius: 10px;
+    overflow: hidden;
+    background: linear-gradient(#24242f, #15151c);
+    cursor: ew-resize;
+  }
+  #plate i { flex: 1; position: relative; border-left: 1px solid #ffffff14; }
+  #plate b { position: absolute; inset: 0; background: var(--me); opacity: 0; }
+  #plate i::after { /* a fret line to aim at */
+    content: '';
+    position: absolute;
+    inset: 12px auto 12px 50%;
+    width: 2px;
+    border-radius: 1px;
+    background: #ffffff26;
+  }
+  @media (max-aspect-ratio: 1/1) { body { flex-direction: column; } } /* a phone held upright */
+</style>
+
+<script>
+  const ROOTS = { 'E♭': 3, 'B♭': 10, F: 5, C: 0, G: 7, D: 2, A: 9, E: 4 } // name → pitch class
+  const KINDS = [['', [0, 4, 7]], ['m', [0, 3, 7]], ['7', [0, 4, 7, 10]]] // rows: name, intervals above the root
+  const STRINGS = 13
+  const RING = 900 // ms a plucked string sounds
+  let pitches = [] // the plate's notes, low to high
+
+  /** Retunes the plate to a chord: its notes, upwards from G3. */
+  function tune(root, intervals) {
+    const classes = intervals.map(i => (root + i) % 12)
+    pitches = []
+    for (let n = 55; pitches.length < STRINGS; n++) if (classes.includes(n % 12)) pitches.push(n)
+  }
+
+  // Chord buttons: a voicing with the root in the bass, held while the button is
+  for (const [kind, intervals] of KINDS) {
+    for (const [name, root] of Object.entries(ROOTS)) {
+      const button = document.querySelector('#chords').appendChild(document.createElement('button'))
+      button.textContent = name + kind
+      button.dataset.kind = kind
+      const voicing = [48 + root, ...intervals.map(i => 60 + (root + i) % 12)]
+      button.onpointerdown = e => {
+        e.preventDefault() // keeps the focus, so Space stays the sustain pedal
+        if (button.classList.contains('down')) return
+        voicing.forEach(note => jam.noteOn(note, 0.5))
+        button.classList.add('down')
+        document.querySelector('.picked')?.classList.remove('picked')
+        button.classList.add('picked')
+        tune(root, intervals)
+      }
+      button.onpointerup = button.onpointercancel = button.onpointerleave = () => {
+        if (!button.classList.contains('down')) return
+        voicing.forEach(note => jam.noteOff(note))
+        button.classList.remove('down')
+      }
+    }
+  }
+
+  // The strum plate: every string crossed sounds, however fast the finger goes
+  const plate = document.querySelector('#plate')
+  for (let i = 0; i < STRINGS; i++) plate.appendChild(document.createElement('i')).append(document.createElement('b'))
+  const ringing = new Map() // note → the timer that lets it go
+  const fingers = new Map() // pointer → the string it was last over
+
+  function pluck(i) {
+    const note = pitches[i]
+    if (ringing.has(note)) {
+      clearTimeout(ringing.get(note))
+      jam.noteOff(note)
+    }
+    jam.noteOn(note, 0.75)
+    ringing.set(note, setTimeout(() => {
+      ringing.delete(note)
+      jam.noteOff(note)
+    }, RING))
+    plate.children[i].firstChild.animate({ opacity: [0.85, 0] }, RING)
+  }
+
+  const stringAt = e => {
+    const r = plate.getBoundingClientRect()
+    return Math.min(STRINGS - 1, Math.max(0, Math.floor((e.clientX - r.left) / r.width * STRINGS)))
+  }
+  plate.onpointerdown = e => {
+    plate.setPointerCapture(e.pointerId)
+    fingers.set(e.pointerId, stringAt(e))
+    pluck(stringAt(e))
+  }
+  plate.onpointermove = e => {
+    if (!fingers.has(e.pointerId)) return
+    const from = fingers.get(e.pointerId), to = stringAt(e), step = Math.sign(to - from)
+    for (let i = from + step; step && i !== to + step; i += step) pluck(i)
+    fingers.set(e.pointerId, to)
+  }
+  plate.onpointerup = plate.onpointercancel = e => fingers.delete(e.pointerId)
+
+  tune(ROOTS.C, KINDS[0][1])
+  document.querySelectorAll('#chords button')[3].classList.add('picked')
+</script>
