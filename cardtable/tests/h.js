@@ -94,7 +94,8 @@ function startServer() {
   const srv = http.createServer((req, res) => {
     const p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
     let f = path.join(APP_ROOT, p);
-    if (!f.startsWith(APP_ROOT)) { res.writeHead(403); return res.end(); }
+    const rel = path.relative(APP_ROOT, f); // inside APP_ROOT, not a sibling sharing its prefix
+    if (rel.startsWith('..') || path.isAbsolute(rel)) { res.writeHead(403); return res.end(); }
     if (p.endsWith('/')) f = path.join(f, 'index.html');
     fs.readFile(f, (err, data) => {
       if (err) { res.writeHead(404); return res.end('not found'); }

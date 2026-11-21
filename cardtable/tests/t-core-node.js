@@ -1,7 +1,9 @@
 // The state core (core.js) in plain Node, no browser: a table is created,
 // dealt, shuffled, played and redacted; cleanDeck turns a hostile deck away;
 // the rules facade runs a template's setup and validate; a save round-trips
-// (and an old-format save still loads). Also: core.js stays DOM-free.
+// (and an old-format or corrupt save still loads). Also: core.js stays
+// DOM-free, hostile actions never throw out of apply, player ids and async
+// hooks are refused, seeded tables replay alike, and shuffles batch crypto.
 const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
@@ -18,7 +20,7 @@ function guard(fn) { try { fn(); } catch (e) { ok(false, 'scenario crashed: ' + 
 (async () => {
   const core = await import(pathToFileURL(path.join(APP, 'core.js')));
   const { RULES_TEMPLATES } = await import(pathToFileURL(path.join(APP, 'templates.js')));
-  const { createTable, cleanDeck, RULES } = core;
+  const { createTable, cleanDeck, RULES, own } = core;
   /** A fresh table: the host (Alice) and Bob seated, one standard deck in the middle. */
   const fresh = (env = {}) => {
     const T = createTable({}, { pid: HOST, ...env });
@@ -192,6 +194,137 @@ function guard(fn) { try { fn(); } catch (e) { ok(false, 'scenario crashed: ' + 
     ok(!T.state.rules.enabled && T.rulesError && T.drain().some((e) => e.t === 'toast' && /Saved rules failed to load/.test(e.msg)), 'a saved script that no longer loads disables the rules, loudly');
     ok(!('extra' in T.state.decks.dd) && !('bad' in T.state.decks), 'saved decks pass the sanitizer again (an unusable one is dropped)');
     ok(T.state.log.length === 1 && T.state.seq === 8, 'the log starts with the resume');
+  });
+  guard(() => {
+    // Corrupt storage: the deck map saved as a string, or as an array.
+    for (const [what, decks] of [['a string', 'xyz'], ['an array', [core.standardDeck(false)]]]) {
+      const T = createTable({ items: {}, players: {}, decks }, { pid: HOST });
+      try { T.resume('Alice'); } catch (e) { ok(false, `decks saved as ${what}: the resume crashed (${e.message})`); continue; }
+      T.apply(HOST, { t: 'addDeck', deck: { name: 'Later', cards: [{ n: 'x' }] } });
+      const back = Object.values(json(T.state.decks)).map((d) => d.name);
+      ok(Object.getPrototypeOf(T.state.decks) === Object.prototype && back.at(-1) === 'Later' && back.length === (what === 'a string' ? 1 : 2),
+        `decks saved as ${what}: the table resumes on a plain deck map, and a later deck is saved (${back})`);
+    }
+  });
+
+  section('core reads the deck map afresh (a resync may replace it)');
+  guard(() => {
+    const T = fresh();
+    T.state.decks = { ...T.state.decks, ab12cd34: { name: 'Fresh', back: null, imgs: [], cards: [{ n: 'Fresh card' }] } };
+    const ref = { d: 'ab12cd34', i: 0 };
+    ok(T.api.cardName(ref) === 'Fresh card' && T.api.card(ref)?.deck === 'Fresh', 't.cardName and t.card see the new map');
+    const id = T.api.newDeck({ name: 'Scripted', cards: [{ name: 'one' }] });
+    ok(T.state.decks[id]?.name === 'Scripted' && T.state.decks.ab12cd34, 'and new decks land in it');
+  });
+
+  section('hostile hand indexes are no-ops, not crashes');
+  guard(() => {
+    const T = fresh();
+    const deck = pileOf(T), items = Object.keys(T.state.items).length;
+    const hostile = [{ t: 'play', idx: 0 }, { t: 'play', idx: 7, x: 1, y: 1 }, { t: 'play', idx: -1 }, { t: 'handPile', idx: 0, pile: deck }, { t: 'handPile', idx: 3, d: 'x', i: 0, pile: deck }];
+    for (const a of hostile) {
+      try { T.apply(BOB, a); } catch (e) { ok(false, `${JSON.stringify(a)} from an empty hand threw: ${e.message}`); }
+    }
+    ok(Object.keys(T.state.items).length === items && T.state.items[deck].cards.length === 52, 'a play or discard past the end of an empty hand changes nothing');
+    T.apply(BOB, { t: 'draw', id: deck });
+    T.apply(BOB, { t: 'play', idx: 4 });
+    ok(T.state.players[BOB].hand.length === 1, 'nor does one past the end of a hand of one');
+  });
+
+  section('a fuzzer of hostile actions never crashes the table');
+  guard(() => {
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
+    const pick = (a) => a[Math.floor(rnd() * a.length)];
+    const junk = [undefined, null, -1, 0, 1, 7, 1e9, NaN, Infinity, 1.5, 'x', '', '__proto__', 'constructor', {}, [], true];
+    const kinds = [...core.RULED_ACTIONS, 'name', 'chat', 'size', 'rulesBtn', 'hello', 'bogus', '__proto__'];
+    const crashes = {}, quiet = [console.warn, console.error];
+    console.warn = console.error = () => {}; // the fuzzer provokes refusals by the thousand
+    try {
+      for (const tpl of [null, 'holdem']) {
+        const T = fresh({ random: rnd });
+        T.join(CAROL, 'Carol', 'c'.repeat(32));
+        if (tpl) T.apply(HOST, { t: 'setRules', code: RULES_TEMPLATES[tpl], enabled: true });
+        for (let n = 0; n < 1500; n++) {
+          if (Object.keys(T.state.items).length < 4) T.api.addStandardDeck({ x: rnd() * 1000, y: rnd() * 1000 }); // deletes empty the table
+          const ids = Object.keys(T.state.items), p = pick([HOST, BOB, CAROL, '__proto__', 'nobody']);
+          const hand = own(T.state.players, p)?.hand || [], c = rnd() < 0.5 ? pick(hand) || {} : {};
+          const any = () => (rnd() < 0.7 && ids.length ? pick(ids) : pick(junk));
+          const a = {
+            t: pick(kinds), id: any(), pile: any(), onto: any(), idx: rnd() < 0.5 ? Math.floor(rnd() * (hand.length + 2)) : pick(junk),
+            d: c.d ?? pick(junk), i: c.i ?? pick(junk), x: rnd() < 0.8 ? rnd() * 2600 - 650 : pick(junk), y: rnd() * 1300, rot: pick([90, -45, ...junk]),
+            up: pick(junk), msg: pick(['hi', ...junk]), name: pick(['N', ...junk]), size: pick([1800, ...junk]),
+            deck: rnd() < 0.03 ? pick([{ cards: [{ n: 'a' }] }, { cards: [null, 'x', { r: 'A', s: '♠' }] }, ...junk]) : undefined,
+          };
+          if (a.t === 'rulesBtn') a.id = pick([...(T.state.rules?.public?.buttons || []).map((b) => b.id), ...junk]);
+          try { T.apply(p, a); } catch (e) { const k = `${a.t}: ${e.message}`; crashes[k] = (crashes[k] || 0) + 1; }
+          T.drain();
+        }
+        const items = Object.values(T.state.items);
+        ok(items.every((it) => Number.isFinite(it.x) && Number.isFinite(it.y) && Number.isFinite(it.rot) && (it.k === 'c' || Array.isArray(it.cards))),
+          `${tpl || 'free table'}: after 1500 hostile actions every item still has a finite place (${items.length} items)`);
+      }
+    } finally { [console.warn, console.error] = quiet; }
+    ok(!Object.keys(crashes).length, `no action threw out of T.apply (${JSON.stringify(crashes)})`);
+    ok(({}).online === undefined && ({}).seat === undefined && ({}).key === undefined, 'Object.prototype is untouched');
+  });
+
+  section('player ids are checked in core too');
+  guard(() => {
+    const T = fresh();
+    const r = T.join('__proto__', 'Mallory', 'm'.repeat(32));
+    ok(r.known === null && !r.back && ({}).online === undefined && ({}).key === undefined, 'join refuses "__proto__" (Object.prototype stays clean)');
+    ok(T.join('Bob', 'Bob', 'k'.repeat(32)).known === null && !('Bob' in T.state.players), 'and any id that is not 16 hex digits');
+    const throws = (fn) => { try { fn(); return false; } catch (e) { return true; } };
+    ok(throws(() => createTable({})) && throws(() => createTable({}, { pid: RULES })), "a table needs the host's own id: no actor passes as the host by sending none");
+  });
+
+  section('hooks are synchronous: a Promise fails closed');
+  guard(() => {
+    const T = fresh();
+    T.apply(HOST, { t: 'setRules', enabled: true, code: '({ name: "Veto", async validate() { return "never"; } })' });
+    const deck = pileOf(T);
+    T.apply(BOB, { t: 'draw', id: deck });
+    ok(!T.state.players[BOB].hand.length && T.state.items[deck].cards.length === 52, 'an async validate() blocks the action instead of letting it through');
+    ok(!T.state.rules.enabled && /synchronous/.test(T.rulesError), `and disables the rules, loudly ("${T.rulesError}")`);
+    const sh = core.scriptHooks(); // a runner that answers later (a Worker would)
+    const T2 = fresh({ hooks: { ...sh, call: (...a) => Promise.resolve(sh.call(...a)) } });
+    T2.apply(HOST, { t: 'setRules', enabled: true, code: '({ name: "Veto", validate() { return "never"; } })' });
+    T2.apply(BOB, { t: 'draw', id: pileOf(T2) });
+    ok(!T2.state.players[BOB].hand.length && !T2.state.rules.enabled, 'so does an asynchronous rules runner');
+  });
+
+  section('seeded tables replay alike (env.now, env.random, env.uid)');
+  guard(() => {
+    const run = () => {
+      let s = 1, n = 0, clock = 0;
+      const T = createTable({}, {
+        pid: HOST, now: () => (clock += 10), random: () => ((s = (s * 16807) % 2147483647) / 2147483647),
+        uid: () => (++n).toString(16).padStart(8, '0'),
+      });
+      T.open('Alice');
+      T.join(BOB, 'Bob', 'k'.repeat(32));
+      const deck = pileOf(T);
+      T.apply(HOST, { t: 'shuffle', id: deck });
+      T.apply(HOST, { t: 'deal', id: deck, x: 300, y: 300, up: true });
+      T.apply(BOB, { t: 'draw', id: deck });
+      T.apply(BOB, { t: 'addDeck', deck: { name: 'D', cards: [{ n: 'a' }] } });
+      return JSON.stringify(T.state);
+    };
+    const a = run();
+    ok(a === run() && a.includes('"00000005"'), 'the same seeds give the same state: ids, order and log');
+  });
+
+  section('the default RNG draws crypto randomness in batches');
+  guard(() => {
+    const T = fresh();
+    const pile = T.api.newPile(Array.from({ length: 5000 }, (_, i) => ({ d: 'x', i })));
+    const gv = crypto.getRandomValues;
+    let calls = 0;
+    crypto.getRandomValues = function (a) { calls++; return gv.call(this, a); };
+    try { T.apply(HOST, { t: 'shuffle', id: pile }); } finally { crypto.getRandomValues = gv; }
+    const order = T.state.items[pile].cards.map((c) => c.i);
+    ok(calls <= 6 && new Set(order).size === 5000 && order.some((v, k) => v !== k), `a 5000-card shuffle reads the crypto RNG ${calls} times, not once per card`);
   });
 
   h.report();

@@ -11,7 +11,9 @@
 //    saves (T.snapshot(), decks apart) and redacts for broadcasts
 //    (T.publicItems(), T.publicPlayers()).
 //  • env injects what isn't pure: {pid (the host's own player id), now()
-//    (Date.now), random() (crypto), hooks (the rules runner, see scriptHooks)}.
+//    (Date.now), random() (crypto), uid() (8 hex digits, crypto: the ids of
+//    new items and decks), hooks (the rules runner, see scriptHooks)}.
+//    Seed now, random and uid, and two tables replay alike.
 //  • Side effects become data: every call queues effects, in order, and the
 //    app takes them with T.drain() after each call:
 //      {t:'fx', f}         an action marker {p, id, x, y} (the name bulbs)
@@ -55,8 +57,17 @@ export const own = (obj, key) => (key != null && Object.hasOwn(obj, key) ? obj[k
 /** A finite number from untrusted input, else the fallback. */
 export const num = (v, fallback = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
 export const normRot = (v) => ((num(v) % 360) + 360) % 360;
-/** A uniform float in [0, 1) from the crypto RNG (the default env.random). */
-const cryptoRandom = () => crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32;
+/** Player ids: 16 hex digits (app.js mints them; the host refuses others). */
+export const PID_RE = /^[0-9a-f]{16}$/;
+/** A uniform float in [0, 1) from the crypto RNG (the default env.random).
+ *  Drawn from a refilled pool: one getRandomValues call per card would make
+ *  shuffling a 5000-card pile ~30× slower than Math.random. */
+const pool = new Uint32Array(1024);
+let poolLeft = 0;
+const cryptoRandom = () => {
+  if (!poolLeft) { crypto.getRandomValues(pool); poolLeft = pool.length; }
+  return pool[--poolLeft] / 2 ** 32;
+};
 
 // --- data hygiene: decks pass one sanitizer (strict image data-URLs, strict
 // color grammar, size caps) before anything renders them ---------------------
@@ -135,9 +146,12 @@ export function itemLabel(decks, it) {
 export const RULES = 'RULES'; // synthetic actor id for script-performed ops
 export const RULED_ACTIONS = new Set(['move', 'rot', 'flip', 'shuffle', 'draw', 'deal', 'play', 'handPile', 'toHand', 'toPile', 'stack', 'merge', 'del', 'addDeck', 'peek']);
 
-/** The rules runner a table drives its hooks through (env.hooks). This one
- *  evaluates the script right here; the interface lets the rules run
- *  elsewhere (a Worker) without the table noticing:
+/** The rules runner a table drives its hooks through (env.hooks): a
+ *  SYNCHRONOUS, same-thread interface (tests inject their own to reach the
+ *  script). It is not where a Worker goes — the table needs validate's
+ *  answer inline, and the facade it hands over is closures over the state.
+ *  A rules Worker (TABLETOP.md §5) runs a whole createTable() on a mirror of
+ *  the state, with this runner inside; the page talks to that table.
  *    load(code)       evaluates and installs a script, returns its name; throws
  *                     (the running script stays) if it doesn't evaluate to an object
  *    has(hook)        whether the installed script defines that hook
@@ -166,14 +180,19 @@ export function scriptHooks() {
 /** A table over `host` (its state, mutated in place) — see the top of this file. */
 export function createTable(host, env = {}) {
   const pid = env.pid;
+  // Host-only powers (setRules, size, no deck budget) go to `p === pid`: an
+  // unset pid would hand them to any caller that passes no player id.
+  if (!pid || typeof pid !== 'string' || pid === RULES) throw new Error(`createTable: env.pid must be the host's player id, got ${pid}`);
   const now = env.now || Date.now, random = env.random || cryptoRandom, hooks = env.hooks || scriptHooks();
+  const newId = env.uid || uid;
   host.seq ??= 1;
   host.items ??= {};
   host.players ??= {};
   host.log ||= []; // saves from before the log existed
   host.size ||= 1300;
+  // Core reads host.decks afresh at every use (never a captured copy), so a
+  // resync or a rollback may replace it.
   host.decks ??= {};
-  const { decks } = host;
   let effects = []; // queued for the app (T.drain)
   let marks = 0;    // action markers so far: apply()'s "it really happened" signal
   let lastRulesError = ''; // shown in the rules dialog
@@ -207,7 +226,7 @@ export function createTable(host, env = {}) {
   }
 
   function ensurePlayer(p, name) {
-    const pl = host.players[p] || (host.players[p] = { name: '', color: freeColor(), online: true, hand: [] });
+    const pl = own(host.players, p) || (host.players[p] = { name: '', color: freeColor(), online: true, hand: [] });
     pl.seat ??= assignSeat();
     pl.online = true;
     // Only fill an empty name here — explicit renames go through the 'name'
@@ -249,8 +268,11 @@ export function createTable(host, env = {}) {
   }
   // Resolve a hand index robustly: guests send both the index and the card they
   // see there; if the hand changed in flight, fall back to the first match.
+  // An empty slot never matches (a missing d/i would equal its undefined),
+  // so an index past the hand finds nothing: -1.
   function handIdx(pl, a) {
-    if (Number.isInteger(a.idx) && pl.hand[a.idx]?.d === a.d && pl.hand[a.idx]?.i === a.i) return a.idx;
+    const c = Number.isInteger(a.idx) && pl.hand[a.idx];
+    if (c && c.d === a.d && c.i === a.i) return a.idx;
     return pl.hand.findIndex((c) => c.d === a.d && c.i === a.i);
   }
 
@@ -275,11 +297,11 @@ export function createTable(host, env = {}) {
       const pl = own(host.players, o.to);
       if (!pl) { pile.cards.push(c); console.warn('opDealTop: unknown player', o.to); return false; }
       pl.hand.push({ d: c.d, i: c.i });
-      logEvent(actor, `dealt a card from ${itemLabel(decks, pile)} to ${pl.name || 'a player'}`);
+      logEvent(actor, `dealt a card from ${itemLabel(host.decks, pile)} to ${pl.name || 'a player'}`);
     } else {
       const at = clampToFelt(num(o.x, pile.x + CARD_W + 18), num(o.y, pile.y), host.size);
-      nid = put(uid(), { k: 'c', x: at.x, y: at.y, rot: normRot(o.rot), z: zTop(), d: c.d, i: c.i, up: !!o.up });
-      logEvent(actor, `dealt ${o.up ? cardName(decks, c.d, c.i) : 'a card face down'} from ${itemLabel(decks, pile)}`);
+      nid = put(newId(), { k: 'c', x: at.x, y: at.y, rot: normRot(o.rot), z: zTop(), d: c.d, i: c.i, up: !!o.up });
+      logEvent(actor, `dealt ${o.up ? cardName(host.decks, c.d, c.i) : 'a card face down'} from ${itemLabel(host.decks, pile)}`);
       mark(actor, nid);
     }
     touch(pileId);
@@ -297,7 +319,7 @@ export function createTable(host, env = {}) {
       [pile.cards[i], pile.cards[j]] = [pile.cards[j], pile.cards[i]];
     }
     touch(pileId);
-    logEvent(actor, `shuffled ${itemLabel(decks, pile)} (${pile.cards.length} cards)`);
+    logEvent(actor, `shuffled ${itemLabel(host.decks, pile)} (${pile.cards.length} cards)`);
     mark(actor, pileId);
     return true;
   }
@@ -307,11 +329,11 @@ export function createTable(host, env = {}) {
     if (!it) return false;
     if (it.k === 'c') {
       it.up = !it.up;
-      logEvent(actor, `flipped ${cardName(decks, it.d, it.i)} face ${it.up ? 'up' : 'down'}`);
+      logEvent(actor, `flipped ${cardName(host.decks, it.d, it.i)} face ${it.up ? 'up' : 'down'}`);
     } else {
       it.cards.reverse();
       for (const c of it.cards) c.up = !c.up;
-      logEvent(actor, `flipped ${itemLabel(decks, it)}`);
+      logEvent(actor, `flipped ${itemLabel(host.decks, it)}`);
     }
     touch(id);
     mark(actor, id);
@@ -321,7 +343,7 @@ export function createTable(host, env = {}) {
   function opToPile(actor, cardId, pileId) {
     const it = own(host.items, cardId), pile = own(host.items, pileId);
     if (it?.k !== 'c' || pile?.k !== 'p') return false;
-    logEvent(actor, `put ${itemLabel(decks, it)} onto ${itemLabel(decks, pile)}`);
+    logEvent(actor, `put ${itemLabel(host.decks, it)} onto ${itemLabel(host.decks, pile)}`);
     mark(actor, pileId);
     pile.cards.push({ d: it.d, i: it.i, up: it.up });
     touch(pileId);
@@ -331,7 +353,7 @@ export function createTable(host, env = {}) {
 
   function opNewPile(actor, cards, o = {}) {
     const at = clampToFelt(o.x ?? host.size / 2 - CARD_W / 2, o.y ?? host.size / 2 - CARD_H / 2, host.size);
-    const nid = put(uid(), { k: 'p', x: at.x, y: at.y, rot: 0, z: zTop(), name: String(o.name || '').slice(0, 24), cards: cards.map((c) => ({ d: c.d, i: c.i, up: !!c.up })) });
+    const nid = put(newId(), { k: 'p', x: at.x, y: at.y, rot: 0, z: zTop(), name: String(o.name || '').slice(0, 24), cards: cards.map((c) => ({ d: c.d, i: c.i, up: !!c.up })) });
     logEvent(actor, `made a pile of ${cards.length} cards`);
     mark(actor, nid);
     return nid;
@@ -341,8 +363,8 @@ export function createTable(host, env = {}) {
   function opStack(actor, id, ontoId) {
     const it = own(host.items, id), b = own(host.items, ontoId);
     if (it?.k !== 'c' || b?.k !== 'c' || it === b) return false;
-    logEvent(actor, `stacked ${itemLabel(decks, it)} onto ${itemLabel(decks, b)}`);
-    const nid = put(uid(), { k: 'p', x: b.x, y: b.y, rot: b.rot, z: zTop(), name: '', cards: [{ d: b.d, i: b.i, up: b.up }, { d: it.d, i: it.i, up: it.up }] });
+    logEvent(actor, `stacked ${itemLabel(host.decks, it)} onto ${itemLabel(host.decks, b)}`);
+    const nid = put(newId(), { k: 'p', x: b.x, y: b.y, rot: b.rot, z: zTop(), name: '', cards: [{ d: b.d, i: b.i, up: b.up }, { d: it.d, i: it.i, up: it.up }] });
     remove(id);
     remove(ontoId);
     mark(actor, nid);
@@ -357,7 +379,7 @@ export function createTable(host, env = {}) {
     const out = typeof only === 'function' ? pl.hand.filter((c) => only({ d: c.d, i: c.i })) : pl.hand.slice();
     if (out.length) {
       const whose = out.length === pl.hand.length ? `${pl.name || 'a player'}'s hand` : `cards from ${pl.name || 'a player'}'s hand`;
-      logEvent(actor, `returned ${whose} (${out.length}) to ${itemLabel(decks, pile)}`);
+      logEvent(actor, `returned ${whose} (${out.length}) to ${itemLabel(host.decks, pile)}`);
       mark(actor, pileId);
       pl.hand = pl.hand.filter((c) => !out.includes(c));
       for (const c of out) pile.cards.push({ d: c.d, i: c.i, up: false });
@@ -424,11 +446,11 @@ export function createTable(host, env = {}) {
           }
           host.guestDeckChars = used + size;
         }
-        const deckId = uid(); // host-minted: a peer must not choose (or overwrite) deck ids
-        decks[deckId] = deck;
+        const deckId = newId(); // host-minted: a peer must not choose (or overwrite) deck ids
+        host.decks[deckId] = deck;
         emit({ t: 'deck', id: deckId });
         const at = clampToFelt(num(a.x, host.size / 2 - CARD_W / 2), num(a.y, host.size / 2 - CARD_H / 2), host.size);
-        const nid = put(uid(), {
+        const nid = put(newId(), {
           k: 'p', x: at.x, y: at.y, rot: 0, z: zTop(), name: deck.name,
           cards: deck.cards.map((_, i) => ({ d: deckId, i, up: false })),
         });
@@ -441,11 +463,11 @@ export function createTable(host, env = {}) {
           ({ x: it.x, y: it.y } = clampToFelt(num(a.x, it.x), num(a.y, it.y), host.size));
           it.z = zTop();
           touch(a.id);
-          logEvent(p, `moved ${itemLabel(decks, it)}`);
+          logEvent(p, `moved ${itemLabel(host.decks, it)}`);
           mark(p, a.id);
         }
         break;
-      case 'rot': if (it) { it.rot = normRot(a.rot); touch(a.id); logEvent(p, `rotated ${itemLabel(decks, it)}`); mark(p, a.id); } break;
+      case 'rot': if (it) { it.rot = normRot(a.rot); touch(a.id); logEvent(p, `rotated ${itemLabel(host.decks, it)}`); mark(p, a.id); } break;
       case 'flip': if (it) opFlip(p, a.id); break;
       case 'shuffle': if (it?.k === 'p') opShuffle(p, a.id); break;
       case 'draw': {
@@ -453,7 +475,7 @@ export function createTable(host, env = {}) {
         if (c && pl) {
           pl.hand.push({ d: c.d, i: c.i });
           touch(a.id);
-          logEvent(p, `drew a card from ${itemLabel(decks, it)}`);
+          logEvent(p, `drew a card from ${itemLabel(host.decks, it)}`);
           mark(p, a.id);
           dropIfEmpty(a.id);
         }
@@ -465,8 +487,8 @@ export function createTable(host, env = {}) {
         if (pl && idx >= 0) {
           const c = pl.hand.splice(idx, 1)[0];
           const at = clampToFelt(num(a.x, host.size / 2), num(a.y, host.size / 2), host.size), up = !!a.up;
-          const nid = put(uid(), { k: 'c', x: at.x, y: at.y, rot: normRot(a.rot), z: zTop(), d: c.d, i: c.i, up });
-          logEvent(p, `played ${up ? cardName(decks, c.d, c.i) : 'a card face down'} from hand`);
+          const nid = put(newId(), { k: 'c', x: at.x, y: at.y, rot: normRot(a.rot), z: zTop(), d: c.d, i: c.i, up });
+          logEvent(p, `played ${up ? cardName(host.decks, c.d, c.i) : 'a card face down'} from hand`);
           mark(p, nid);
         }
         break;
@@ -481,14 +503,14 @@ export function createTable(host, env = {}) {
           const up = pile.cards.at(-1)?.up ?? false;
           pile.cards.push({ d: c.d, i: c.i, up });
           touch(a.pile);
-          logEvent(p, `put ${up ? cardName(decks, c.d, c.i) : 'a card face down'} from hand onto ${itemLabel(decks, pile)}`);
+          logEvent(p, `put ${up ? cardName(host.decks, c.d, c.i) : 'a card face down'} from hand onto ${itemLabel(host.decks, pile)}`);
           mark(p, a.pile);
         }
         break;
       }
       case 'toHand':
         if (it?.k === 'c' && pl) {
-          logEvent(p, `took ${itemLabel(decks, it)} from the table into hand`);
+          logEvent(p, `took ${itemLabel(host.decks, it)} from the table into hand`);
           mark(p, a.id);
           pl.hand.push({ d: it.d, i: it.i });
           remove(a.id);
@@ -499,7 +521,7 @@ export function createTable(host, env = {}) {
       case 'merge': {
         const to = own(items, a.pile);
         if (it?.k === 'p' && to?.k === 'p' && it !== to) {
-          logEvent(p, `merged ${itemLabel(decks, it)} (${it.cards.length} cards) into ${itemLabel(decks, to)}`);
+          logEvent(p, `merged ${itemLabel(host.decks, it)} (${it.cards.length} cards) into ${itemLabel(host.decks, to)}`);
           mark(p, a.pile);
           to.cards.push(...it.cards);
           touch(a.pile);
@@ -509,7 +531,7 @@ export function createTable(host, env = {}) {
       }
       case 'del':
         if (it) {
-          logEvent(p, `removed ${itemLabel(decks, it)}${it.k === 'p' ? ` (${it.cards.length} cards)` : ''}`);
+          logEvent(p, `removed ${itemLabel(host.decks, it)}${it.k === 'p' ? ` (${it.cards.length} cards)` : ''}`);
           mark(p, a.id);
           remove(a.id);
         }
@@ -521,7 +543,7 @@ export function createTable(host, env = {}) {
       case 'peek': {
         const c = it?.k === 'c' ? !it.up && it : it?.k === 'p' && it.cards.at(-1);
         if (!c) break;
-        logEvent(p, it.k === 'c' ? 'peeked at a face-down card' : `peeked at the top card of ${itemLabel(decks, it)}`, false, undefined, true);
+        logEvent(p, it.k === 'c' ? 'peeked at a face-down card' : `peeked at the top card of ${itemLabel(host.decks, it)}`, false, undefined, true);
         mark(p, a.id);
         emit({ t: 'peek', p, c: { d: c.d, i: c.i } });
         break;
@@ -601,9 +623,12 @@ export function createTable(host, env = {}) {
   // --- players come and go ---------------------------------------------------
   /** Registers player p, who just sent an action with this name and seat key:
    *  a new player gets a seat, and the first contact binds the key to it
-   *  (checking it is the app's job). Returns the player as it was before
-   *  (null if new) and whether they're back (new, or were offline). */
+   *  (checking it is the app's job, in the same synchronous step: two claims
+   *  of one seat must not both pass). Returns the player as it was before
+   *  (null if new) and whether they're back (new, or were offline). An id
+   *  that isn't a player id (PID_RE: never "__proto__") is refused. */
   function join(p, name, key) {
+    if (typeof p !== 'string' || !PID_RE.test(p)) { console.error('join: refused an invalid player id', p); return { known: null, back: false }; }
     const known = own(host.players, p);
     const back = !known?.online; // read BEFORE ensurePlayer flips the same object online
     ensurePlayer(p, name);
@@ -628,9 +653,9 @@ export function createTable(host, env = {}) {
   function open(name) {
     ensurePlayer(pid, name);
     const deck = standardDeck(false);
-    const deckId = uid();
-    decks[deckId] = deck;
-    put(uid(), {
+    const deckId = newId();
+    host.decks[deckId] = deck;
+    put(newId(), {
       k: 'p', x: host.size / 2 - CARD_W / 2, y: host.size / 2 - CARD_H / 2, rot: 0, z: 1,
       name: deck.name, cards: deck.cards.map((_, i) => ({ d: deckId, i, up: false })),
     });
@@ -642,9 +667,11 @@ export function createTable(host, env = {}) {
    *  so their decks pass it again; a saved rules script that no longer loads
    *  disables the rules loudly rather than wedging the resume. */
   function resume(name) {
-    for (const [id, d] of Object.entries(decks)) {
-      try { decks[id] = cleanDeck(d); } catch (err) { console.error(`saved deck ${id} dropped`, err); delete decks[id]; }
+    const decks = {}; // a fresh map: a corrupt save may hold a string or an array here
+    for (const [id, d] of Object.entries(host.decks)) {
+      try { decks[id] = cleanDeck(d); } catch (err) { console.error(`saved deck ${id} dropped`, err); }
     }
+    host.decks = decks;
     if (host.rules?.code) {
       try {
         hooks.load(host.rules.code);
@@ -674,11 +701,19 @@ export function createTable(host, env = {}) {
   function runHook(name, ...args) {
     if (!host.rules?.enabled || !hooks.has(name)) return undefined;
     try {
-      return hooks.call(name, tApi, ...args);
+      return callHook(name, ...args);
     } catch (err) {
       hookFailed(name, err);
       return undefined;
     }
+  }
+  /** Calls a hook with the facade. Hooks are synchronous: a Promise (an
+   *  async hook, or a runner that answers later) would let validate's veto
+   *  pass unread, so it throws — a script error, which fails closed. */
+  function callHook(name, ...args) {
+    const r = hooks.call(name, tApi, ...args);
+    if (typeof r?.then === 'function') throw new Error('hooks must be synchronous (it returned a Promise)');
+    return r;
   }
   /** A script error: disable the rules, loudly and on the record. */
   function hookFailed(name, err) {
@@ -729,7 +764,7 @@ export function createTable(host, env = {}) {
   function refreshButtons() {
     if (!host.rules?.enabled || !hooks.has('buttons')) return;
     try {
-      const btns = hooks.call('buttons', tApi) || [];
+      const btns = callHook('buttons') || [];
       host.rules.public.buttons = btns.map((b) => ({ id: String(b.id), label: String(b.label).slice(0, 30), ...(b.pid ? { pid: b.pid } : {}) }));
     } catch (err) {
       hookFailed('buttons', err);
@@ -781,15 +816,15 @@ export function createTable(host, env = {}) {
       if (!Number.isInteger(idx) || !pl?.hand[idx]) { console.error('t.playFromHand: bad hand index', p, idx); return false; }
       const c = pl.hand.splice(idx, 1)[0];
       const at = clampToFelt(o.x ?? host.size / 2 - CARD_W / 2, o.y ?? host.size / 2 - CARD_H / 2, host.size);
-      const nid = put(uid(), { k: 'c', x: at.x, y: at.y, rot: normRot(o.rot), z: zTop(), d: c.d, i: c.i, up: o.up !== false });
-      logEvent(RULES, `played ${o.up !== false ? cardName(decks, c.d, c.i) : 'a card face down'} from ${pl.name || 'a player'}'s hand`);
+      const nid = put(newId(), { k: 'c', x: at.x, y: at.y, rot: normRot(o.rot), z: zTop(), d: c.d, i: c.i, up: o.up !== false });
+      logEvent(RULES, `played ${o.up !== false ? cardName(host.decks, c.d, c.i) : 'a card face down'} from ${pl.name || 'a player'}'s hand`);
       mark(RULES, nid);
       return nid;
     },
     toHand(p, cardId) {
       const it = own(host.items, cardId), pl = own(host.players, p);
       if (it?.k !== 'c' || !pl) return false;
-      logEvent(RULES, `gave ${itemLabel(decks, it)} to ${pl.name || 'a player'}`);
+      logEvent(RULES, `gave ${itemLabel(host.decks, it)} to ${pl.name || 'a player'}`);
       mark(RULES, cardId);
       pl.hand.push({ d: it.d, i: it.i });
       remove(cardId);
@@ -803,7 +838,7 @@ export function createTable(host, env = {}) {
     merge(fromId, toId) {
       const from = own(host.items, fromId), to = own(host.items, toId);
       if (from?.k !== 'p' || to?.k !== 'p' || from === to) return false;
-      logEvent(RULES, `merged ${itemLabel(decks, from)} (${from.cards.length} cards) into ${itemLabel(decks, to)}`);
+      logEvent(RULES, `merged ${itemLabel(host.decks, from)} (${from.cards.length} cards) into ${itemLabel(host.decks, to)}`);
       mark(RULES, toId);
       to.cards.push(...from.cards);
       touch(toId);
@@ -816,7 +851,7 @@ export function createTable(host, env = {}) {
       ({ x: it.x, y: it.y } = clampToFelt(x, y, host.size));
       it.z = zTop();
       touch(id);
-      logEvent(RULES, `moved ${itemLabel(decks, it)}`);
+      logEvent(RULES, `moved ${itemLabel(host.decks, it)}`);
       mark(RULES, id);
       return true;
     },
@@ -825,14 +860,14 @@ export function createTable(host, env = {}) {
       if (!it) return false;
       it.rot = normRot(deg);
       touch(id);
-      logEvent(RULES, `rotated ${itemLabel(decks, it)}`);
+      logEvent(RULES, `rotated ${itemLabel(host.decks, it)}`);
       mark(RULES, id);
       return true;
     },
     remove(id) {
       const it = own(host.items, id);
       if (!it) return false;
-      logEvent(RULES, `removed ${itemLabel(decks, it)}${it.k === 'p' ? ` (${it.cards.length} cards)` : ''}`);
+      logEvent(RULES, `removed ${itemLabel(host.decks, it)}${it.k === 'p' ? ` (${it.cards.length} cards)` : ''}`);
       mark(RULES, id);
       remove(id);
       return true;
@@ -842,19 +877,19 @@ export function createTable(host, env = {}) {
      *  can keep big decks off the table (small piles via t.newPile([{d,i,up}])
      *  keep the broadcast state light). `back` may be a solid color ("#111"). */
     newDeck(def) {
-      const deckId = uid();
-      decks[deckId] = cleanDeck({
+      const deckId = newId();
+      host.decks[deckId] = cleanDeck({
         name: def.name, back: def.back,
         cards: (def.cards || []).map((c) => ({ n: c.name, txt: c.text, col: c.color, b: c.bg, meta: c.meta })),
       });
       emit({ t: 'deck', id: deckId });
-      logEvent(RULES, `defined deck "${decks[deckId].name}" (${decks[deckId].cards.length} cards)`);
+      logEvent(RULES, `defined deck "${host.decks[deckId].name}" (${host.decks[deckId].cards.length} cards)`);
       return deckId;
     },
     addStandardDeck(o = {}) {
       const deck = standardDeck(!!o.jokers);
-      const deckId = uid();
-      decks[deckId] = deck;
+      const deckId = newId();
+      host.decks[deckId] = deck;
       emit({ t: 'deck', id: deckId });
       const nid = opNewPile(RULES, deck.cards.map((_, i) => ({ d: deckId, i, up: false })), { x: o.x, y: o.y, name: deck.name });
       own(host.items, nid).name = deck.name;
@@ -887,14 +922,14 @@ export function createTable(host, env = {}) {
       const i = ps.findIndex((x) => x.id === p);
       return ps.length ? ps[(i + 1) % ps.length].id : p;
     },
-    cardName: (ref) => cardName(decks, ref.d, ref.i),
+    cardName: (ref) => cardName(host.decks, ref.d, ref.i),
     /** Full card identity for game logic: {name, rank, suit, text, meta, deck}.
      *  `meta` is the free-form JSON from a custom deck's manifest. */
     card(ref) {
-      const deck = decks[ref.d], c = deck?.cards[ref.i];
+      const deck = host.decks[ref.d], c = deck?.cards[ref.i];
       if (!c) return null;
       return structuredClone({
-        name: cardName(decks, ref.d, ref.i), rank: c.r, suit: c.s, text: c.txt,
+        name: cardName(host.decks, ref.d, ref.i), rank: c.r, suit: c.s, text: c.txt,
         meta: c.meta, deck: deck.name,
       });
     },

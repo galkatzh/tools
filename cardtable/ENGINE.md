@@ -78,7 +78,9 @@ Hook semantics worth knowing:
   not offered to that player, reaches no hook at all.)
 - **`validate` fails closed**: if it throws, the action is blocked and
   the rules disable themselves (an input that crashes the validator must
-  not slip through unvalidated).
+  not slip through unvalidated). Hooks are synchronous: one that returns
+  a Promise (an `async` hook) counts as throwing, since its veto would
+  come too late.
 - **`onJoin` also fires on reconnect after a host reload**, without a
   preceding `onLeave`: a resumed host marks everyone offline, and each
   player's first message after the resume is a (re)join. A script that
@@ -300,11 +302,17 @@ the default.
   helpers, the validate-veto, `join` / `leave`, `runTimers` (`t.schedule`),
   the public view — plus the rules module: the hook runner (try/catch +
   auto-disable), the `t` facade (`T.api`), the RULES actor id. Scripts are
-  evaluated by an injectable runner (`env.hooks`, by default
-  `scriptHooks()`), so the rules can move out of the page. What used to
-  touch the screen or the network (log lines, action markers, banners,
-  private notes and peeks, new decks, the host's toasts) is queued as
-  effects that `app.js` drains (`T.drain()`).
+  evaluated by a runner (`env.hooks`, by default `scriptHooks()`; tests
+  inject their own). It is synchronous and same-thread: the table reads
+  `validate`'s answer inline, and a hook that returns a Promise counts as a
+  script error, so the veto fails closed. A rules Worker therefore wraps the
+  whole table, not the runner: it runs `createTable()` on a mirror of the
+  state, and the page sends it actions and gets back changes and effects.
+  Time, randomness and new ids are injectable too (`env.now`, `env.random`,
+  `env.uid`), so a seeded table replays exactly. What used to touch the
+  screen or the network (log lines, action markers, banners, private notes
+  and peeks, new decks, the host's toasts) is queued as effects that
+  `app.js` drains (`T.drain()`).
 - `cardtable/templates.js`: the example scripts (`RULES_TEMPLATES`) and
   the 🎲 picker's catalog (`GAMES`).
 - `cardtable/app.js`: the `note`, `rulesBtn` and `setRules` messages; rules

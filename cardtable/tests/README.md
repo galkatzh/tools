@@ -39,8 +39,8 @@ node t-smoke.js         # one suite, output on the terminal
 - Runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
   `/tmp/cardtable-tests.lock`): concurrent runs on a small machine starve each
   other into flaky timeouts, so a second run waits for the first.
-- Each suite's log is kept in `out/`; failing checks are listed with the log's
-  path.
+- Each suite's log is kept in `out/<suite>.log` until the next run; failing
+  checks are listed with the log's path.
 - `parse.js` parse-checks `app.js` and every local module it imports as real
   ES modules (a stray `await` or a duplicate export fails there, not in a
   browser).

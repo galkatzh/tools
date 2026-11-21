@@ -16,7 +16,7 @@
 import { joinRoom, selfId, getRelaySockets } from 'https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm';
 import {
   CARD_W, CARD_H, TABLE_SIZES, IMG_RE, COLOR_RE, RANKS, RULES, playR, clampToFelt,
-  rand, uid, clamp, own, num, cleanDeck, cleanName, standardDeck, cardName, createTable,
+  PID_RE, rand, clamp, own, num, cleanDeck, cleanName, standardDeck, cardName, createTable,
 } from './core.js';
 import { RULES_TEMPLATES, GAMES } from './templates.js';
 
@@ -154,14 +154,13 @@ localStorage.setItem(pidKey, pid);
 // everyone can see). Sent to the authenticated host only — see act().
 const seatKey = localStorage.getItem(`${pidKey}-key`) || rand(16);
 localStorage.setItem(`${pidKey}-key`, seatKey);
-const PID_RE = /^[0-9a-f]{16}$/;
 let myName = AS || localStorage.getItem('ct-name') || `Player-${pid.slice(0, 4)}`;
 
 // --- game state -----------------------------------------------------------
 // T:      the table (host only): core.js's createTable() over the authoritative
 //         state {seq, size, items, players, log, rules, decks, …} — see core.js
 // decks:  {deckId: {name, back: dataURL|null, cards: [{img} | {r,s,c}]}} — the
-//         renderer's deck map; on the host it IS T.state.decks
+//         renderer's deck map; on the host it IS T.state.decks (refreshView)
 // view:   what render() consumes — on guests this arrives from the host; its
 //         items are the PUBLIC shape (publicItems: piles {…, n, top}, no hidden ids).
 let role = null, roomId, password, room = null;
@@ -270,6 +269,7 @@ function refreshView() {
   };
   myHand = host.players[pid]?.hand || [];
   gameLog = host.log;
+  decks = host.decks; // the renderer's deck map is the table's own (core may replace it)
 }
 
 function scheduleBroadcast() {
@@ -1740,7 +1740,7 @@ $('deck-form').addEventListener('submit', async (e) => {
       if (name) deck.name = name;
     }
     if (run !== deckBuild) return; // the player cancelled while it was building
-    act({ t: 'addDeck', deckId: uid(), deck, x: TABLE_W / 2 - CARD_W / 2, y: TABLE_H / 2 - CARD_H / 2 });
+    act({ t: 'addDeck', deck, x: TABLE_W / 2 - CARD_W / 2, y: TABLE_H / 2 - CARD_H / 2 });
     $('deck-dialog').close();
     $('deck-form').reset();
   } catch (err) {
@@ -1771,7 +1771,6 @@ function becomeHost(saved) {
     askGame = true;
     T.open(myName); // the host's seat and a standard deck
   }
-  decks = T.state.decks; // the renderer's deck map is the table's own
   drain();
   refreshView();
   persist();

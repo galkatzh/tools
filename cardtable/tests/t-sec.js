@@ -127,5 +127,9 @@ const statesSeen = (m) => m.evaluate(() => window.M.got.state.map(({ m }) => (ty
   await h.sleep(1200);
   ok((await stacks()) === before, "pressing another player's button changes nothing");
   ok(!(await host.evaluate(() => document.getElementById('log').textContent.includes('folds'))), 'no fold was applied');
+
+  section("the test server serves its checkout only");
+  const sibling = `${env.base}/..%2F${require('path').basename(h.APP_ROOT)}-x%2Fsecret.txt`; // a sibling dir sharing the prefix
+  ok((await fetch(sibling)).status === 403 && (await fetch(`${env.base}/cardtable/core.js`)).status === 200, 'an encoded ../ into a look-alike sibling directory is refused (403)');
   await env.done();
 })().catch(h.crash);

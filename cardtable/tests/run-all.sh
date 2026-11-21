@@ -1,6 +1,7 @@
 #!/bin/bash
 # Runs the ES-module parse check, then every t-*.js suite in parallel (each
-# suite has its own relay and server ports). Logs go to out/.
+# suite has its own relay and server ports). Logs go to out/<suite>.log,
+# overwritten by the next run (the lock keeps runs from sharing them).
 #   $1                   optional suite-name filter: ./run-all.sh holdem
 #   APP_ROOT             repo checkout to serve (default: this one)
 #   JOBS                 suites at once (default: 2 per CPU; each drives a Chromium)
@@ -19,18 +20,17 @@ max=${JOBS:-$(($(nproc) * 2))}
 for t in "${suites[@]}"; do
   while [ "$(jobs -rp | wc -l)" -ge "$max" ]; do wait -n; done
   n=${t%.js}
-  (timeout 600 node "$t" > "out/$n.$$.log" 2>&1; echo $? > "out/$n.$$.rc") &
+  (timeout 600 node "$t" > "out/$n.log" 2>&1; echo $? > "out/$n.rc") &
 done
 wait
 fail=0
 for t in "${suites[@]}"; do
   n=${t%.js}
-  rc=$(cat "out/$n.$$.rc")
+  rc=$(cat "out/$n.rc")
   if [ "$rc" = 0 ]; then echo "PASS  $n"; continue; fi
   fail=1
   echo "FAIL(rc=$rc)  $n"
-  grep -E "✗|PAGEERROR|CRASH" "out/$n.$$.log" | head -15 | sed 's/^/      /'
-  echo "      log: $PWD/out/$n.$$.log"
+  grep -E "✗|PAGEERROR|CRASH" "out/$n.log" | head -15 | sed 's/^/      /'
+  echo "      log: $PWD/out/$n.log"
 done
-rm -f out/*.$$.rc
 exit $fail
