@@ -164,8 +164,26 @@ Two editing tools become essential with many pieces:
   That stays the default for card games.
 - A box may ask for a **rectangular table** of any size up to about
   6000 × 4000 units, with seats spread along its edges.
+- **Seats** are assigned automatically, as today (the middle of the largest
+  free stretch of the rim or the edges), unless the seating matters. Then the
+  box **names** them:
+  ```json
+  "seats": [ { "id": "white", "name": "White", "edge": "bottom", "color": "#f8fafc" },
+             { "id": "black", "name": "Black", "edge": "top",    "color": "#111827" } ]
+  ```
+  - Each seat has an `edge` (`bottom`, `top`, `left` or `right`, spread
+    along it) or an exact `at: [x, y]`.
+  - A joining player takes the first free named seat, and anyone may move
+    to a free one from their seat label's menu.
+  - Players beyond the named seats watch.
+  - Scripts read the seat through `t.players()`: `seatId: 'white'` alongside
+    the angle.
 - Pan, zoom and rotate-to-your-seat already work for any shape.
 - `clampToFelt` becomes a per-shape clamp.
+- **The hand bar hides** when nothing on the table can be held in a hand
+  (no cards and no `hand: true` pieces) and your hand is empty. The board then
+  gets the whole screen on a phone, and the bar comes back the moment a
+  hand-held piece exists.
 
 ### Boards, grids and spaces
 
@@ -347,11 +365,25 @@ move of a 400-unit game stays fast.
 
 ### Running heavy scripts
 
-A runaway script still freezes the host's own tab (ENGINE.md's honest limit).
-Big games make that likelier. The planned answer is to run rules in a **Web
-Worker**: the facade stays the same, ops become messages, and a watchdog
-disables a script that hangs. This is a separate later phase, because it turns
-the facade asynchronous inside the engine.
+Big games make a runaway or slow script likelier, and today it would freeze
+the host's own tab (ENGINE.md's honest limit). So **rules run in a Web Worker**,
+introduced together with `handle`. That way the one change to how scripts run
+happens once, early:
+- The Worker keeps a **mirror** of the host's state. It is the shared DOM-free
+  `core.js` code, kept current with the same patches that sync the guests
+  (§3).
+- A ruled action is processed in the Worker: `handle` or `validate`, then the
+  default effect through the same core ops, then `onAction`. The Worker
+  returns the resulting **patch**, plus its log lines, notices and banners.
+- The host applies the patch and broadcasts it. Hooks become **atomic**: a
+  script that throws halfway leaves no half-applied moves behind.
+- To the script, `t` is still synchronous, because it reads and writes the
+  mirror. Only the engine around it is asynchronous, and actions queue in
+  order.
+- A **watchdog** terminates a Worker that doesn't answer within a few seconds.
+  It then disables the rules loudly; the table itself is untouched.
+- Randomness (shuffles, rolls) happens inside the Worker's ops and travels in
+  the patch, so there is a single source of truth.
 
 ## 6. A complete example: chess as pure script
 
@@ -390,26 +422,36 @@ None of this needs a game-specific engine feature.
 ## 7. Phases
 
 Each phase ships on its own, keeps every existing suite green, and comes with
-public-domain demos that prove the new primitives.
+public-domain demos that prove the new primitives. The build order puts the
+foundations first: scale before pieces, so pieces are built on incremental
+sync and rendering, and the Worker together with `handle`.
 
-1. **Pieces, dice and boards.**
-   - The piece model (`k:'g'`): tokens, tiles and dice with `roll`.
-   - Board images, lock, owner and rotation steps.
-   - Identical stacks ×N, supplies and bags.
-   - Rectangular tables.
-   - Free-table interactions and the hidden-face reduction in `publicItems()`.
-   - *Demos:* draughts and backgammon, played by hand.
-2. **Scale.**
+0. **Core and harness.**
+   - The DOM-free state core (`core.js`: the state model, ops, the public
+     view, the validation gates) is extracted from `app.js`, so the page, the
+     rules Worker and Node tests all run the same code.
+   - The templates move to `templates.js`.
+   - The end-to-end harness moves into the repo (`cardtable/tests/`).
+   - No change in behaviour.
+1. **Scale.**
    - Delta sync, incremental public view and rendering.
    - IndexedDB storage and content-hash asset caching.
    - Indexed script reads.
    - *Proof:* a synthetic 1,000-piece benchmark suite (wire bytes per move,
      frame time while panning on an emulated phone, host apply time).
-3. **Space and full-rules scripting.**
+2. **Pieces, dice and boards.**
+   - The piece model (`k:'g'`): tokens, tiles and dice with `roll`.
+   - Board images, lock, owner and rotation steps.
+   - Identical stacks ×N, supplies and bags.
+   - Rectangular tables, named seats, and the hand bar hiding.
+   - Free-table interactions and the hidden-face reduction in the public view.
+   - *Demos:* draughts and backgammon, played by hand.
+3. **Space and full-rules scripting, in a Worker.**
    - Grids, spaces, zones, links and snapping, with addresses in the log.
+   - Rules in a Worker with a watchdog, and atomic hooks.
    - `handle`, `strict`, `t.ask` / `onAnswer`, `onSelect` / `t.hint`,
      `t.secret`.
-   - The spatial helpers.
+   - Components from code and the spatial helpers.
    - *Demos:* chess with full rules (§6), go 9×9 and 19×19 (up to 361 stones:
      a real scale test), reversi.
 4. **Game boxes.**
@@ -423,8 +465,6 @@ public-domain demos that prove the new primitives.
    - `vis` (owner-visible pieces, dice under a cup), private areas beyond the
      hand (a tile rack, a screen), and peeking at any hidden piece.
    - *Demos:* dominoes and a hidden-units game.
-6. **Rules in a Worker** (optional, if real scripts need it): the watchdog
-   and an asynchronous facade.
 
 The terminal bridge follows each phase:
 - pieces and boxes appear in its snapshot;
@@ -433,8 +473,9 @@ The terminal bridge follows each phase:
 
 ## 8. Verification plan
 
-The existing Playwright harness (a local Nostr relay and server for each suite)
-extends with:
+The Playwright harness (a local Nostr relay and server for each suite) lives
+in `cardtable/tests/`, with a README on running it. Logic suites import
+`core.js` directly in Node. The harness extends with:
 
 1. **Pieces:** every kind on desktop and iPhone 13 (stack, split, flip,
    rotate step, roll, lock, owner refusal, supply and bag draws), checked
@@ -472,12 +513,11 @@ extends with:
 - **No server.** The host's browser still holds the game. A big box lives in the
   host's IndexedDB and on each peer that has fetched it.
 
-## Open questions
+## Decisions
 
-- **Rectangular tables:** should seats be placed automatically along the edges
-  (as on the round table), or should the box name the seats? Proposal:
-  automatic, with an optional `seats` list in `game.json`.
-- **Hands for board games:** should the hand bar hide when a box declares no
-  hand-held pieces, giving the board the whole screen on a phone?
-- **Worker timing:** move scripts to a Worker in phase 3, alongside `handle`
-  (one API break, early), or only if measurements demand it (phase 6)?
+- **Seats:** automatic by default, or named by the box when the seating matters
+  (§2).
+- **Hand bar:** hidden when nothing can be held in a hand and yours is empty
+  (§2).
+- **Worker:** rules move into a Web Worker together with `handle` (phase 3),
+  so the one change to how scripts run happens once, early (§5).
