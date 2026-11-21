@@ -1,0 +1,11 @@
+{
+  "name": "cardtable-tests",
+  "private": true,
+  "description": "End-to-end and logic suites for the card table (see README.md)",
+  "scripts": {
+    "test": "./run-all.sh"
+  },
+  "devDependencies": {
+    "ws": "^8.18.0"
+  }
+}
