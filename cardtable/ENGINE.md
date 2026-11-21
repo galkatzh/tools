@@ -8,8 +8,9 @@ approach (companion to [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB-DESIGN.md
 which documents the networking design space this app builds on).
 
 **Why this is cheap here:** the host is already the single authority, and
-every player action already flows through one function — `apply(p, a)` in
-`app.js`. A rules engine is a plugin at exactly that choke point.
+every player action already flows through one function — `apply(p, a)`
+(in `app.js` when this was written, now in the state core `core.js`). A
+rules engine is a plugin at exactly that choke point.
 **Why this is safe:** scripts run on the host only. Guests receive data
 (state, decks, log) and never code, so there is no remote-code-execution
 surface for guests; the host executing code they themselves typed is the
@@ -98,7 +99,7 @@ if it ever matters.
 
 ## 2. The `t` facade (script API)
 
-A thin wrapper over existing internals in `app.js`:
+A thin wrapper over the table's existing ops (today in `core.js`):
 
 - **Reads**: `t.players()` (id/name/seat/online/handCount, seat-ordered;
   `host: true` marks the host's own seat, for host-only commands),
@@ -293,16 +294,28 @@ the default.
 
 ## Implementation map
 
-- `cardtable/app.js` (~+300 lines): refactor `apply()` switch bodies into
-  named op helpers; a rules module (eval, hook runner with try/catch +
-  auto-disable, `t` facade, RULES actor id); the validate-veto in
-  `apply()`; new `note`, `rulesBtn`, `setRules` actions; rules carried in
-  broadcast/`handleState`/`persist`; turn indicator in `renderPlayers`;
+- `cardtable/core.js`, the DOM-free state core (the page, Node tests and,
+  later, a rules Worker run the same code): `createTable(state, env)` holds
+  the state and every op — `apply()` with its switch bodies as named op
+  helpers, the validate-veto, `join` / `leave`, `runTimers` (`t.schedule`),
+  the public view — plus the rules module: the hook runner (try/catch +
+  auto-disable), the `t` facade (`T.api`), the RULES actor id. Scripts are
+  evaluated by an injectable runner (`env.hooks`, by default
+  `scriptHooks()`), so the rules can move out of the page. What used to
+  touch the screen or the network (log lines, action markers, banners,
+  private notes and peeks, new decks, the host's toasts) is queued as
+  effects that `app.js` drains (`T.drain()`).
+- `cardtable/templates.js`: the example scripts (`RULES_TEMPLATES`) and
+  the 🎲 picker's catalog (`GAMES`).
+- `cardtable/app.js`: the `note`, `rulesBtn` and `setRules` messages; rules
+  carried in broadcast/`handleState`/`persist`; the timer tick; the rules
+  dialog and game picker; turn indicator in `renderPlayers`;
   scripted-buttons row.
 - `cardtable/index.html` / `style.css`: Rules button + dialog (editor,
   examples select, enable/disable, error line), buttons row, seat glow.
 - `cardtable/README.md`: "Scriptable rules" section including trust notes.
-- Example scripts embedded as string constants in `app.js`.
+- `cardtable/tests/`: Playwright suites, and Node suites that run the
+  templates on a real `core.js` table (see its README).
 
 ## Verification plan
 

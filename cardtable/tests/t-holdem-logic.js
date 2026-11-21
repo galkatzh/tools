@@ -1,101 +1,25 @@
-// Hold'em template logic, driven through a Node port of the rules facade
-// (no browser for the game itself — deterministic decks, every edge case).
-// The template is read from APP_ROOT's app.js. The mock mirrors the engine:
-// rulesBtn only runs buttons offered to that player, validate() vetoes.
-// (final overlay: the mock gains t.schedule (+ m.expire / m.join) and
-// takeHand's card filter; a dropped player is folded after a grace (PT-5),
-// Abandon is its own two-press button (PT-11), busted players get a Rebuy
-// button (PT-10), refusals are told (PT-8), New hand gathers only its own
-// deck, face down (PT-2, PT-3), the deck/muck/burns can't be peeked (SEC-F4).)
+// Hold'em template logic on a real Node table (final-lib table(): core.js and
+// its `t` facade, no browser) with rigged decks, for every edge case. As the
+// engine does, rulesBtn only runs buttons offered to that player and
+// validate() vetoes.
+// (final overlay: t.schedule (+ m.expire / m.join) and takeHand's card
+// filter; a dropped player is folded after a grace (PT-5), Abandon is its own
+// two-press button (PT-11), busted players get a Rebuy button (PT-10),
+// refusals are told (PT-8), New hand gathers only its own deck, face down
+// (PT-2, PT-3), the deck/muck/burns can't be peeked (SEC-F4).)
 const h = require('./h');
 const { ok, section } = h;
-const fs = require('fs');
+const lib = require('./final-lib');
 
-const src = fs.readFileSync(h.APP_ROOT + '/cardtable/app.js', 'utf8');
-const s0 = src.indexOf('const RULES_TEMPLATES = {'), s1 = src.indexOf('\n};\n', s0);
-const TPL = eval('(' + src.slice(s0 + 'const RULES_TEMPLATES = '.length, s1 + 2) + ')').holdem;
-
-const SUITS = ['♠', '♥', '♦', '♣'], RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-const STD = SUITS.flatMap((s) => RANKS.map((r) => ({ r, s })));
 const JOKER = 52; // index of a '+ Deck' joker in the 'std' deck (only scenarios that add it)
-const idx = (name) => STD.findIndex((c) => c.r + c.s === name);
 
-/** A table: players named in seat order (the first is the host). */
-function table(names, o = {}) {
-  const W = o.size || 1300, R = W / 2 - 110, CW = 100, CH = 140;
-  let n = 0; const uid = () => 'id' + (++n);
-  const log = [], tells = [], refused = [], timers = [];
-  const host = { players: {}, items: {}, rules: { data: {}, public: {} } };
-  names.forEach((nm, k) => { host.players[nm] = { name: nm, online: true, hand: [], seat: k * (360 / 8) }; });
-  host.items.deck = { k: 'p', x: W / 2 - CW / 2, y: W / 2 - CH / 2, cards: STD.map((_, i) => ({ d: 'std', i, up: false })) };
-  let rig = null; // cards to deal next, in deal order (replaces the shuffle)
-  const clamp = (x, y) => { const cx = x + CW / 2 - W / 2, cy = y + CH / 2 - W / 2, d = Math.hypot(cx, cy); if (d <= R) return { x, y }; const f = R / d; return { x: W / 2 + cx * f - CW / 2, y: W / 2 + cy * f - CH / 2 }; };
-  const dealTop = (pileId, o2 = {}) => {
-    const pile = host.items[pileId], c = pile?.k === 'p' && pile.cards.pop();
-    if (!c) return false;
-    let nid = null;
-    if (o2.to) host.players[o2.to].hand.push({ d: c.d, i: c.i });
-    else { const at = clamp(o2.x ?? pile.x + 118, o2.y ?? pile.y); nid = uid(); host.items[nid] = { k: 'c', x: at.x, y: at.y, rot: o2.rot || 0, d: c.d, i: c.i, up: !!o2.up }; }
-    if (!pile.cards.length) delete host.items[pileId];
-    return o2.to ? { d: c.d, i: c.i } : { id: nid, d: c.d, i: c.i };
-  };
-  const t = {
-    get data() { return host.rules.data; }, get public() { return host.rules.public; }, set public(v) { host.rules.public = v || {}; },
-    hostId: names[0],
-    players: () => Object.entries(host.players).filter(([, p]) => p.seat != null).map(([id, p]) => ({ id, name: p.name, seat: p.seat, online: p.online, handCount: p.hand.length })).sort((a, b) => a.seat - b.seat),
-    hand: (p) => (host.players[p]?.hand || []).map((c) => ({ ...c })),
-    items: () => Object.entries(host.items).map(([id, it]) => structuredClone({ id, ...it })),
-    piles() { return this.items().filter((x) => x.k === 'p'); },
-    deal: (p, o2) => dealTop(p, o2),
-    takeHand(p, pileId, only = () => true) { const pl = host.players[p], pile = host.items[pileId]; if (!pl || pile?.k !== 'p') return false; const out = pl.hand.filter((c) => only({ ...c })); pl.hand = pl.hand.filter((c) => !out.includes(c)); for (const c of out) pile.cards.push({ d: c.d, i: c.i, up: false }); return true; },
-    schedule: (sec, tag) => timers.push(String(tag)),
-    playFromHand(p, i, o2 = {}) { const c = host.players[p]?.hand.splice(i, 1)[0]; if (!c) return false; const at = clamp(o2.x, o2.y); const nid = uid(); host.items[nid] = { k: 'c', x: at.x, y: at.y, rot: o2.rot || 0, d: c.d, i: c.i, up: o2.up !== false }; return nid; },
-    shuffle(id) {
-      const p = host.items[id];
-      for (let i = p.cards.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [p.cards[i], p.cards[j]] = [p.cards[j], p.cards[i]]; }
-      if (rig) { // put the rigged cards on top, first-dealt last
-        const want = rig.map(idx);
-        p.cards = p.cards.filter((c) => !want.includes(c.i)).concat(want.reverse().map((i) => ({ d: 'std', i, up: false })));
-        rig = null;
-      }
-    },
-    flip: (id) => { const it = host.items[id]; if (it) it.up = !it.up; },
-    toPile: (cid, pid) => { const it = host.items[cid], p = host.items[pid]; if (it?.k !== 'c' || p?.k !== 'p') return false; p.cards.push({ d: it.d, i: it.i, up: it.up }); delete host.items[cid]; return true; },
-    newPile: (cards, o2 = {}) => { const at = clamp(o2.x ?? 600, o2.y ?? 580); const id = uid(); host.items[id] = { k: 'p', x: at.x, y: at.y, name: o2.name || '', cards: cards.map((c) => ({ d: c.d, i: c.i, up: !!c.up })) }; return id; },
-    merge: (f, to) => { const a = host.items[f], b = host.items[to]; if (a?.k !== 'p' || b?.k !== 'p' || a === b) return false; b.cards.push(...a.cards); delete host.items[f]; return true; },
-    move: (id, x, y) => { const it = host.items[id]; if (!it) return false; Object.assign(it, clamp(x, y)); return true; },
-    remove: (id) => { if (!host.items[id]) return false; delete host.items[id]; return true; },
-    geom: () => ({ size: W, cx: W / 2, cy: W / 2, r: R }),
-    say: (m) => log.push(m), announce: (m) => log.push('📣 ' + m),
-    win(w, m) { host.rules.public.winners = [].concat(w); this.announce(m); },
-    tell: (p, m) => tells.push(p + ': ' + m),
-    nextSeat(p) { const ps = this.players().filter((x) => x.online || x.id === p); const i = ps.findIndex((x) => x.id === p); return ps.length ? ps[(i + 1) % ps.length].id : p; },
-    cardName: (r) => (r.d === 'std' ? (r.i === JOKER ? 'Joker 🃏' : STD[r.i].r + STD[r.i].s) : '“white card ' + r.i + '”'),
-    card: (r) => (r.d === 'std' ? { name: t.cardName(r), rank: r.i === JOKER ? 'JOKER' : STD[r.i].r, suit: STD[r.i]?.s } : { name: t.cardName(r), text: 'white card ' + r.i }),
-  };
-  const script = new Function(`"use strict"; return (\n${TPL}\n);`)();
-  const d = () => host.rules.data;
-  const m = {
-    t, host, script, log, tells, refused, d,
-    buttons: () => script.buttons(t),
-    /** rulesBtn as the engine runs it: only a button offered to p. */
-    btn(p, id) {
-      const b = script.buttons(t).find((x) => x.id === id);
-      if (b && (!b.pid || b.pid === p)) script.onButton(t, id, p); else refused.push(p + ':' + id);
-    },
-    mine: (p) => script.buttons(t).filter((b) => !b.pid || b.pid === p),
-    chat: (p, msg) => script.onChat(t, msg, p),
-    /** The actor presses its first offered action (Check, else Call). */
-    passive() { const b = m.mine(d().turn).find((x) => x.id === 'check' || x.id === 'call'); m.btn(d().turn, b.id); },
-    leave(p) { host.players[p].online = false; script.onLeave?.(t, p); },
-    join(p) { host.players[p].online = true; script.onJoin?.(t, p); },
-    /** Fires every scheduled timer now (the grace periods run out). */
-    expire() { for (const tag of timers.splice(0)) script.onTimer?.(t, tag); },
-    rig: (cards) => { rig = cards; },
-    chips: () => Object.values(d().stacks).reduce((a, b) => a + b, 0) + (d().stage === 'hand' ? d().pot : 0),
-    lastTell: (p) => tells.filter((x) => x.startsWith(p + ':')).pop() || '',
-  };
-  script.setup(t);
+/** Hold'em for players named in seat order (the first is the host), 45° apart. */
+function table(names) {
+  const m = lib.table('holdem', names, { seats: names.map((_, k) => k * 45) });
+  const d = m.d;
+  /** The actor presses its first offered action (Check, else Call). */
+  m.passive = () => { const b = m.mine(d().turn).find((x) => x.id === 'check' || x.id === 'call'); m.btn(d().turn, b.id); };
+  m.chips = () => Object.values(d().stacks).reduce((a, b) => a + b, 0) + (d().stage === 'hand' ? d().pot : 0);
   return m;
 }
 const conserved = (m, total, what) => ok(m.chips() === total, `${what}: chips conserved (${m.chips()} = ${total})`);
@@ -104,9 +28,7 @@ function guard(fn) { try { fn(); } catch (e) { ok(false, 'scenario crashed: ' + 
 /** Plays passively (check/call) until the hand is over. */
 function finish(m) { for (let k = 0; k < 60 && m.d().stage === 'hand' && m.d().turn; k++) m.passive(); }
 
-(async () => {
-  const env = await h.start();
-
+(() => {
   section("recheck: a deck with jokers (bottom card a Joker) is still the game's deck");
   guard(() => {
     const m = table(['A', 'B']);
@@ -371,5 +293,5 @@ function finish(m) { for (let k = 0; k < 60 && m.d().stage === 'hand' && m.d().t
     ok(m.d().stage === 'done', 'All-in + call runs it out');
     conserved(m, 1080, 'quick bets');
   });
-  await env.done();
-})().catch(h.crash);
+  h.report();
+})();

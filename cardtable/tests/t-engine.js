@@ -205,9 +205,9 @@ const eveHand = (E) => E.evaluate((pid) => (window.E.states.filter((s) => s.to =
   section('ENG-9: t.schedule rejects a non-numeric delay loudly');
   await run("t.schedule('soon', 'nan');");
   await toastHas(host, 't.schedule: seconds must be a number').then(() => ok(true, 'a NaN delay is a script error, not a silently dropped timer'), () => ok(false, 'a NaN delay is a script error, not a silently dropped timer'));
-  const src = fs.readFileSync(path.join(h.APP_ROOT, 'cardtable/app.js'), 'utf8');
-  const loop = src.slice(src.indexOf('// Fire due script timers'), src.indexOf('// --- host <-> guest sync'));
-  ok(count(loop, 'Date.now()') === 1, 'the timer loop reads the clock once (no timer falls between the due/remaining filters)');
+  const src = fs.readFileSync(path.join(h.APP_ROOT, 'cardtable/core.js'), 'utf8');
+  const at = src.indexOf('function runTimers('), loop = src.slice(at, src.indexOf('\n  }\n', at));
+  ok(at > 0 && count(loop, 'now()') === 1, 'the timer loop reads the clock once (no timer falls between the due/remaining filters)');
 
   section('ENG-12: a buttons() error disables the rules on the record');
   await enable(host, "({ name: 'BadButtons', buttons() { throw new Error('kaboom'); } })");

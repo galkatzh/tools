@@ -11,13 +11,14 @@ with no browser.
 ```sh
 cd cardtable/tests
 npm install                       # ws, for the local relay
-npm install -g playwright         # or: npm install playwright (here)
+npm install --no-save playwright  # unless /opt/node22/lib/node_modules has it
 npx playwright install chromium   # once per machine
 ```
 
-`h.js` uses a local `playwright` if there is one, else a global install
-(`/opt/node22/lib/node_modules`). Node 22 or newer is required (the logic
-suites `require()` the app's ES modules).
+`h.js` uses a `playwright` installed here, else the one in
+`/opt/node22/lib/node_modules` (preinstalled on the development machines).
+Node 22.12 or newer is required: the logic suites `require()` the app's ES
+modules.
 
 CDN libraries (Trystero, QR codes) are fetched with `curl` on first use into
 `.cdn-cache/` (gitignored), then served locally, so a run never depends on the
@@ -33,7 +34,9 @@ node t-smoke.js         # one suite, output on the terminal
 
 - The suites test the checkout they live in: `h.js` serves the repo two
   levels up. Set `APP_ROOT=/path/to/repo` to test another checkout.
-- Full runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
+- At most two suites per CPU run at once (`JOBS=n` to change it): every
+  end-to-end suite drives its own Chromium.
+- Runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
   `/tmp/cardtable-tests.lock`): concurrent runs on a small machine starve each
   other into flaky timeouts, so a second run waits for the first.
 - Each suite's log is kept in `out/`; failing checks are listed with the log's
@@ -69,4 +72,5 @@ const { ok, section } = h;
   `require(path.join(h.APP_ROOT, 'cardtable/core.js'))`, make checks with `ok`,
   and finish with `h.report()` (see `t-core-node.js`).
 - Shared helpers: `fun-lib.js` (seated players, screenshots into `shots/`),
-  `final-lib.js` (a raw attacker peer, rules templates on a Node table).
+  `final-lib.js` (a raw attacker peer, and `table(template, players)`: a
+  rules template running on a real `core.js` table in Node).

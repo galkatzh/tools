@@ -63,6 +63,13 @@ cues still show.
 
 Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB-DESIGN.md):
 
+- **Code**: no build step — the page loads plain ES modules. `core.js` is
+  the table's state and every operation on it (dealing, shuffling, the
+  public view, the deck sanitizer, the rules engine and its `t` facade) with
+  no DOM or network, so the page and the Node tests run the same code;
+  `app.js` is the network, persistence, rendering and input around it, and
+  `templates.js` holds the shipped rules scripts.
+
 - **Transport**: Trystero WebRTC, signaling over public Nostr relays — no
   server, no accounts. The room id + password live in the invite link's hash
   and never reach any server. `window.CARDTABLE_RELAYS` overrides the relay
@@ -300,7 +307,10 @@ refuse the `https → http://127.0.0.1` fetch.
 
 ## Testing
 
-E2E-tested with Playwright: two isolated browser contexts (host + guest)
-connected through a minimal local Nostr relay, exercising join, draw, deal,
-flip, drag-move, play from hand, stacking, merging, shuffling, custom image
-decks, face-down play, and host reload/resume.
+The suites live in [`tests/`](tests/README.md) (how to install, run and add
+one is there); `tests/run-all.sh` runs them all. Playwright suites drive
+isolated browser contexts (host, guests, a raw attacker peer) through a
+minimal local Nostr relay, exercising join, draw, deal, flip, drag-move,
+play from hand, stacking, merging, shuffling, custom image decks, face-down
+play, host reload/resume, the rules engine and the terminal bridge. Node
+suites run the state core and the rules templates without a browser.

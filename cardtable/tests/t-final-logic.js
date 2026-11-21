@@ -1,4 +1,4 @@
-// Final review, template logic through the Node facade port (final-lib table()):
+// Final review, template logic on a real Node table (final-lib table(): core.js and its facade, no browser):
 // Bridge publishes the declarer as the actor on the dummy's turn (INT-2/PT-4),
 // keeps another deck's cards out of its deal (QUAL-1) and tells refusals
 // (PT-8); Hold'em gathers only its own deck, face down (PT-2, PT-3), gives a
@@ -12,9 +12,7 @@ const { table } = require('./final-lib');
 function guard(fn) { try { fn(); } catch (e) { ok(false, 'scenario crashed: ' + e.stack); } }
 const allStd = (m, p) => m.host.players[p].hand.every((c) => c.d === 'std');
 
-(async () => {
-  const env = await h.start();
-
+(() => {
   section('Bridge: Deal sets another deck\'s cards aside (QUAL-1), refusals are told (PT-8)');
   guard(() => {
     const m = table('bridge', ['A', 'B', 'C', 'D']);
@@ -139,5 +137,5 @@ const allStd = (m, p) => m.host.players[p].hand.every((c) => c.d === 'std');
     ok(!v(m.script.deck(m.t).id), 'between hands it is allowed');
   });
 
-  await env.done();
-})().catch(h.crash);
+  h.report();
+})();
