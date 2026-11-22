@@ -225,14 +225,18 @@ const SPY = {
   ],
 };
 /** A second box whose catalog record t-p2-hidden deletes (case 13): one
- *  hidden piece, one shown; the same seats as SPY. */
+ *  hidden piece, one shown, and three hidden tiles (a face-down pile and a
+ *  hand piece to deal and play once the box is gone); the same seats as SPY. */
 const GHOST = {
   name: 'Ghost box',
   imgs: [],
   seats: SPY.seats,
-  backs: { gb: { face: { color: '#101010' } } },
-  types: { qzGhost: { kind: 'token', name: 'Spectre', faces: ['QZH1'], back: 'gb' }, lamp: { kind: 'token', name: 'Lamp', faces: ['L'] } },
-  setup: [{ piece: 'qzGhost', up: false, at: [2500, 1500] }, { piece: 'lamp', at: [2600, 1500] }],
+  backs: { gb: { face: { color: '#101010' } }, gt: { face: { color: '#202020' } } },
+  types: {
+    qzGhost: { kind: 'token', name: 'Spectre', faces: ['QZH1'], back: 'gb' }, lamp: { kind: 'token', name: 'Lamp', faces: ['L'] },
+    qzShade: { kind: 'tile', name: 'Shade', faces: ['QZS1'], back: 'gt' },
+  },
+  setup: [{ piece: 'qzGhost', up: false, at: [2500, 1500] }, { piece: 'lamp', at: [2600, 1500] }, { piece: 'qzShade', up: false, count: 3, spread: [0, 120], at: [2400, 1500] }],
 };
 
 /** The CLI suite's box (t-p2-cli): spec §2i's own `table` examples, plus a

@@ -122,8 +122,9 @@ A thin wrapper over the table's existing ops (today in `core.js`):
     `'box/type'` ref, or a bare type id matched in any box; `owner`: a
     player id (it also matches items owned by that player's named seat,
     `'seat:<id>'`) or a `'seat:<id>'`. Any other key, or another kind,
-    throws a `TypeError` naming the known ones. It reads indexes by kind,
-    type and owner.
+    throws a `TypeError` naming the known ones. It starts from an index:
+    the items of a `'box/type'` ref, else those of the owner, else those of
+    the kinds asked for.
   - `t.type(ref)` → a piece type, copied: `{kind, name, w, h, shape, faces,
     back?, rotStep, hand, stack, meta, box}` (`box`: its box's name), or
     `null`. `ref` is a `'box/type'` string or an item's `{t}`. A type's
@@ -154,9 +155,11 @@ A thin wrapper over the table's existing ops (today in `core.js`):
   `t.playFromHand(pid, idx, {x, y, rot, up})` (lands **face up** unless
   `up: false`, unlike a human play; returns the new card id, `false` for
   an index that isn't a card in the hand), `t.takeHand(pid, pileId, only)`
-  (a hand onto a pile, face down — all of it, or the cards the optional
-  `only({d, i})` picks, e.g. `(c) => c.d === myDeck` to leave another
-  game's cards), `t.toHand(pid, cardId)`,
+  (a hand onto a pile, face down — all of it, or the entries the optional
+  `only({d, i} | {t, f, up?})` picks, e.g. `(c) => c.d === myDeck` to
+  leave another game's cards; an entry that doesn't go onto that pile —
+  a piece onto a card deck, a card onto a pile of pieces, another size —
+  stays in the hand, with a `console.warn`), `t.toHand(pid, cardId)`,
   `t.shuffle`, `t.flip`, `t.move`, `t.rot`, `t.toPile`,
   `t.stack(cardId, ontoCardId)` (→ the new pile id), `t.merge`,
   `t.newPile(cards, {x,y,name})` (→ the new pile id), `t.remove`,
@@ -185,7 +188,11 @@ A thin wrapper over the table's existing ops (today in `core.js`):
     logs "📜 Rules rolled 5", or "rolled a hidden die" for one face down.
     `t.random()` → a float in `[0, 1)` from the same RNG; an action's draws
     are logged once ("used randomness (3 draws)"). Every op that adds items
-    stops at the table's 5,000 (it returns `false` with a `console.warn`).
+    stops at the table's 5,000 (it returns `false` with a `console.warn`;
+    `t.addStandardDeck` then mints no deck either), every op that adds to
+    a hand at 1,000 entries, every op that adds to a pile at 5,000 members
+    (a supply never runs out: without these, pieces taken from one would
+    grow a hand or a pile without end).
 
   Anything a human can do, a script can
   do — that is the operational definition of "can run arbitrary games".

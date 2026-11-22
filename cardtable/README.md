@@ -311,7 +311,7 @@ Game pieces have their own commands (both REPLs; `help` lists them):
 
 | Command | Does |
 |---|---|
-| `roll <id…>` / `roll all` | rolls dice together (`all`: every die you may handle) |
+| `roll <id…>` / `roll all` | rolls dice together (`all`: every die you may handle — at most 20 in one roll; with more, it says so and rolls none: name them) |
 | `face <id> <f>` | turns a piece to face `f` (0, 1, …) — not a die: dice are rolled |
 | `take <supply> [x y] [--hand]` | takes a piece from a supply (an id or its type's name) |
 | `pull <bag> [x y] [--hand]` | draws a random piece from a bag (an id or its name) |
@@ -326,8 +326,9 @@ the owner and 🔒 after it when present: `[ab12cd34] ♛ Light man (token)
 ×3 @412,620 owner:Alice 🔒`, `[cd34ef56] hidden piece ×2 @80,90`,
 `[ef56ab12] supply Gold (token) ∞ @200,200`, `[0a1b2c3d] bag "Tiles" ×42
 @300,300`, `[1a2b3c4d] pile "stack" ×5 top: hidden piece @500,500`,
-`[2b3c4d5e] board Chessboard (board) @0,0 🔒`. `players` shows a named
-seat as `[light]`, and a watcher as `(watching)`.
+`[2b3c4d5e] board Chessboard (board) @0,0 🔒` (a piece or a supply whose
+game box this tab lacks: `? unknown piece`). `players` shows a named seat
+as `[light]`, and a watcher as `(watching)`.
 
 Scripting: `require('./cli.js')` / `from cli import Bridge` exposes the
 bridge as a small API — the same in both languages: `state`, `send`,

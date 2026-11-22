@@ -26,11 +26,20 @@
 //  (6) MIGRATE[2] and the board z band.
 //  (7) randInt: χ² on 60,000 draws of randInt(6), and no modulo bias.
 //  (8) The built-in boxes as §2g describes them.
+//  (R) Regressions for the review of Phase 2A: a board never shares a back,
+//      a bag's box (who may lock it) is fixed when it is made, a hidden piece
+//      whose box is missing never turns face up, hands and piles are capped,
+//      t.takeHand keeps piles all-card or all-piece, the bridge script
+//      survives a player standing up, a seat that is gone frees what it
+//      owned, deals and setups snap their rotation, a malformed lock is
+//      refused, t.addStandardDeck at the cap mints nothing, flagsOf on public
+//      piles and bags, t.find through the indexes, a shuffled group's hidden
+//      pieces agree on what shows, a resume says when pieces lost their box.
 // Every random sequence is seeded and every failure names its seed.
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
-import { APP_ROOT, core, ok, section, report, crash, guard, rng, json, canon as sortedJSON, keyOf, HOST, BOB, CAROL, DAVE } from './node-lib.mjs';
+import { APP_ROOT, core, ok, section, report, crash, guard, rng, json, canon as sortedJSON, keyOf, HOST, BOB, CAROL, DAVE, RULES_TEMPLATES } from './node-lib.mjs';
 
 const grid = await import(pathToFileURL(path.join(APP_ROOT, 'cardtable/grid.js')));
 const { BOXES } = await import(pathToFileURL(path.join(APP_ROOT, 'cardtable/templates.js')));
@@ -1043,6 +1052,7 @@ function testNewActions() {
       ps: S('peg', { x: 600 }), pb: BAG([{ t: 'peg' }], { x: 500 }) };
     for (const k of ['peg', 'alp', 'bp', 'ps', 'pb']) its[k].t &&= ref('peg', LBX);
     its.pb.of = [{ t: ref('peg', LBX), f: 0 }];
+    its.pb.box = LBX; // a bag's box is fixed when it is made (its setup's), never read from what it holds (review fix: an oracle on hidden contents)
     const T = mk(its), r = run(T, HOST, { t: 'lock', id: 'a', on: true });
     ok(happened(r) && items(T).a.lock === true && r.log[0] === 'locked A', `the host locks: lock: true, "locked {label}": ${JSON.stringify(r.log)}`);
     const u = run(T, HOST, { t: 'lock', id: 'a', on: false });
@@ -2189,6 +2199,208 @@ function testBuiltins() {
   }
 }
 
+// =============================================================================
+// (R) Regressions for the review of Phase 2A
+// =============================================================================
+function testReviewFixes() {
+  section('(R) a board and another piece never share a back: hidden, a board would show by its z band and its lock');
+  {
+    const fog = { backs: { fog: { face: {} } } };
+    const land = { kind: 'board', name: 'Land', w: 100, back: 'fog' }, camp = { kind: 'token', name: 'Camp', w: 100, shape: 'rect', rotStep: 90, stack: 'none', faces: ['C'], back: 'fog' };
+    const e = boxError(boxOf({ land, camp }, fog));
+    ok(e && e.message.startsWith('types.camp: back "fog" also hides types.land'), `cleanBox refuses a board and a token on one back, naming the field (${e?.message})`);
+    ok(!boxError(boxOf({ land, camp: { ...camp, back: 'fog2' } }, { backs: { fog: { face: {} }, fog2: { face: {} } } })), 'with a back each, the box is fine');
+    ok(!boxError(boxOf({ land, sea: { ...land, name: 'Sea' } }, fog)), 'two boards may share one');
+  }
+
+  section('(R) who may lock a bag is fixed with the bag (its box), never read from what it holds');
+  {
+    const T = mk({ o: P('open', { x: 300, y: 300 }) });
+    const POOL = { name: 'Pool box', imgs: [], lockable: 'anyone', types: { t: { kind: 'tile', name: 'Pooled', faces: ['T'] } }, setup: [{ bag: [{ t: 't', n: 2 }], name: 'Pool', at: [700, 700] }] };
+    ok(happened(run(T, HOST, { t: 'loadBox', box: POOL, setup: true })), 'the host sets up a box whose pieces anyone may lock: a bag of its tiles');
+    const bag = Object.keys(items(T)).find((id) => items(T)[id].k === 'b'), poolBox = items(T)[bag]?.box;
+    ok(poolBox && T.boxes[poolBox]?.name === 'Pool box', `the bag carries its box (${poolBox})`);
+    ok(!('box' in T.pub.get(bag)) && isDeepStrictEqual(T.pub.get(bag), specPub(items(T)[bag], T.boxes)), `the public bag doesn't (§2d): ${JSON.stringify(T.pub.get(bag))}`);
+    const answers = [], probe = () => answers.push(happened(run(T, CAROL, { t: 'lock', id: bag, on: true })) && happened(run(T, CAROL, { t: 'lock', id: bag, on: false })));
+    probe();
+    ok(happened(run(T, BOB, { t: 'toBag', id: 'o', bag })), 'Bob puts a tile of another box in');
+    probe();
+    for (let k = 0; k < 3; k++) { run(T, BOB, { t: 'pull', id: bag, hand: true }); probe(); }
+    ok(items(T)[bag].of.length === 0 && answers.length === 5 && answers.every(Boolean), `Carol may lock and unlock it whatever it holds, down to empty — no oracle on its contents (${answers})`);
+    const sack = BAG([], { box: BX });
+    sack.of = [{ t: ref('peg', LBX), f: 0 }];
+    const U = mk({ sack }), r = run(U, CAROL, { t: 'lock', id: 'sack', on: true });
+    ok(refusedBy(r, '🚫 Only the host can lock or unlock that'), `a bag made by a box nobody may lock stays the host's, whatever it holds — ${why(r)}`);
+  }
+
+  section('(R) a hidden piece whose box is missing never turns face up for want of it: deal, play, takeHand');
+  {
+    const gone = { t: 'deadbeef/spy', f: 1, up: false };
+    const T = mk({ gp: PILE([gone, gone, gone].map((m) => ({ ...m })), { x: 500, y: 500 }) }, { hands: { [BOB]: [{ ...gone }], [CAROL]: [{ ...gone }] } });
+    ok(isDeepStrictEqual(T.pub.get('gp').top, { b: null, up: false }), `a face-down pile of them shows {b: null, up: false} (${JSON.stringify(T.pub.get('gp').top)})`);
+    const hidden = (id) => items(T)[id]?.up === false && isDeepStrictEqual(Object.keys(T.pub.get(id)).sort(), ['b', 'k', 'rot', 'x', 'y', 'z']) && T.pub.get(id).b === null;
+    let before = Object.keys(items(T));
+    const d = run(T, BOB, { t: 'deal', id: 'gp', up: false, x: 300, y: 300 }), [dealt] = newIds(T, before);
+    ok(happened(d) && hidden(dealt), `a face-down deal from it stays hidden: ${JSON.stringify(T.pub.get(dealt))}`);
+    before = Object.keys(items(T));
+    const p = run(T, BOB, { t: 'play', idx: 0, type: gone.t, f: gone.f, up: false, x: 400, y: 400 }), [played] = newIds(T, before);
+    ok(happened(p) && hidden(played), `a face-down play from the hand stays hidden: ${JSON.stringify(T.pub.get(played))}`);
+    const n0 = items(T).gp.cards.length, th = run(T, 'RULES', (t) => t.takeHand(CAROL, 'gp'));
+    ok(isDeepStrictEqual(T.state.players[CAROL].hand, [gone]) && items(T).gp.cards.length === n0 && th.warn.some((w) => /stayed there/.test(w)),
+      `t.takeHand leaves it in the hand, as it was (an unknown piece fits no pile) — warn ${JSON.stringify(th.warn)}`);
+  }
+
+  section('(R) a hand holds at most 1,000 entries, a pile 5,000: a supply never runs out, the state must not grow without bound');
+  {
+    const big = range(5000).map((i) => ({ d: DK, i: i % 52, up: false }));
+    const T = mk({ s: S('pawn', { x: 300, y: 300 }), hb: BAG(['pawn', 'pawn'], { hand: true, x: 400 }), dk: PILE(cardsOf(3), { x: 500 }), c: C(5, { x: 600 }), full: PILE(big, { x: 700 }), two: PILE(cardsOf(2), { x: 900 }), c2: C(6, { x: 950 }) },
+      { hands: { [CAROL]: [{ d: DK, i: 7 }] } });
+    for (let k = 0; k < 1000; k++) T.apply(BOB, { t: 'take', id: 's', hand: true });
+    T.drain();
+    ok(T.state.players[BOB].hand.length === core.MAX_HAND && core.MAX_HAND === 1000, `Bob takes 1,000 pieces into his hand (${T.state.players[BOB].hand.length})`);
+    const FULLHAND = '🚫 Your hand is full (1,000)';
+    for (const [what, a] of [['take {hand}', { t: 'take', id: 's', hand: true }], ['pull {hand}', { t: 'pull', id: 'hb', hand: true }], ['draw', { t: 'draw', id: 'dk' }], ['toHand', { t: 'toHand', id: 'c' }]]) {
+      const r = run(T, BOB, a);
+      ok(refusedBy(r, FULLHAND), `then ${what} is refused: "${FULLHAND}" — ${why(r)}`);
+    }
+    const sd = run(T, 'RULES', (t) => t.deal('dk', { to: BOB }));
+    ok(sd.ret === false && sd.warn.some((w) => w.includes('hand is full')) && items(T).dk.cards.length === 3, `a script's deal to his full hand returns false, with a console.warn (${JSON.stringify(sd.warn)})`);
+    const FULLPILE = '🚫 That pile is full (5,000)';
+    for (const [what, a, p] of [['toPile', { t: 'toPile', id: 'c2', pile: 'full' }, BOB], ['merge', { t: 'merge', id: 'two', pile: 'full' }, BOB], ['handPile', { t: 'handPile', idx: 0, d: DK, i: 7, pile: 'full' }, CAROL]]) {
+      const r = run(T, p, a);
+      ok(refusedBy(r, FULLPILE) && items(T).full.cards.length === 5000, `${what} onto a pile of 5,000 is refused: "${FULLPILE}" — ${why(r)}`);
+    }
+  }
+
+  section('(R) t.takeHand moves only what goes onto the pile: a card deck never takes in a piece');
+  {
+    const hand = [{ d: DK, i: 10 }, { t: ref('pawn'), f: 0 }, { d: DK, i: 11 }, { t: ref('open'), f: 1 }];
+    const T = mk({ deck: PILE(cardsOf(3)), tp: PILE(piecesOf('open', 1), { x: 400 }) }, { hands: { [BOB]: hand } });
+    const r = run(T, 'RULES', (t) => t.takeHand(BOB, 'deck'));
+    ok(items(T).deck.cards.length === 5 && items(T).deck.cards.every((m) => 'd' in m && m.up === false), `the deck takes the two cards, face down, and stays all cards (${items(T).deck.cards.length})`);
+    ok(isDeepStrictEqual(T.state.players[BOB].hand, [hand[1], hand[3]]) && r.warn.some((w) => /^t\.takeHand: 2 of Bob's hand stayed there/.test(w)) && r.log[0] === "returned cards from Bob's hand (2) to the Pile pile",
+      `the pieces stay in Bob's hand, said (${JSON.stringify(r.warn)}, ${JSON.stringify(r.log)})`);
+    const r2 = run(T, 'RULES', (t) => t.takeHand(BOB, 'tp'));
+    ok(isDeepStrictEqual(T.state.players[BOB].hand, [hand[1]]) && isDeepStrictEqual(items(T).tp.cards.at(-1), { t: ref('open'), f: 1, up: true }) && r2.warn.length === 1,
+      `a pile of tiles takes the tile (face up: it has no back), not the token (${JSON.stringify(items(T).tp.cards)})`);
+  }
+
+  section('(R) the bridge script survives a player who stood up mid-trick (t.players() leaves watchers out)');
+  {
+    const ps = { [HOST]: player('Alice', 90), [BOB]: player('Bob', 180), [CAROL]: player('Carol', 270), [DAVE]: player('Dave', 0) };
+    const trick = [[HOST, 1], [BOB, 0], [CAROL, 2], [DAVE, 3]]; // ♠2, ♠A, ♠3, ♠4: Bob's ace takes it
+    const T = mk(Object.fromEntries(trick.map(([, i], k) => [`t${k}`, C(i, { x: 850 + 20 * k, y: 850 })])), { players: ps });
+    T.state.rules = { name: 'Bridge', enabled: false, code: '', public: {},
+      data: { phase: 'play', seats: [HOST, BOB, CAROL, DAVE], trick: trick.map(([p, i]) => ({ p, d: DK, i })), tricks: [0, 0], sidePiles: [], declarer: HOST, dummy: CAROL, level: 1, trump: null, turn: null, dealerIdx: 0, firstLead: false } };
+    run(T, HOST, { t: 'setRules', enabled: true, code: RULES_TEMPLATES.bridge });
+    ok(T.state.rules.enabled && T.state.rules.data.phase === 'play', 'Bridge runs, mid-hand, its trick of four on the table');
+    ok(happened(run(T, BOB, { t: 'seat', watch: true })) && T.state.players[BOB].seat === null, 'Bob, who won the trick, stands up to watch');
+    T.state.rules.data._timers = [{ at: 0, tag: 'sweep' }];
+    const r = run(T, 'RULES', () => T.runTimers());
+    ok(T.state.rules.enabled && !r.error.length && r.log.some((l) => l.startsWith('Trick to Bob')), `the sweep still runs, and names him (${JSON.stringify(r.log)}${r.error.length ? `, error ${r.error[0]}` : ''})`);
+  }
+
+  section('(R) what a seat that is gone owned belongs to nobody: otherwise no one, the host included, could handle it');
+  {
+    const T = mk({});
+    run(T, HOST, { t: 'loadBox', box: BOXES.draughts, setup: true, clear: true });
+    const men = Object.keys(items(T)).filter((id) => items(T)[id].owner?.startsWith('seat:'));
+    const r = run(T, HOST, { t: 'loadBox', box: { name: 'Seatless', imgs: [], types: { x: { kind: 'token', name: 'X', faces: ['X'] } } } });
+    ok(men.length === 24 && men.every((id) => !('owner' in items(T)[id])), `loading a box without seats frees the 24 men (${men.filter((id) => items(T)[id].owner).length} still owned)`);
+    ok(r.log.includes('released 12 items of Light: that seat is gone') && r.log.includes('released 12 items of Dark: that seat is gone'), `one log line per seat: ${JSON.stringify(r.log)}`);
+    ok([...T.byOwner.keys()].every((o) => !o.startsWith('seat:')), 'the owner index agrees');
+    ok(happened(run(T, BOB, { t: 'move', id: men[0], x: 500, y: 500 })), 'and the men can be moved again');
+  }
+
+  section('(R) a dealt piece and a set-up one snap to their rotStep, as a played one does');
+  {
+    const T = mk({ tp: PILE(piecesOf('open', 2)) });
+    let before = Object.keys(items(T));
+    run(T, BOB, { t: 'deal', id: 'tp', up: true, rot: 50, x: 300, y: 300 });
+    const [d] = newIds(T, before);
+    ok(items(T)[d]?.rot === 90, `a tile dealt at 50° lies at 90° (${items(T)[d]?.rot})`);
+    before = Object.keys(items(T));
+    run(T, HOST, { t: 'loadBox', box: { name: 'Turns', imgs: [], types: { q: { kind: 'tile', name: 'Q', faces: ['Q'] }, w: { kind: 'token', name: 'W', faces: ['W'] } }, setup: [{ piece: 'q', rot: 130, at: [200, 200] }, { piece: 'w', rot: 33, at: [400, 400] }] }, setup: true });
+    const got = Object.fromEntries(newIds(T, before).map((id) => [items(T)[id].t.slice(-1), items(T)[id].rot]));
+    ok(got.q === 90 && got.w === 33, `set up at 130°, a tile lies at 90°; a token turns freely (33°): ${JSON.stringify(got)}`);
+  }
+
+  section('(R) lock with a malformed `on` is refused, never read as an unlock');
+  {
+    const T = mk({ a: P('tok', { lock: true }) });
+    for (const on of [undefined, 1, 'yes', null]) {
+      const r = run(T, HOST, { t: 'lock', id: 'a', on });
+      ok(refusedBy(r) && r.notes.length === 1 && items(T).a.lock === true, `on: ${JSON.stringify(on)} — refused with a notice, still locked (${why(r)})`);
+    }
+  }
+
+  section('(R) t.addStandardDeck at the cap mints no deck');
+  {
+    const T = mk(Object.fromEntries(range(5000).map((k) => [`x${k}`, P('chip')])));
+    const decks0 = Object.keys(T.state.decks).length, r = run(T, 'RULES', (t) => t.addStandardDeck());
+    ok(r.ret === false && Object.keys(T.state.decks).length === decks0 && !r.fx.some((e) => e.t === 'deck') && r.warn.some((w) => w.includes('table is full')),
+      `false, a console.warn, and the catalog unchanged (${Object.keys(T.state.decks).length} decks)`);
+  }
+
+  section('(R) flagsOf and sizeOf read public piles (their top) and bags as a renderer needs them (§2b)');
+  {
+    const HEX = { name: 'Hexes', imgs: [], backs: { hb: { face: {} } }, types: { h: { kind: 'tile', name: 'Hex', shape: 'hex', rotStep: 60, faces: ['H'], back: 'hb' } } }, HX = 'b0000003';
+    const hx = (up) => ({ t: `${HX}/h`, f: 0, up });
+    const T = mk({ hp: PILE([hx(true), hx(true)]), hh: PILE([hx(false)], { x: 500 }), hb: BAG(['pawn'], { hand: true, x: 300 }), nb: BAG(['chip'], { x: 200 }) },
+      { boxes: { [BX]: cleanBox(TESTBOX), [LBX]: cleanBox(LOCKBOX), [HX]: cleanBox(HEX) } });
+    const f = (id) => core.flagsOf(T.pub.get(id), T.boxes), want = { w: 100, h: 100, shape: 'hex', rotStep: 60, hand: true, stack: 'pile' };
+    ok(isDeepStrictEqual(f('hp'), want) && isDeepStrictEqual(f('hh'), want), `a pile of hex tiles, shown or face down: its top's flags (${JSON.stringify(f('hp'))})`);
+    ok(f('hb').hand === true && f('nb').hand === false && f('hb').w === 90 && f('hb').h === 100, `a bag: 90 × 100, held in a hand iff its fixed flag says so (${JSON.stringify(f('hb'))})`);
+    ok(isDeepStrictEqual(core.sizeOf(T.pub.get('hp'), T.boxes), { w: 100, h: 100 }) && isDeepStrictEqual(core.sizeOf(T.pub.get('hb'), T.boxes), { w: 90, h: 100 }), 'sizeOf agrees');
+    run(T, BOB, { t: 'rot', id: 'hp', rot: 50 });
+    ok(items(T).hp.rot === 60, `turning the pile by 50° snaps it to 60° (${items(T).hp.rot})`);
+  }
+
+  section('(R) t.find reads the type and owner indexes, and agrees with a scan');
+  {
+    const T = mk({ a: P('tok', { owner: BOB }), b: P('tok', { x: 900 }), c: S('tok', { owner: 'seat:x', x: 300 }), d: P('coin', { owner: BOB, x: 400 }), e: C(1, { owner: BOB, x: 500 }) });
+    const ids = (q) => T.api.find(q).map((x) => x.id).sort().join();
+    ok(ids({ type: ref('tok') }) === 'a,b,c' && ids({ type: 'tok' }) === 'a,b,c' && ids({ owner: BOB }) === 'a,d,e' && ids({ type: ref('tok'), owner: BOB }) === 'a'
+      && ids({ kind: 'supply', type: ref('tok') }) === 'c' && ids({ kind: 'card', owner: BOB }) === 'e' && ids({ type: ref('nope') }) === '',
+      `by type (a ref or a bare id), by owner, both, with a kind (${ids({ owner: BOB })})`);
+  }
+
+  section('(R) a shuffled group: the hidden pieces sharing a back must agree on what shows (rot, lock, n, owner)');
+  {
+    const SH = (a, b, extra = []) => ({
+      name: 'Shuffle', imgs: [], seats: [{ id: 's1', name: 'S1' }], backs: { u: { face: {} } },
+      types: { banner: { kind: 'token', name: 'Banner', back: 'u', faces: ['B'] }, soldier: { kind: 'token', name: 'Soldier', back: 'u', faces: ['S'] } },
+      setup: [{ group: [{ piece: 'banner', up: false, at: [300, 300], ...a }, { piece: 'soldier', up: false, count: 3, spread: [80, 0], at: [400, 300], ...b }, ...extra], shuffle: true }],
+    });
+    for (const [field, a] of [['rot', { rot: 90 }], ['lock', { lock: true }], ['n', { n: 2 }], ['owner', { owner: 'seat:s1' }]]) {
+      const e = boxError(SH(a, {}));
+      ok(e && e.message.startsWith(`setup[0].group[1]: ${field} differs from setup[0].group[0], which shares its back`), `${field} differs: refused, naming the entries (${e?.message})`);
+    }
+    ok(!boxError(SH({ rot: 90, lock: true }, { rot: 90, lock: true })) && !boxError(SH({ rot: 90 }, { up: true })), 'agreeing, or the other one shown, the box is fine');
+    let still = true;
+    for (let seed = 1; seed <= 10; seed++) {
+      const T = mk({}, { env: renv(seed), seed });
+      run(T, HOST, { t: 'loadBox', box: SH({}, {}, [{ supply: 'banner', up: false, at: [900, 300] }]), setup: true, clear: true });
+      const sup = Object.values(items(T)).find((it) => it.k === 's');
+      still &&= sup?.x === 900 && sup.y === 300;
+    }
+    ok(still, 'a hidden supply on that back never trades places with the pieces (10 seeds)');
+  }
+
+  section('(R) a resume says, on the host\'s screen, when pieces lost their box');
+  {
+    const T = mk({ g: P('x', { t: 'deadbeef/x' }) }), q = quietly(() => T.resume('Alice')), fx = T.drain();
+    ok(fx.some((e) => e.t === 'toast' && e.msg === 'A piece of this table belongs to a game box that is missing or unreadable: shown as "?"') && q.error.length,
+      `a toast, and a console.error (${JSON.stringify(fx.filter((e) => e.t === 'toast'))})`);
+  }
+
+  section('(R) seatAt: a named seat placed with `at` sits at that very point, facing the centre');
+  {
+    const s = core.seatAt({ shape: 'rect', w: 1400, h: 1200 }, 180, { id: 'w', name: 'W', at: [300, 600] }), r = core.seatAt({ shape: 'round', w: 1800, h: 1800 }, 90);
+    ok(isDeepStrictEqual(s, { x: 300, y: 600, ux: 1, uy: 0 }) && near(r.x, 900) && near(r.y, 1750) && near(r.uy, -1), `${JSON.stringify(s)}; an angle alone: the rim (${JSON.stringify(r)})`);
+  }
+}
+
 (async () => {
   await guard('(G) grid.js', testGrid);
   await guard('(1) cleanBox', testCleanBox);
@@ -2209,5 +2421,6 @@ function testBuiltins() {
   await guard('(6) MIGRATE[2] and board z', testMigrate);
   await guard('(7) randInt', testRandInt);
   await guard('(8) the built-in boxes', testBuiltins);
+  await guard('(R) review fixes', testReviewFixes);
   report();
 })().catch(crash);

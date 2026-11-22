@@ -539,7 +539,10 @@ export const RULES_TEMPLATES = {
   sideOf(t, p) { return this.seats(t).indexOf(p) % 2; },
   sideName(t, s) { const q = this.seats(t); return this.nameOf(t, q[s]) + '–' + this.nameOf(t, q[s + 2]); },
   sidePids(t, s) { return this.seats(t).filter((_, i) => i % 2 === s); },
-  nameOf(t, p) { return (t.players().find((x) => x.id === p) || {}).name || '?'; },
+  // (all: a dealt player may have stood up to watch since — they keep their name, hand and partnership)
+  nameOf(t, p) { return (t.players({ all: true }).find((x) => x.id === p) || {}).name || '?'; },
+  /** Where player p sits (degrees): the bottom while they watch. */
+  seatOf(t, p) { const x = t.players({ all: true }).find((y) => y.id === p); return x && x.seat != null ? x.seat : 90; },
   inCenter(t, x, y) { const g = t.geom(); return Math.hypot(x + 50 - g.cx, y + 70 - g.cy) < g.r * 0.4; },
   dummyRef(t, id) {
     const it = t.items().find((x) => x.id === id);
@@ -555,7 +558,7 @@ export const RULES_TEMPLATES = {
     // around (after a passed-out hand it is all in the hands, with no pile
     // left), else the biggest pile. Other decks' cards and piles stay put.
     const has = (D) => D != null && (t.items().some((it) => it.d === D || (it.cards || []).some((c) => c.d === D))
-      || t.players().some((p) => t.hand(p.id).some((c) => c.d === D)));
+      || t.players({ all: true }).some((p) => t.hand(p.id).some((c) => c.d === D)));
     const D = has(t.data.deckD) ? t.data.deckD : this.deck(t)?.cards[0].d;
     if (D == null) return t.tell(by, 'No deck on the table!');
     const ours = (p) => p.cards.every((c) => c.d === D);
@@ -674,15 +677,15 @@ export const RULES_TEMPLATES = {
   // Lays the dummy's whole hand face up in two sorted rows by their seat,
   // oriented to face them; the declarer plays these by sliding to the middle.
   showDummy(t) {
-    const dummy = t.players().find((p) => p.id === t.data.dummy);
+    const dummy = t.players({ all: true }).find((p) => p.id === t.data.dummy);
     if (!dummy) return;
     const order = { '♠': 0, '♥': 1, '♦': 2, '♣': 3 };
     const refs = t.hand(dummy.id).sort((a, b) =>
       (order[this.suitOf(t, a)] - order[this.suitOf(t, b)]) || (this.rankOf(t, b) - this.rankOf(t, a)));
     t.data.dummyCards = refs.map((c) => ({ d: c.d, i: c.i }));
-    const g = t.geom(), rad = (dummy.seat * Math.PI) / 180;
+    const seat = this.seatOf(t, dummy.id), g = t.geom(), rad = (seat * Math.PI) / 180;
     const tx = -Math.sin(rad), ty = Math.cos(rad); // tangent along the rim
-    const rot = ((dummy.seat - 90) % 360 + 360) % 360; // upright for the dummy
+    const rot = ((seat - 90) % 360 + 360) % 360; // upright for the dummy
     refs.forEach((c, k) => {
       const row = k < 7 ? 0 : 1, off = ((k < 7 ? k : k - 7) - 3) * 68;
       const rr = g.r - 260 + row * 155; // both rows clear of the r*0.4 'played' center zone
@@ -777,13 +780,12 @@ export const RULES_TEMPLATES = {
     }
     const side = this.sideOf(t, win.p);
     t.data.tricks[side]++;
-    const winner = t.players().find((p) => p.id === win.p);
     // sweep the four cards into the winning side's face-down trick pile
     let pileId = t.data.sidePiles[side];
     if (!pileId || !t.items().some((it) => it.id === pileId)) {
       // by a hand-holding seat: the dummy's seat is covered by its cards
       const by = side === this.sideOf(t, t.data.declarer) ? t.data.declarer : win.p;
-      const g = t.geom(), rad = (t.players().find((p) => p.id === by).seat * Math.PI) / 180;
+      const g = t.geom(), rad = (this.seatOf(t, by) * Math.PI) / 180;
       pileId = t.newPile([], { x: g.cx + Math.cos(rad) * (g.r - 40) - 50, y: g.cy + Math.sin(rad) * (g.r - 40) - 70, name: this.sideName(t, side) + ' tricks' });
       t.data.sidePiles[side] = pileId;
     }
@@ -791,7 +793,7 @@ export const RULES_TEMPLATES = {
       if (it.k === 'c' && trick.some((c) => c.d === it.d && c.i === it.i)) { t.flip(it.id); t.toPile(it.id, pileId); }
     }
     t.data.trick = [];
-    t.say('Trick to ' + winner.name + ' — ' + this.sideName(t, 0) + ' ' + t.data.tricks[0] + ' : ' + t.data.tricks[1] + ' ' + this.sideName(t, 1));
+    t.say('Trick to ' + this.nameOf(t, win.p) + ' — ' + this.sideName(t, 0) + ' ' + t.data.tricks[0] + ' : ' + t.data.tricks[1] + ' ' + this.sideName(t, 1));
     if (t.data.tricks[0] + t.data.tricks[1] === 13) {
       const dSide = this.sideOf(t, t.data.declarer);
       const made = t.data.tricks[dSide];

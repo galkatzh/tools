@@ -205,7 +205,7 @@ HELP = """commands:
   shuffle [pile]          shuffle a pile
   flip|peek|tohand <id>   flip / peek at / take a table card
   move <id> <x> <y>       move an item (table coords)
-  roll <id...> | roll all roll dice together (all: every die you may handle)
+  roll <id...> | roll all roll dice together (all: every die you may handle, at most 20)
   face <id> <f>           turn a piece to face f (0, 1, …; not a die)
   take <supply> [x y] [--hand]  take a piece from a supply (id or type name)
   pull <bag> [x y] [--hand]     draw a random piece from a bag (id or name)
@@ -258,7 +258,7 @@ def fmt_item(it):
     if kind == 'bag':
         return f"{head}bag \"{it['name']}\" ×{it['count']}{at}{tail}"
     if kind == 'supply':
-        what = 'of hidden pieces' if it.get('hidden') else f"{fmt_piece(it)} ({it['pieceKind']})"
+        what = 'of hidden pieces' if it.get('hidden') else '? unknown piece' if it.get('unknown') else f"{fmt_piece(it)} ({it['pieceKind']})"
         return f"{head}supply {what} ∞{at}{tail}"
     if kind == 'hidden':
         return f"{head}hidden piece{n}{at}{tail}"

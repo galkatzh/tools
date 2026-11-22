@@ -196,7 +196,8 @@ top of `core.js` and README "How it works".
   The table is full (5,000 items)", "🚫 Dice are rolled, not turned", "🚫
   Those don't stack together", "🚫 Some of those pieces have no hidden
   side", "🚫 Those pieces can't be held in a hand", "🚫 Roll 1 to 20
-  different dice", "🚫 Box rejected: {cleanBox's message}"; a guest whose
+  different dice", "🚫 Your hand is full (1,000)", "🚫 That pile is full
+  (5,000)", "🚫 Box rejected: {cleanBox's message}"; a guest whose
   box fails `cleanBox` toasts "A game box from the host couldn't be read:
   {message}" once per box.
 - **Drawn pieces** (`pieces.js`): `.item.piece.shape-{shape}` sized w × h
@@ -212,7 +213,11 @@ top of `core.js` and README "How it works".
   cap(), the hidden-item rule, the bag flag; setup order (Spearman over 20
   seeds); the public reduction against §2d's table (`specPub`, `specHandy`)
   after 500 random piece ops; seats; MIGRATE[2] and the board z band;
-  randInt; the built-in boxes. Its tables are built by `mk(items, o)` from
+  randInt; the built-in boxes; and (R), one regression check per issue the
+  Phase 2A review found (a board's back, a bag's fixed box, missing boxes,
+  the hand and pile caps, t.takeHand, the bridge script with a watcher,
+  seats that are gone, rotation snapping, flagsOf on public piles and bags,
+  …). Its tables are built by `mk(items, o)` from
   the test box `TESTBOX` (one type per behaviour) and `run(T, p, a)` returns
   what an action did (notes, log lines, effects, changed). Ids are random
   hex, as `uid()` makes them: a JS object lists integer-like keys
@@ -224,7 +229,8 @@ top of `core.js` and README "How it works".
   and `at(items, x, y, pred?)` (test boxes give every item its own top-left,
   so tests find even hidden ones by place); the test boxes `SPY` (a 3000 ×
   2000 table, three named seats, `lockable: 'anyone'`, the `SECRETS` types
-  only ever face down or in bags), `GHOST` (one hidden piece, one shown) and
+  only ever face down or in bags), `GHOST` (one hidden piece, one shown,
+  three hidden tiles: a face-down pile and a hand piece once stacked) and
   `PARLOUR` (spec §2i's `table` examples). **`arm(M)`** gives Mallory's page
   `M.fold()` (her view, folded as a guest folds), `M.scan(needles, refs)`
   (the recursive scan of every key and string of every body on `state`,
@@ -239,13 +245,18 @@ top of `core.js` and README "How it works".
 - **The browser suites.** `t-p2-hidden.js`: spec §2j's attacker cases 1–14
   as Mallory (the host's own refusals of a guest's host-only actions come
   one per 10 s, so case 6 is spread out; case 13 deletes a box's catalog
-  record on `h.plain` and reloads the host; case 8 fills the table to 4,990
-  with two setups first). `t-p2-cli.js`: cli.js and cli.py in parity (§2i)
+  record on `h.plain` and reloads the host, then deals from a face-down
+  pile of that box and plays a face-down hand piece of it: both stay
+  `{b: null}`; case 8 fills the table to 4,990 with two setups first).
+  `t-p2-cli.js`: cli.js and cli.py in parity (§2i)
   — each new command's action through a fake tab and, through real tabs,
   as the host received it (a probe script's `validate()` records every
   ruled action in `t.public`); the bridge API; the snapshot captured from
   the tab's `/state` POST (`page.route`); `table`, `players` and `hand` as
-  text, the same in both REPLs, control characters stripped.
+  text, the same in both REPLs, control characters stripped (a supply of a
+  box the tab lacks: `? unknown piece`); a double-click on a locked board
+  or on another player's die sends nothing and their bar stays empty; `roll
+  all` over more than 20 dice is said, and sends nothing.
 
 ## Storage and images (Phase 1B)
 

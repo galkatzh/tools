@@ -157,7 +157,7 @@ const HELP = `commands:
   shuffle [pile]          shuffle a pile
   flip|peek|tohand <id>   flip / peek at / take a table card
   move <id> <x> <y>       move an item (table coords)
-  roll <id...> | roll all roll dice together (all: every die you may handle)
+  roll <id...> | roll all roll dice together (all: every die you may handle, at most 20)
   face <id> <f>           turn a piece to face f (0, 1, …; not a die)
   take <supply> [x y] [--hand]  take a piece from a supply (id or type name)
   pull <bag> [x y] [--hand]     draw a random piece from a bag (id or name)
@@ -181,7 +181,7 @@ function fmtItem(it) {
     case 'card': return `${head}${it.up ? fmtCard(it) : 'face-down card'}${at}${tail}`;
     case 'pile': return `${head}pile "${it.name || 'stack'}" ×${it.count}${it.top ? ` top: ${fmtTop(it.top)}` : ''}${at}${tail}`;
     case 'bag': return `${head}bag "${it.name}" ×${it.count}${at}${tail}`;
-    case 'supply': return `${head}supply ${it.hidden ? 'of hidden pieces' : `${fmtPiece(it)} (${it.pieceKind})`} ∞${at}${tail}`;
+    case 'supply': return `${head}supply ${it.hidden ? 'of hidden pieces' : it.unknown ? '? unknown piece' : `${fmtPiece(it)} (${it.pieceKind})`} ∞${at}${tail}`;
     case 'hidden': return `${head}hidden piece${n}${at}${tail}`;
     case 'board': return `${head}board ${it.type} (board)${at}${tail}`;
     case 'unknown': return `${head}? unknown piece${at}${tail}`;

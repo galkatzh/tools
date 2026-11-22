@@ -197,6 +197,12 @@ const PROBE = `({ name: 'Probe', validate(t, a) {
   ok(shown.table.includes('  [aaaaaaa1] L Ev[31mil (token) ×2 @1,2 owner:Ow]0;xner 🔒') && shown.table.includes('  [aaaaaaa6] hidden piece ×2 @9,9 owner:White'),
     `the visible text stays (${json(shown.table[0])})`);
 
+  section('a shown supply whose box the tab lacks prints as "? unknown piece", in both REPLs');
+  const GONE = { ...FAKE, seq: 3, items: [{ id: 'aaaaaaa7', kind: 'supply', unknown: true, typeRef: 'b/q', x: 11, y: 12 }] };
+  for (const b of fakes) await req(b.port, `/state?token=${b.token}`, { method: 'POST', body: json(GONE) }).done;
+  const gone = (await Promise.all(fakes.map((b) => type(b, 'table', (ls) => ls.some((l) => l.startsWith('  [aaaaaaa7] ')))))).map((ls) => ls.find((l) => l.startsWith('  [aaaaaaa7] ')));
+  ok(gone.every((l) => l === '  [aaaaaaa7] supply ? unknown piece ∞ @11,12'), `"  [aaaaaaa7] supply ? unknown piece ∞ @11,12" from both (${json(gone)})`);
+
   section('the bridge API: roll, take and seat');
   const apis = await Promise.all(LANGS.map(async (lang) => {
     const c = lang === 'node' ? child('node', ['-e', NODE_API]) : child('python3', ['-u', '-c', PY_API]);
@@ -389,6 +395,42 @@ const PROBE = `({ name: 'Probe', validate(t, a) {
   await check('Bob', 'seat +', (a) => eq(a, { t: 'seat', sit: true }), '{t: seat, sit: true}');
   await check('Bob', 'seat black', (a) => eq(a, { t: 'seat', id: 'black' }), '{t: seat, id}');
   ok(await until(() => snap('Bob')?.me?.seatId === 'black', 10000), 'Bob sits as Black again');
+
+  section('the bar and a double-click offer nothing the host would refuse: a locked board, another player\'s die');
+  /** A screen point on item `id` in `page` where it is the topmost item (null if there is none). */
+  const spotOn = (page, x) => page.evaluate((x) => {
+    const el = document.querySelector(`.item[data-id="${x}"]`), r = el.getBoundingClientRect();
+    for (let fy = 0.1; fy < 1; fy += 0.1) {
+      for (let fx = 0.1; fx < 1; fx += 0.1) {
+        const p = [r.left + fx * r.width, r.top + fy * r.height];
+        if (document.elementFromPoint(...p)?.closest('.item') === el) return p;
+      }
+    }
+    return null;
+  }, x);
+  const kUI = Math.max(0, ...(await probed()).map((e) => e.k));
+  const barHidden = (page) => page.evaluate(() => document.getElementById('action-bar').classList.contains('hidden'));
+  const onBoard = await spotOn(host, I.board), onDie = await spotOn(bob, dice[1]);
+  ok(onBoard && onDie, 'a free spot on the board (Alice), and on the die White owns (Bob)');
+  await host.mouse.dblclick(...onBoard);
+  await bob.mouse.dblclick(...onDie);
+  await h.sleep(700);
+  await host.mouse.click(...onBoard); // (a click toggles the selection: the double-click's two left it off)
+  await bob.mouse.click(...onDie);
+  const selected = (page, x) => page.evaluate((x) => document.querySelector(`.item[data-id="${x}"]`).classList.contains('selected'), x);
+  ok(await selected(host, I.board) && await barHidden(host), "Alice's click selects the locked board, and its bar shows nothing");
+  ok(await selected(bob, dice[1]) && await barHidden(bob), "Bob's selects White's die, and its bar shows nothing");
+  await h.sleep(1500);
+  const sentUI = (await probed()).filter((e) => e.k > kUI).map((e) => e.a);
+  ok(!sentUI.length, `nothing was sent — no flip of the board, no roll of her die (${json(sentUI)})`);
+
+  section('`roll all` over more than 20 dice says so, and sends nothing');
+  await loadBox(host, { name: 'Dice tray', imgs: [], types: { d: { kind: 'die', name: 'Die' } }, setup: [{ piece: 'd', count: 21, spread: [60, 0], at: [60, 1060] }] }, { clear: false });
+  const k21 = Math.max(0, ...(await probed()).map((e) => e.k));
+  const said = await Promise.all(['Alice', 'Bob'].map(async (name) => (await type(R[name], 'roll all', (ls) => ls.some((l) => /roll all: that is \d+ dice — at most 20 per roll/.test(l)))).find((l) => /at most 20/.test(l))));
+  ok(said.every((l) => /^ {2}✉ error: roll all: that is 2\d dice — at most 20 per roll, name them$/.test(l || '')), `both REPLs print the tab's refusal (${json(said)})`);
+  await h.sleep(1500);
+  ok(!(await probed()).some((e) => e.k > k21 && e.a.t === 'roll'), 'and no roll reached the host');
 
   for (const k of kids) k.kill();
   await env.done();

@@ -299,8 +299,9 @@ const needlesOf = (types) => Object.entries(types).flatMap(([id, ty]) => [id, ty
   ok(tokenLast, `Mallory pulled face down until the token was the last (in ${rounds} round(s))`);
   await pull(2400, 1700);
   const bagForms = (await M.evaluate((x) => window.M.got.state.map(({ m }) => window.M.body(m).items?.[x]).filter(Boolean), ids.mixed));
-  ok(bagForms.length > 6 && bagForms.every((b) => !('hand' in b) && !('of' in b)) && bagForms.at(-1).n === 0,
-    `the bag's public hand flag never changed over ${bagForms.length} bodies, down to empty`);
+  // (one body per pull at least, and her snapshot: a fixed "> 6" failed whenever the token was last after the first round)
+  ok(bagForms.length > pulls && bagForms.every((b) => !('hand' in b) && !('of' in b)) && bagForms.at(-1).n === 0,
+    `the bag's public hand flag never changed over ${bagForms.length} bodies (${pulls} pulls), down to empty`);
   const drew = (await X.view('v.log')).filter((e) => e.p === MPID && /^drew /.test(e.txt));
   ok(drew.length === pulls && drew.every((e) => e.txt === 'drew a piece from the bag Mixed'), `every face-down pull is logged as "drew a piece from the bag Mixed" (${drew.length} lines, ${pulls} pulls)`);
   {
@@ -325,6 +326,8 @@ const needlesOf = (types) => Object.entries(types).flatMap(([id, ty]) => [id, ty
   {
     const code = "({ name: 'Roller', onChat(t, msg) { if (msg === '!roll') for (const d of t.find({ kind: 'die', up: false })) t.roll(d.id); } })";
     await act(host, { t: 'setRules', code, enabled: true });
+    // (the enable line must be in her view before counting from it: under load it lands after)
+    await M.waitForFunction(() => window.M.fold().log.some((e) => e.p === 'RULES' && /«Roller» enabled/.test(e.txt)), null, { timeout: 15000 });
     const log0 = (await X.view('v.log')).length;
     await act(host, { t: 'chat', msg: '!roll' });
     await M.waitForFunction((k) => window.M.fold().log.slice(k).some((e) => e.p === 'RULES' && /rolled/.test(e.txt)), log0, { timeout: 15000 });
@@ -368,7 +371,14 @@ const needlesOf = (types) => Object.entries(types).flatMap(([id, ty]) => [id, ty
   const ghostBox = await loadBox(host, GHOST, { clear: false });
   const its2 = await items(host), ghost = at(its2, 2500, 1500), lamp = at(its2, 2600, 1500);
   ok(its2[ghost]?.b === `${ghostBox}/gb` && its2[lamp]?.t === `${ghostBox}/lamp`, 'the ghost box laid out a hidden piece and a shown one');
-  ok(await until(async () => (await saved(host))?.state?.items?.[ghost] && (await h.idb(host, 'catalog', [room, ghostBox]))?.kind === 'box', 20000, 300), 'the host saved them, and the box in its catalog');
+  // A face-down pile of its hidden tiles, and one in the host's hand: once the box is gone, a deal and a play must keep them hidden too.
+  const shades = [0, 1, 2].map((k) => at(its2, 2400, 1500 + 120 * k));
+  ok(shades.every((id) => its2[id]?.b === `${ghostBox}/gt`), 'and three hidden tiles');
+  ok((await act(host, { t: 'stack', id: shades[1], onto: shades[0] })).ok && (await act(host, { t: 'toHand', id: shades[2] })).ok, 'the host stacks two of them, and takes the third into its hand');
+  const shadePile = at(await items(host), 2400, 1500, (it) => it.k === 'p');
+  ok(shadePile, 'a face-down pile of ghost tiles');
+  ok(await until(async () => { const s = (await saved(host))?.state; return s?.items?.[ghost] && s.items[shadePile] && !s.items[shades[2]] && (await h.idb(host, 'catalog', [room, ghostBox]))?.kind === 'box'; }, 20000, 300),
+    'the host saved them, and the box in its catalog');
   await host.goto(h.plain(env));
   await host.evaluate(async ([room, id]) => {
     const db = await new Promise((res, rej) => { const r = indexedDB.open('cardtable'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
@@ -392,6 +402,19 @@ const needlesOf = (types) => Object.entries(types).flatMap(([id, ty]) => [id, ty
   const snaps = (await X.bodiesSince(before.state)).filter((d) => d.kind === 'snap');
   ok(snaps.length && snaps.every((d) => { const g = d.items[ghost]; return g && g.k === 'g' && g.b === null && !('t' in g) && !('f' in g) && !('up' in g) && d.items[lamp]?.t === `${ghostBox}/lamp`; }),
     `every snapshot Mallory got from the reloaded host shows it as {k:'g', b: null} (${snaps.length} snapshot(s): ${JSON.stringify(snaps.at(-1)?.items[ghost])})`);
+  const pileTop = (await items(host))[shadePile]?.top;
+  ok(pileTop?.b === null && pileTop.up === false && !('t' in pileTop), `the face-down pile's top is {b: null, up: false} (${JSON.stringify(pileTop)})`);
+  await M.act({ t: 'deal', id: shadePile, up: false, x: 2200, y: 1200 });
+  ok(await until(async () => at(await items(host), 2200, 1200), 15000, 200), 'Mallory deals one face down from the ghost pile');
+  const hand13 = await host.evaluate(() => JSON.parse(JSON.stringify(window.__ct.view().hand))), hi = hand13.findIndex((c) => c.t === `${ghostBox}/qzShade`);
+  ok(hi >= 0 && hand13[hi].up === false, 'the host holds the other hidden ghost tile');
+  ok((await act(host, { t: 'play', idx: hi, type: hand13[hi].t, f: hand13[hi].f, up: false, x: 2200, y: 1500 })).ok, 'and plays it face down');
+  const its13 = await items(host), dealt = at(its13, 2200, 1200), played = at(its13, 2200, 1500);
+  const stillHidden = (it) => it?.k === 'g' && it.b === null && !('t' in it) && !('f' in it) && !('up' in it);
+  ok(stillHidden(its13[dealt]) && stillHidden(its13[played]), `neither turns face up for want of its box: both are {k:'g', b: null} (${JSON.stringify([its13[dealt], its13[played]])})`);
+  await X.barrier(ids.marker);
+  const mv13 = await M.evaluate(([a, b]) => [window.M.fold().items[a], window.M.fold().items[b]], [dealt, played]);
+  ok(mv13.every(stillHidden), `and so in Mallory's view (${JSON.stringify(mv13)})`);
 
   section('8: 6,000 takes stop at 5,000 items, and the host stays responsive');
   const n8 = await host.evaluate(() => Object.keys(window.__ct.view().items).length);
@@ -427,9 +450,9 @@ const needlesOf = (types) => Object.entries(types).flatMap(([id, ty]) => [id, ty
   ok(true, 'Mallory\'s next action is applied: the table answers');
 
   section('the whole record: what Mallory received, scanned once more');
-  hits = [...(await scan(SECRETS, box)), ...(await scan({ qzGhost: GHOST.types.qzGhost }, ghostBox))];
+  hits = [...(await scan(SECRETS, box)), ...(await scan({ qzGhost: GHOST.types.qzGhost, qzShade: GHOST.types.qzShade }, ghostBox))];
   ok(!hits.length, `no hidden type ref, face label or name in any body, the reload and the flood included (${hits.slice(0, 5).join('; ')})`);
-  forms = await M.evaluate((x) => window.M.forms(x), [...hiddenIds, ghost]);
+  forms = await M.evaluate((x) => window.M.forms(x), [...hiddenIds, ghost, dealt, played]);
   ok(!forms.length, `every public form is §2d's (${forms.slice(0, 3).join('; ')})`);
   const unsorted = await M.evaluate(() => window.M.unsorted());
   ok(!unsorted.length, `every snapshot and patch lists its items in sorted-id order (${unsorted.slice(0, 3).join('; ')})`);
