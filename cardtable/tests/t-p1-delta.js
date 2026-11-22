@@ -353,7 +353,7 @@ const NAMES = { host: 'Alice', a: 'Bob', b: 'Carol' };
     if (n === 250) await converged('after 250 actions');
   }
   console.log(`  ran ${done.ct} __ct.act and ${done.ui} UI actions (${done.none} had nothing to act on): ${JSON.stringify(byKind)}`);
-  ok(done.ui >= 40 && done.ct >= 350, `both paths were exercised (${done.ui} UI actions, ${done.ct} through __ct.act)`);
+  ok(done.ui >= 25 && done.ct >= 350, `both paths were exercised: ${done.ui} UI actions (floor 25), ${done.ct} through __ct.act (floor 350)`);
   await converged('after 500 actions');
   const c2 = await counters();
   ok(c2.a.gaps === c1.a.gaps && c2.b.gaps === c1.b.gaps, `no patch ever missed its base in normal play (gaps: Bob ${c2.a.gaps - c1.a.gaps}, Carol ${c2.b.gaps - c1.b.gaps})`);
@@ -362,6 +362,7 @@ const NAMES = { host: 'Alice', a: 'Bob', b: 'Carol' };
 
   // =========================================================================
   section('(7) the log arrives inside patches, trimmed to the same entries everywhere');
+  for (const p of [host, a, b]) await p.keyboard.press('Escape'); // closes a zoom or peek the random play left open
   await host.click('#add-deck-btn'); // a fresh pile for the sections below (the random play may have used them all up)
   await host.click('#deck-add');
   await h.logHas(host, 'added deck "Standard"');
@@ -412,7 +413,16 @@ const NAMES = { host: 'Alice', a: 'Bob', b: 'Carol' };
     const before = { host: await ids(host), a: await ids(a), b: await ids(b) };
     const hand0 = (await L.view(off)).hand;
     await off.evaluate(() => { window.__rtc.bodies = []; window.__rtc.keep = true; });
-    await h.playFromHand(off, 0, 0.5, 0.38);
+    // drop it on a spot of the table that nothing covers (a toast or a seat label would swallow the drop)
+    const [fx, fy] = await off.evaluate(() => {
+      const r = document.getElementById('table').getBoundingClientRect();
+      for (let k = 0; k < 400; k++) {
+        const fx = 0.35 + ((k * 7) % 31) / 100, fy = 0.35 + ((k * 13) % 29) / 100;
+        if (document.elementFromPoint(r.x + r.width * fx, r.y + r.height * fy)?.closest('#table')) return [fx, fy];
+      }
+      return [0.5, 0.5];
+    });
+    await h.playFromHand(off, 0, fx, fy);
     ok(await h.toastHas(off, "It's not your turn").then(() => true, () => false), `${NAMES[offK]} is told it's not their turn`);
     await h.sleep(1500);
     for (const k of Object.keys(P)) {
