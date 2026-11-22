@@ -9,7 +9,8 @@
 //   (2) migrate  a pre-Phase 1 save (localStorage ct-save- / ct-decks-: an image deck
 //                and the standard deck, seat keys inside players) resumes with its
 //                images and its returning guest, and its keys go — but stay when the
-//                new storage refuses it; a legacy lost marker migrates and resets loudly
+//                new storage refuses it; a legacy lost marker migrates and resets loudly;
+//                an older shape still (decks inside the save, no log, size or seats)
 //   (3) quota    full storage prunes another room's old save (its catalog and images
 //                too; a save written moments ago is spared) and says so; with nothing
 //                to prune: a lost marker, one toast, and a reload resets loudly; a
@@ -312,6 +313,28 @@ const okWait = async (promise, msg) => ok(await promise.then((x) => x !== false,
   ok(!!lostPut && lostPut.ts === lostTs, `the marker was migrated as a {room, ts, lost} record (${JSON.stringify(lostPut)})`);
   ok(!(await legacyKeys(alice)).length, 'and its legacy key is gone');
   await okWait(L.until(() => sameTable(bob, alice), 20000), 'Bob follows the fresh table');
+
+  // (d) an older shape still: the decks inside the save; no log, size or seats
+  await alice.goto(h.plain(env));
+  await dropDB(alice);
+  const oldCards = stdRec.deck.cards.map((_, i) => ({ d: 'd01d0001', i, up: false }));
+  await plantLegacy(JSON.stringify({
+    ts: Date.now(), decks: { d01d0001: { name: 'Old deck', back: null, cards: stdRec.deck.cards } },
+    state: {
+      seq: 7, items: { '01d00001': { k: 'p', x: 500, y: 520, rot: 0, z: 3, name: 'Old deck', cards: oldCards.slice(0, -1) } },
+      players: { [alicePid]: { name: 'Alice', color: '#e11d48', online: true, hand: [oldCards.at(-1)].map(({ d, i }) => ({ d, i })) } },
+    },
+  }), null);
+  await back(alice, invite);
+  const v4 = await L.view(alice);
+  ok(await isHost(alice) && v4.items['01d00001']?.n === oldCards.length - 1 && v4.items['01d00001'].x === 500 && v4.size === 1300
+    && Number.isFinite(v4.players[alicePid]?.seat) && (await h.handCount(alice)) === 1 && v4.log.some((e) => e.txt === 'resumed the table'),
+    `a save older still (decks inside it, no log, size or seats) resumes: its pile, the hand, a seat, the default size (${JSON.stringify({ pile: v4.items['01d00001'], size: v4.size, seat: v4.players[alicePid]?.seat })})`);
+  ok(!(await shown(alice, /Couldn't resume|Couldn't move|was dropped/)) && !(await legacyKeys(alice)).length, 'with no failure, and its key is gone');
+  ok(await settled(alice), 'it is saved');
+  const rec4 = await h.idb(alice, 'saves', room), cat4 = (await h.idb(alice, 'catalog')).filter((r) => r.room === room);
+  ok(rec4.state.v === STATE_V && rec4.state.zMax === 3 && cat4.length === 1 && cat4[0].id === 'd01d0001' && !notV2(cat4).length,
+    `as v${STATE_V} (zMax ${rec4.state.zMax}), its deck in the catalog as a v2 deck`);
 
   // ---------------------------------------------------------------------------------
   section('(3) full storage');
