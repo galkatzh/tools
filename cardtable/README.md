@@ -67,8 +67,9 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   the table's state and every operation on it (dealing, shuffling, the
   public view, the deck sanitizer, the rules engine and its `t` facade) with
   no DOM or network, so the page and the Node tests run the same code;
-  `app.js` is the network, persistence, rendering and input around it, and
-  `templates.js` holds the shipped rules scripts.
+  `store.js` is storage (IndexedDB) and image checking; `app.js` is the
+  network, rendering and input around them, and `templates.js` holds the
+  shipped rules scripts.
 
 - **Transport**: Trystero WebRTC, signaling over public Nostr relays — no
   server, no accounts. The room id + password live in the invite link's hash
@@ -95,9 +96,11 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   time, so a small patch never overtakes the big snapshot before it. A
   refused or vetoed action (or one whose target had just vanished) re-sends
   the items it named and the actor's hand, so an optimistic drag snaps
-  back. A 1,000-card table costs a few hundred bytes per move, and every
-  screen — the host's own included, through the same path — redraws only
-  the items that changed.
+  back. A guest whose connection stops draining doesn't pile up a backlog
+  on the host: past 64 waiting states they are dropped, and it gets one
+  fresh snapshot once it drains. A 1,000-card table costs a few hundred
+  bytes per move, and every screen — the host's own included, through the
+  same path — redraws only the items that changed.
 - **Versions**: actions carry the wire version and host messages declare
   it; a peer on another version of Card Table is refused with a "reload this
   page" notice instead of misreading the table. Every module import carries
@@ -133,26 +136,47 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   slow down), and the decks guests add share one 1.5M-char budget per
   table (saved with it), so nobody can fill the host's browser storage.
   Card and deck names lose their control characters on the way in.
-- **Persistence**: the host throttle-saves the state to `localStorage` keyed
-  by room id (`ct-save-<room>`), with the deck images in a separate key
-  written only when a deck is added; reopening the invite link in the host's
-  browser resumes the game. When storage is full, other rooms' saves are
-  deleted oldest first (with a toast saying so; saves another tab wrote in
-  the last 30 s are spared, and none are deleted when the table wouldn't fit
-  even then); if the table still can't be
-  saved, the stale snapshot is replaced by a "lost" marker, so a reload
-  resets the table loudly instead of silently rewinding it. Each host start
-  is a new state epoch, so guests follow a restarted host even when its
-  counter restarts lower. If two hosts ever collide (stale resume, invite
-  opened twice in the host's browser), the one holding older state demotes
-  itself to guest.
-- **Decks**: the standard 52-card deck renders as DOM/CSS; custom decks are
-  uploaded images, downscaled client-side to ≤560px WebP data-URLs so they
-  stay cheap to broadcast and persist (~25–50 KB per card on the wire).
-  Deck traffic is minimized: guests send actions targeted at the host rather
-  than broadcasting to the whole mesh, and the host relays newly added decks
-  as per-deck deltas (guests merge), so each player downloads a deck once and
-  adding a second deck never re-ships the first.
+- **Persistence**: the host saves the table in IndexedDB (`store.js`,
+  database `cardtable`): the state at most once a second, one write at a
+  time, as a structured clone (a few ms on the main thread for 1,000
+  cards), and each deck once, into the room's catalog, in the same
+  transaction. Reopening the invite link in the host's browser resumes the
+  game; a save from before IndexedDB (localStorage `ct-save-<room>`) is
+  moved over on its first resume. When storage is full, other rooms' saves
+  are deleted oldest first, with the images no table needs any more (with a
+  toast saying so; saves another tab wrote in the last 30 s are spared, and
+  none are deleted when the table wouldn't fit even then); if the table
+  still can't be saved, the stale save is replaced by a "lost" marker, so a
+  reload resets the table loudly instead of silently rewinding it. A write
+  started as the tab closes may never land, so the tab also leaves a
+  `ct-pending-<room>` note in localStorage, and if the save behind it never
+  committed the next start says "the last moment of play before the reload
+  wasn't saved". A browser that blocks IndexedDB runs the table unsaved, and
+  says so (no fallback); it still hosts its room after a reload, by the host
+  key. A save written by a newer Card Table (a tab left open across a
+  deploy) is never resumed or overwritten: the older tab says "reload this
+  page" until it does. Each host start is a new state epoch, so guests
+  follow a restarted host even when its counter restarts lower. If two
+  hosts ever collide (stale resume, invite opened twice in the host's
+  browser), the one holding older state demotes itself to guest.
+- **Decks and images**: the standard 52-card deck renders as DOM/CSS; custom
+  decks are uploaded images, downscaled client-side to ≤560px WebP. A deck
+  names its images by **content hash** (the SHA-256 of their bytes), and the
+  bytes travel apart: every peer keeps them in an IndexedDB cache shared by
+  all its tables, and a guest asks the host only for those it lacks, so a
+  player who has seen a deck downloads nothing on a rejoin, and one who
+  uploads a deck never downloads it back. The host sends only images of the
+  table at hand (never another room's), a few at a time per guest and after
+  that guest's pending moves, so play stays live during a big download,
+  within 64 MB a minute per guest. Every image is checked before any peer
+  stores it: PNG, JPEG, WebP or GIF by its magic bytes, at most 2 MB, at most
+  4,096 px a side and 16 Mpx in all — read from its header, so a tiny file
+  that declares a huge picture is refused before anything decodes it — and,
+  from the host, matching its hash. An image that doesn't come (the host
+  lost it, or it arrived damaged twice) shows as a struck-out picture, with
+  a notice. Unused cached images are deleted after 14 days, and a guest's
+  cache is capped at 500 MB. Decks themselves travel once per player, as
+  per-deck deltas, so adding a second deck never re-ships the first.
 
 ## Custom decks for custom games
 
@@ -323,6 +347,8 @@ refuse the `https → http://127.0.0.1` fetch.
   like the dealer at a home game.
 - The table always starts fitted to the smaller screen dimension; zoom and
   pan are per-player remedies, not persisted between reloads.
+- The image cache can be probed: a guest asks the host only for the images
+  it doesn't hold, so a host can tell whether a guest has seen a deck before.
 - Rules scripts are trusted code on the host's machine: a runaway loop can
   freeze the host's tab (refresh recovers via the save), and a dishonest
   host could run different code than displayed — the same trust tier as the
@@ -339,6 +365,9 @@ play, host reload/resume, the rules engine and the terminal bridge. Node
 suites run the state core and the rules templates without a browser; a
 seeded fuzzer (`core-p1.test.mjs`) checks that the incremental public view
 and every guest's view folded from patches equal full recomputes after each
-of 600 random ops. The benchmarks (`t-p1-bench.js`, `core-p1-bench.mjs`)
+of 600 random ops. Storage and images have suites of their own
+(`t-p1-store.js`, `t-p1-assets.js`: saves, migration, quota, the image pull
+and its checks). The benchmarks (`t-p1-bench.js`, `core-p1-bench.mjs`)
 assert the Phase 1 budgets on a 1,000-card table: bytes per move, apply and
-render times, phone panning, snapshot size, indexed reads.
+render times, phone panning, snapshot size, indexed reads, the save's
+main-thread time and zero image bytes on a warm rejoin.

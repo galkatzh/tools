@@ -25,8 +25,10 @@ const { chromium } = playwright;
 
 const CDN_DIR = path.join(__dirname, '.cdn-cache');
 const APP_ROOT = path.resolve(process.env.APP_ROOT || path.join(__dirname, '../..'));
-/** The wire version raw test peers put on every action (`_v`): read from the app's core, never hard-coded. */
-const { PROTO } = require(path.join(APP_ROOT, 'cardtable/core.js'));
+/** The wire version raw test peers put on every action (`_v`), and the
+ *  modules' code version (imports carry ?v=MODULE_V): read from the app's
+ *  core, never hard-coded. */
+const { PROTO, MODULE_V } = require(path.join(APP_ROOT, 'cardtable/core.js'));
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml' };
 
 let failures = 0;
@@ -238,4 +240,69 @@ function viewFrom(list) {
 }
 function crash(e) { console.error('TEST CRASHED:', e); process.exit(2); }
 
-module.exports = { start, ok, section, report, joinAs, hostAndGuest, logHas, toastHas, handCount, waitHand, playFromHand, enableRules, sleep, crash, bodies, viewFrom, playwright, APP_ROOT, PROTO };
+// --- storage: IndexedDB `cardtable` (store.js) ---------------------------------
+/** A same-origin page with no app on it (a script file shown as text): where
+ *  a test plants storage that a running app would save over. */
+const plain = (env) => `${env.base}/cardtable/cah-cards.js`;
+/** Store `name`'s records in the page's IndexedDB as plain JSON — all of
+ *  them, or the one under `key` (catalog keys are [room, id]; null when
+ *  absent). Assets come as {h, mime, size, used}, without their bytes. It
+ *  never creates the database (one opened before the app's first open would
+ *  have no stores). */
+const idb = (page, name, key) => page.evaluate(async ([name, key]) => {
+  const none = key === undefined ? [] : null;
+  if (!(await indexedDB.databases()).some((d) => d.name === 'cardtable')) return none;
+  const db = await new Promise((res, rej) => { const r = indexedDB.open('cardtable'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  try {
+    if (!db.objectStoreNames.contains(name)) return none;
+    const s = db.transaction(name).objectStore(name), r = key === undefined ? s.getAll() : s.get(key);
+    const got = await new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    const json = (x) => (x?.data instanceof ArrayBuffer ? { h: x.h, mime: x.mime, size: x.size, used: x.used } : x);
+    return key === undefined ? got.map(json) : json(got) ?? null;
+  } finally { db.close(); }
+}, [name, key]);
+/** Runs `fn(store, arg)` in the page with the app's store.js imported and
+ *  opened (its own schema: the database is created as the app creates it),
+ *  and returns its result. `fn` is serialized: it sees only its arguments. */
+const withStore = (page, fn, arg) => page.evaluate(async ([src, arg, v]) => {
+  const S = await import(`/cardtable/store.js?v=${v}`);
+  await S.open();
+  return (0, eval)(`(${src})`)(S, arg); // eslint-disable-line no-eval
+}, [fn.toString(), arg, MODULE_V]);
+/** Plants room's save in IndexedDB as the app writes one — {room, ts, v:
+ *  state.v, state} — and a catalog record per deck of `decks` ({id: deck in
+ *  the v2 shape}). On a page where the app isn't running (plain()): it would
+ *  save over it. */
+const plantSave = (page, room, state, decks = {}, ts = Date.now()) => withStore(page, async (S, [room, state, decks, ts]) => {
+  const db = await new Promise((res, rej) => { const r = indexedDB.open('cardtable'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  const t = db.transaction(['saves', 'catalog'], 'readwrite');
+  t.objectStore('saves').put({ room, ts, v: state.v, state });
+  for (const [id, deck] of Object.entries(decks)) t.objectStore('catalog').put({ room, id, kind: 'deck', deck });
+  await new Promise((res, rej) => { t.oncomplete = res; t.onabort = () => rej(t.error); });
+  db.close();
+}, [room, state, decks, ts]);
+/** Init script (addInitScript): the quota stub. While window.__quota names a
+ *  store ('saves', 'catalog' or 'assets') — or is {store, heal: n} —
+ *  IDBObjectStore.prototype.put into that store throws QuotaExceededError,
+ *  for every record but a lost marker ({room, ts, lost}: tiny, what a full
+ *  browser still takes here). With heal: n, the n-th delete from that store
+ *  frees enough room (pruning or GC did its job): the stub lifts itself
+ *  (window.__quota = null). */
+function quotaStub() {
+  const { put, delete: del } = IDBObjectStore.prototype;
+  const quota = () => (typeof window.__quota === 'string' ? { store: window.__quota } : window.__quota);
+  IDBObjectStore.prototype.put = function (v, ...rest) {
+    if (quota()?.store === this.name && typeof v?.lost !== 'string') throw new DOMException('quota (test)', 'QuotaExceededError');
+    return put.call(this, v, ...rest);
+  };
+  IDBObjectStore.prototype.delete = function (...args) {
+    const q = quota();
+    if (q?.store === this.name && q.heal && --q.heal === 0) window.__quota = null;
+    return del.apply(this, args);
+  };
+}
+
+module.exports = {
+  start, ok, section, report, joinAs, hostAndGuest, logHas, toastHas, handCount, waitHand, playFromHand, enableRules, sleep, crash,
+  bodies, viewFrom, plain, idb, withStore, plantSave, quotaStub, playwright, APP_ROOT, PROTO, MODULE_V,
+};

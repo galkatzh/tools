@@ -426,19 +426,30 @@ public-domain demos that prove the new primitives. The build order puts the
 foundations first: scale before pieces, so pieces are built on incremental
 sync and rendering, and the Worker together with `handle`.
 
-0. **Core and harness.**
+0. **Core and harness.** *Done.*
    - The DOM-free state core (`core.js`: the state model, ops, the public
      view, the validation gates) is extracted from `app.js`, so the page, the
      rules Worker and Node tests all run the same code.
    - The templates move to `templates.js`.
    - The end-to-end harness moves into the repo (`cardtable/tests/`).
    - No change in behaviour.
-1. **Scale.**
+1. **Scale.** *Done.*
    - Delta sync, incremental public view and rendering.
    - IndexedDB storage and content-hash asset caching.
    - Indexed script reads.
    - *Proof:* a synthetic 1,000-piece benchmark suite (wire bytes per move,
      frame time while panning on an emulated phone, host apply time).
+   - As built (README "How it works"): per-recipient patch bases, snapshots
+     on join, gap or reload, and a wire version gate; the log travels inside
+     the patches; seat keys moved to `state.keys` (state v2); refusals
+     re-send what they named; host saves and the deck catalog in IndexedDB
+     (one transaction per save, a `ct-pending-<room>` marker for a write the
+     closing tab couldn't finish, a newer version's save never touched, the
+     host key as the fallback proof of ownership); images by SHA-256,
+     pulled by guests from the host only, paced and budgeted, and checked
+     (magic bytes, size, header pixel size, hash) before any peer stores
+     them; decks ingested outside the action queue; every module import
+     versioned (`?v=MODULE_V`).
 2. **Pieces, dice and boards.**
    - The piece model (`k:'g'`): tokens, tiles and dice with `roll`.
    - Board images, lock, owner and rotation steps.

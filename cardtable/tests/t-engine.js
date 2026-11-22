@@ -231,14 +231,11 @@ const eveHand = async (E) => (await eveView(E)).hand.length;
   // session leaves behind; the old count-based pick then hands the next
   // newcomer color #1 — the host's own.
   await host.goto(`${env.base}/cardtable/style.css`); // pagehide saves the table
-  await host.evaluate((cols) => {
-    const k = Object.keys(localStorage).find((x) => x.startsWith('ct-save-'));
-    const save = JSON.parse(localStorage.getItem(k));
-    const ps = save.state.players;
-    for (const [p, pl] of Object.entries(ps)) if (pl.name !== 'Alice') delete ps[p];
-    for (let i = 1; i < 8; i++) ps[`ab${i}`.padEnd(16, '0')] = { name: `Ghost${i}`, color: cols[i], online: false, hand: [], seat: 10 + i * 30 };
-    localStorage.setItem(k, JSON.stringify(save));
-  }, COLORS);
+  const room = invite.match(/#room~([0-9a-f]+)/)[1], save = await h.idb(host, 'saves', room);
+  const ps = save.state.players;
+  for (const [p, pl] of Object.entries(ps)) if (pl.name !== 'Alice') delete ps[p];
+  for (let i = 1; i < 8; i++) ps[`ab${i}`.padEnd(16, '0')] = { name: `Ghost${i}`, color: COLORS[i], online: false, hand: [], seat: 10 + i * 30 };
+  await h.plantSave(host, room, save.state);
   await host.goto(invite);
   await host.waitForSelector('.item.pile .count');
   const carol = await env.page('Carol');

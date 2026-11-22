@@ -1,5 +1,5 @@
 // Shared by the Node-only Phase 1 suites (core-p1.test.mjs, core-p1-bench.mjs):
-// the state core loaded straight from the checkout, checks in h.js's format,
+// the state core (and store.js) loaded straight from the checkout, checks in h.js's format,
 // seeded randomness and seeded tables. No browser and no Playwright: these
 // only need Node ≥ 22.7, which loads core.js (ES module syntax in a .js file,
 // with no package.json saying so) by syntax detection.
@@ -15,6 +15,10 @@ if (major < 22 || (major === 22 && minor < 7)) {
 /** The checkout under test: APP_ROOT, as for h.js (default: this one). */
 export const APP_ROOT = path.resolve(process.env.APP_ROOT || path.join(path.dirname(fileURLToPath(import.meta.url)), '../..'));
 export const core = await import(pathToFileURL(path.join(APP_ROOT, 'cardtable/core.js')));
+/** store.js: its pure parts (imageDims, checkImage, sha256hex, ingestDeck in memory) run in Node; IndexedDB does not. */
+export const store = await import(pathToFileURL(path.join(APP_ROOT, 'cardtable/store.js')));
+/** The image fixtures (tests/fixtures: 37 × 23 px each, see tests/README.md). */
+export const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 export const { RULES_TEMPLATES } = await import(pathToFileURL(path.join(APP_ROOT, 'cardtable/templates.js')));
 
 let failures = 0;

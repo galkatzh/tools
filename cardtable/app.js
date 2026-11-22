@@ -7,21 +7,24 @@
 // broadcast tick with only what changed — personalized and signed for each
 // guest (public table + that guest's private hand + hand counts for everyone
 // else). Transport is Trystero WebRTC with signaling over public Nostr relays
-// — no server, rooms are invite links. The host persists the game to
-// localStorage so reloading the invite link in the host's browser resumes the
+// — no server, rooms are invite links. The host saves the game in IndexedDB
+// (store.js) so reloading the invite link in the host's browser resumes the
 // room; if two hosts ever collide (e.g. a stale resume), the one with the
-// older state demotes itself to guest.
+// older state demotes itself to guest. Card images travel apart, by hash:
+// every peer caches them, and a guest asks the host only for those it lacks.
 //
 // The table's state and every operation on it live in core.js (no DOM, no
-// network); this file is the network, persistence, rendering, input, dialogs
-// and the terminal bridge around it. The shipped rules scripts are in templates.js.
+// network), storage in store.js; this file is the network, rendering, input,
+// dialogs and the terminal bridge around them. The shipped rules scripts are
+// in templates.js.
 import { joinRoom, selfId, getRelaySockets } from 'https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm';
 import {
-  CARD_W, CARD_H, IMG_RE, COLOR_RE, RANKS, RULES, playR, clampToFelt,
-  PID_RE, rand, clamp, own, num, cleanDeck, cleanName, standardDeck, cardName, createTable,
+  CARD_W, CARD_H, COLOR_RE, RANKS, RULES, playR, clampToFelt, PID_RE, ASSET_RE, rand, clamp, own, num, peerText,
+  cleanDeck, cleanDeckV1, deckOverBudget, assetRefs, cleanName, standardDeck, cardName, createTable,
   MODULE_V as CORE_V, PROTO, PUBLIC_ACTIONS, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch,
 } from './core.js?v=1';
 import { RULES_TEMPLATES, GAMES, MODULE_V as TEMPLATES_V } from './templates.js?v=1';
+import * as store from './store.js?v=1';
 
 /** This file's code version; every module it imports must carry the same (see core.js MODULE_V). */
 export const MODULE_V = 1;
@@ -48,14 +51,16 @@ function setTableSize(size) {
 }
 
 // --- loud error reporting -------------------------------------------------
-let toastT = 0;
-/** Shows a 5s notice: red (a problem) unless `ok` marks it as good news. */
-function toast(msg, ok) {
+let toastT = 0, pinned = ''; // pinned: a notice that stays up (it returns once later toasts expire)
+/** Shows a 5s notice: red (a problem) unless `ok` marks it as good news;
+ *  `pin` keeps it up for good. */
+function toast(msg, ok, pin) {
+  if (pin) pinned = msg;
   toastEl.classList.toggle('ok', !!ok);
   toastEl.textContent = msg;
   toastEl.classList.remove('hidden');
   clearTimeout(toastT);
-  toastT = setTimeout(() => toastEl.classList.add('hidden'), 5000);
+  if (msg !== pinned) toastT = setTimeout(() => (pinned ? toast(pinned) : toastEl.classList.add('hidden')), 5000);
 }
 window.addEventListener('error', (e) => { console.error(e.error || e.message); toast(`Error: ${e.message}`); });
 window.addEventListener('unhandledrejection', (e) => {
@@ -78,8 +83,9 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 //  • Seat ownership: each player holds a secret key that is only ever sent to
 //    the authenticated host; the host binds it to the seat on first contact,
 //    so a guest can't claim someone else's (publicly visible) player id.
-//  • Data hygiene: decks pass one sanitizer (strict image data-URLs, strict
-//    color grammar, size caps) before anything renders them.
+//  • Data hygiene: decks pass one sanitizer (images by hash only, strict
+//    color grammar, size caps) before anything renders them, and image bytes
+//    are checked (type, size, pixel size, hash) before any peer stores them.
 const ALG = { name: 'ECDSA', namedCurve: 'P-256' };
 const enc = (s) => new TextEncoder().encode(s);
 const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
@@ -161,22 +167,23 @@ let myName = AS || localStorage.getItem('ct-name') || `Player-${pid.slice(0, 4)}
 // --- game state -----------------------------------------------------------
 // T:      the table (host only): core.js's createTable() over the authoritative
 //         state {v, seq, size, items, players, keys, log, rules, decks, …}
-// decks:  {deckId: {name, back: dataURL|null, cards: [{img} | {r,s,c}]}} — the
-//         renderer's deck map; on the host it IS T.state.decks (commit())
+// decks:  {deckId: {name, back, backImg?, imgs: [asset id], cards: [{g?} | {r,s,c}]}}
+//         (core.js cleanDeck) — the renderer's deck map; on the host it IS
+//         T.state.decks (commit()). Images are drawn from store.js by asset id.
 // view:   what render() consumes, on every tab the host's included: the PUBLIC
 //         table {seq, boot, host, size, rules, items, players, log, hand},
 //         folded from the host's snapshots and patches (core.js viewFromSnap,
 //         applyViewPatch). Items are the public shape (piles {…, n, top}, no
 //         hidden ids); `hand` is this player's own.
 let role = null, roomId, password, room = null;
-let sendAct, sendState, sendDecks, sendNote, sendRules;
+let sendAct, sendState, sendDecks, sendNote, sendRules, stateSend, sendAsset; // (set by connect())
 let decks = {};
 let T = null;
 let view = viewFromSnap({ seq: 0, boot: 0 });
 let peerPid = {};    // host only: Trystero peerId -> stable player id
 let hostPeer = null; // guest only: peerId currently acting as host
 /** Counters and the last durations, for the tests and benchmarks (window.__ct). */
-const perf = { snaps: 0, patches: 0, gaps: 0, snapRequests: 0, lastApplyMs: 0, lastRenderMs: 0, lastTickMs: 0 };
+const perf = { snaps: 0, patches: 0, gaps: 0, snapRequests: 0, lastApplyMs: 0, lastRenderMs: 0, lastTickMs: 0, lastSaveSyncMs: 0 };
 
 // --- the host's action queue ------------------------------------------------
 // Every state change on the host runs through one FIFO, in arrival order: a
@@ -184,9 +191,9 @@ const perf = { snaps: 0, patches: 0, gaps: 0, snapRequests: 0, lastApplyMs: 0, l
 // closed), `_tick` (the rules' timers) and `_refuse` (an action turned away
 // before it ran: re-send what it named). Jobs are synchronous today, so a job
 // on an empty queue runs at once, in the caller's task, and the host's own
-// clicks feel instant. The seam for later phases: asynchronous preprocessing
-// (deck ingestion) runs before enqueue(), and a rules Worker would make a job
-// asynchronous.
+// clicks feel instant. Asynchronous preprocessing (deck ingestion) runs
+// before a job enters the queue (submit), and a rules Worker would make a
+// job asynchronous.
 const queue = [];
 let running = false;
 /** Host: queues player p's action `a`. Resolves {ok: true} once it changed
@@ -217,6 +224,35 @@ function runJob({ p, a, resolve }) {
   resolve(error ? { ok: false, error } : { ok: changed });
 }
 
+const ingests = new Map(); // host: player → their deck ingestion in progress (one at a time each)
+/** Host: hands player p's action to the queue — after its preprocessing,
+ *  for an action that has one. A deck (addDeck) is checked and measured at
+ *  once (cleanDeckV1; a guest's against the deck budget, before anything is
+ *  decoded), then ingested (store.js: its images decoded, checked and
+ *  stored) OUTSIDE the queue, one ingestion per player at a time: a big deck
+ *  takes seconds, and nobody's moves wait for it. It is queued once
+ *  ingested, so decks commit in the order their ingestion ends (nothing can
+ *  refer to a deck before it commits). A failure tells the actor and queues
+ *  nothing. Resolves like enqueue(). */
+function submit(p, a) {
+  if (a.t !== 'addDeck') return enqueue(p, a);
+  const reject = (err) => {
+    console.error('rejected a deck', err);
+    tell(p, `🚫 Deck rejected: ${err.message}`);
+    return { ok: false, error: err.message };
+  };
+  try {
+    const over = p !== pid && deckOverBudget(T.state.guestDeckChars || 0, JSON.stringify(cleanDeckV1(a.deck)).length);
+    if (over) throw new Error(over);
+  } catch (err) { return Promise.resolve(reject(err)); }
+  const run = (ingests.get(p) || Promise.resolve()).then(() => store.ingestDeck(a.deck)).then(({ deck, cost }) => (role === 'host'
+    ? enqueue(p, { ...a, deck, cost }) // the budget is checked again at commit: another guest's deck may come first
+    : { ok: false, error: 'this tab is no longer the host' }), reject);
+  ingests.set(p, run);
+  run.finally(() => { if (ingests.get(p) === run) ingests.delete(p); });
+  return run;
+}
+
 /** Host, after a job: carries out what the table queued and, when it changed
  *  (core renumbered it), broadcasts (coalesced) and saves. Returns the first
  *  refusal notice ("🚫 …") addressed to `actor`, if any. */
@@ -240,14 +276,14 @@ function commit(changed, actor) {
 const pendingActs = [];
 function act(a) {
   if (role === 'host') {
-    const done = enqueue(pid, a);
+    const done = submit(pid, a);
     flush(); // the host's own move shows at once, not on the next tick
     return done;
   }
   if (!room) { console.warn('action before the room is up', a); return Promise.resolve({ ok: false, error: 'not connected yet' }); }
   const target = hostPeer && room.getPeers()[hostPeer] ? hostPeer : null;
   if (!target) {
-    if (a.t !== 'hello' && a.t !== 'snap') {
+    if (a.t !== 'hello' && a.t !== 'snap' && a.t !== 'need') { // (an image request times out and asks again)
       pendingActs.push({ a, at: Date.now() });
       if (pendingActs.length > 30) pendingActs.shift();
       note('Reconnecting to the host — your move will be sent when it\'s back');
@@ -308,7 +344,7 @@ function drain(actor) {
       case 'ann': annQueue.push(e.msg); break;
       case 'note':
         if (e.p === actor && !refusal && e.msg.startsWith('🚫')) refusal = e.msg;
-        if (e.p === pid) note(e.msg); else noteTo(e.p, { msg: e.msg.slice(0, 200) });
+        tell(e.p, e.msg);
         break;
       case 'peek': if (e.p === pid) showPeek(e.c); else noteTo(e.p, { peek: e.c }); break;
       case 'toast': toast(e.msg); break;
@@ -325,6 +361,8 @@ function noteTo(p, body) {
     if (mapped === p) sendNote({ ...body, to: p }, peer);
   }
 }
+/** Host: a private notice for player p — this screen's own, or theirs. */
+const tell = (p, msg) => (p === pid ? note(msg) : noteTo(p, { msg: msg.slice(0, 200) }));
 
 function scheduleBroadcast() {
   if (!bcastT) bcastT = setTimeout(broadcast, 40);
@@ -430,10 +468,43 @@ function demote() {
   clearTimeout(persistT);
   bcastT = persistT = 0;
   for (const job of queue.splice(0)) job.resolve({ ok: false, error: 'this tab is no longer the host' });
+  outbox.clear();
   T = null;
   view.boot = 0;
   $('size-sel').classList.add('hidden');
 }
+
+const LANE_MAX = 64; // state bodies a peer's lane may hold waiting (see connect())
+const lanes = new Map(); // host: peer → its lane {q: bodies waiting, busy: one in flight, over: dropping until it drains, idle: waiters}
+/** Host: queues a sealed state body for peer, in its lane (see connect()). */
+function laneSend(m, peer) {
+  const L = lanes.get(peer) || lanes.set(peer, { q: [], busy: false, over: false, idle: [] }).get(peer);
+  if (L.over) return;
+  if (L.q.length >= LANE_MAX) {
+    console.warn(`the state lane to ${peer} backed up (${LANE_MAX} bodies waiting): dropped them, and a fresh snapshot follows once it drains`);
+    L.q.length = 0;
+    L.over = true;
+    return;
+  }
+  L.q.push(m);
+  if (!L.busy) drainLane(peer, L);
+}
+/** Sends lane L's bodies one by one; once it is empty, wakes laneIdle()'s
+ *  waiters, and a lane that overflowed asks for its peer's snapshot. */
+async function drainLane(peer, L) {
+  L.busy = true;
+  while (L.q.length) {
+    try { await stateSend(L.q.shift(), peer); } catch (err) { console.error('state send failed', err); } // the guest's gap recovery covers the loss
+  }
+  L.busy = false;
+  for (const wake of L.idle.splice(0)) wake();
+  if (L.over && lanes.get(peer) === L) {
+    L.over = false;
+    if (role === 'host') wantSnap(peer); // (rate-limited like any request)
+  }
+}
+/** Resolves once peer's lane has sent what it holds (at once when it is empty). */
+const laneIdle = (peer) => new Promise((wake) => { const L = lanes.get(peer); if (L?.busy) L.idle.push(wake); else wake(); });
 
 let registered = false; // guest: the host has bound our seat (we got a state addressed to us)
 let lastIntro = 0;
@@ -539,6 +610,157 @@ function refuse(peer, reason) {
   sendNote({ msg: `🚫 ${reason}`, to: null }, peer);
 }
 
+// --- card images: pulled by hash ------------------------------------------------
+// Decks name their images by asset id; the bytes travel apart, on their own
+// channel, only when asked for, and only from the host. A guest asks for the
+// ones it holds neither in memory nor in IndexedDB (`need`, NEED_BATCH ids
+// a request). The host sends each one this table shows — never another
+// room's: its image store is shared by every room this browser hosted —
+// paced per peer, after that peer's pending states, within a byte budget,
+// and names the ones it lacks (a `missing` note). Nothing waits forever: a
+// request left unanswered for NEED_TIMEOUT_MS is asked again once, then the
+// image counts as missing, as does one that arrives damaged twice.
+const NEED_BATCH = 64, NEED_TIMEOUT_MS = 20000;
+const ASSET_INFLIGHT = 2, PEER_ASSET_BUDGET = 64e6, ASSET_WINDOW_MS = 60000;
+const pending = new Map(); // guest: image asked of the host → {at: when, tries: requests so far}
+const missingImgs = new Set(); // images that won't come: their sides show as missing
+const loadingImgs = new Set(); // images being read from IndexedDB
+let lastImageAt = 0; // guest: when the host last delivered an image (a long pull is progress, not a timeout)
+/** What the image cache's GC must spare: the images of the decks this tab shows, and those it is pulling. */
+const keepImages = () => new Set([...assetRefs(decks), ...pending.keys()]);
+
+/** Gets images `ids` this tab doesn't hold yet: from IndexedDB, else (a
+ *  guest) from the host. The host's own images come from its storage only:
+ *  what that lacks is missing (the boot check said so). */
+function wantImages(ids) {
+  const fresh = ids.filter((h) => !store.getAssetURL(h) && !missingImgs.has(h) && !loadingImgs.has(h) && !pending.has(h));
+  if (!fresh.length) return;
+  for (const h of fresh) loadingImgs.add(h);
+  Promise.all(fresh.map((h) => store.loadAsset(h).catch((err) => { console.error('reading a cached image failed', h, err); return null; })))
+    .then((urls) => {
+      for (const h of fresh) loadingImgs.delete(h);
+      const lack = fresh.filter((_, k) => !urls[k]);
+      if (lack.length < fresh.length) imagesArrived(fresh.filter((_, k) => urls[k]));
+      if (lack.length && role === 'host') giveUp(lack);
+      else if (lack.length) askHost(lack);
+    });
+}
+let asking = new Set(), askT = 0; // guest: images to ask for in the next request(s)
+/** Guest: asks the host for images `ids` — gathered for a moment, so faces
+ *  that want their images one by one make few requests (each costs a token
+ *  of the host's flood control). */
+function askHost(ids) {
+  const now = Date.now();
+  for (const h of ids) { pending.set(h, { at: now, tries: (pending.get(h)?.tries || 0) + 1 }); asking.add(h); }
+  askT ||= setTimeout(() => {
+    const all = [...asking];
+    asking = new Set();
+    askT = 0;
+    for (let k = 0; k < all.length; k += NEED_BATCH) act({ t: 'need', a: all.slice(k, k + NEED_BATCH) });
+  }, 50);
+}
+// Requests the host left unanswered: asked again once, then given up on.
+setInterval(() => {
+  const now = Date.now(), late = [...pending].filter(([, x]) => now - Math.max(x.at, lastImageAt) > NEED_TIMEOUT_MS);
+  const again = late.filter(([, x]) => x.tries < 2).map(([h]) => h), gone = late.filter(([, x]) => x.tries >= 2).map(([h]) => h);
+  if (again.length) { console.warn(`${again.length} image requests went unanswered — asking again`); askHost(again); }
+  if (gone.length) giveUp(gone, `${gone.length} card images are missing on the host — ask them to re-add the deck`);
+}, 2000);
+/** Stops waiting for images `ids`: their sides show as missing, loudly
+ *  (`msg`: a toast too). */
+function giveUp(ids, msg) {
+  for (const h of ids) { pending.delete(h); missingImgs.add(h); }
+  console.error(msg || 'card images are missing from this browser\'s storage', ids);
+  if (msg) toast(msg);
+  imagesArrived(ids);
+}
+
+/** Guest: image bytes on the `asset` channel. Unsigned, so taken only from
+ *  the host, only when asked for, and only if they pass store.putAsset's
+ *  checks: the type and its magic bytes, ≤ ASSET_MAX_BYTES, the pixel size
+ *  in the header (imageDims), and the hash. Anything else is dropped; a
+ *  damaged image is asked for again once. */
+function receiveImage(data, peer, meta) {
+  const h = peerText(meta?.h);
+  if (role !== 'guest' || peer !== hostPeer) { console.warn('dropped an image that did not come from the host', peer); return; }
+  if (!pending.has(h)) { console.warn('dropped an image nobody asked for', h.slice(0, 16)); return; }
+  lastImageAt = Date.now();
+  store.putAsset(ArrayBuffer.isView(data) ? data : new Uint8Array(0), peerText(meta?.mime), h).then(() => {
+    pending.delete(h);
+    imagesArrived([h]);
+  }, (err) => {
+    console.error('a card image from the host failed its checks', h, err);
+    if (!pending.has(h)) return; // another copy made it
+    if (pending.get(h).tries < 2) {
+      toast('A card image from the host was damaged in transit — retrying');
+      askHost([h]);
+    } else giveUp([h], 'A card image from the host arrived damaged again — it shows as missing');
+  });
+}
+
+const outbox = new Map(); // host: peer → its image queue {q, queued, inflight, sent: Map<id, {at, n}>, since, bytes, warned}
+/** Host: peer (player p) asked for images `list` (a need, ≤ NEED_BATCH ids):
+ *  queues the ones this table shows and this browser holds, names the ones
+ *  it lacks in a `missing` note, and ignores the rest. The same image goes
+ *  to the same peer at most twice a minute (a guest asks again once, when
+ *  one arrives damaged). */
+async function serveImages(peer, p, list) {
+  const refs = T.assetRefs(), now = Date.now();
+  const box = outbox.get(peer) || outbox.set(peer, { q: [], queued: new Set(), inflight: 0, sent: new Map(), since: now, bytes: 0, warned: false }).get(peer);
+  const asked = (Array.isArray(list) ? list.slice(0, NEED_BATCH) : []).filter((h) => typeof h === 'string' && ASSET_RE.test(h));
+  const ids = asked.filter((h) => {
+    const s = box.sent.get(h);
+    return refs.has(h) && !box.queued.has(h) && !(s && now - s.at < ASSET_WINDOW_MS && s.n >= 2);
+  });
+  const foreign = asked.filter((h) => !refs.has(h)).length;
+  if (foreign) console.warn(`${peer} asked for ${foreign} images this table doesn't show — ignored`);
+  for (const h of ids) box.queued.add(h);
+  const held = await Promise.all(ids.map((h) => store.has(h).catch((err) => { console.error('looking up an image failed', h, err); return false; })));
+  const lack = ids.filter((_, k) => !held[k]);
+  for (const h of lack) box.queued.delete(h);
+  if (lack.length) {
+    console.error(`${peer} asked for ${lack.length} images of this table that this browser doesn't hold`, lack);
+    sendNote({ missing: lack, to: p }, peer);
+  }
+  if (outbox.get(peer) !== box) return; // the peer left meanwhile
+  box.q.push(...ids.filter((_, k) => held[k]));
+  pumpImages(peer, box);
+}
+/** Host: keeps up to ASSET_INFLIGHT image sends going to peer. */
+function pumpImages(peer, box) {
+  while (box.inflight < ASSET_INFLIGHT && box.q.length) {
+    const h = box.q.shift();
+    box.inflight++;
+    sendImage(peer, box, h).catch((err) => console.error('sending an image failed', h, err)).finally(() => {
+      box.queued.delete(h);
+      box.inflight--;
+      if (outbox.get(peer) === box) pumpImages(peer, box);
+    });
+  }
+}
+/** Host: sends image h to peer, once its pending states are out, if the
+ *  peer's byte budget (PEER_ASSET_BUDGET per ASSET_WINDOW_MS) allows. */
+async function sendImage(peer, box, h) {
+  await laneIdle(peer); // states first: play stays live during a big pull
+  const img = await store.getAsset(h), now = Date.now();
+  if (!img) {
+    console.error('an image of this table is gone from this browser\'s storage', h);
+    sendNote({ missing: [h], to: peerPid[peer] ?? null }, peer);
+    return;
+  }
+  if (now - box.since > ASSET_WINDOW_MS) Object.assign(box, { since: now, bytes: 0, warned: false });
+  if (box.bytes + img.data.byteLength > PEER_ASSET_BUDGET) {
+    console.warn(`${peer} is over its image budget (${PEER_ASSET_BUDGET / 1e6} MB a minute): dropped its requests`);
+    for (const x of box.q.splice(0)) box.queued.delete(x);
+    if (!box.warned) { box.warned = true; sendNote({ msg: '🚫 Too many image requests — slow down', to: peerPid[peer] ?? null }, peer); }
+    return;
+  }
+  box.bytes += img.data.byteLength;
+  const s = box.sent.get(h);
+  box.sent.set(h, s && now - s.at < ASSET_WINDOW_MS ? { at: s.at, n: s.n + 1 } : { at: now, n: 1 });
+  await sendAsset(img.data, peer, { h, mime: img.mime });
+}
+
 function connect() {
   // window.CARDTABLE_RELAYS overrides the default public Nostr relays (tests, self-hosting).
   // redundancy 10 (default 5): more relays per room = better odds that two
@@ -550,6 +772,7 @@ function connect() {
   const decksA = room.makeAction('decks');
   const noteA = room.makeAction('note');
   const rulesA = room.makeAction('rules');
+  const assetA = room.makeAction('asset');
   // Host → guest channels are signed in send order (sealing is async, the
   // queue keeps it FIFO); guests verify them in arrival order the same way.
   // Bodies are sealed as JSON text: a state is spliced from the tick's shared text.
@@ -559,18 +782,17 @@ function connect() {
     sealQ = sealed.catch((err) => console.error(`signing a ${what} failed`, err)); // keeps the FIFO alive
     return sealed.then((m) => send(m, target)).catch((err) => console.error(`${what} send failed`, err));
   };
-  // A peer's states go out one at a time. Trystero chunks each message in a
-  // loop of its own, so a one-chunk patch sent while a big snapshot is still
-  // being chunked would arrive first: the guest would drop it as a gap, and
-  // every patch after it. Each send starts once the one before it to that
-  // peer is done (Trystero resolves when every chunk is on the ordered channel).
-  const lanes = new Map(); // peer → its last state send (never rejects: failures are logged)
-  const laneSend = (m, peer) => {
-    const sent = (lanes.get(peer) || Promise.resolve()).then(() => stateA.send(m, { target: peer }))
-      .catch((err) => console.error('state send failed', err)); // the lane moves on; the guest's gap recovery covers the loss
-    lanes.set(peer, sent);
-    return sent;
-  };
+  // A peer's states go out one at a time, in a lane: Trystero chunks each
+  // message in a loop of its own, so a one-chunk patch sent while a big
+  // snapshot is still being chunked would arrive first, and the guest would
+  // drop it as a gap, and every patch after it. Each send starts once the one
+  // before it to that peer is done (Trystero resolves when every chunk is on
+  // the ordered channel). A lane that backs up (its peer stopped reading, or
+  // its link stalled) must not grow for as long as that lasts: past LANE_MAX
+  // waiting bodies they are all dropped, the lane takes nothing until it
+  // drains, and then that peer gets one fresh snapshot instead of a backlog.
+  stateSend = (m, peer) => stateA.send(m, { target: peer });
+  sendAsset = (data, peer, meta) => assetA.send(data, { target: peer, metadata: meta });
   // States and notes always go to one peer: its connection id (`tp`) is
   // signed into the body, so a copy relayed to anyone else is dropped.
   const bound = (send) => (data, target) => send({ ...data, tp: target }, target);
@@ -596,9 +818,16 @@ function connect() {
     if (role === 'host' || !n || (n.to && n.to !== pid)) return;
     if (n.msg) note(String(n.msg)); // toast + the terminal bridge
     if (n.peek && n.to === pid) showPeek({ d: String(n.peek.d), i: num(n.peek.i, -1) }); // the host's private answer to our peek
+    if (Array.isArray(n.missing)) { // images we asked for that the host doesn't hold
+      const gone = n.missing.filter((h) => pending.has(h));
+      if (gone.length) giveUp(gone, `${gone.length} card image${gone.length > 1 ? 's are' : ' is'} missing on the host — ask them to re-add the deck`);
+    }
   }, true);
   rulesA.onMessage = fromHost((r) => { if (role !== 'host') guestRules = { code: String(r?.code || ''), name: String(r?.name || '') }; });
   stateA.onMessage = fromHost(handleState, true);
+  // Images: unsigned, so taken only from the host, only when asked for, and
+  // only once their bytes check out (receiveImage).
+  assetA.onMessage = (data, { peerId, metadata }) => receiveImage(data, peerId, metadata);
   // Deck messages are deltas (or the full map for new joiners) — always merge,
   // re-sanitized here too (defense in depth, and legacy unsigned rooms).
   decksA.onMessage = fromHost((d) => {
@@ -608,7 +837,13 @@ function connect() {
       if (!/^[0-9a-f]{8}$/.test(id)) { console.warn('ignored a deck with a bad id', id); continue; }
       try { decks[id] = cleanDeck(deck); got.push(id); } catch (err) { console.error(`deck ${id} rejected`, err); }
     }
-    decksArrived(got);
+    // Their images: from memory, IndexedDB or the host, all in one go (before
+    // the redraw asks for them face by face). A new decks message (the host
+    // is back, say) gives the images we gave up on another chance.
+    const imgs = [...assetRefs(Object.fromEntries(got.map((id) => [id, decks[id]])))];
+    for (const h of imgs) missingImgs.delete(h);
+    wantImages(imgs);
+    arrived(itemsByDeck, got, (z) => got.includes(z.d));
   });
 
   actA.onMessage = (a, { peerId: peer }) => {
@@ -660,7 +895,8 @@ function connect() {
     // A keyed hello comes only from a guest that hasn't had a state addressed
     // to it (introduce): one that answers it may be lost, so it asks for one too.
     if (action.t === 'snap' || action.t === 'hello') wantSnap(peer);
-    enqueue(p, action);
+    if (action.t === 'need') serveImages(peer, p, action.a);
+    submit(p, action);
   };
 
   room.onPeerJoin = () => {
@@ -678,7 +914,9 @@ function connect() {
     if (role !== 'host') return;
     clearTimeout(sync.get(peer)?.timer);
     sync.delete(peer);
+    if (lanes.has(peer)) lanes.get(peer).q.length = 0;
     lanes.delete(peer);
+    outbox.delete(peer);
     incompatible.delete(peer);
     const p = peerPid[peer];
     delete peerPid[peer];
@@ -689,7 +927,6 @@ function connect() {
 // hellos (or their answers) lost in connection churn and a host that comes
 // back after a reload.
 setInterval(() => { if (room && role === 'guest' && !registered) introduce(); }, 3000);
-window.addEventListener('pagehide', () => { try { room?.leave(); } catch (e) { console.error(e); } });
 
 /** Open WebSockets to signaling relays right now. 0 = we're invisible. */
 function openRelays() {
@@ -742,98 +979,75 @@ setInterval(() => {
 }, 5000);
 
 // --- host persistence -----------------------------------------------------
-// Two keys per room: ct-decks-<room> (the big image data, rewritten only when
-// a deck is added) and ct-save-<room> = {ts, state} (small, throttle-saved).
-// When storage is full, other rooms' saves are deleted oldest first (see
-// oldSaves()); if this table still can't be saved, a tiny {lost} marker
-// replaces the snapshot, so a reload never quietly rewinds to stale state —
-// it resets the table loudly (and this browser stays the host instead of
-// waiting in its own room).
-let persistT = 0, lastSave = 0, persistWarned = false;
-let savedDecks = -1; // how many decks storage holds: decks are append-only, so a new count means "rewrite"
-function doSave() {
-  if (role !== 'host') return; // a demoted host's pending timer must not clobber the winner's save
+// The table is saved in IndexedDB (store.js): the state at most once a
+// second (throttled, not debounced: a busy game still hits storage), one
+// write at a time; each deck once, into the room's catalog, in the same
+// transaction as the first save that has it. When storage is full, store.js
+// makes room (other rooms' saves, oldest first); if the table still can't
+// be saved, a tiny lost marker replaces the save, so a reload never quietly
+// rewinds to stale state — it resets the table loudly (and this browser
+// stays the host instead of waiting in its own room).
+// An IndexedDB write started as the page goes away may never commit, so
+// pagehide also leaves the seq it meant to save in localStorage (synchronous):
+// ct-pending-<room>. A commit of that seq removes it; a boot that finds it
+// ahead of the save says the last moment of play was lost.
+let persistT = 0, lastSave = 0, saving = false, again = false, persistWarned = false;
+let savedSeq = -1; // host: the seq of the last save that committed
+let noSave = ''; // host: why this tab never writes its room's save ('' = it does)
+const savedCatalog = new Set(); // host: the deck ids this room's catalog holds
+const pendingKey = () => `ct-pending-${roomId}`;
+/** Writes the table (host), see above; a request made while a write is in
+ *  flight runs once it is done — unless the page is `leaving`: then it
+ *  starts at once (IndexedDB runs the two in order). perf.lastSaveSyncMs:
+ *  its main-thread part. */
+async function doSave(leaving) {
+  if (role !== 'host' || noSave) return; // a demoted host's pending timer must not clobber the winner's save
+  if (saving && !leaving) { again = true; return; }
+  saving = true;
   lastSave = Date.now();
-  const n = Object.keys(decks).length, deckJson = n !== savedDecks ? JSON.stringify(decks) : '';
-  const saveJson = JSON.stringify({ ts: Date.now(), state: T.snapshot() });
-  let old = null, freed = 0;
-  for (;;) {
-    try {
-      if (n !== savedDecks) {
-        savedDecks = -1;
-        localStorage.setItem(`ct-decks-${roomId}`, deckJson);
-        savedDecks = n;
-      }
-      localStorage.setItem(`ct-save-${roomId}`, saveJson);
-      if (freed) toast(`Browser storage was full — deleted ${freed} old table save${freed > 1 ? 's' : ''} to keep this one`);
-      persistWarned = false;
-      return;
-    } catch (err) {
-      if (err.name === 'QuotaExceededError' && (old ??= oldSaves(deckJson.length + saveJson.length)).length) {
-        const id = old.shift();
-        console.warn('browser storage full — deleting the save of an older room', id);
-        // (its ct-hostkey stays: tiny, and a tab still hosting that room needs it to resume)
-        localStorage.removeItem(`ct-save-${id}`);
-        localStorage.removeItem(`ct-decks-${id}`);
-        freed++;
-        continue;
-      }
-      console.error('failed to persist game', err);
-      const why = err.name === 'QuotaExceededError' ? 'browser storage is full' : `auto-save failed: ${err.message}`;
-      try {
-        localStorage.removeItem(`ct-decks-${roomId}`);
-        savedDecks = -1; // the next save that fits must write the decks again, or the state alone would "resume" without them
-        localStorage.setItem(`ct-save-${roomId}`, JSON.stringify({ ts: Date.now(), lost: why }));
-      } catch (e) { console.error('could not even mark the save as lost', e); }
-      if (!persistWarned) { persistWarned = true; toast(`Can't save this table (${why}) — reloading the host tab would reset it`); }
-      return;
-    }
+  try {
+    const t0 = performance.now(), state = T.snapshot(), all = T.state.decks;
+    const fresh = Object.keys(all).filter((id) => !savedCatalog.has(id)).map((id) => ({ id, kind: 'deck', deck: all[id] }));
+    const write = store.saveTable(roomId, state, fresh); // synchronously, the structured clone of the state
+    perf.lastSaveSyncMs = performance.now() - t0;
+    const pruned = await write;
+    savedSeq = state.seq;
+    for (const c of fresh) savedCatalog.add(c.id);
+    if (pruned) toast(`Browser storage was full — deleted ${pruned} old table save${pruned > 1 ? 's' : ''} to keep this one`);
+    persistWarned = false;
+    if (+localStorage.getItem(pendingKey()) <= state.seq) localStorage.removeItem(pendingKey());
+  } catch (err) {
+    console.error('failed to persist game', err);
+    savedCatalog.clear(); // the save is a lost marker now: the next one that fits writes every deck again
+    if (!persistWarned) { persistWarned = true; toast(`Can't save this table (${err.message}) — reloading the host tab would reset it`); }
+  } finally {
+    saving = false;
+    if (again) { again = false; doSave(); }
   }
 }
-/** Other rooms' saves that pruning may delete to fit `need` more chars,
- *  oldest first (saves without a ts — older versions — go first). Spared:
- *  saves written in the last 30 s (another tab is hosting that room right
- *  now — evicting each other would be endless), and all of them when even
- *  deleting every one couldn't make room (unrelated tables lost for nothing). */
-function oldSaves(need) {
-  const old = Object.keys(localStorage).filter((k) => k.startsWith('ct-save-') && k !== `ct-save-${roomId}`)
-    .map((k) => {
-      const id = k.slice('ct-save-'.length), raw = localStorage.getItem(k);
-      let ts = 0;
-      try { ts = num(JSON.parse(raw)?.ts); } catch (err) { console.error('unreadable save', k, err); }
-      return { id, ts, size: raw.length + (localStorage.getItem(`ct-decks-${id}`)?.length || 0) };
-    })
-    .filter((x) => x.ts < Date.now() - 30000);
-  const bytes = old.reduce((sum, x) => sum + x.size, 0);
-  if (bytes < need) { console.warn(`not pruning other saves: this table (${need} chars) is bigger than all of them (${bytes})`); return []; }
-  return old.sort((a, b) => a.ts - b.ts).map((x) => x.id);
-}
-// Another tab of this browser may delete this room's decks (storage-full
-// pruning above): write them again with the next save.
-window.addEventListener('storage', (e) => { if (e.key === `ct-decks-${roomId}` && e.newValue == null) savedDecks = -1; });
-// Throttled (not debounced!) — a busy game must still hit storage regularly.
 function persist() {
-  if (role !== 'host' || persistT) return;
+  if (role !== 'host' || noSave || persistT) return;
   persistT = setTimeout(() => { persistT = 0; doSave(); }, Math.max(0, 1000 - (Date.now() - lastSave)));
 }
+// Leaving: the table's last moment is saved first (if it isn't yet), then the
+// room is left — which marks the guests offline, a change not worth a save.
 window.addEventListener('pagehide', () => {
-  if (role === 'host') { clearTimeout(persistT); persistT = 0; doSave(); }
-});
-/** This room's save: {decks, state}, {lost: why} when it can't be resumed, or null if this browser never hosted it. */
-function loadSave() {
-  const raw = localStorage.getItem(`ct-save-${roomId}`);
-  if (!raw) return null;
-  try {
-    const s = JSON.parse(raw);
-    if (typeof s?.lost === 'string') return s;
-    if (!s?.state?.items || !s.state.players) throw new Error('the save holds no table');
-    s.decks ??= JSON.parse(localStorage.getItem(`ct-decks-${roomId}`) || 'null'); // older saves embed their decks
-    if (!s.decks) throw new Error('the saved decks are missing');
-    return s;
-  } catch (err) {
-    console.error('corrupt save discarded', err);
-    return { lost: `the save is unreadable: ${err.message}` };
+  if (role === 'host' && !noSave && T.state.seq !== savedSeq) {
+    try { localStorage.setItem(pendingKey(), String(T.state.seq)); } catch (err) { console.error('could not mark the save as pending', err); }
+    clearTimeout(persistT);
+    persistT = 0;
+    doSave(true);
   }
+  try { room?.leave(); } catch (err) { console.error('leaving the room failed', err); }
+});
+/** Host, at boot: a save this tab left pending (pagehide) that never committed is said, once. */
+function checkPending(save) {
+  const mark = localStorage.getItem(pendingKey());
+  if (mark === null) return;
+  localStorage.removeItem(pendingKey());
+  if (save?.lost || +mark <= num(save?.state?.seq)) return;
+  console.warn(`the last save before the reload never committed (seq ${mark}; the save has ${save?.state?.seq ?? 'none'})`);
+  toast("The last moment of play before the reload wasn't saved (the browser closed first)");
 }
 
 // --- rendering ------------------------------------------------------------
@@ -853,11 +1067,30 @@ function contrastFor(color) {
   const [r, g, b] = m.slice(1).map((x) => parseInt(x, 16));
   return 0.299 * r + 0.587 * g + 0.114 * b < 140 ? '#f8fafc' : '#1e293b';
 }
+/** The image a card side shows — a face's, or its deck's image back — as
+ *  an asset id; undefined for a drawn face or back, or a deck not here yet. */
+function sideImage(d, i, up) {
+  const deck = decks[d];
+  if (!up) return deck?.backImg;
+  const g = deck?.cards[i]?.g; // g: the card's entry in imgs (copies share one image)
+  return g === undefined ? undefined : deck.imgs[g];
+}
+/** Whether image h is drawn ('u'), missing for good ('x') or on its way ('l'): part of an item's signature. */
+const imageState = (h) => (!h ? '' : store.getAssetURL(h) ? 'u' : missingImgs.has(h) ? 'x' : 'l');
+/** An image side (cls: face or back): the picture once this tab holds it
+ *  (an object URL from store.js, never a peer's string), else a placeholder
+ *  while it is fetched (wantImages), or the missing look for good. */
+function imageHTML(h, cls) {
+  const url = store.getAssetURL(h);
+  if (url) return `<img class="${cls}" src="${esc(url)}" alt="">`;
+  wantImages([h]);
+  if (missingImgs.has(h)) return `<div class="${cls} missing" title="This card's image is missing"><s>🖼</s></div>`;
+  return cls === 'face' ? '<div class="face loading">🂠</div>' : '<div class="back"></div>';
+}
 function faceHTML(d, i) {
   const deck = decks[d], c = deck?.cards[i];
   if (!c) return '<div class="face loading">🂠</div>'; // deck data not yet received
-  const img = c.img ?? (c.g != null ? deck.imgs?.[c.g] : null); // g: shared-image index (copies ship the image once)
-  if (img) return `<img class="face" src="${esc(img)}" alt="">`;
+  if (c.g !== undefined) return imageHTML(deck.imgs[c.g], 'face');
   if (c.r === 'JOKER') return `<div class="face std ${c.c}"><div class="corner">★</div><div class="mid joker">🃏</div><div class="corner br">★</div></div>`;
   if (c.r) return `<div class="face std ${c.c}"><div class="corner">${c.r}\n${c.s}</div><div class="mid"><div class="mr">${c.r}</div><div class="ms">${c.s}</div></div><div class="corner br">${c.r}\n${c.s}</div></div>`;
   // Image-less custom card: rendered from its manifest name/text/colors.
@@ -866,10 +1099,9 @@ function faceHTML(d, i) {
   return `<div class="face txt" style="${style}"><div class="tn">${esc(c.n || '')}</div>${c.txt ? `<div class="tt">${esc(c.txt)}</div>` : ''}</div>`;
 }
 function backHTML(d) {
-  const b = decks[d]?.back;
-  if (!b) return '<div class="back"></div>';
-  if (IMG_RE.test(b)) return `<img class="back" src="${esc(b)}" alt="">`;
-  return `<div class="back" style="background:${safeColor(b)}"></div>`; // solid-color back
+  const deck = decks[d];
+  if (deck?.backImg) return imageHTML(deck.backImg, 'back');
+  return deck?.back ? `<div class="back" style="background:${safeColor(deck.back)}"></div>` : '<div class="back"></div>'; // a solid-color back, or the pattern
 }
 
 /** Markup for a PUBLIC item (see publicItems: piles carry n + top). */
@@ -924,25 +1156,48 @@ function flyToSeat(o, p, n) {
 }
 
 // Late arrivals: a deck can land after the items that show it (a joiner's
-// snapshot outruns the deck images). Each item is indexed by the deck its face
-// shows (a pile by its top), so the deck's arrival redraws exactly those.
-const itemsByDeck = new Map(), deckOf = new Map(); // deck id → item ids; item id → deck id
-function indexDeck(id, it) {
-  const d = it && (it.k === 'c' ? it.d : it.top?.d), was = deckOf.get(id);
-  if (d === was) return;
-  itemsByDeck.get(was)?.delete(id);
-  if (d === undefined) { deckOf.delete(id); return; }
-  deckOf.set(id, d);
-  if (!itemsByDeck.has(d)) itemsByDeck.set(d, new Set());
-  itemsByDeck.get(d).add(id);
+// snapshot outruns the decks), and an image after both. Each item is indexed
+// by the deck and the image its visible side shows (a pile's by its top), so
+// an arrival redraws exactly those: dirty-set rendering redraws only items
+// whose public data changed.
+/** A late-arrival index: key (a deck or asset id) → the ids of the items showing it. */
+function showing() {
+  const by = new Map(), of = new Map(); // key → item ids; item id → key
+  return {
+    get: (k) => by.get(k) || [],
+    /** Item `id` now shows `k` (undefined: nothing, or it is gone). */
+    set(id, k) {
+      const was = of.get(id);
+      if (k === was) return;
+      by.get(was)?.delete(id);
+      if (k === undefined) { of.delete(id); return; }
+      of.set(id, k);
+      if (!by.has(k)) by.set(k, new Set());
+      by.get(k).add(id);
+    },
+  };
 }
-/** Guest: decks `ids` arrived — redraw the items, the hand and an open zoom that show them. */
-function decksArrived(ids) {
+const itemsByDeck = showing(), itemsByAsset = showing();
+/** What arrived — `ids` of `index`: decks, or images — redraws the items
+ *  showing it, the hand (it may hold placeholders: handSig) and an open zoom
+ *  or peek that `zoomShows`. */
+function arrived(index, ids, zoomShows) {
   const prev = new Map();
-  for (const d of ids) for (const id of itemsByDeck.get(d) || []) prev.set(id, view.items[id]);
-  handSig = ''; // the hand may hold placeholders for these decks: redraw it even if the hand didn't change
-  if (zoomed && !peekEl.classList.contains('hidden') && ids.includes(zoomed.d)) showZoom(zoomed.d, zoomed.i, zoomed.caption);
+  for (const k of ids) for (const id of index.get(k)) prev.set(id, view.items[id]);
+  handSig = '';
+  if (zoomed && !peekEl.classList.contains('hidden') && zoomShows(zoomed)) showZoom(zoomed.d, zoomed.i, zoomed.caption);
   renderAll(prev);
+}
+let landed = new Set(), landT = 0;
+/** Images `ids` arrived, or turned out missing: their items redraw, in batches (a big pull lands many at once). */
+function imagesArrived(ids) {
+  for (const h of ids) landed.add(h);
+  landT ||= setTimeout(() => {
+    const hs = [...landed];
+    landed = new Set();
+    landT = 0;
+    arrived(itemsByAsset, hs, (z) => hs.includes(sideImage(z.d, z.i, true)));
+  }, 30);
 }
 
 /** Draws the items: those in `prev` (a Map of id → the public item it
@@ -956,9 +1211,11 @@ function renderItems(prev, prevPlayers = new Map()) {
   const ids = prev ? prev.keys() : new Set([...itemEls.keys(), ...Object.keys(view.items).sort((a, b) => num(view.items[a].z) - num(view.items[b].z))]);
   const move = prev && !calm.matches && motionSources(prev, prevPlayers);
   for (const id of ids) {
-    const it = view.items[id], before = prev?.get(id);
+    const it = view.items[id], before = prev?.get(id), side = it && (it.k === 'c' ? it : it.top);
+    const img = side && sideImage(side.d, side.i, side.up);
     let el = itemEls.get(id);
-    indexDeck(id, it);
+    itemsByDeck.set(id, side?.d);
+    itemsByAsset.set(id, img);
     if (!it) {
       if (el) { el.remove(); itemEls.delete(id); }
       continue;
@@ -977,8 +1234,8 @@ function renderItems(prev, prevPlayers = new Map()) {
       }
     }
     const sig = it.k === 'c'
-      ? `c|${it.d}|${it.i}|${it.up}|${!!decks[it.d]}`
-      : `p|${it.n}|${JSON.stringify(it.top)}|${it.name}|${!!decks[it.top?.d]}`;
+      ? `c|${it.d}|${it.i}|${it.up}|${!!decks[it.d]}|${imageState(img)}`
+      : `p|${it.n}|${JSON.stringify(it.top)}|${it.name}|${!!decks[it.top?.d]}|${imageState(img)}`;
     if (el.dataset.sig !== sig) {
       el.dataset.sig = sig;
       el.innerHTML = contentFor(it);
@@ -1290,10 +1547,6 @@ function layout() {
   tableEl.style.left = `${(w - TABLE_W) / 2}px`;
   tableEl.style.top = `${(h - TABLE_H) / 2}px`;
   tableEl.style.transform = `translate(${panX}px, ${panY}px) rotate(${viewAngle}deg) scale(${scale})`;
-  // Cards drawn tiny (a phone's fit view of a big table) skip their
-  // upside-down corner index, a few pixels tall at that size: its rotation
-  // is a paint node per card, which every pan frame re-processes (B4).
-  tableEl.classList.toggle('tiny', scale < 0.25);
   hintEl.style.transform = `rotate(${-viewAngle}deg)`; // keep the hint readable
   if (sel) placeBar();
   for (const b of bulbs.values()) placeFx(b);
@@ -1987,12 +2240,20 @@ async function manifestDeck(m, images) {
 // the dialog meanwhile (Cancel/Escape) abandons that build — its result is
 // dropped even if the player has reopened the dialog since.
 let deckBuild = 0; // bumped on every close: a build that started before is stale
+let persistAsked = false; // host: navigator.storage.persist() was asked, from its first upload
 const deckBtn = (busy) => { $('deck-add').disabled = busy; $('deck-add').textContent = busy ? 'Building…' : 'Add deck'; };
 $('deck-dialog').addEventListener('close', () => { deckBuild++; deckBtn(false); });
 $('deck-form').addEventListener('submit', async (e) => {
   if (e.submitter?.value !== 'add') return;
   e.preventDefault();
   if ($('deck-add').disabled) return;
+  // The host's table now holds images worth keeping: ask the browser not to
+  // evict its storage — here, in the gesture (Firefox prompts, and a prompt
+  // right after an upload explains itself; one at boot would not).
+  if (role === 'host' && !persistAsked && navigator.storage?.persist) {
+    persistAsked = true;
+    navigator.storage.persist().then((ok) => console.info(`persistent storage ${ok ? 'granted' : 'not granted'}`), (err) => console.error('asking for persistent storage failed', err));
+  }
   const run = deckBuild;
   deckBtn(true);
   const kind = document.querySelector('input[name="deck-kind"]:checked').value;
@@ -2018,6 +2279,9 @@ $('deck-form').addEventListener('submit', async (e) => {
       if (backFile) deck.back = await fileToDataURL(backFile);
       if (name) deck.name = name;
     }
+    // A guest ingests its own deck first (store.js: the same checks the host
+    // runs), so it holds every image before the host's deck message names them.
+    if (role === 'guest') await store.ingestDeck(deck);
     if (run !== deckBuild) return; // the player cancelled while it was building
     act({ t: 'addDeck', deck, x: TABLE_W / 2 - CARD_W / 2, y: TABLE_H / 2 - CARD_H / 2 });
     $('deck-dialog').close();
@@ -2031,25 +2295,45 @@ $('deck-form').addEventListener('submit', async (e) => {
 });
 
 // --- boot -----------------------------------------------------------------
-function becomeHost(saved) {
+/** Takes the host role over this room's save (store.js loadSave: a table,
+ *  {lost}, {newer} or null), or a fresh table. `unsaved`: why this tab can't
+ *  save at all (no IndexedDB), said at boot. */
+function becomeHost(saved, unsaved) {
+  noSave = unsaved || '';
+  if (saved?.newer) {
+    // Mixed versions run for minutes after a deploy: this older tab must
+    // never overwrite the newer save with a downgraded one. It still hosts
+    // (the save proves ownership), a fresh table, and saves nothing.
+    noSave = 'a newer save';
+    console.error(`this table was saved by a newer Card Table (state v${saved.newer}): not resuming it, and never writing over it`);
+    toast('This table was saved by a newer Card Table — reload this page', false, true);
+    saved = null;
+  } else if (!noSave) checkPending(saved);
   if (saved?.lost) {
     console.error('this table could not be resumed:', saved.lost);
     toast(`Couldn't resume this table (${saved.lost}) — started a fresh one`);
     saved = null;
   }
-  // The table first: a save from a newer Card Table throws here (core.js
-  // migrate), and this tab must not go on as a host with no table.
-  const t = createTable(saved ? { ...saved.state, decks: saved.decks } : {}, { pid }); // lifts an older save
+  const t = createTable(saved ? { ...saved.state, decks: saved.decks } : {}, { pid });
   if (saved) t.resume(myName); // re-sanitizes the decks, reloads the rules, everyone else waits offline
   else t.open(myName); // the host's seat and a standard deck
   T = t;
   role = 'host';
   hostBoot = Date.now();
   askGame = !saved;
+  savedCatalog.clear();
+  if (saved?.stored) for (const id of Object.keys(saved.decks)) savedCatalog.add(id);
   $('size-sel').classList.remove('hidden'); // table size is the host's call
   $('size-sel').value = String(T.state.size);
   commit(true);
   flush(); // this screen's first snapshot
+  // The images this table shows must be in this browser's storage: say at
+  // once if some are gone (their cards show as missing, never as loading forever).
+  const refs = [...T.assetRefs()];
+  Promise.all(refs.map((h) => store.has(h).catch((err) => { console.error('looking up an image failed', h, err); return false; }))).then((held) => {
+    const lack = refs.filter((_, k) => !held[k]);
+    if (lack.length) giveUp(lack, `${lack.length} card images of this table are missing from this browser's storage`);
+  });
 }
 
 // --- terminal bridge (opt-in) ---------------------------------------------
@@ -2244,17 +2528,33 @@ function askName() {
 async function boot() {
   // Module skew: a page cached across a deploy could pair this app.js with
   // other versions of its modules. Stop here, plainly, not with odd errors later.
-  const skew = [['core.js', CORE_V], ['templates.js', TEMPLATES_V]].filter(([, v]) => v !== MODULE_V);
+  const skew = [['core.js', CORE_V], ['templates.js', TEMPLATES_V], ['store.js', store.MODULE_V]].filter(([, v]) => v !== MODULE_V);
   if (skew.length) {
     console.error(`module version mismatch: app.js is v${MODULE_V}, ${skew.map(([f, v]) => `${f} v${v}`).join(', ')}`);
     document.body.insertAdjacentHTML('afterbegin', '<div id="skew-banner">Card Table was updated while this page loaded — reload this page</div>');
     return;
   }
+  // Storage first: the role depends on it. A failure is said, never covered
+  // by a fallback (localStorage couldn't hold a big table anyway).
+  let idbFailed = '';
+  await store.open({
+    notify: toast, keep: keepImages, hosting: () => role === 'host',
+    onVersionChange() { // a newer Card Table upgraded the database in another tab
+      console.warn('the database was upgraded in another tab — this tab stops saving');
+      if (role === 'host') { noSave = 'an upgrade in another tab'; toast('Card Table was updated in another tab — reload this tab to keep saving', false, true); }
+    },
+    onPruned(room) { // another tab deleted our (idle) save to make room: write it again, every deck included
+      if (room !== roomId) return;
+      savedCatalog.clear();
+      persist();
+    },
+  }).catch((err) => { idbFailed = `IndexedDB: ${err.message}`; });
   const m = location.hash.match(/^#room~([0-9a-f]+)~([0-9a-f]+)(?:~|$)/);
   let saved = null;
   if (m) {
     [, roomId, password] = m;
-    saved = loadSave();
+    // (a bot tab never hosts, so it never reads, or migrates, the host's save)
+    if (!AS && !idbFailed) saved = await store.loadSave(roomId).catch((err) => ({ lost: `the save is unreadable: ${err.message}` }));
   } else {
     roomId = await newHostKey(); // the room id IS the host key's fingerprint
     password = rand(8);
@@ -2262,21 +2562,32 @@ async function boot() {
   }
   signedRoom = roomId.length === 24;
   if (!localStorage.getItem('ct-name') && !AS) await askName();
-  // A bot tab is always a guest — even in the host's browser, where the
-  // room's save would otherwise make this tab claim the table.
-  let hosting = !AS && (!m || saved);
+  // The role. A bot tab is always a guest — even in the host's browser,
+  // where the room's save would otherwise make this tab claim the table. A
+  // browser that can't read its storage but holds the room's host key is the
+  // host still (it lives in localStorage): a reload must not make the host a
+  // guest of its own room.
+  let hosting = !AS && (!m || !!saved || (!!idbFailed && localStorage.getItem(`ct-hostkey-${roomId}`) !== null));
   if (hosting && signedRoom && !(await useHostKey(roomId))) {
     console.error('this browser has the save but not the host key for this room');
     toast('This room\'s host key is missing here — joining as a guest');
     hosting = false;
   }
-  if (hosting) becomeHost(saved);
+  if (idbFailed) {
+    toast(hosting ? `This browser blocks storage (${idbFailed}) — the table can't be saved; reloading the host tab will reset it`
+      : `This browser blocks storage (${idbFailed}) — card images will download again next time`);
+  }
+  if (hosting) becomeHost(saved, idbFailed);
   else role = 'guest';
   if (window.innerWidth <= 820) sideEl.classList.add('hidden');
   layout();
   renderAll(null);
   connect();
   cliConnect();
+  // Upkeep, once the page is settled: the image cache's GC (store.js gc).
+  setTimeout(() => (window.requestIdleCallback || ((f) => f()))(() => store.gc({ keep: keepImages() }).then(
+    ({ deleted, bytes }) => { if (deleted) console.info(`image cache: deleted ${deleted} unused images (${(bytes / 1e6).toFixed(1)} MB)`); },
+    (err) => console.error('image cache upkeep failed', err))), 5000);
 }
 // The test hook (the harness sets window.CARDTABLE_TEST before load): the same
 // act() a click uses, the view, this player's hand and log, and the counters.

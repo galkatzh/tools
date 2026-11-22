@@ -14,10 +14,11 @@
 //   register  a reloading guest whose registering snapshot (the first addressed
 //             to it) is lost still gets its hand back on a quiet table: its next
 //             keyed hello asks for a snapshot (no change, so no patch to show a gap)
-//   newer     a save from a newer Card Table: the tab says so and stops, loudly,
-//             with no misleading errors after, and the save is left alone
-//   skew      a stale module that fails to link, or carries another MODULE_V: the
-//             page says so (a banner), instead of staying dead or misbehaving
+//   newer     a save from a newer Card Table (planted in IndexedDB): the tab says
+//             so for good and still hosts, with no misleading errors after, and the
+//             save is left alone
+//   skew      a stale module that fails to link, or carries another MODULE_V (core.js,
+//             store.js): the page says so (a banner), instead of staying dead or misbehaving
 const h = require('./h');
 const L = require('./p1-lib');
 const { mallory } = require('./final-lib');
@@ -142,32 +143,30 @@ const sameTable = async (x, y) => { const [a, b] = [await L.view(x), await L.vie
   await zed.goto(env.url);
   await h.joinAs(zed, 'Zed');
   await zed.waitForSelector('.item.pile .count');
-  const room = zed.url(), plain = env.url.replace(/\/cardtable\/$/, '/cardtable/cah-cards.js'); // a same-origin page with no app
-  await zed.goto(plain); // leaving saves the table (pagehide); the app must not run while the save is planted
-  const planted = await zed.evaluate(() => {
-    const key = Object.keys(localStorage).find((k) => k.startsWith('ct-save-'));
-    const s = JSON.parse(localStorage.getItem(key));
-    s.state.v = 3;
-    localStorage.setItem(key, JSON.stringify(s));
-    return [key, localStorage.getItem(key)];
-  });
+  const room = zed.url(), id = room.match(/#room~([0-9a-f]+)/)[1];
+  await zed.goto(h.plain(env)); // leaving saves the table (pagehide); the app must not run while the save is planted
+  const { state } = await h.idb(zed, 'saves', id);
+  await h.plantSave(zed, id, { ...state, v: 3 });
+  const planted = JSON.stringify(await h.idb(zed, 'saves', id));
   await zed.goto(room);
   await h.toastHas(zed, 'saved by a newer Card Table');
   const n0 = errs.length;
   await h.sleep(3500);
   const toast = await zed.textContent('#toast');
-  ok(/newer Card Table \(state v3\) — reload this page/.test(toast), `the tab says so ("${toast}")`);
+  ok(/This table was saved by a newer Card Table — reload this page/.test(toast), `the tab says so, and it stays up ("${toast}")`);
   ok(errs.length === n0 && !errs.some((e) => /Cannot read properties/.test(e)), `and nothing fails after it (${errs.length - n0} more console errors)`);
-  await zed.goto(plain); // pagehide
-  ok(await zed.evaluate(([k, v]) => localStorage.getItem(k) === v, planted), 'the newer save is left byte for byte');
+  ok(!(await zed.isHidden('#size-sel')), 'the tab still hosts the room (the save proves it)');
+  await zed.goto(h.plain(env)); // pagehide
+  ok(JSON.stringify(await h.idb(zed, 'saves', id)) === planted, 'the newer save is left byte for byte');
 
   section('skew: a module from another version');
-  for (const [what, edit, want] of [
-    ['a core.js that lacks an export app.js needs', (src) => src.replace('export const PUBLIC_ACTIONS', 'const PUBLIC_ACTIONS'), /failed to load .*PUBLIC_ACTIONS.* — reload this page/],
-    ['a core.js of another MODULE_V', (src) => src.replace('export const MODULE_V = ', 'export const MODULE_V = 1000 + '), /updated while this page loaded — reload this page/],
+  for (const [what, file, edit, want] of [
+    ['a core.js that lacks an export app.js needs', 'core.js', (src) => src.replace('export const PUBLIC_ACTIONS', 'const PUBLIC_ACTIONS'), /failed to load .*PUBLIC_ACTIONS.* — reload this page/],
+    ['a core.js of another MODULE_V', 'core.js', (src) => src.replace('export const MODULE_V = ', 'export const MODULE_V = 1000 + '), /updated while this page loaded — reload this page/],
+    ['a store.js of another MODULE_V', 'store.js', (src) => src.replace('export const MODULE_V = ', 'export const MODULE_V = 1000 + '), /updated while this page loaded — reload this page/],
   ]) {
     const p = await env.page('Skewed');
-    await p.route('**/cardtable/core.js?v=*', async (route) => {
+    await p.route(`**/cardtable/${file}?v=*`, async (route) => {
       const res = await route.fetch();
       await route.fulfill({ response: res, body: edit(await res.text()) });
     });

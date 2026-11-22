@@ -87,33 +87,48 @@ const cryptoRandom = () => {
   return pool[--poolLeft] / 2 ** 32;
 };
 
-// --- data hygiene: decks pass one sanitizer (strict image data-URLs, strict
+// --- data hygiene: decks pass one sanitizer (strict image references, strict
 // color grammar, size caps) before anything renders them ---------------------
+// A deck travels in two shapes. The catalog shape (v2, cleanDeck) is what the
+// table holds, saves and sends: its images are asset ids, the SHA-256 of
+// their bytes, which store.js keeps and every peer pulls by hash (app.js).
+// The transport shape (v1, cleanDeckV1) carries the images as data URLs: an
+// upload, a save from before Phase 1. It only ever goes to store.js's
+// ingestDeck, which checks every image and turns the deck into the v2 shape.
 export const IMG_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+=*$/;
+/** An image's asset id: the hex SHA-256 of its bytes. */
+export const ASSET_RE = /^[0-9a-f]{64}$/;
+/** The image types a deck may carry (as IMG_RE's data URLs, or as assets). */
+export const IMG_MIMES = new Set(['image/webp', 'image/png', 'image/jpeg', 'image/gif']);
+/** The largest image a peer stores or accepts, in bytes. */
+export const ASSET_MAX_BYTES = 2e6;
 export const COLOR_RE = /^(?:#[0-9a-f]{3,8}|[a-z]{3,20})$/i;
 export const RANKS = new Set(['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'JOKER']);
 export const SUITS = new Set(['♠', '♥', '♦', '♣', '🃏']);
 export const MAX_DECK_BYTES = 24e6, MAX_DECK_CARDS = 5000;
 export const GUEST_DECK_CHARS = 1.5e6; // all decks guests add to one table, together (see apply 'addDeck')
+/** Why a guest's deck of `cost` chars doesn't fit a table whose guests used `used` already ('' if it fits). */
+export const deckOverBudget = (used, cost) => (used + cost > GUEST_DECK_CHARS
+  ? `this table's deck budget for guests is full (${Math.round((GUEST_DECK_CHARS - used) / 1e3)} kB left) — ask the host to add it` : '');
 // Control characters (C0, DEL, C1) never reach a page or the terminal bridge:
 // a peer's ESC sequences could clear or spoof a bridge user's terminal.
 // CTRL_NL spares the newline, for multi-line card texts.
 export const CTRL = /[\u0000-\u001f\u007f-\u009f]/g, CTRL_NL = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g;
 export const str = (v, n, strip = CTRL) => (typeof v === 'string' && v ? v.replace(strip, '').slice(0, n) : undefined);
 
-/** The one gate every deck passes (uploads, scripts, saves, the wire): keeps
- *  only known fields of the right type, so nothing a peer sends can smuggle
+/** A deck's name and cards, cleaned for either shape: `img(s)` tells a
+ *  usable image reference (in `imgs`, and on a v1 card as `img`). Keeps only
+ *  known fields of the right type, so nothing a peer sends can smuggle
  *  markup, script URLs or CSS into anyone's page. Throws on unusable decks. */
-export function cleanDeck(d) {
+function deckParts(d, img, v1) {
   if (!d || typeof d !== 'object' || !Array.isArray(d.cards) || !d.cards.length) throw new Error('a deck needs at least one card');
   if (d.cards.length > MAX_DECK_CARDS) throw new Error(`decks are limited to ${MAX_DECK_CARDS} cards`);
-  const imgs = (Array.isArray(d.imgs) ? d.imgs : []).slice(0, MAX_DECK_CARDS).map((s) => (IMG_RE.test(s) ? s : null));
-  let bytes = imgs.reduce((n, s) => n + (s?.length || 0), 0);
+  const imgs = (Array.isArray(d.imgs) ? d.imgs : []).slice(0, MAX_DECK_CARDS).map((s) => (img(s) ? s : null));
   const cards = d.cards.map((c) => {
     const o = {};
     if (!c || typeof c !== 'object') return o;
     if (RANKS.has(c.r) && SUITS.has(c.s)) Object.assign(o, { r: c.r, s: c.s, c: c.c === 'r' ? 'r' : 'b' });
-    if (IMG_RE.test(c.img)) { o.img = c.img; bytes += c.img.length; }
+    if (v1 && img(c.img)) o.img = c.img;
     if (Number.isInteger(c.g) && imgs[c.g]) o.g = c.g;
     for (const [k, n, strip] of [['n', 60], ['txt', 300, CTRL_NL]]) if (str(c[k], n, strip)) o[k] = str(c[k], n, strip);
     for (const k of ['col', 'b']) if (COLOR_RE.test(c[k])) o[k] = c[k];
@@ -123,9 +138,44 @@ export function cleanDeck(d) {
     }
     return o;
   });
+  return { name: str(d.name, 24) || 'Deck', imgs, cards };
+}
+const dataURL = (s) => typeof s === 'string' && s.startsWith('data:');
+
+/** The gate every deck the table holds passes (scripts, saves, the wire, an
+ *  upload once ingested): the catalog shape, v2 — {name, back: a color or
+ *  null, backImg?: an asset id, imgs: (asset id | null)[], cards}, where a
+ *  card's `g` indexes a non-null image. (The 24 MB image cap is store.js's
+ *  to check: only ingestion knows the sizes.) A deck that still embeds data
+ *  URLs is refused: it must be ingested first, not lose its images here. */
+export function cleanDeck(d) {
+  const { name, imgs, cards } = deckParts(d, (s) => ASSET_RE.test(s));
+  if ([d.back, ...(Array.isArray(d.imgs) ? d.imgs : []), ...d.cards.map((c) => c?.img)].some(dataURL)) {
+    throw new Error('this deck still embeds its images (data URLs): it must be ingested first');
+  }
+  return { name, back: COLOR_RE.test(d.back) ? d.back : null, ...(ASSET_RE.test(d.backImg) && { backImg: d.backImg }), imgs, cards };
+}
+
+/** The transport gate (v1): a deck as uploads and pre-Phase 1 saves carry it,
+ *  images as data URLs (IMG_RE) in `imgs`, a card's `img` or the `back`, at
+ *  most 24 MB of them. It runs first on every addDeck, and the guests' deck
+ *  budget is measured on its result (JSON length) before anything is decoded;
+ *  then store.js's ingestDeck turns it into the v2 shape. Throws on unusable decks. */
+export function cleanDeckV1(d) {
+  const { name, imgs, cards } = deckParts(d, (s) => IMG_RE.test(s), true);
+  const bytes = [...imgs, ...cards.map((c) => c.img)].reduce((n, s) => n + (s?.length || 0), 0);
   if (bytes > MAX_DECK_BYTES) throw new Error('deck images are too large (24 MB max)');
-  const back = IMG_RE.test(d.back) || COLOR_RE.test(d.back) ? d.back : null;
-  return { name: str(d.name, 24) || 'Deck', back, imgs, cards };
+  return { name, back: IMG_RE.test(d.back) || COLOR_RE.test(d.back) ? d.back : null, imgs, cards };
+}
+
+/** Every asset id the decks of `decks` (a deck map) show: their images and image backs. */
+export function assetRefs(decks) {
+  const refs = new Set();
+  for (const d of Object.values(decks)) {
+    for (const h of d.imgs || []) if (h) refs.add(h);
+    if (d.backImg) refs.add(d.backImg);
+  }
+  return refs;
 }
 
 /** Text from a peer: a string as is, a number as its digits, anything else
@@ -169,14 +219,14 @@ export const RULED_ACTIONS = new Set(['move', 'rot', 'flip', 'shuffle', 'draw', 
 /** Every action type a guest may send: the host refuses anything else at the
  *  network boundary. Host-only actions (size, setRules) and the host's
  *  internal jobs (types starting with "_") never come from the wire. */
-export const PUBLIC_ACTIONS = new Set([...RULED_ACTIONS, 'hello', 'snap', 'name', 'chat', 'rulesBtn']);
+export const PUBLIC_ACTIONS = new Set([...RULED_ACTIONS, 'hello', 'snap', 'need', 'name', 'chat', 'rulesBtn']);
 /** Actions that take from or give to the actor's hand: a refusal re-sends it. */
 const HAND_ACTIONS = new Set(['play', 'handPile', 'toHand', 'draw']);
 /** How many of an action's `ids` a refusal re-sends. No Phase 1 action
  *  carries ids; group actions (Phase 4) bring their own cap. A small one keeps
  *  a vetoed action from making the host re-send many items to everyone. */
 const NAMED_IDS = 8;
-/** The most t.data may hold, as JSON (checked once per job that ran hooks: dataOver). */
+/** The most t.data may hold, as JSON (checked after validate() and once per job that ran hooks: dataOver). */
 export const DATA_MAX_CHARS = 4e6;
 
 /** The rules runner a table drives its hooks through (env.hooks): a
@@ -242,7 +292,7 @@ export function trimLog(log) {
 
 // --- saves from older versions -------------------------------------------------
 /** MIGRATE[v] lifts a host state from version v to v + 1, in place (the
- *  synchronous part: decks are the app's). */
+ *  synchronous part: the decks' images are store.js's, loadSave). */
 export const MIGRATE = {
   /** v1 (every save before Phase 1, no `v`) → v2: the seat keys leave the
    *  players for state.keys (players are copied into patches; keys never
@@ -332,7 +382,7 @@ export function applyViewPatch(V, d) {
 }
 
 // --- the table ---------------------------------------------------------------
-// decks:  {deckId: {name, back: dataURL|null, cards: [{img} | {r,s,c}]}}
+// decks:  {deckId: Deck v2 (cleanDeck): {name, back, backImg?, imgs: [asset id], cards: [{r,s,c} | {g?, n?, txt?, …}]}}
 // items:  {itemId: card {k:'c',x,y,rot,z,d,i,up} | pile {k:'p',x,y,rot,z,name,cards:[{d,i,up}]}}
 // players: {pid: {name, color, online, seat, hand:[{d,i}]}}; keys: {pid: seat key}
 /** A table over `host` (its state, mutated in place) — see the top of this file. */
@@ -621,21 +671,22 @@ export function createTable(host, env = {}) {
 
   /** Applies one action from player `p` to the authoritative state, as one
    *  job (act, then the t.data cap). True when the table changed (render,
-   *  broadcast, save); false when nothing did: a hello or a snapshot request
-   *  (registration is join()'s, the snapshot the app's), a chat over flood
-   *  control, a refused rules button. */
+   *  broadcast, save); false when nothing did: a hello, a snapshot or image
+   *  request (registration is join()'s, the answer the app's), a chat over
+   *  flood control, a refused rules button. */
   function apply(p, a) {
     const changed = act(p, a);
     return dataOver() && !changed ? bump() : changed;
   }
   /** The action itself (see apply). */
   function act(p, a) {
-    if (a.t === 'hello' || a.t === 'snap') return false;
+    if (a.t === 'hello' || a.t === 'snap' || a.t === 'need') return false;
     const items = host.items, pl = own(host.players, p);
     const it = own(items, a.id);
     // Rules veto: an enabled script may block gameplay actions with a reason.
     if (RULED_ACTIONS.has(a.t) && host.rules?.enabled) {
       const reason = runHook('validate', { ...a, p });
+      dataOver(); // the cap, now: a validate() that outgrew t.data fails like one that threw
       // Fail closed: a validate() that throws has just disabled the rules, and
       // the action that crashed it must not slip through unvalidated.
       const why = host.rules.enabled ? typeof reason === 'string' && reason : 'rules script error';
@@ -677,14 +728,17 @@ export function createTable(host, env = {}) {
         // Decks are kept (and saved in the host's browser) forever: guests share
         // one budget for the table, so nobody can fill the host's storage.
         // (host.guestDeckChars is saved with the table: a reload can't reset it.)
+        // A deck costs its transport size (`cost`: ingestion measured it, app.js),
+        // never less than the deck as stored; the budget was checked before
+        // ingestion too, but another guest's deck may have committed since.
         if (p !== pid) {
-          const size = JSON.stringify(deck).length, used = host.guestDeckChars || 0;
-          if (used + size > GUEST_DECK_CHARS) {
-            console.warn('guest deck over budget', p, size, used);
-            notify(p, `🚫 Deck rejected: this table's deck budget for guests is full (${Math.round((GUEST_DECK_CHARS - used) / 1e3)} kB left) — ask the host to add it`);
+          const cost = Math.max(num(a.cost), JSON.stringify(deck).length), used = host.guestDeckChars || 0, over = deckOverBudget(used, cost);
+          if (over) {
+            console.warn('guest deck over budget', p, cost, used);
+            notify(p, `🚫 Deck rejected: ${over}`);
             break;
           }
-          host.guestDeckChars = used + size;
+          host.guestDeckChars = used + cost;
         }
         const deckId = mint(host.decks); // host-minted: a peer must not choose (or overwrite) deck ids
         host.decks[deckId] = deck;
@@ -987,10 +1041,11 @@ export function createTable(host, env = {}) {
     return r;
   }
   const jobHooks = new Set(); // the hooks the current job ran (dataOver)
-  /** Ends a job (an action, a join or leave, the timers): if it ran hooks,
+  /** Ends a job (an action, a join or leave, the timers) — and validate(),
+   *  whose veto must not stand on an oversized t.data: if it ran hooks,
    *  t.data must still fit DATA_MAX_CHARS (it is saved, and copied to a
    *  Worker), or the rules disable loudly, naming those hooks. One stringify
-   *  per job, not one per hook (an action runs up to three). True when the
+   *  per job (plus one after validate), not one per hook. True when the
    *  rules were disabled (a change: the caller renumbers). */
   function dataOver() {
     const names = [...jobHooks].join('(), ');
@@ -1354,9 +1409,11 @@ export function createTable(host, env = {}) {
     /** The last rules-script error, for the rules dialog ('' after a successful enable). */
     get rulesError() { return lastRulesError; },
     apply, join, leave, open, resume, runTimers, mayAct, publicItems, publicPlayers,
+    /** Every asset id the table's decks show: the only images the host serves (app.js). */
+    assetRefs: () => assetRefs(host.decks),
     takeDirty, patchContent, snapContent, refreshFor, applyStatePatch,
     /** The state as saved: all of it but the decks, which are saved apart
-     *  (big, and rewritten only when a deck is added). */
+     *  (store.js's catalog: written once, when a deck is added). */
     snapshot() { const s = { ...host }; delete s.decks; return s; },
     /** The effects queued since the last drain, oldest first (see the top of this file). */
     drain() { const out = effects; effects = []; return out; },

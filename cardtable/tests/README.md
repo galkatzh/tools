@@ -129,9 +129,12 @@ top of `core.js` and README "How it works".
   app sees it; and `keep`/`bodies`, the incoming
   bodies recorded while `keep` is set. Also `player`/`trio` (seated pages
   with the hook), `view`/`pidOf`/`act` (over `window.__ct`), `saved(host)`
-  (the host's save, from localStorage or IndexedDB) and `truthOf(save)` (the
+  (the host's save record, from IndexedDB) and `truthOf(save)` (the
   public table and hands, recomputed from a save by core.js in Node), and
   `same`/`diff`, `prng`, `pct`, `until`.
+- **Raw peers and images.** final-lib's Mallory also joins the `asset`
+  channel: `M.send.asset(bytes, target, {h, mime})` sends an image, and
+  `M.got.asset` records `{m, peerId, metadata}`.
 - **The suites.** `core-p1.test.mjs`: the seeded fuzz of the public view and
   the patch fold, trimLog, z, indexed reads, MIGRATE, refusals, the splice,
   the t.data cap, applyStatePatch. `core-p1-bench.mjs`: B1, B2, B5, B7.
@@ -140,3 +143,86 @@ top of `core.js` and README "How it works".
   regressions the Phase 1A review found (states out of order, refusals that
   re-send too much, a refused snapshot request, no-op drops, log rebuilds, a
   lost registration snapshot, a newer save, module skew). `t-p1-bench.js`: B1', B3, B4 (serial).
+
+## Storage and images (Phase 1B)
+
+The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores
+`saves` {room, ts, v, state} or {room, ts, lost}; `catalog` {room, id, kind:
+'deck', deck} keyed [room, id]; `assets` {h, mime, size, data, used} keyed by
+the image's SHA-256). localStorage keeps only `ct-pid*`, `ct-name`,
+`ct-hostkey-*`, `ct-sort`, `ct-handh` and `ct-pending-<room>`; a legacy
+`ct-save-<room>` / `ct-decks-<room>` is migrated on the host's next boot
+(planting one still works).
+
+**Helpers in `h.js`:**
+
+- **`h.idb(page, store, key?)`**: the page's records of `store` as plain
+  JSON (all of them, or the one under `key`; catalog keys are `[room, id]`;
+  `null` when absent). Assets come as `{h, mime, size, used}`, no bytes. It
+  never creates the database.
+- **`h.plain(env)`**: a same-origin URL with no app on it (a script file
+  shown as text): where a test plants storage a running app would overwrite.
+  Navigating there from the app also fires its `pagehide` save.
+- **`h.plantSave(page, room, state, decks?, ts?)`**: writes `{room, ts, v:
+  state.v, state}` and one catalog record per deck of `decks` (`{id: v2
+  deck}`), on a `plain()` page. A planted `v: STATE_V + 1` is a "newer" save.
+- **`h.withStore(page, fn, arg)`**: runs `fn(store, arg)` in the page with
+  store.js imported and opened (the database created with the app's own
+  schema) — e.g. `S.putAsset(bytes, 'image/png')` plants an image of
+  another room. `fn` is serialized: it sees only its arguments.
+- **`h.quotaStub`**: an init script. While `window.__quota` names a store
+  (`'saves'`, `'catalog'`, `'assets'`) — or is `{store, heal: n}` —
+  `IDBObjectStore.prototype.put` into it throws `QuotaExceededError` for
+  every record but a lost marker; with `heal: n` the n-th delete from that
+  store (pruning, GC) lifts it. Set it before boot with an init script of
+  your own (`t-sync-net.js` `fullOnce`), or at any time with `evaluate`.
+- **`h.MODULE_V`**: the modules' code version (`store.js?v=…`).
+
+**`node-lib.mjs`** also exports `store` (imageDims, checkImage, sha256hex,
+and ingestDeck in memory all run in Node; IndexedDB does not) and
+**`FIXTURES`**, the directory of image fixtures: `37x23.png`,
+`37x23-baseline.jpg` (SOF0), `37x23-progressive.jpg` (SOF2), `37x23.gif`,
+`37x23-vp8.webp`, `37x23-vp8l.webp`, `37x23-vp8x.webp` — each 37 × 23 px,
+made with ImageMagick (`convert -size 37x23 xc:red …`, `-interlace JPEG` for
+the progressive one, `-define webp:lossless=…` for the WebP chunks, an
+alpha colour for VP8X).
+
+**What the app exposes and says** (for checks; texts are exact):
+
+- `window.__ct.perf.lastSaveSyncMs`: the main-thread part of the last save
+  (B6): `T.snapshot()`, the new catalog entries and the transaction's
+  `put()`s, which clone the state.
+- The `asset` channel carries image bytes with metadata `{h, mime}`; a
+  guest's image request is the action `{t: 'need', a: [≤ 64 ids]}`; the
+  host's note `{missing: [ids]}` names the ones it lacks. A guest gathers its
+  requests for 50 ms, asks again once after 20 s without an answer (`NEED_TIMEOUT_MS`;
+  the clock restarts whenever an image arrives), then gives up.
+- Faces: `img.face[src^="blob:"]` once drawn, `.face.loading` while on the
+  way, `.face.missing` (or `.back.missing` for an image back) for good. An
+  item's `data-sig` ends with the image's state: `u` drawn, `l` loading, `x`
+  missing.
+- Toasts: "This browser blocks storage (IndexedDB: …) — the table can't be
+  saved; reloading the host tab will reset it" (a guest: "… — card images
+  will download again next time"); "Couldn't move this table's save to the
+  new storage: …"; "The last moment of play before the reload wasn't saved
+  (the browser closed first)"; "This table was saved by a newer Card Table —
+  reload this page" (pinned: it stays); "Browser storage was full — deleted
+  N old table save(s) to keep this one"; "Can't save this table (browser
+  storage is full) — reloading the host tab would reset it"; "Couldn't cache
+  card images on this device (storage full) — they'll download again next
+  time" (a host: "Couldn't store card images in this browser (storage full)
+  — reloading the host tab would lose them"); "Card Table was updated in
+  another tab — reload this tab to keep saving"; "N card images of this
+  table are missing from this browser's storage" (host boot); "N card images
+  are missing on the host — ask them to re-add the deck"; "A card image from
+  the host was damaged in transit — retrying", then "A card image from the
+  host arrived damaged again — it shows as missing". A refused deck: the note
+  "🚫 Deck rejected: card 12: image is 30000 × 30000 px (max 4096 per side,
+  16 Mpx)" (or "…: not a PNG/JPEG/WebP/GIF image", "the image claims to be
+  image/png but is image/jpeg", "image is 2.4 MB (max 2 MB)", "the image's
+  header can't be read"); a host over a guest's image budget sends "🚫 Too
+  many image requests — slow down".
+- Limits: `IMG_MAX_SIDE` 4,096 px and `IMG_MAX_PX` 16,000,000 px (store.js;
+  a 4096 × 4096 image is over), `ASSET_MAX_BYTES` 2,000,000 (core.js); per
+  guest the host keeps at most 2 image sends in flight, sends one image at
+  most twice a minute, and at most 64 MB a minute.

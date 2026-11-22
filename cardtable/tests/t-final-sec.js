@@ -7,10 +7,9 @@ const h = require('./h');
 const { ok, section, logHas } = h;
 const { mallory } = require('./final-lib');
 
-const store = (page, prefix) => page.evaluate((p) => {
-  const k = Object.keys(localStorage).find((x) => x.startsWith(p));
-  return k ? JSON.parse(localStorage.getItem(k)) : null;
-}, prefix);
+/** The host's saved decks (the room's catalog), and its save record. */
+const savedDecks = async (page) => (await h.idb(page, 'catalog')).map((r) => r.deck);
+const savedTable = (page) => page.evaluate(() => location.hash.match(/#room~([0-9a-f]+)/)[1]).then((room) => h.idb(page, 'saves', room));
 const logText = (page) => page.textContent('#log');
 
 (async () => {
@@ -26,9 +25,9 @@ const logText = (page) => page.textContent('#log');
   await logHas(host, 'PWNED');
   const lines = (await logText(host)) + (await logText(guest));
   ok(!/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(lines) && lines.includes('added deck "[2J]0;PWNEDEvil"'), 'the deck name reaches the log without its ESC/BEL bytes');
-  await host.waitForFunction(() => Object.keys(localStorage).some((k) => k.startsWith('ct-decks-') && localStorage.getItem(k).includes('PWNED')), null, { timeout: 10000 });
-  const evil = Object.values(await store(host, 'ct-decks-')).find((d) => d.name.includes('PWNED'));
-  ok(evil.cards[0].n === 'N[31m' && evil.cards[0].txt === 'line1\nline2[0m', `card names and texts are stripped too, a text keeps its newline (${JSON.stringify(evil.cards[0])})`);
+  let evil;
+  for (let k = 0; k < 40 && !evil; k++, await h.sleep(250)) evil = (await savedDecks(host)).find((d) => d.name.includes('PWNED'));
+  ok(evil?.cards[0].n === 'N[31m' && evil.cards[0].txt === 'line1\nline2[0m', `card names and texts are stripped too, a text keeps its newline (${JSON.stringify(evil?.cards[0])})`);
 
   section('SEC-F1: guests share one deck budget');
   await M.evaluate(() => {
@@ -40,11 +39,8 @@ const logText = (page) => page.textContent('#log');
   ok(full, 'the third 0.6M-char deck from a guest is refused: the guests\' budget is full');
   await h.sleep(1500);
   ok(!(await logText(host)).includes('added deck "Big3"'), 'and it never reaches the table');
-  await host.waitForFunction(() => {
-    const k = Object.keys(localStorage).find((x) => x.startsWith('ct-save-'));
-    return k && JSON.parse(localStorage.getItem(k)).state?.guestDeckChars > 1e6;
-  }, null, { timeout: 10000 }).catch(() => {});
-  const save = await store(host, 'ct-save-');
+  let save;
+  for (let k = 0; k < 40 && !(save?.state?.guestDeckChars > 1e6); k++, await h.sleep(250)) save = await savedTable(host);
   ok(save?.state?.guestDeckChars > 1e6 && !save.lost, `the budget used is saved with the table (${save?.state?.guestDeckChars}), and the table still saves`);
 
   section('SEC-F3: an action flood cannot push a peek out of the log');

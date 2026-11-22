@@ -27,10 +27,11 @@ async function uploadDeck(page, files, name = '') {
   await logHas(host, 'added deck "TestGame" (6 cards)');
   ok(true, 'counts expand: 3 + 2 + 1 unlisted = 6');
   await guest.waitForFunction(() => [...document.querySelectorAll('.item.pile .count')].some((c) => c.textContent === '6'), null, { timeout: 15000 });
-  ok(await guest.evaluate(() => {
+  // (images follow their deck: the guest pulls them from the host by hash)
+  ok(await guest.waitForFunction(() => {
     const pile = [...document.querySelectorAll('.item.pile')].find((el) => el.querySelector('.count')?.textContent === '6');
     return !!pile?.querySelector('img.back');
-  }), 'manifest "back" image renders on the guest');
+  }, null, { timeout: 15000 }).then(() => true, () => false), 'manifest "back" image renders on the guest');
 
   section('rules script reads names + meta via t.card');
   await h.enableRules(host, { code: `({
@@ -67,17 +68,13 @@ async function uploadDeck(page, files, name = '') {
   ok(true, '"played Gold Coin" in the shared log');
 
   section('copies share one image slot');
-  await host.waitForFunction(() => {
-    for (const k of Object.keys(localStorage)) {
-      if (!k.startsWith('ct-decks-')) continue; // (fix-sync: decks are stored apart from the throttled state save)
-      const deck = Object.values(JSON.parse(localStorage.getItem(k)) || {}).find((d) => d.name === 'TestGame');
-      if (!deck) continue;
-      const dr = deck.cards.filter((c) => c.n === 'Ancient Dragon');
-      return dr.length === 2 && dr[0].g === dr[1].g && typeof deck.imgs[dr[0].g] === 'string';
-    }
-    return false;
-  }, null, { timeout: 10000 });
-  ok(true, 'both dragons reference one deck.imgs entry');
+  let shared = false; // (decks are stored apart from the throttled state save: the room's catalog)
+  for (let k = 0; k < 40 && !shared; k++, await h.sleep(250)) {
+    const deck = (await h.idb(host, 'catalog')).map((r) => r.deck).find((d) => d.name === 'TestGame');
+    const dr = deck?.cards.filter((c) => c.n === 'Ancient Dragon') || [];
+    shared = dr.length === 2 && dr[0].g === dr[1].g && typeof deck.imgs[dr[0].g] === 'string';
+  }
+  ok(shared, 'both dragons reference one deck.imgs entry');
 
   section('no manifest: filenames name the cards');
   await uploadDeck(host, [img('fire_bolt.png'), img('ice-wall.png')], 'Spells');

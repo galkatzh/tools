@@ -109,25 +109,8 @@ const view = (p) => p.evaluate(() => JSON.parse(JSON.stringify({ ...window.__ct.
 const pidOf = (p) => p.evaluate(() => localStorage.getItem('ct-pid'));
 const act = (p, a) => p.evaluate((x) => window.__ct.act(x), a);
 
-/** The host's latest save record ({ts, state, …}): localStorage today, the
- *  IndexedDB `saves` store once Phase 1B moves it there. null if none. */
-const saved = (host) => host.evaluate(async () => {
-  const room = location.hash.match(/#room~([0-9a-f]+)/)[1];
-  const raw = localStorage.getItem(`ct-save-${room}`);
-  if (raw) return JSON.parse(raw);
-  if (!(await indexedDB.databases()).some((d) => d.name === 'cardtable')) return null;
-  return new Promise((resolve, reject) => {
-    const r = indexedDB.open('cardtable');
-    r.onerror = () => reject(r.error);
-    r.onsuccess = () => {
-      const db = r.result;
-      if (!db.objectStoreNames.contains('saves')) { db.close(); resolve(null); return; }
-      const q = db.transaction('saves').objectStore('saves').get(room);
-      q.onsuccess = () => { db.close(); resolve(q.result ?? null); };
-      q.onerror = () => { db.close(); reject(q.error); };
-    };
-  });
-});
+/** The host's latest save record ({room, ts, v, state}, from IndexedDB), or null. */
+const saved = async (host) => h.idb(host, 'saves', await host.evaluate(() => location.hash.match(/#room~([0-9a-f]+)/)[1]));
 /** Ground truth from the host's save, recomputed in Node by core.js itself:
  *  the full public items and players (publicItems/publicPlayers, no
  *  incremental cache), the log, the rules, and every player's hand. */

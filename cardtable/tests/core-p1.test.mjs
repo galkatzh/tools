@@ -707,7 +707,7 @@ function quietly(fn) {
     ok(!(await verify(text.replace('"base":8', '"base":7'))), 'a changed body does not verify');
   });
 
-  section('t.data has a size limit, checked once per job (§1e)');
+  section('t.data has a size limit, checked after validate() and once per job (§1e)');
   await guard('data cap', () => {
     const T = createTable({}, env(12));
     T.open('Alice');
@@ -718,12 +718,20 @@ function quietly(fn) {
     let n = 0;
     JSON.stringify = function (v, ...rest) { if (v === data) n++; return js.call(this, v, ...rest); };
     try { T.apply(BOB, { t: 'move', id: pileOf(T), x: 300, y: 300 }); } finally { JSON.stringify = js; }
-    ok(n === 1, `a move runs validate, onAction and buttons, and measures t.data once (${n} times)`);
+    ok(n === 2, `a move runs validate, onAction and buttons, and measures t.data twice: after validate and at the end (${n} times)`);
     const seq = T.state.seq;
     quietly(() => T.apply(BOB, { t: 'rulesBtn', id: 'go' }));
     ok(!T.state.rules.enabled && /^onButton\(\), onAction\(\), buttons\(\): t\.data is too large \(4,000,0\d\d chars, max 4,000,000\)$/.test(T.rulesError),
       `a hook that grows t.data past 4e6 chars disables the rules, naming the job's hooks ("${T.rulesError}")`);
     ok(T.drain().some((e) => e.t === 'toast' && /t\.data is too large/.test(e.msg)) && T.state.seq > seq, 'loudly, and the table is renumbered');
+    // A validate() that outgrows t.data fails closed, like one that throws: its action is blocked.
+    T.apply(HOST, { t: 'setRules', enabled: true, reset: true, code: '({ name: "Greedy", validate(t, a) { if (a.t === "move") t.data.big = "x".repeat(4e6); }, onAction(t) { t.data.ran = 1; } })' });
+    T.drain();
+    const pile = pileOf(T), at = { ...T.state.items[pile] };
+    quietly(() => T.apply(BOB, { t: 'move', id: pile, x: 300, y: 300 }));
+    ok(T.state.items[pile].x === at.x && !T.state.rules.data.ran && !T.state.rules.enabled && /^validate\(\): t\.data is too large/.test(T.rulesError),
+      `an oversized validate() blocks its move and disables the rules ("${T.rulesError}")`);
+    ok(T.state.log.some((e) => /blocked Bob: rules script error/.test(e.txt)), 'and the block is on the record');
   });
 
   section('applyStatePatch mirrors a table (§1f: the seam for a rules Worker)');

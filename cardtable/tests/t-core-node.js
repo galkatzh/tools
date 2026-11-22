@@ -1,5 +1,6 @@
 // The state core (core.js) in plain Node, no browser: a table is created,
-// dealt, shuffled, played and redacted; cleanDeck turns a hostile deck away;
+// dealt, shuffled, played and redacted; the deck gates (cleanDeckV1 for
+// uploads, cleanDeck for the catalog) turn a hostile deck away;
 // the rules facade runs a template's setup and validate; a save round-trips
 // (and an old-format or corrupt save still loads). Also: core.js stays
 // DOM-free, hostile actions never throw out of apply, player ids and async
@@ -20,7 +21,7 @@ function guard(fn) { try { fn(); } catch (e) { ok(false, 'scenario crashed: ' + 
 (async () => {
   const core = await import(pathToFileURL(path.join(APP, 'core.js')));
   const { RULES_TEMPLATES } = await import(pathToFileURL(path.join(APP, 'templates.js')));
-  const { createTable, cleanDeck, RULES, own } = core;
+  const { createTable, cleanDeck, cleanDeckV1, RULES, own } = core;
   /** A fresh table: the host (Alice) and Bob seated, one standard deck in the middle. */
   const fresh = (env = {}) => {
     const T = createTable({}, { pid: HOST, ...env });
@@ -91,15 +92,15 @@ function guard(fn) { try { fn(); } catch (e) { ok(false, 'scenario crashed: ' + 
     ok(!JSON.stringify(T.publicPlayers()).includes('"hand"') && !Object.values(T.publicItems()).some((it) => it.k === 'c' && it.d === hidden.d && it.i === hidden.i), "Bob's hand card is nowhere in the public view");
   });
 
-  section('cleanDeck turns hostile decks away');
+  section('the transport gate (cleanDeckV1) turns hostile decks away');
   guard(() => {
-    const throws = (d, why) => { try { cleanDeck(d); ok(false, why); } catch (e) { ok(true, `${why} (${e.message})`); } };
+    const throws = (d, why) => { try { cleanDeckV1(d); ok(false, why); } catch (e) { ok(true, `${why} (${e.message})`); } };
     throws(null, 'not a deck');
     throws({ cards: [] }, 'no cards');
     throws({ cards: 'x' }, 'cards not a list');
     throws({ cards: Array(5001).fill({ r: 'A', s: '♠' }) }, 'over 5000 cards');
     throws({ cards: [{ img: 'data:image/png;base64,' + 'A'.repeat(25e6) }] }, 'over 24 MB of images');
-    const d = cleanDeck({
+    const d = cleanDeckV1({
       name: '\u001b[2J<b>Evil</b> deck name way too long', back: 'url(javascript:alert(1))', imgs: ['javascript:alert(1)'],
       cards: [
         { img: 'data:text/html;base64,PHNjcmlwdD4=', col: 'red;background:url(x)', b: '#123', n: '\u001b[31mred\u0007', txt: 'one\ntwo\u0000', meta: { big: 'x'.repeat(3000) }, onload: 'alert(1)', g: 0 },
@@ -111,7 +112,23 @@ function guard(fn) { try { fn(); } catch (e) { ok(false, 'scenario crashed: ' + 
     ok(!a.img && !a.col && a.b === '#123' && !('onload' in a) && !('g' in a) && !('meta' in a), 'a non-image data URL, a CSS-injecting color, unknown fields, a dangling image ref and oversized meta are dropped');
     ok(a.n === '[31mred' && a.txt === 'one\ntwo', 'names and texts lose control characters (texts keep newlines)');
     ok(!b.r && b.meta.cost === 3 && JSON.stringify(c) === '{}' && q.r === 'Q' && q.c === 'b', 'bad ranks and non-object cards carry nothing; small meta survives');
-    ok(Object.getPrototypeOf(cleanDeck({ cards: [JSON.parse('{"__proto__": {"x": 1}, "meta": {"__proto__": {"y": 1}}}')] }).cards[0]) === Object.prototype, 'a "__proto__" key pollutes nothing');
+    ok(Object.getPrototypeOf(cleanDeckV1({ cards: [JSON.parse('{"__proto__": {"x": 1}, "meta": {"__proto__": {"y": 1}}}')] }).cards[0]) === Object.prototype, 'a "__proto__" key pollutes nothing');
+  });
+
+  section('the catalog gate (cleanDeck, v2) holds asset ids only');
+  guard(() => {
+    const H = 'a'.repeat(64), d = cleanDeck({
+      name: 'V2', back: 'url(javascript:x)', backImg: 'b'.repeat(63), imgs: [H, 'javascript:x', H.toUpperCase()],
+      cards: [{ g: 0, n: 'one' }, { g: 1 }, { g: 2 }, { g: 9 }],
+    });
+    ok(d.imgs[0] === H && d.imgs[1] === null && d.imgs[2] === null && d.back === null && !('backImg' in d), 'only hex SHA-256 ids survive as images (a bad back and backImg go)');
+    ok(d.cards[0].g === 0 && d.cards.slice(1).every((c) => !('g' in c)), 'a card keeps its g only when it names a usable image');
+    ok(cleanDeck({ cards: [{ n: 'x' }], backImg: H }).backImg === H, 'an asset id back is kept');
+    for (const [what, deck] of [['imgs', { imgs: ['data:image/png;base64,AAAA'], cards: [{ g: 0 }] }], ['a card', { cards: [{ img: 'data:image/png;base64,AAAA' }] }], ['the back', { back: 'data:image/png;base64,AAAA', cards: [{ n: 'x' }] }]]) {
+      let err = '';
+      try { cleanDeck(deck); } catch (e) { err = e.message; }
+      ok(/must be ingested first/.test(err), `a data URL in ${what} is refused, not dropped quietly (${err})`);
+    }
   });
 
   section("the facade runs a template's setup and validate");
