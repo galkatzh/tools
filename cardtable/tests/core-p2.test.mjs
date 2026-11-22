@@ -364,7 +364,7 @@ function boxProblems(o) {
         return;
       }
       if (kind === 'bag') {
-        only(e, ['bag', 'name', 'at', 'owner', 'hand', 'lock'], at);
+        only(e, ['bag', 'name', 'at', 'owner', 'hand'], at);
         if (!Array.isArray(e.bag)) return fail(`${at}.bag`);
         let size = 0;
         e.bag.forEach((m, j) => {
@@ -1148,6 +1148,10 @@ function testNewActions() {
     ok(!boxError(WIDE), 'a box whose forEachSeat spawns 1,600 per seat passes cleanBox (no named seats to count)');
     const U = mk({}), rw = run(U, HOST, { t: 'loadBox', box: WIDE, setup: true });
     ok(refusedBy(rw) && rw.notes[0]?.includes('setup places too many items') && !Object.keys(items(U)).length, `with 3 players seated it would spawn 4,800: refused loudly before the first op ("setup places too many items") — ${why(rw)}`);
+    const OFF = mk({}), OUT = { name: 'Out', imgs: [], table: { shape: 'rect', w: 1400, h: 1200 }, types: { m: { kind: 'token', name: 'Man', faces: ['M'] } }, setup: [{ piece: 'm', at: [-500, 9000] }] };
+    run(OFF, HOST, { t: 'loadBox', box: OUT, setup: true, clear: true });
+    const out = Object.values(items(OFF))[0];
+    ok(out && out.x + 30 === 60 && out.y + 30 === 1140, `a setup item goes through place(): one declared off the table is clamped onto it (centre ${out && [out.x + 30, out.y + 30]})`);
     const MANY = { name: 'Many', imgs: [], types: { m: { kind: 'token', name: 'Man', faces: ['M'] } }, setup: [{ piece: 'm', at: [100, 100], count: 200 }] };
     const filled = Object.fromEntries(range(4900).map((k) => [`f${k}`, C(k % 52, { up: false })])), V = mk(filled);
     const rc = run(V, HOST, { t: 'loadBox', box: MANY, setup: true });
@@ -1411,6 +1415,33 @@ function testBagFlag() {
   ok(refusedBy(r) && pub(tiles).hand === true && pub(tiles).n === 3, `toBag of a non-hand piece into a hand bag: refused — ${why(r)}`);
   for (let k = 0; k < 3; k++) run(T, BOB, { t: 'pull', id: tiles, hand: true });
   ok(pub(tiles).n === 0 && pub(tiles).hand === true && refusedBy(run(T, BOB, { t: 'toBag', id: tok, bag: tiles })), 'emptied into a hand, the bag keeps its flag, and still refuses the token');
+}
+
+function testHostile() {
+  section('(2j) hostile payloads: "__proto__" anywhere, numbers that are not numbers — no throw, no pollution, nothing changed');
+  const its = { a: P('tok', { n: 3 }), s: S('chip'), g: BAG(['tok']), d: P('die'), p: PILE(piecesOf('tile', 2)) };
+  const T = mk(its, { hands: { [BOB]: [{ t: ref('tile'), f: 0 }] } }), proto = Object.getOwnPropertyNames(Object.prototype).join();
+  const P_ = '__proto__', bad = [];
+  const payloads = [
+    { t: 'roll', ids: [P_] }, { t: 'roll', ids: [P_, 'd'] }, { t: 'face', id: P_, f: 0 }, { t: 'split', id: P_, n: 1 }, { t: 'split', id: 'a', n: 1, onto: P_ }, { t: 'join', id: P_, onto: 'a' },
+    { t: 'join', id: 'a', onto: P_ }, { t: 'take', id: P_ }, { t: 'pull', id: P_ }, { t: 'toBag', id: P_, bag: 'g' }, { t: 'toBag', id: 'a', bag: P_ }, { t: 'lock', id: P_, on: true },
+    { t: 'owner', id: P_, to: BOB }, { t: 'owner', id: 'a', to: P_ }, { t: 'seat', id: P_ }, { t: 'seat', watch: true, p: P_ }, { t: 'play', idx: 0, type: `${P_}/x`, f: 0, x: 1, y: 1 },
+    { t: 'play', idx: 0, type: `${BX}/${P_}`, f: 0 }, { t: 'handPile', idx: 0, type: ref('tile'), f: 0, pile: P_ }, { t: 'stack', id: P_, onto: 'a' }, { t: 'toPile', id: 'a', pile: P_ },
+    { t: 'move', id: P_, x: 1, y: 1 }, { t: 'del', id: P_ }, { t: 'flip', id: P_ }, { t: 'rot', id: P_, rot: 1 }, { t: 'toHand', id: P_ }, { t: 'peek', id: P_ }, { t: 'draw', id: P_ },
+    { t: 'face', id: 'a', f: { valueOf: 1 } }, { t: 'split', id: 'a', n: { toString: 1 } }, { t: 'roll', ids: { length: 3 } }, { t: 'owner', id: 'a', to: { toString: 1 } },
+  ];
+  for (const a of payloads) {
+    const before = sig(T);
+    let threw = null;
+    quietly(() => { try { T.apply(BOB, json(a)); } catch (e) { threw = e; } });
+    T.drain();
+    if (threw || sig(T) !== before) bad.push(`${JSON.stringify(a)}: ${threw ? `threw ${threw.message}` : 'changed the table'}`);
+  }
+  ok(!bad.length && Object.getOwnPropertyNames(Object.prototype).join() === proto && ({}).lock === undefined && ({}).owner === undefined, `${payloads.length} hostile payloads: ${bad.slice(0, 3).join('; ') || 'none threw or changed anything'}`);
+  const U = mk({ a: P('tok', { n: 3 }), s: S('chip'), g: BAG(['tok', 'coin']) }), u0 = Object.keys(items(U));
+  for (const a of [{ t: 'move', id: 'a', x: NaN, y: 'x' }, { t: 'take', id: 's', x: Infinity, y: {} }, { t: 'pull', id: 'g', x: '12', y: -Infinity }, { t: 'split', id: 'a', n: 1, x: null, y: [] }, { t: 'rot', id: 'a', rot: 'NaN' }]) run(U, BOB, a);
+  const nums = Object.values(items(U)).flatMap((it) => [it.x, it.y, it.rot, it.z]);
+  ok(newIds(U, u0).length === 3 && nums.every(Number.isFinite), `numbers from a peer pass num(): every item lands at finite coordinates (${nums.filter((x) => !Number.isFinite(x)).length} not finite)`);
 }
 
 function testFacade() {
@@ -1886,6 +1917,20 @@ function testSeats() {
     const g = 900 + 730 * Math.SQRT1_2;
     ok(c('s') && near(c('s')[0], 900) && near(c('s')[1], 1630) && near(c('g')[0], g) && near(c('g')[1], g),
       `round: 'seat' is the seat point (centre + 850·(cos, sin)) moved 120 toward the centre (${JSON.stringify([c('s'), c('g')])})`);
+    // "A named seat with `at` uses its exact point": both seats lie on a line through the centre, so "toward the table" is unambiguous.
+    const AT = (table, at) => T1BOX({ ...(table && { table }), seats: [{ id: 'w', name: 'W', at }], setup: [{ forEachSeat: [{ piece: 'm', at: 'seat', owner: 'seat' }] }] });
+    for (const [what, box, want] of [['a rect 1400 × 1200, at [300, 600]', AT({ shape: 'rect', w: 1400, h: 1200 }, [300, 600]), [420, 600]], ['a round 1800, at [900, 300]', AT(null, [900, 300]), [900, 420]]]) {
+      const A = mk({});
+      run(A, HOST, { t: 'loadBox', box, setup: true, clear: true });
+      const it = Object.values(items(A)).find((x) => x.owner === 'seat:w'), got = it && [it.x + 30, it.y + 30];
+      ok(got && near(got[0], want[0]) && near(got[1], want[1]), `${what}: a seat placed with \`at\` sits at that exact point, so 'seat' is 120 from it toward the centre: ${JSON.stringify(want)} (got ${JSON.stringify(got)})`);
+    }
+    // Automatic seating: forEachSeat runs per seated player, and owner 'seat' is that player.
+    const AU = mk({});
+    run(AU, HOST, { t: 'loadBox', box: T1BOX({ setup: [{ forEachSeat: [{ piece: 'm', at: 'seat', owner: 'seat' }] }] }), setup: true, clear: true });
+    const mine = (p) => { const it = Object.values(items(AU)).find((x) => x.owner === p); return it && [it.x + 30, it.y + 30]; };
+    ok(Object.keys(items(AU)).length === 3 && near(mine(HOST)?.[1], 1630) && near(mine(HOST)?.[0], 900) && near(mine(BOB)?.[1], 170) && near(mine(CAROL)?.[0], 1630),
+      `automatic seating: forEachSeat runs once per seated player, owner "seat" is that player's pid, placed in their frame (${JSON.stringify([mine(HOST), mine(BOB), mine(CAROL)])})`);
   }
 
   section('(5) setting the named seats: online first, then offline, each clockwise from the bottom; the log');
@@ -1955,6 +2000,8 @@ function testSeats() {
     r = run(T, HOST, { t: 'owner', id: 'w', to: 'seat:dark' });
     ok(happened(r) && items(T).w.owner === 'seat:dark' && r.log[0] === 'gave A to Dark', `the host gives it to a seat: "gave A to Dark" (${JSON.stringify(r.log)})`);
     ok(happened(run(T, CAROL, { t: 'owner', id: 'w', to: BOB })) && items(T).w.owner === BOB, "Carol (in Dark) resolves as its owner, and passes it to Bob");
+    const rs = run(T, BOB, { t: 'owner', id: 'w', to: 'seat:dark' });
+    ok(refusedBy(rs) && items(T).w.owner === BOB, `an owner may give to a player or to nobody, not to a seat (that is the host's) — ${why(rs)}`);
   }
 
   section('(5) watchers under automatic seating sit down again');
@@ -2151,6 +2198,7 @@ function testBuiltins() {
   await guard('(2) caps', testCaps);
   await guard('(2) the hidden-item rule', testHiddenRule);
   await guard('(2) the bag flag', testBagFlag);
+  await guard('(2j) hostile payloads', testHostile);
   await guard('(2e) the facade', testFacade);
   await guard('(2d) the log', testLogNamesNothingHidden);
   await guard('(3) setup order', testSetupOrder);
