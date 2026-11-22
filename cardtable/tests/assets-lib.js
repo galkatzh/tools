@@ -1,5 +1,5 @@
-// Shared helpers for the Phase 1B image suites (t-p1-assets.js, and B8 in
-// t-p1-bench.js); not a suite itself. Images are made here, in code (PNG
+// Shared helpers for the Phase 1B image suites (t-p1-assets.js, t-p1-flood.js,
+// and B8 in t-p1-bench.js); not a suite itself. Images are made here, in code (PNG
 // written byte by byte), so a test knows every asset id up front: an asset id
 // is the hex SHA-256 of the image's bytes (spec §1a). Decks go to the host as
 // an `addDeck` with data URLs (the wire shape, §1c), which keeps those bytes:
@@ -21,11 +21,11 @@ function chunk(type, data) {
   out.writeUInt32BE(zlib.crc32(td), td.length + 4);
   return out;
 }
-/** A w × h RGB PNG. With `seed`: seeded noise, which no deflate shrinks (about
+/** A w × ht RGB PNG. With `seed`: seeded noise, which no deflate shrinks (about
  *  3 bytes a pixel, so 800 × 800 is ≈ 1.92 MB); else one flat colour `rgb`.
- *  `rows` (default h) is how many scanlines its IDAT really holds: fewer than
- *  h makes a short file whose header still declares w × h (a decompression bomb). */
-function png(w, h, { seed, rgb = [200, 60, 60], rows = h } = {}) {
+ *  `rows` (default ht) is how many scanlines its IDAT really holds: fewer
+ *  makes a short file whose header still declares w × ht (a decompression bomb). */
+function png(w, ht, { seed, rgb = [200, 60, 60], rows = ht } = {}) {
   const line = 1 + 3 * w, raw = Buffer.alloc(line * rows);
   if (seed !== undefined) {
     const next = L.prng(seed);
@@ -36,7 +36,7 @@ function png(w, h, { seed, rgb = [200, 60, 60], rows = h } = {}) {
   }
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(w, 0);
-  ihdr.writeUInt32BE(h, 4);
+  ihdr.writeUInt32BE(ht, 4);
   ihdr.set([8, 2, 0, 0, 0], 8); // 8-bit RGB, deflate, no filter variants, no interlace
   return Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), chunk('IHDR', ihdr),
     chunk('IDAT', zlib.deflateSync(raw, { level: seed === undefined ? 9 : 0 })), chunk('IEND', Buffer.alloc(0))]);
@@ -56,7 +56,8 @@ const bomb = () => png(30000, 30000, { rows: 1 });
 /** An asset id: the hex SHA-256 of an image's bytes. */
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 const dataURL = (buf, mime = 'image/png') => `data:${mime};base64,${Buffer.from(buf).toString('base64')}`;
-/** A deck in the transport shape (data URLs; spec §1a v1): card k shows image k. */
+/** A deck in the transport shape (data URLs; spec §1a v1): card k shows image
+ *  k; `mime` is every image's type, or a list of one per image. */
 const imgDeck = (name, bufs, mime = 'image/png') => ({
   name, back: null, imgs: bufs.map((b, k) => dataURL(b, Array.isArray(mime) ? mime[k] : mime)), cards: bufs.map((_, g) => ({ g, n: `${name} ${g + 1}` })),
 });
