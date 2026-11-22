@@ -43,7 +43,8 @@ node t-smoke.js         # one suite, output on the terminal
   checks are listed with the log's path.
 - `parse.js` parse-checks `app.js` and every local module it imports as real
   ES modules (a stray `await` or a duplicate export fails there, not in a
-  browser).
+  browser). Local imports carry the code version (`./core.js?v=1`, see
+  `MODULE_V` in `core.js`); the check, like the test server, ignores it.
 
 ## Add a suite
 
@@ -74,3 +75,32 @@ const { ok, section } = h;
 - Shared helpers: `fun-lib.js` (seated players, screenshots into `shots/`),
   `final-lib.js` (a raw attacker peer, and `table(template, players)`: a
   rules template running on a real `core.js` table in Node).
+
+## The wire, for raw peers and state checks
+
+The host sends each peer a snapshot (`kind: 'snap'`: the whole public
+table) when it arrives, re-registers or asks for one, then patches
+(`kind: 'patch'`: only what changed, built on the seq in `base`) — see the
+top of `core.js` and README "How it works".
+
+- **`_v` on every raw action.** The host refuses an action whose `_v` isn't
+  the app's wire version (`PROTO`), so a raw peer (Mallory, a spy, a relay)
+  sends `_v: h.PROTO` — read from `core.js`, never hard-coded — or its
+  attack is refused before it reaches the code under test.
+- **`h.bodies(raw)`** unwraps recorded `state` messages (`{b, s, k}`) into
+  bodies, snapshots and patches alike; **`h.viewFrom(bodies)`** folds them, in
+  order, into the view they add up to (`{items, players, rules, size, log,
+  hand}`, the log untrimmed: everything that peer saw).
+- **`window.__ct`.** `h.start()`'s pages set `window.CARDTABLE_TEST`, so the
+  app exposes `{act, view, hand, log, perf}`: `act(a)` is a click's own path
+  (on the host a Promise of `{ok, error?}`), `view()` the public view the
+  screen draws (the host's own too: it takes its patches through the guest
+  path), `hand()` and `log()` this player's hand and log, and `perf` the
+  counters (`snaps`, `patches`, `gaps`, `snapRequests`) and the last
+  durations (`lastApplyMs`: a received body applied and its items drawn;
+  `lastRenderMs`, `lastTickMs`: the host's broadcast tick).
+- **The tick in Node.** `T.takeDirty()`, then `T.patchContent(d)` (or
+  `T.snapContent()` in the same tick), wrapped in `{v, kind, boot, seq,
+  host}`, serialized once, and `spliceBody({to, tp, base, hand?}, text)` per
+  recipient; a guest folds them with `viewFromSnap` / `applyViewPatch` (the
+  app's own functions). `tick()` in `t-core-node.js` is a worked example.

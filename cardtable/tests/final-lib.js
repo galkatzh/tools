@@ -7,21 +7,22 @@ const h = require('./h');
 async function mallory(env, invite) {
   const page = await env.page('Mallory');
   await page.goto(`${env.base}/cardtable/cah-cards.js`); // any same-origin page; the app does not run
-  await page.evaluate(async ({ invite, relay }) => {
+  await page.evaluate(async ({ invite, relay, v }) => {
     const { joinRoom } = await import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm');
     const [, roomId, password] = invite.match(/#room~([0-9a-f]+)~([0-9a-f]+)/);
     const room = joinRoom({ appId: 'gk-cardtable', password, relayConfig: { urls: [relay] } }, roomId);
     const M = (window.M = { room, got: { state: [], note: [] }, send: {} });
-    for (const ch of ['act', 'state', 'decks', 'log', 'note', 'rules']) {
+    for (const ch of ['act', 'state', 'decks', 'note', 'rules']) {
       const a = room.makeAction(ch);
       M.send[ch] = (data, target) => a.send(data, target ? { target } : {});
       a.onMessage = (m, { peerId }) => (M.got[ch] ||= []).push({ m, peerId });
     }
     const body = (m) => (typeof m.b === 'string' ? JSON.parse(m.b) : m);
     M.notes = () => M.got.note.map(({ m }) => body(m));
-    M.act = (a) => a && M.send.act({ ...a, _pid: 'ffffffffffffffff', _name: 'Mallory', _key: 'm'.repeat(32) });
+    // every action carries the wire version: without it the host refuses it before the code under test runs
+    M.act = (a) => a && M.send.act({ _v: v, ...a, _pid: 'ffffffffffffffff', _name: 'Mallory', _key: 'm'.repeat(32) });
     await new Promise((r) => { const t = setInterval(() => { if (Object.keys(room.getPeers()).length >= 2) { clearInterval(t); r(); } }, 100); });
-  }, { invite, relay: env.relayUrl });
+  }, { invite, relay: env.relayUrl, v: h.PROTO });
   page.act = (a) => page.evaluate((x) => window.M.act(x), a);
   page.notes = () => page.evaluate(() => window.M.notes().map((n) => n.msg || (n.peek ? 'PEEK' : '')));
   return page;

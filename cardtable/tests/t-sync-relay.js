@@ -13,18 +13,18 @@ const { ok, section, logHas } = h;
 async function spy(env, invite) {
   const page = await env.page('Spy');
   await page.goto(`${env.base}/cardtable/cah-cards.js`);
-  await page.evaluate(async ({ invite, relay }) => {
+  await page.evaluate(async ({ invite, relay, v }) => {
     const { joinRoom } = await import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm');
     const [, roomId, password] = invite.match(/#room~([0-9a-f]+)~([0-9a-f]+)/);
     const room = joinRoom({ appId: 'gk-cardtable', password, relayConfig: { urls: [relay] } }, roomId);
     const S = (window.S = { room, got: { state: [], note: [], act: [] }, send: {} });
     for (const ch of ['state', 'note', 'act']) {
       const a = room.makeAction(ch);
-      S.send[ch] = a.send;
+      S.send[ch] = ch === 'act' ? (data, o) => a.send({ _v: v, ...data }, o) : a.send; // actions carry the wire version
       a.onMessage = (m, { peerId }) => S.got[ch].push({ m, from: peerId, body: typeof m?.b === 'string' ? JSON.parse(m.b) : m });
     }
     await new Promise((r) => { const t = setInterval(() => { if (Object.keys(room.getPeers()).length >= 2) { clearInterval(t); r(); } }, 100); });
-  }, { invite, relay: env.relayUrl });
+  }, { invite, relay: env.relayUrl, v: h.PROTO });
   await page.waitForFunction(() => window.S.got.state.length > 0, null, { timeout: 20000 });
   return page;
 }
@@ -50,7 +50,8 @@ const keyedActs = (S) => S.evaluate(() => window.S.got.act.filter((x) => x.body.
 
   section('a relayed current state is dropped (no seat key for the relayer)');
   for (let k = 0; k < 2; k++) { await guest.dblclick('.item.pile'); await h.waitHand(guest, k + 1); }
-  await S.waitForFunction(() => window.S.got.state.at(-1).body.items && Object.values(window.S.got.state.at(-1).body.items).some((i) => i.n === 50), null, { timeout: 15000 });
+  // (a patch carries the items that changed: wait for the one with the pile at 50)
+  await S.waitForFunction(() => window.S.got.state.some((x) => Object.values(x.body.items || {}).some((i) => i.n === 50)), null, { timeout: 15000 });
   await replay(S, 'S.got.state.at(-1)');
   await h.sleep(3500);
   ok((await keyedActs(S)) === 0, 'the guest never sends its keyed hello to the relaying peer');

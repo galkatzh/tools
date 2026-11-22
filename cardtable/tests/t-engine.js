@@ -39,18 +39,20 @@ const rulesOn = (page) => page.locator('#rules-btn').evaluate((el) => el.classLi
 async function eve(env, invite) {
   const page = await env.page('Eve');
   await page.goto(`${env.base}/cardtable/cah-cards.js`); // same origin, app not loaded
-  await page.evaluate(async ({ invite, relay, pid, key }) => {
+  await page.evaluate(async ({ invite, relay, pid, key, v }) => {
     const { joinRoom } = await import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm');
     const [, roomId, password] = invite.match(/#room~([0-9a-f]+)~([0-9a-f]+)/);
     const room = joinRoom({ appId: 'gk-cardtable', password, relayConfig: { urls: [relay] } }, roomId);
     const act = room.makeAction('act'), state = room.makeAction('state');
-    window.E = { states: [], send: (a) => act.send({ ...a, _pid: pid, _name: 'Eve', _key: key }) };
-    state.onMessage = (m) => E.states.push(typeof m.b === 'string' ? JSON.parse(m.b) : m);
+    window.E = { states: [], send: (a) => act.send({ ...a, _pid: pid, _name: 'Eve', _key: key, _v: v }) };
+    state.onMessage = (m) => E.states.push(m);
     await new Promise((r) => { const t = setInterval(() => { if (Object.keys(room.getPeers()).length >= 2) { clearInterval(t); r(); } }, 100); });
-  }, { invite, relay: env.relayUrl, pid: EPID, key: EKEY });
+  }, { invite, relay: env.relayUrl, pid: EPID, key: EKEY, v: h.PROTO });
   return page;
 }
-const eveHand = (E) => E.evaluate((pid) => (window.E.states.filter((s) => s.to === pid).at(-1)?.hand || []).length, EPID);
+/** What Eve's states add up to (snapshots and patches, h.viewFrom). */
+const eveView = async (E) => h.viewFrom(h.bodies(await E.evaluate(() => window.E.states)));
+const eveHand = async (E) => (await eveView(E)).hand.length;
 
 (async () => {
   const env = await h.start();
@@ -135,7 +137,7 @@ const eveHand = (E) => E.evaluate((pid) => (window.E.states.filter((s) => s.to =
   await logHas(host, 'onAction play').then(() => ok(true, 'a real play still reaches onAction'), () => ok(false, 'a real play still reaches onAction'));
 
   section('ENG-4: validate() that throws blocks the action (fail closed)');
-  const pileId = await E.evaluate(() => Object.entries(window.E.states.at(-1).items).find(([, it]) => it.k === 'p')[0]);
+  const pileId = Object.entries((await eveView(E)).items).find(([, it]) => it.k === 'p')[0];
   await E.evaluate((id) => window.E.send({ t: 'draw', id, boom: {} }), pileId);
   await logHas(host, 'script error in validate()');
   await logHas(host, 'blocked Eve').then(() => ok(true, 'the crashing draw is blocked and logged'), () => ok(false, 'the crashing draw is blocked and logged'));

@@ -2,6 +2,9 @@
 // picker's catalog. Each template is the source text of a script, exactly as
 // the 📜 dialog shows it and the host's rules runner evaluates it.
 
+/** The code version (see core.js MODULE_V): the same in every cardtable module. */
+export const MODULE_V = 1;
+
 export const RULES_TEMPLATES = {
   blank: `({
   name: 'My game',

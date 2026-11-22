@@ -5,11 +5,11 @@
 // It imports nothing and runs in a page, in a module Worker and in Node 22.
 //
 // The host owns one table: `const T = createTable(state, env)`.
-//  • state is plain JSON — {seq, size, items, players, log, rules, decks,
-//    guestDeckChars} — the host's authoritative copy, so it is called `host`
-//    below. T mutates it in place; T.state is that same object, which the app
-//    saves (T.snapshot(), decks apart) and redacts for broadcasts
-//    (T.publicItems(), T.publicPlayers()).
+//  • state is plain JSON, version STATE_V — {v, seq, size, items, players,
+//    keys, log, rules, decks, guestDeckChars, zMax} — the host's authoritative
+//    copy, so it is called `host` below. T mutates it in place; T.state is
+//    that same object, which the app saves (T.snapshot(), decks apart).
+//    Older saves are lifted on the way in (migrate, MIGRATE).
 //  • env injects what isn't pure: {pid (the host's own player id), now()
 //    (Date.now), random() (crypto), uid() (8 hex digits, crypto: the ids of
 //    new items and decks), hooks (the rules runner, see scriptHooks)}.
@@ -21,11 +21,28 @@
 //      {t:'note', p, msg}  a private notice for player p
 //      {t:'peek', p, c}    a peeked card {d, i}, for player p's eyes only
 //      {t:'toast', msg}    a notice for the host's own screen (script errors)
-//      {t:'log', e}        a new log entry
 //      {t:'deck', id}      a new deck, to send to everyone
 //      {t:'rules'}         the script or its on/off state changed: resend the code
-//  • apply(), leave() and runTimers() return true when the table changed (it
-//    was renumbered, state.seq): the app then re-renders, broadcasts and saves.
+//  • apply(), leave(), runTimers() and refreshFor() return true when the
+//    table changed (it was renumbered, state.seq): the app then broadcasts
+//    and saves.
+//  • Delta sync (TABLETOP.md §3): every write records what it
+//    changed in the dirty sets, and the app's broadcast tick takes them once
+//    (T.takeDirty()) to build one patch for everyone (T.patchContent()) or a
+//    full snapshot for a newcomer (T.snapContent()). T.pub caches each item's
+//    public view, so neither rebuilds the whole table. Guests fold the bodies
+//    into their view with viewFromSnap() and applyViewPatch().
+
+// --- versions -----------------------------------------------------------------
+/** The code version every cardtable module exports, and every import of one
+ *  carries (`./core.js?v=1`): bumped in all of them by every change to any,
+ *  so a page never mixes a fresh module with a cached one (app.js checks). */
+export const MODULE_V = 1;
+/** The wire protocol: actions carry it as `_v`, host bodies as `v`; a peer
+ *  on another version is refused loudly rather than misread. */
+export const PROTO = 2;
+/** The host state's schema version (state.v), the newest MIGRATE target. */
+export const STATE_V = 2;
 
 // --- table geometry ---------------------------------------------------------
 // The table is a circle: a square logical space with a round felt. A circle is
@@ -145,6 +162,14 @@ export function itemLabel(decks, it) {
 // no game concepts — all game semantics live in the script.
 export const RULES = 'RULES'; // synthetic actor id for script-performed ops
 export const RULED_ACTIONS = new Set(['move', 'rot', 'flip', 'shuffle', 'draw', 'deal', 'play', 'handPile', 'toHand', 'toPile', 'stack', 'merge', 'del', 'addDeck', 'peek']);
+/** Every action type a guest may send: the host refuses anything else at the
+ *  network boundary. Host-only actions (size, setRules) and the host's
+ *  internal jobs (types starting with "_") never come from the wire. */
+export const PUBLIC_ACTIONS = new Set([...RULED_ACTIONS, 'hello', 'snap', 'name', 'chat', 'rulesBtn']);
+/** Actions that take from or give to the actor's hand: a refusal re-sends it. */
+const HAND_ACTIONS = new Set(['play', 'handPile', 'toHand', 'draw']);
+/** The most t.data may hold, as JSON (checked after every hook). */
+export const DATA_MAX_CHARS = 4e6;
 
 /** The rules runner a table drives its hooks through (env.hooks): a
  *  SYNCHRONOUS, same-thread interface (tests inject their own to reach the
@@ -173,10 +198,125 @@ export function scriptHooks() {
   };
 }
 
+// --- the public view: what guests may know -----------------------------------
+/** An item as players see it — hidden identities stay on the host. A pile
+ *  becomes {…, n: count, top} (a face-down top keeps only its deck, for the
+ *  back), and a face-down loose card loses its index `i`. Everyone renders
+ *  this one shape, the host included; only host LOGIC reads host.items. */
+function pubItem(it) {
+  if (it.k === 'p') {
+    const { cards, ...rest } = it, top = cards.at(-1);
+    return { ...rest, n: cards.length, top: top && (top.up ? { ...top } : { d: top.d, up: false }) };
+  }
+  const { i, ...rest } = it;
+  return it.up ? { ...rest, i } : rest;
+}
+/** A player as everyone sees them: a hand COUNT, never the hand (nor the seat key, kept in state.keys). */
+const pubPlayer = (pl) => ({ name: pl.name, color: pl.color, online: pl.online, handCount: pl.hand.length, seat: pl.seat });
+
+// --- the log ------------------------------------------------------------------
+/** The log's three buckets and their caps: talk (chat and renames, the
+ *  entries carrying `c` or `n`), on-the-record entries (`k`: peeks) and every
+ *  other action — so neither chatter nor a flood of cheap moves can push the
+ *  record of a peek out of the log. */
+export const LOG_CAPS = { talk: 100, loud: 50, act: 200 };
+const logKind = (e) => (e.c || 'n' in e ? 'talk' : e.k ? 'loud' : 'act');
+/** The log trimmed to the newest LOG_CAPS entries of each bucket (the same
+ *  array when it fits). The result does not depend on how the entries were
+ *  batched: the host trims after every entry, a guest once per patch, and
+ *  both keep the same entries. */
+export function trimLog(log) {
+  const over = { talk: -LOG_CAPS.talk, loud: -LOG_CAPS.loud, act: -LOG_CAPS.act };
+  for (const e of log) over[logKind(e)]++;
+  // oldest first: an entry goes while its bucket still holds too many
+  return over.talk > 0 || over.loud > 0 || over.act > 0 ? log.filter((e) => over[logKind(e)]-- <= 0) : log;
+}
+
+// --- saves from older versions -------------------------------------------------
+/** MIGRATE[v] lifts a host state from version v to v + 1, in place (the
+ *  synchronous part: decks are the app's). */
+export const MIGRATE = {
+  /** v1 (every save before Phase 1, no `v`) → v2: the seat keys leave the
+   *  players for state.keys (players are copied into patches; keys never
+   *  travel), and z gets a running max (state.zMax). */
+  1(s) {
+    s.keys = {};
+    for (const [p, pl] of Object.entries(s.players || {})) {
+      if (!pl || typeof pl !== 'object' || !('key' in pl)) continue;
+      if (typeof pl.key === 'string') s.keys[p] = pl.key;
+      delete pl.key;
+    }
+    s.zMax = Object.values(s.items || {}).reduce((m, it) => Math.max(m, num(it?.z)), 0);
+    s.v = 2;
+    return s;
+  },
+};
+/** Lifts state `s` to STATE_V through MIGRATE (in place); a state from a
+ *  newer Card Table is refused, never downgraded. */
+export function migrate(s) {
+  const v = num(s.v, 1);
+  if (v > STATE_V) throw new Error(`this table was saved by a newer Card Table (state v${v}) — reload this page`);
+  for (let k = v; k < STATE_V; k++) MIGRATE[k](s);
+  return s;
+}
+
+// --- host → guest bodies --------------------------------------------------------
+// A body is a snapshot {v, kind:'snap', boot, seq, host, size, rules, items,
+// players, log, fx, ann} or a patch {v, kind:'patch', boot, seq, host, size?,
+// rules?, items?, del?, players?, log?, fx?, ann?}, plus the recipient's own
+// fields {to, tp, base (patches), hand?}. The shared part is serialized once
+// per broadcast tick and each recipient's body is spliced from it as text.
+/** One recipient's body as JSON text: its own fields `mine` (never empty:
+ *  `to` at least), then the shared JSON text. */
+export function spliceBody(mine, shared) {
+  const head = JSON.stringify(mine);
+  return head.slice(0, -1) + (shared === '{}' ? '}' : `,${shared.slice(1)}`);
+}
+/** The host's signature: ECDSA P-256 over SHA-256 (the room id is the key's fingerprint). */
+export const SIG = { name: 'ECDSA', hash: 'SHA-256' };
+/** Seals a body already serialized as `text`: {b: text, s: its signature
+ *  (base64), k: the host's base64 raw public key `pub`}. */
+export async function sealText(text, key, pub) {
+  const s = new Uint8Array(await crypto.subtle.sign(SIG, key, new TextEncoder().encode(text)));
+  return { b: text, s: btoa(String.fromCharCode(...s)), k: pub };
+}
+
+// A guest's view: {seq, boot, host, size, rules, items, players, log, hand}.
+// items and players are null-prototype maps: an id from the wire is only
+// ever a key, never Object.prototype (a legacy unsigned room can send anything).
+const dict = (o) => Object.assign(Object.create(null), o && typeof o === 'object' && !Array.isArray(o) ? o : {});
+const entries = (l) => (Array.isArray(l) ? l.filter((e) => e && typeof e === 'object') : []);
+/** A guest's whole view from a snapshot body. */
+export function viewFromSnap(d) {
+  return {
+    seq: d.seq, boot: d.boot, host: d.host, size: own(TABLE_SIZES, d.size) ? +d.size : 1300, rules: d.rules ?? null,
+    items: dict(d.items), players: dict(d.players), log: trimLog(entries(d.log)), hand: Array.isArray(d.hand) ? d.hand : [],
+  };
+}
+/** Folds a patch body into view V, in place: items and players are replaced
+ *  whole, `del` removed, log entries appended (then trimmed), the hand
+ *  replaced when present. Returns what it replaced, for the renderer:
+ *  {items: Map<id, old public item | undefined (new)>, players: Map<pid, old | undefined>}. */
+export function applyViewPatch(V, d) {
+  const items = new Map(), players = new Map();
+  for (const [id, it] of Object.entries(dict(d.items))) { items.set(id, V.items[id]); V.items[id] = it; }
+  for (const id of Array.isArray(d.del) ? d.del : []) {
+    if (!items.has(id)) items.set(id, V.items[id]);
+    delete V.items[id];
+  }
+  for (const [p, pl] of Object.entries(dict(d.players))) { players.set(p, V.players[p]); V.players[p] = pl; }
+  if ('rules' in d) V.rules = d.rules;
+  if (own(TABLE_SIZES, d.size)) V.size = +d.size;
+  if (Array.isArray(d.log)) V.log = trimLog(V.log.concat(entries(d.log)));
+  if (Array.isArray(d.hand)) V.hand = d.hand;
+  V.seq = d.seq;
+  return { items, players };
+}
+
 // --- the table ---------------------------------------------------------------
 // decks:  {deckId: {name, back: dataURL|null, cards: [{img} | {r,s,c}]}}
 // items:  {itemId: card {k:'c',x,y,rot,z,d,i,up} | pile {k:'p',x,y,rot,z,name,cards:[{d,i,up}]}}
-// players: {pid: {name, color, online, seat, key, hand:[{d,i}]}}
+// players: {pid: {name, color, online, seat, hand:[{d,i}]}}; keys: {pid: seat key}
 /** A table over `host` (its state, mutated in place) — see the top of this file. */
 export function createTable(host, env = {}) {
   const pid = env.pid;
@@ -193,22 +333,86 @@ export function createTable(host, env = {}) {
   // Core reads host.decks afresh at every use (never a captured copy), so a
   // resync or a rollback may replace it.
   host.decks ??= {};
+  migrate(host);
+  host.keys ??= {};
+  host.zMax = Object.values(host.items).reduce((m, it) => Math.max(m, num(it.z)), num(host.zMax));
   let effects = []; // queued for the app (T.drain)
   let marks = 0;    // action markers so far: apply()'s "it really happened" signal
   let lastRulesError = ''; // shown in the rules dialog
   const emit = (e) => { effects.push(e); };
 
-  // --- item writes ---------------------------------------------------------
-  // Every change to host.items goes through put / remove / touch: the one
-  // place where delta sync (TABLETOP.md §3) will record what changed.
-  /** Places item `it` under `id`; returns the id. */
-  const put = (id, it) => { host.items[id] = it; return id; };
-  /** Takes item `id` off the table. */
-  const remove = (id) => { delete host.items[id]; };
-  /** Item `id` changed in place (moved, turned, flipped, its pile changed). Nothing to record yet. */
-  const touch = (id) => id;
+  // --- what changed since the last broadcast tick: the dirty sets ------------
+  // Not persisted; T.takeDirty() hands them over and starts afresh.
+  const newDirty = () => ({
+    items: new Set(),   // put/touch: an item created or changed
+    removed: new Set(), // remove: an item deleted
+    players: new Set(), // anything publicPlayers shows changed (name, colour, online, handCount, seat)
+    hands: new Set(),   // that player's private hand changed
+    rules: false,       // rules meta or public changed (found by comparison, in takeDirty)
+    size: false,
+    log: [],            // entries appended
+  });
+  let dirty = newDirty();
+  const pub = new Map();   // T.pub: id → public item, refreshed lazily for the ids in `stale`
+  const stale = new Set(Object.keys(host.items));
+  /** T.byKind: 'c' (cards) and 'p' (piles) → their ids, for indexed script reads. */
+  const byKind = new Map([['c', new Set()], ['p', new Set()]]);
+  for (const [id, it] of Object.entries(host.items)) byKind.get(it.k)?.add(id);
 
-  const zTop = () => 1 + Object.values(host.items).reduce((m, it) => Math.max(m, it.z), 0);
+  // --- item writes ---------------------------------------------------------
+  // Every change to host.items goes through put / remove / touch, and every
+  // change to a player through touchPlayer: what delta sync sends is exactly
+  // what was recorded here.
+  /** Places item `it` under `id` (new, or replacing one); returns the id. */
+  const put = (id, it) => {
+    const old = own(host.items, id);
+    if (old) byKind.get(old.k)?.delete(id);
+    host.items[id] = it;
+    byKind.get(it.k)?.add(id);
+    if (it.z > host.zMax) host.zMax = it.z;
+    dirty.items.add(id);
+    dirty.removed.delete(id);
+    stale.add(id);
+    return id;
+  };
+  /** Takes item `id` off the table. */
+  const remove = (id) => {
+    const it = own(host.items, id);
+    if (!it) return;
+    byKind.get(it.k)?.delete(id);
+    delete host.items[id];
+    dirty.items.delete(id);
+    dirty.removed.add(id);
+    stale.add(id);
+  };
+  /** Item `id` is about to change in place (moved, turned, flipped, its pile
+   *  changed) — or is re-sent unchanged (a refusal). Ids not on the table are ignored. */
+  const touch = (id) => {
+    if (own(host.items, id)) { dirty.items.add(id); stale.add(id); }
+    return id;
+  };
+  /** Player p changed (anything publicPlayers shows); `hand`: their hand too. */
+  const touchPlayer = (p, o = {}) => {
+    dirty.players.add(p);
+    if (o.hand) dirty.hands.add(p);
+  };
+  /** A new id for `map` (host.items or host.decks): host-minted, never one in use. */
+  const mint = (map) => {
+    let id = newId();
+    while (own(map, id)) id = newId();
+    return id;
+  };
+  /** The next z on top of everything: a running max, never a scan of the table. */
+  const zTop = () => ++host.zMax;
+  /** Brings the cached public items (T.pub) up to date. */
+  function refresh() {
+    for (const id of stale) {
+      const it = own(host.items, id);
+      if (it) pub.set(id, pubItem(it));
+      else pub.delete(id);
+    }
+    stale.clear();
+  }
 
   /** Picks a seat angle for a new player: bottom first, then always the middle
    *  of the largest empty arc — 2 players sit opposite, a 3rd between them, etc.
@@ -232,6 +436,7 @@ export function createTable(host, env = {}) {
     // Only fill an empty name here — explicit renames go through the 'name'
     // action so they land in the log.
     if (name && !pl.name) pl.name = cleanName(name);
+    touchPlayer(p);
   }
   /** A color no ONLINE player wears (offline seats don't hold one hostage); cycles once all are taken. */
   function freeColor() {
@@ -250,18 +455,15 @@ export function createTable(host, env = {}) {
 
   /** Appends to the shared log. Consecutive duplicates (drag/rotate spam) collapse.
    *  Entries render the actor's CURRENT name, unless `as` freezes one (renames).
-   *  Three buckets are capped separately: talk (chat + renames, the entries
-   *  carrying `c` or `n`) at 100, on-the-record entries (`loud`, stored as `k`:
-   *  peeks) at 50, and every other action at 200 — so neither chatter nor a
-   *  flood of cheap moves can push the record of a peek out of the log. */
+   *  `chat` marks a chat line (talk), `loud` an on-the-record one (a peek); the
+   *  buckets are capped separately (LOG_CAPS, trimLog). */
   function logEvent(p, txt, chat, as, loud) {
     const last = host.log.at(-1);
     if (!chat && last && last.p === p && last.txt === txt) return;
-    host.log.push({ p, txt, ts: now(), ...(chat ? { c: 1 } : {}), ...(as ? { n: as } : {}), ...(loud ? { k: 1 } : {}) });
-    const kind = (e) => (e.c || 'n' in e ? 'talk' : e.k ? 'loud' : 'act'), mine = kind(host.log.at(-1));
-    const same = host.log.filter((e) => kind(e) === mine);
-    if (same.length > { talk: 100, loud: 50, act: 200 }[mine]) host.log.splice(host.log.indexOf(same[0]), 1);
-    emit({ t: 'log', e: host.log.at(-1) });
+    const e = { p, txt, ts: now(), ...(chat ? { c: 1 } : {}), ...(as ? { n: as } : {}), ...(loud ? { k: 1 } : {}) };
+    host.log.push(e);
+    host.log = trimLog(host.log);
+    dirty.log.push(e);
   }
   function dropIfEmpty(pileId) {
     if (host.items[pileId]?.cards.length === 0) remove(pileId);
@@ -297,10 +499,11 @@ export function createTable(host, env = {}) {
       const pl = own(host.players, o.to);
       if (!pl) { pile.cards.push(c); console.warn('opDealTop: unknown player', o.to); return false; }
       pl.hand.push({ d: c.d, i: c.i });
+      touchPlayer(o.to, { hand: true });
       logEvent(actor, `dealt a card from ${itemLabel(host.decks, pile)} to ${pl.name || 'a player'}`);
     } else {
       const at = clampToFelt(num(o.x, pile.x + CARD_W + 18), num(o.y, pile.y), host.size);
-      nid = put(newId(), { k: 'c', x: at.x, y: at.y, rot: normRot(o.rot), z: zTop(), d: c.d, i: c.i, up: !!o.up });
+      nid = put(mint(host.items), { k: 'c', x: at.x, y: at.y, rot: normRot(o.rot), z: zTop(), d: c.d, i: c.i, up: !!o.up });
       logEvent(actor, `dealt ${o.up ? cardName(host.decks, c.d, c.i) : 'a card face down'} from ${itemLabel(host.decks, pile)}`);
       mark(actor, nid);
     }
@@ -353,7 +556,7 @@ export function createTable(host, env = {}) {
 
   function opNewPile(actor, cards, o = {}) {
     const at = clampToFelt(o.x ?? host.size / 2 - CARD_W / 2, o.y ?? host.size / 2 - CARD_H / 2, host.size);
-    const nid = put(newId(), { k: 'p', x: at.x, y: at.y, rot: 0, z: zTop(), name: String(o.name || '').slice(0, 24), cards: cards.map((c) => ({ d: c.d, i: c.i, up: !!c.up })) });
+    const nid = put(mint(host.items), { k: 'p', x: at.x, y: at.y, rot: 0, z: zTop(), name: String(o.name || '').slice(0, 24), cards: cards.map((c) => ({ d: c.d, i: c.i, up: !!c.up })) });
     logEvent(actor, `made a pile of ${cards.length} cards`);
     mark(actor, nid);
     return nid;
@@ -364,7 +567,7 @@ export function createTable(host, env = {}) {
     const it = own(host.items, id), b = own(host.items, ontoId);
     if (it?.k !== 'c' || b?.k !== 'c' || it === b) return false;
     logEvent(actor, `stacked ${itemLabel(host.decks, it)} onto ${itemLabel(host.decks, b)}`);
-    const nid = put(newId(), { k: 'p', x: b.x, y: b.y, rot: b.rot, z: zTop(), name: '', cards: [{ d: b.d, i: b.i, up: b.up }, { d: it.d, i: it.i, up: it.up }] });
+    const nid = put(mint(host.items), { k: 'p', x: b.x, y: b.y, rot: b.rot, z: zTop(), name: '', cards: [{ d: b.d, i: b.i, up: b.up }, { d: it.d, i: it.i, up: it.up }] });
     remove(id);
     remove(ontoId);
     mark(actor, nid);
@@ -382,6 +585,7 @@ export function createTable(host, env = {}) {
       logEvent(actor, `returned ${whose} (${out.length}) to ${itemLabel(host.decks, pile)}`);
       mark(actor, pileId);
       pl.hand = pl.hand.filter((c) => !out.includes(c));
+      touchPlayer(p, { hand: true });
       for (const c of out) pile.cards.push({ d: c.d, i: c.i, up: false });
       touch(pileId);
     }
@@ -401,9 +605,10 @@ export function createTable(host, env = {}) {
       // the action that crashed it must not slip through unvalidated.
       const why = host.rules.enabled ? typeof reason === 'string' && reason : 'rules script error';
       if (why) {
+        touchNamed(p, a); // the next patch re-sends them: the actor's optimistic UI reverts
         logEvent(RULES, `blocked ${pl?.name || 'a player'}: ${why}`);
         notify(p, `🚫 ${why}`);
-        return bump(); // the fresh broadcast reverts the actor's optimistic UI
+        return bump();
       }
     }
     if ((a.t === 'chat' || a.t === 'name') && !mayTalk(p)) {
@@ -418,11 +623,13 @@ export function createTable(host, env = {}) {
     const fx0 = marks;
     switch (a.t) {
       case 'hello': break; // registration + join logging happen in join()
+      case 'snap': break;  // a snapshot request: the app serves it (the sender registered in join())
       case 'name': {
         const name = cleanName(a.name || '');
         if (pl && name && name !== pl.name) {
           const old = pl.name;
           pl.name = name;
+          touchPlayer(p);
           logEvent(p, `is now known as "${name}"`, false, old); // shown under the OLD name
         }
         break;
@@ -446,11 +653,11 @@ export function createTable(host, env = {}) {
           }
           host.guestDeckChars = used + size;
         }
-        const deckId = newId(); // host-minted: a peer must not choose (or overwrite) deck ids
+        const deckId = mint(host.decks); // host-minted: a peer must not choose (or overwrite) deck ids
         host.decks[deckId] = deck;
         emit({ t: 'deck', id: deckId });
         const at = clampToFelt(num(a.x, host.size / 2 - CARD_W / 2), num(a.y, host.size / 2 - CARD_H / 2), host.size);
-        const nid = put(newId(), {
+        const nid = put(mint(host.items), {
           k: 'p', x: at.x, y: at.y, rot: 0, z: zTop(), name: deck.name,
           cards: deck.cards.map((_, i) => ({ d: deckId, i, up: false })),
         });
@@ -474,6 +681,7 @@ export function createTable(host, env = {}) {
         const c = it?.k === 'p' && it.cards.pop();
         if (c && pl) {
           pl.hand.push({ d: c.d, i: c.i });
+          touchPlayer(p, { hand: true });
           touch(a.id);
           logEvent(p, `drew a card from ${itemLabel(host.decks, it)}`);
           mark(p, a.id);
@@ -486,8 +694,9 @@ export function createTable(host, env = {}) {
         const idx = pl && handIdx(pl, a);
         if (pl && idx >= 0) {
           const c = pl.hand.splice(idx, 1)[0];
+          touchPlayer(p, { hand: true });
           const at = clampToFelt(num(a.x, host.size / 2), num(a.y, host.size / 2), host.size), up = !!a.up;
-          const nid = put(newId(), { k: 'c', x: at.x, y: at.y, rot: normRot(a.rot), z: zTop(), d: c.d, i: c.i, up });
+          const nid = put(mint(host.items), { k: 'c', x: at.x, y: at.y, rot: normRot(a.rot), z: zTop(), d: c.d, i: c.i, up });
           logEvent(p, `played ${up ? cardName(host.decks, c.d, c.i) : 'a card face down'} from hand`);
           mark(p, nid);
         }
@@ -498,6 +707,7 @@ export function createTable(host, env = {}) {
         const pile = own(items, a.pile);
         if (pl && idx >= 0 && pile?.k === 'p') {
           const c = pl.hand.splice(idx, 1)[0];
+          touchPlayer(p, { hand: true });
           // A card discarded onto a pile matches the pile's exposed face
           // (face up onto a face-up pile, face down onto a deck).
           const up = pile.cards.at(-1)?.up ?? false;
@@ -513,6 +723,7 @@ export function createTable(host, env = {}) {
           logEvent(p, `took ${itemLabel(host.decks, it)} from the table into hand`);
           mark(p, a.id);
           pl.hand.push({ d: it.d, i: it.i });
+          touchPlayer(p, { hand: true });
           remove(a.id);
         }
         break;
@@ -555,6 +766,7 @@ export function createTable(host, env = {}) {
         if (p === pid && size && size !== host.size) {
           const shift = (size - host.size) / 2; // items stay centered on the felt
           host.size = size;
+          dirty.size = true;
           for (const [id, o] of Object.entries(items)) {
             ({ x: o.x, y: o.y } = clampToFelt(o.x + shift, o.y + shift, size));
             touch(id);
@@ -632,7 +844,7 @@ export function createTable(host, env = {}) {
     const known = own(host.players, p);
     const back = !known?.online; // read BEFORE ensurePlayer flips the same object online
     ensurePlayer(p, name);
-    host.players[p].key ||= key; // first contact binds the seat (older saves adopt their first claimant)
+    host.keys[p] ||= key; // first contact binds the seat (older saves adopt their first claimant)
     if (back) {
       logEvent(p, known ? 'is back at the table' : 'joined the table');
       if (host.rules?.enabled) { runHook('onJoin', p); refreshButtons(); }
@@ -644,6 +856,7 @@ export function createTable(host, env = {}) {
     const pl = own(host.players, p);
     if (!pl) return false;
     pl.online = false;
+    touchPlayer(p);
     logEvent(p, 'left the table');
     if (host.rules?.enabled) { runHook('onLeave', p); refreshButtons(); }
     return bump();
@@ -653,10 +866,10 @@ export function createTable(host, env = {}) {
   function open(name) {
     ensurePlayer(pid, name);
     const deck = standardDeck(false);
-    const deckId = newId();
+    const deckId = mint(host.decks);
     host.decks[deckId] = deck;
-    put(newId(), {
-      k: 'p', x: host.size / 2 - CARD_W / 2, y: host.size / 2 - CARD_H / 2, rot: 0, z: 1,
+    put(mint(host.items), {
+      k: 'p', x: host.size / 2 - CARD_W / 2, y: host.size / 2 - CARD_H / 2, rot: 0, z: zTop(),
       name: deck.name, cards: deck.cards.map((_, i) => ({ d: deckId, i, up: false })),
     });
     logEvent(pid, 'opened the table');
@@ -683,10 +896,13 @@ export function createTable(host, env = {}) {
         emit({ t: 'toast', msg: `Saved rules failed to load: ${err.message}` });
       }
     }
-    for (const pl of Object.values(host.players)) pl.online = false;
     // Migrate older saves: seats didn't exist, and the table used to be a
     // larger rectangle — pull stranded items back onto the round felt.
-    for (const pl of Object.values(host.players)) pl.seat ??= assignSeat();
+    for (const [p, pl] of Object.entries(host.players)) {
+      pl.online = false;
+      pl.seat ??= assignSeat();
+      touchPlayer(p);
+    }
     for (const [id, it] of Object.entries(host.items)) {
       ({ x: it.x, y: it.y } = clampToFelt(it.x, it.y, host.size));
       touch(id);
@@ -697,6 +913,17 @@ export function createTable(host, env = {}) {
   }
 
   // --- the engine around the script ------------------------------------------
+  const FIND_KEYS = ['kind', 'name', 'up'];
+  /** The [id, item] pairs of kind k, from the index (skipping an id a caller
+   *  deleted from state.items behind the table's back). */
+  function* ofKind(k) {
+    for (const id of byKind.get(k)) {
+      const it = own(host.items, id);
+      if (it?.k === k) yield [id, it];
+    }
+  }
+  /** A script's own copy of item `id`: changing it never changes the table. */
+  const copyItem = (id, it) => ({ id, ...it, ...(it.cards && { cards: it.cards.map((c) => ({ ...c })) }) });
   /** Runs one script hook; any throw disables the rules loudly. */
   function runHook(name, ...args) {
     if (!host.rules?.enabled || !hooks.has(name)) return undefined;
@@ -709,10 +936,13 @@ export function createTable(host, env = {}) {
   }
   /** Calls a hook with the facade. Hooks are synchronous: a Promise (an
    *  async hook, or a runner that answers later) would let validate's veto
-   *  pass unread, so it throws — a script error, which fails closed. */
+   *  pass unread, so it throws — a script error, which fails closed. So does
+   *  a t.data grown past DATA_MAX_CHARS (it is saved, and copied to a Worker). */
   function callHook(name, ...args) {
     const r = hooks.call(name, tApi, ...args);
     if (typeof r?.then === 'function') throw new Error('hooks must be synchronous (it returned a Promise)');
+    const n = JSON.stringify(host.rules.data)?.length || 0;
+    if (n > DATA_MAX_CHARS) throw new Error(`t.data is too large (${n.toLocaleString('en-US')} chars, max ${DATA_MAX_CHARS.toLocaleString('en-US')})`);
     return r;
   }
   /** A script error: disable the rules, loudly and on the record. */
@@ -797,8 +1027,27 @@ export function createTable(host, env = {}) {
       .map(([id, pl]) => ({ id, name: pl.name, seat: pl.seat, online: pl.online, handCount: pl.hand.length, host: id === pid }))
       .sort((a, b) => a.seat - b.seat),
     hand: (p) => (own(host.players, p)?.hand || []).map((c) => ({ ...c })),
-    items: () => Object.entries(host.items).map(([id, it]) => structuredClone({ id, ...it })),
-    piles() { return this.items().filter((it) => it.k === 'p'); },
+    /** Every item, copied: O(n) — t.item(id) and t.find(q) are the cheap reads. */
+    items: () => Object.entries(host.items).map(([id, it]) => copyItem(id, it)),
+    /** One item, copied ({id, ...item}), or null. */
+    item: (id) => { const it = own(host.items, id); return it ? copyItem(id, it) : null; },
+    /** The items matching q = {kind?: 'card'|'pile', name? (a pile's, any case), up?}, copied. */
+    find(q = {}) {
+      for (const k of Object.keys(q)) if (!FIND_KEYS.includes(k)) throw new TypeError(`t.find: unknown filter '${k}' — known: ${FIND_KEYS.join(', ')}`);
+      const kinds = q.kind === undefined ? ['c', 'p'] : [own({ card: 'c', pile: 'p' }, q.kind)];
+      if (!kinds[0]) throw new TypeError(`t.find: unknown kind '${q.kind}' — known: card, pile`);
+      const name = q.name === undefined ? null : String(q.name).toLowerCase();
+      const out = [];
+      for (const k of kinds) {
+        for (const [id, it] of ofKind(k)) {
+          if (name !== null && (it.k !== 'p' || String(it.name || '').toLowerCase() !== name)) continue;
+          if (q.up !== undefined && !!(it.k === 'c' ? it.up : it.cards.at(-1)?.up) !== !!q.up) continue;
+          out.push(copyItem(id, it));
+        }
+      }
+      return out;
+    },
+    piles: () => [...ofKind('p')].map(([id, it]) => copyItem(id, it)),
     deal: (pileId, o) => opDealTop(RULES, pileId, o),
     dealToAll(pileId, n = 1, o = {}) {
       for (let i = 0; i < n; i++) {
@@ -815,8 +1064,9 @@ export function createTable(host, env = {}) {
       // splice() would read -1 (a failed findIndex) as "the last card": refuse it
       if (!Number.isInteger(idx) || !pl?.hand[idx]) { console.error('t.playFromHand: bad hand index', p, idx); return false; }
       const c = pl.hand.splice(idx, 1)[0];
+      touchPlayer(p, { hand: true });
       const at = clampToFelt(o.x ?? host.size / 2 - CARD_W / 2, o.y ?? host.size / 2 - CARD_H / 2, host.size);
-      const nid = put(newId(), { k: 'c', x: at.x, y: at.y, rot: normRot(o.rot), z: zTop(), d: c.d, i: c.i, up: o.up !== false });
+      const nid = put(mint(host.items), { k: 'c', x: at.x, y: at.y, rot: normRot(o.rot), z: zTop(), d: c.d, i: c.i, up: o.up !== false });
       logEvent(RULES, `played ${o.up !== false ? cardName(host.decks, c.d, c.i) : 'a card face down'} from ${pl.name || 'a player'}'s hand`);
       mark(RULES, nid);
       return nid;
@@ -827,6 +1077,7 @@ export function createTable(host, env = {}) {
       logEvent(RULES, `gave ${itemLabel(host.decks, it)} to ${pl.name || 'a player'}`);
       mark(RULES, cardId);
       pl.hand.push({ d: it.d, i: it.i });
+      touchPlayer(p, { hand: true });
       remove(cardId);
       return true;
     },
@@ -877,7 +1128,7 @@ export function createTable(host, env = {}) {
      *  can keep big decks off the table (small piles via t.newPile([{d,i,up}])
      *  keep the broadcast state light). `back` may be a solid color ("#111"). */
     newDeck(def) {
-      const deckId = newId();
+      const deckId = mint(host.decks);
       host.decks[deckId] = cleanDeck({
         name: def.name, back: def.back,
         cards: (def.cards || []).map((c) => ({ n: c.name, txt: c.text, col: c.color, b: c.bg, meta: c.meta })),
@@ -888,7 +1139,7 @@ export function createTable(host, env = {}) {
     },
     addStandardDeck(o = {}) {
       const deck = standardDeck(!!o.jokers);
-      const deckId = newId();
+      const deckId = mint(host.decks);
       host.decks[deckId] = deck;
       emit({ t: 'deck', id: deckId });
       const nid = opNewPile(RULES, deck.cards.map((_, i) => ({ d: deckId, i, up: false })), { x: o.x, y: o.y, name: deck.name });
@@ -935,34 +1186,112 @@ export function createTable(host, env = {}) {
     },
   };
 
-  // --- the public view: what guests may know -----------------------------------
+  // --- the public view: what guests may know (full recomputes) -------------------
   function publicPlayers() {
-    return Object.fromEntries(Object.entries(host.players).map(([p, pl]) => [
-      p, { name: pl.name, color: pl.color, online: pl.online, handCount: pl.hand.length, seat: pl.seat },
-    ]));
+    return Object.fromEntries(Object.entries(host.players).map(([p, pl]) => [p, pubPlayer(pl)]));
   }
-
-  /** The table as players see it — hidden identities stay on the host. A pile
-   *  becomes {…, n: count, top} (a face-down top keeps only its deck, for the
-   *  back), and a face-down loose card loses its index `i`. Everyone renders
-   *  this one shape, the host included; only host LOGIC reads host.items. */
+  /** The table as players see it (see pubItem); T.pub holds the same, kept up to date incrementally. */
   function publicItems() {
-    return Object.fromEntries(Object.entries(host.items).map(([id, it]) => {
-      if (it.k === 'p') {
-        const { cards, ...rest } = it, top = cards.at(-1);
-        return [id, { ...rest, n: cards.length, top: top && (top.up ? { ...top } : { d: top.d, up: false }) }];
-      }
-      const { i, ...rest } = it;
-      return [id, it.up ? { ...rest, i } : rest];
-    }));
+    return Object.fromEntries(Object.entries(host.items).map(([id, it]) => [id, pubItem(it)]));
+  }
+  const rulesView = () => (host.rules ? { name: host.rules.name, enabled: host.rules.enabled, public: host.rules.public } : null);
+  let rulesSig = JSON.stringify(rulesView()); // what the last takeDirty() saw
+
+  // --- delta sync: the dirty sets, patches and snapshots ------------------------
+  /** Hands over what changed since the last call (the dirty sets) and starts
+   *  afresh. The app calls it once per broadcast tick. Scripts change
+   *  t.public in place, so the rules are found dirty by comparison here. */
+  function takeDirty() {
+    refresh();
+    const d = dirty, sig = JSON.stringify(rulesView());
+    dirty = newDirty();
+    if (sig !== rulesSig) { rulesSig = sig; d.rules = true; }
+    return d;
+  }
+  /** The part of a patch every recipient shares, from a takeDirty() result:
+   *  only what changed — whole public items and players, removed ids, new log
+   *  entries — item ids in sorted order (creation order never shows). */
+  function patchContent(d) {
+    refresh();
+    const c = {};
+    if (d.size) c.size = host.size;
+    if (d.rules) c.rules = rulesView();
+    if (d.items.size) c.items = Object.fromEntries([...d.items].sort().map((id) => [id, pub.get(id)]));
+    if (d.removed.size) c.del = [...d.removed].sort();
+    const ps = [...d.players].filter((p) => own(host.players, p)).sort();
+    if (ps.length) c.players = Object.fromEntries(ps.map((p) => [p, pubPlayer(host.players[p])]));
+    if (d.log.length) c.log = trimLog(d.log); // entries this tick both appends and trims need not travel
+    return c;
+  }
+  /** The shared part of a snapshot: the whole public table. Build it in the
+   *  same tick as the takeDirty() it follows, so the next patch continues it. */
+  function snapContent() {
+    refresh();
+    const items = Object.fromEntries(Object.keys(host.items).sort().map((id) => [id, pub.get(id)]));
+    return { size: host.size, rules: rulesView(), items, players: publicPlayers(), log: host.log };
+  }
+  /** Marks the items action `a` names, and for a hand action p's hand, to be
+   *  re-sent unchanged: after a refusal the actor's optimistic UI (a drag, a
+   *  card taken from the hand) must snap back, and deltas only carry what is marked. */
+  function touchNamed(p, a) {
+    for (const id of [a.id, a.pile, a.onto, ...(Array.isArray(a.ids) ? a.ids.slice(0, 200) : [])]) touch(id);
+    if (HAND_ACTIONS.has(a.t) && own(host.players, p)) touchPlayer(p, { hand: true });
+  }
+  /** An action of p's was refused before it reached the table (flood
+   *  control): re-send what it names (touchNamed). Returns true (renumbered). */
+  function refreshFor(p, a) {
+    touchNamed(p, a);
+    return bump();
+  }
+  /** Applies a host-state patch (from a rules Worker running a mirror of this
+   *  table, TABLETOP.md §5): items whole (null = removed), players whole (keys
+   *  stay here), new decks (sanitized again), rules fields, log entries to
+   *  append, counters, and refresh touches. Everything lands in the dirty
+   *  sets; the caller renumbers (state.seq) and broadcasts. */
+  function applyStatePatch(s) {
+    for (const [id, it] of Object.entries(s.items || {})) {
+      if (id === '__proto__') continue;
+      if (it === null) remove(id);
+      else put(id, it);
+    }
+    for (const [p, pl] of Object.entries(s.players || {})) {
+      if (p === '__proto__') continue;
+      const old = own(host.players, p);
+      host.players[p] = pl;
+      touchPlayer(p, { hand: JSON.stringify(old?.hand) !== JSON.stringify(pl.hand) });
+    }
+    for (const [id, deck] of Object.entries(s.decks || {})) {
+      if (id === '__proto__') continue;
+      try {
+        host.decks[id] = cleanDeck(deck);
+        emit({ t: 'deck', id });
+      } catch (err) { console.error(`patched deck ${id} rejected`, err); }
+    }
+    if (s.rules) {
+      const was = host.rules;
+      host.rules = { ...was, ...s.rules };
+      if (host.rules.code !== was?.code || host.rules.enabled !== was?.enabled) emit({ t: 'rules' });
+    }
+    if (own(TABLE_SIZES, s.size) && +s.size !== host.size) { host.size = +s.size; dirty.size = true; }
+    if (Array.isArray(s.log)) {
+      host.log = trimLog(host.log.concat(s.log));
+      dirty.log = dirty.log.concat(s.log);
+    }
+    for (const k of ['zMax', 'guestDeckChars']) if (Number.isFinite(s[k])) host[k] = s[k];
+    for (const id of s.refresh || []) touch(id);
+    for (const p of s.refreshHands || []) if (own(host.players, p)) touchPlayer(p, { hand: true });
   }
 
   return {
     state: host,
     api: tApi, // the rules facade `t`
+    byKind,
+    /** id → public item for every item on the table: publicItems(), kept incrementally. */
+    get pub() { refresh(); return pub; },
     /** The last rules-script error, for the rules dialog ('' after a successful enable). */
     get rulesError() { return lastRulesError; },
     apply, join, leave, open, resume, runTimers, mayAct, publicItems, publicPlayers,
+    takeDirty, patchContent, snapContent, refreshFor, applyStatePatch,
     /** The state as saved: all of it but the decks, which are saved apart
      *  (big, and rewritten only when a deck is added). */
     snapshot() { const s = { ...host }; delete s.decks; return s; },

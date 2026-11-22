@@ -9,24 +9,26 @@ const { ok, section, logHas } = h;
 async function mallory(env, invite) {
   const page = await env.page('Mallory');
   await page.goto(`${env.base}/cardtable/cah-cards.js`); // any same-origin page; we don't run the app
-  await page.evaluate(async ({ invite, relay }) => {
+  await page.evaluate(async ({ invite, relay, v }) => {
     const { joinRoom } = await import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm');
     const [, roomId, password] = invite.match(/#room~([0-9a-f]+)~([0-9a-f]+)/);
     const room = joinRoom({ appId: 'gk-cardtable', password, relayConfig: { urls: [relay] } }, roomId);
     const M = (window.M = { room, got: { state: [], note: [] }, send: {} });
-    for (const ch of ['act', 'state', 'decks', 'log', 'note', 'rules']) {
+    for (const ch of ['act', 'state', 'decks', 'note', 'rules']) {
       const a = room.makeAction(ch);
       M.send[ch] = (data, target) => a.send(data, target ? { target } : {});
       a.onMessage = (m, { peerId }) => (M.got[ch] ||= []).push({ m, peerId });
     }
+    const act = M.send.act; // every action carries the wire version (else the host refuses it unread)
+    M.send.act = (data, target) => act({ _v: v, ...data }, target);
     await new Promise((r) => { const t = setInterval(() => { if (Object.keys(room.getPeers()).length >= 2) { clearInterval(t); r(); } }, 100); });
-  }, { invite, relay: env.relayUrl });
+  }, { invite, relay: env.relayUrl, v: h.PROTO });
   return page;
 }
 const MKEY = 'm'.repeat(32);
 const MPID = 'ffffffffffffffff';
-/** Bodies of all states Mallory received (signed rooms wrap them in {b,s,k}). */
-const statesSeen = (m) => m.evaluate(() => window.M.got.state.map(({ m }) => (typeof m.b === 'string' ? JSON.parse(m.b) : m)));
+/** Bodies of all states (snapshots and patches) Mallory received (signed rooms wrap them in {b,s,k}). */
+const statesSeen = async (m) => h.bodies(await m.evaluate(() => window.M.got.state.map(({ m }) => m)));
 
 (async () => {
   const env = await h.start();
@@ -63,14 +65,15 @@ const statesSeen = (m) => m.evaluate(() => window.M.got.state.map(({ m }) => (ty
 
   section('forged host messages');
   const itemsBefore = await guest.locator('.item').count();
-  await M.evaluate(() => {
-    const fake = { seq: 1e9, size: 1300, items: {}, players: {}, to: null, hand: [], fx: [], ann: ['HACKED'] };
+  await M.evaluate((v) => {
+    // a whole new table from a "newer epoch", with a forged log (the log travels in states)
+    const fake = { v, kind: 'snap', boot: Date.now() + 1e9, seq: 1e9, size: 1300, items: {}, players: {}, rules: null, to: null, hand: [], fx: [], ann: ['HACKED'],
+      log: [{ p: 'RULES', txt: 'FORGED LOG', ts: Date.now() }] };
     window.M.send.state(fake);                                  // unsigned
     window.M.send.state({ b: JSON.stringify(fake), s: 'AAAA', k: 'BBBB' }); // bogus signature
-    window.M.send.log([{ p: 'RULES', txt: 'FORGED LOG', ts: Date.now() }]);
     window.M.send.note({ msg: 'FORGED NOTE' });
     window.M.send.decks({ deadbeef: { name: 'x', cards: [{ r: 'A', s: '♠' }] } });
-  });
+  }, h.PROTO);
   await h.sleep(2000);
   ok((await guest.locator('.item').count()) === itemsBefore, "a forged state can't wipe the guest's table");
   ok(!(await guest.evaluate(() => document.getElementById('log').textContent.includes('FORGED'))), "a forged log can't rewrite the guest's record");

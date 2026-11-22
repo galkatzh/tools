@@ -196,6 +196,7 @@ select {
   cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
   -webkit-touch-callout: none; /* iOS: a long-press zooms the card, no image callout */
   transition: left 0.18s ease-out, top 0.18s ease-out; /* remote moves glide (UX-I1) */
+  contain: layout style; /* a redrawn card never re-lays out the table (not paint: it would clip the outline and shadows) */
 }
 .item.dragging { pointer-events: none; cursor: grabbing; transition: none; }
 @media (hover: hover) { /* touch screens keep :hover after a tap: no stuck lift */
@@ -373,6 +374,11 @@ dialog ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 14px; }
   box-shadow: 0 4px 14px #000a; max-width: 92%; font-size: 14px; text-align: center;
 }
 #toast.ok { background: #059669; }
+/* the module-version check failed (app.js boot): nothing else runs */
+#skew-banner {
+  position: fixed; inset: 0 0 auto; z-index: 1000000; padding: 14px 16px;
+  background: #dc2626; color: #fff; font-size: 16px; font-weight: 600; text-align: center;
+}
 @media (max-width: 480px), (max-height: 500px) { #toast { font-size: 13px; padding: 6px 12px; } }
 
 /* Short screens (phone landscape): give the table every pixel we can. */

@@ -80,9 +80,25 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   *counts*, and that guest's own hand. The public table is redacted: piles
   travel as a count plus their top card (just its back when it's face down)
   and face-down cards without their identity, so deck order and hidden
-  cards never leave the host. Bare actions + full-state broadcast, no
-  CRDT: state is small and single-writer, and late joiners catch up from the
-  host's first broadcast.
+  cards never leave the host. Bare actions + host-authored deltas, no CRDT:
+  state is single-writer.
+- **Delta sync**: the host records what each action changed (core.js dirty
+  sets) and, on a 40 ms broadcast tick, serializes one patch with just those
+  items, players and log lines; each guest gets it spliced with its own
+  fields (its hand, when that changed), signed and bound to its connection.
+  A guest that arrives, reloads or re-registers gets a full snapshot
+  instead. Patches are numbered per guest (each one says which seq it
+  builds on), so a guest never applies one out of order: a stale one is
+  ignored, and a gap (a lost message) makes it ask for a fresh snapshot (at
+  most one per 3 s, shown as "re-syncing" in the status tooltip). A
+  1,000-card table costs a few hundred bytes per move, and every screen —
+  the host's own included, through the same path — redraws only the items
+  that changed.
+- **Versions**: actions carry the wire version and host messages declare
+  it; a peer on another version of Card Table is refused with a "reload this
+  page" notice instead of misreading the table. Every module import carries
+  the code version (`core.js?v=1`), and the page stops with a "reload" banner
+  if a cached module of another version slipped in.
 - **Identity**: players get a persistent random id in `localStorage`, so a
   reloaded guest reclaims their hand (WebRTC peer ids change per page load).
   Every guest action carries that id + nickname, and the host registers the
@@ -101,9 +117,10 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   only peer that can name cards trustworthily), keeps the last 200 actions,
   the last 50 peeks and the last 100 chat lines and renames in state
   (separate caps, so neither chatter nor a flood of moves can push the
-  record of a peek out), and pushes them on a dedicated channel only when
-  the log changes; repeated drag/rotate entries collapse so moves don't
-  flood it, and a guest may chat or rename at most 5 times per 5 seconds.
+  record of a peek out), and sends new entries inside the patches (every
+  peer trims with the same rule, so all copies agree); repeated drag/rotate
+  entries collapse so moves don't flood it, and a guest may chat or rename
+  at most 5 times per 5 seconds.
 - **Flood control**: the host is the only authority, so a guest's action
   burst could freeze the table for everyone: each guest may send a burst
   of 40 actions, then 20 per second (more are dropped, and they're told to
@@ -313,4 +330,6 @@ isolated browser contexts (host, guests, a raw attacker peer) through a
 minimal local Nostr relay, exercising join, draw, deal, flip, drag-move,
 play from hand, stacking, merging, shuffling, custom image decks, face-down
 play, host reload/resume, the rules engine and the terminal bridge. Node
-suites run the state core and the rules templates without a browser.
+suites run the state core and the rules templates without a browser; a
+seeded fuzzer checks that the incremental public view and every guest's
+view folded from patches equal full recomputes after each of 600 random ops.

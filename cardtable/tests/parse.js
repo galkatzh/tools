@@ -17,7 +17,8 @@ while (todo.length) {
   seen.add(f);
   try {
     const m = new vm.SourceTextModule(fs.readFileSync(f, 'utf8'), { identifier: f });
-    for (const s of m.dependencySpecifiers) if (/^\.\.?\//.test(s)) todo.push(path.resolve(path.dirname(f), s));
+    // (a local specifier carries the module version, "./core.js?v=1": the file is the path)
+    for (const s of m.dependencySpecifiers) if (/^\.\.?\//.test(s)) todo.push(path.resolve(path.dirname(f), s.replace(/\?.*$/, '')));
     console.log('parses:', path.relative(APP, f));
   } catch (e) {
     bad++;

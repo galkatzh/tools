@@ -105,12 +105,28 @@ A thin wrapper over the table's existing ops (today in `core.js`):
 
 - **Reads**: `t.players()` (id/name/seat/online/handCount, seat-ordered;
   `host: true` marks the host's own seat, for host-only commands),
-  `t.items()`, `t.piles()`, `t.hand(pid)` (the host already holds all
-  hands, pile orders and face-down identities — guests never receive
-  those, see README "Honest limits").
+  `t.item(id)`, `t.find(q)`, `t.piles()`, `t.items()`, `t.hand(pid)` (the
+  host already holds all hands, pile orders and face-down identities —
+  guests never receive those, see README "Honest limits").
+  - `t.item(id)` → `{id, ...item}` (a pile with its `cards`), or `null`: one
+    lookup, whatever the table's size.
+  - `t.find({kind, name, up})` → the matching items: `kind` `'card'` or
+    `'pile'`, `name` a pile's name (exact, any case), `up` the face a card
+    shows (a pile: its top card). Any other key, or another kind, throws a
+    `TypeError` naming the known ones. It reads an index by kind.
+  - `t.piles()` → every pile (the same index).
+  - `t.items()` → every item: it copies the whole table, O(n) — on a
+    1,000-card table, prefer `t.item` and `t.find`, especially in hooks that
+    run on every action (`validate`, `onAction`, `buttons`).
+
+  Every read returns copies: plain, mutable and detached — changing one never
+  changes the table, and one kept across hooks never changes under the script.
 - **Scratch state**: `t.data` — a plain object persisted inside
   `host.rules.data` (survives host reload via the existing `persist()`
-  path), so turn pointers, phases, and pending timers live there.
+  path), so turn pointers, phases, and pending timers live there. It must
+  stay JSON and under 4,000,000 characters as JSON: after each hook a larger
+  `t.data` fails it (`t.data is too large (N chars, max 4,000,000)`), and the
+  rules disable loudly.
 - **Ops — the complete primitive set**, mirroring everything `apply()` can
   do (the switch bodies get refactored into named helpers — `opDeal`,
   `opShuffle`, … — used by both the switch and this API):
@@ -307,16 +323,20 @@ the default.
   `validate`'s answer inline, and a hook that returns a Promise counts as a
   script error, so the veto fails closed. A rules Worker therefore wraps the
   whole table, not the runner: it runs `createTable()` on a mirror of the
-  state, and the page sends it actions and gets back changes and effects.
-  Time, randomness and new ids are injectable too (`env.now`, `env.random`,
-  `env.uid`), so a seeded table replays exactly. What used to touch the
-  screen or the network (log lines, action markers, banners, private notes
-  and peeks, new decks, the host's toasts) is queued as effects that
-  `app.js` drains (`T.drain()`).
+  state, and the page sends it actions and gets back changes (a state
+  patch, `T.applyStatePatch()`) and effects. Time, randomness and new ids
+  are injectable too (`env.now`, `env.random`, `env.uid`), so a seeded
+  table replays exactly. What used to touch the screen or the network
+  (action markers, banners, private notes and peeks, new decks, the host's
+  toasts) is queued as effects that `app.js` drains (`T.drain()`); what
+  changed in the state (items, players, hands, log lines, the rules'
+  public part) is recorded in dirty sets that `app.js` takes once per
+  broadcast tick (`T.takeDirty()`) to build the patches.
 - `cardtable/templates.js`: the example scripts (`RULES_TEMPLATES`) and
   the 🎲 picker's catalog (`GAMES`).
-- `cardtable/app.js`: the `note`, `rulesBtn` and `setRules` messages; rules
-  carried in broadcast/`handleState`/`persist`; the timer tick; the rules
+- `cardtable/app.js`: the `note`, `rulesBtn` and `setRules` messages; the
+  rules' public part carried in the snapshots and patches, and saved; the
+  timer tick (a `_tick` job on the host's action queue); the rules
   dialog and game picker; turn indicator in `renderPlayers`;
   scripted-buttons row.
 - `cardtable/index.html` / `style.css`: Rules button + dialog (editor,

@@ -171,7 +171,7 @@ function guard(fn) { try { fn(); } catch (e) { ok(false, 'scenario crashed: ' + 
     const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     const cards = (t) => Object.entries(t.state.decks).map(([id, d]) => [id, d.name, d.cards]);
     ok(same(T2.state.items, T.state.items) && same(cards(T2), cards(T)), 'the table and its decks come back as they were');
-    ok(same(T2.state.players[BOB].hand, T.state.players[BOB].hand) && T2.state.players[BOB].key === 'k'.repeat(32), "Bob's hand and seat key are kept");
+    ok(same(T2.state.players[BOB].hand, T.state.players[BOB].hand) && T2.state.keys[BOB] === 'k'.repeat(32), "Bob's hand and seat key are kept");
     ok(!T2.state.players[BOB].online && T2.state.players[HOST].online, 'everyone but the host waits offline until they reconnect');
     ok(T2.state.rules.enabled && same(T2.state.rules.data, T.state.rules.data) && T2.drain().some((e) => e.t === 'rules'), "Hold'em's code reloads, its state kept");
     ok(T2.state.seq === T.state.seq + 1 && T2.state.log.at(-1).txt === 'resumed the table', 'the resume is logged and renumbered');
@@ -325,6 +325,283 @@ function guard(fn) { try { fn(); } catch (e) { ok(false, 'scenario crashed: ' + 
     try { T.apply(HOST, { t: 'shuffle', id: pile }); } finally { crypto.getRandomValues = gv; }
     const order = T.state.items[pile].cards.map((c) => c.i);
     ok(calls <= 6 && new Set(order).size === 5000 && order.some((v, k) => v !== k), `a 5000-card shuffle reads the crypto RNG ${calls} times, not once per card`);
+  });
+
+  // --- Phase 1: delta sync ------------------------------------------------------
+  const { PROTO, trimLog, spliceBody, viewFromSnap, applyViewPatch, migrate, MIGRATE, STATE_V } = core;
+  /** A seeded table: host Alice, guests Bob and Carol, a standard deck. */
+  const seeded = (seed = 1) => {
+    let s = seed, n = 0, clock = 1e12;
+    const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+    const T = createTable({}, { pid: HOST, now: () => (clock += 250), random: rnd, uid: () => (++n).toString(16).padStart(8, '0') });
+    T.open('Alice');
+    T.join(BOB, 'Bob', 'k'.repeat(32));
+    T.join(CAROL, 'Carol', 'c'.repeat(32));
+    return { T, rnd };
+  };
+  /** Top-level keys sorted: dict order on a guest follows patch arrival, not creation. */
+  const canon = (o) => JSON.stringify(Object.keys(o).sort().map((k) => [k, o[k]]));
+  /** One broadcast tick for recipients `views` ({to, view}), as the app runs
+   *  it: takeDirty, one shared text, then per recipient a spliced snapshot
+   *  (the one numbered `fresh`: a reload), a patch, or nothing. Returns how many got nothing. */
+  const tick = (T, views, fresh = -1, boot = 1) => {
+    const d = T.takeDirty(), content = T.patchContent(d), seq = T.state.seq;
+    const shared = JSON.stringify({ v: PROTO, kind: 'patch', boot, seq, host: HOST, ...content });
+    let skipped = 0;
+    for (const [k, r] of views.entries()) {
+      if (k === fresh) {
+        const text = JSON.stringify({ v: PROTO, kind: 'snap', boot, seq, host: HOST, ...T.snapContent(), fx: [], ann: [] });
+        r.view = viewFromSnap(JSON.parse(spliceBody({ to: r.to, tp: 'peer', ...(r.to ? { hand: T.state.players[r.to].hand } : {}) }, text)));
+        continue;
+      }
+      const mine = r.to && d.hands.has(r.to);
+      if (!Object.keys(content).length && !mine) { skipped++; continue; }
+      const body = JSON.parse(spliceBody({ to: r.to, tp: 'peer', base: r.view.seq, ...(mine ? { hand: T.state.players[r.to].hand } : {}) }, shared));
+      if (body.base !== r.view.seq || body.boot !== r.view.boot) throw new Error('a patch out of order');
+      applyViewPatch(r.view, body);
+    }
+    return skipped;
+  };
+  /** A recipient's view from a fresh snapshot (taken right after a takeDirty, as the app does). */
+  const snapView = (T, to, boot = 1) => {
+    T.takeDirty();
+    const text = JSON.stringify({ v: PROTO, kind: 'snap', boot, seq: T.state.seq, host: HOST, ...T.snapContent(), fx: [], ann: [] });
+    return { to, view: viewFromSnap(JSON.parse(spliceBody({ to, tp: 'peer', ...(to ? { hand: T.state.players[to].hand } : {}) }, text))) };
+  };
+
+  section('Phase 1: T.pub and folded patches match full recomputes through 600 random ops');
+  guard(() => {
+    const { T, rnd } = seeded(11);
+    const pick = (a) => a[Math.floor(rnd() * a.length)];
+    T.apply(HOST, { t: 'setRules', code: RULES_TEMPLATES.turns, enabled: true });
+    const views = [snapView(T, HOST), snapView(T, BOB), snapView(T, null)];
+    let pubBad = 0, viewBad = '', skipped = 0, kinds = new Set();
+    const quiet = [console.warn, console.error];
+    console.warn = console.error = () => {}; // refusals and vetoes by the hundred
+    try {
+      for (let n = 0; n < 600; n++) {
+        const ids = Object.keys(T.state.items), piles = [...T.byKind.get('p')], cards = [...T.byKind.get('c')];
+        const p = pick([HOST, BOB, CAROL]), hand = T.state.players[p].hand, c = pick(hand) || {}, idx = hand.indexOf(c);
+        const xy = () => ({ x: rnd() * 1000 + 100, y: rnd() * 1000 + 100 });
+        const t = T.api;
+        const ops = [
+          () => T.apply(p, { t: 'move', id: pick(ids), ...xy() }),
+          () => T.apply(p, { t: 'rot', id: pick(ids), rot: 90 }),
+          () => T.apply(p, { t: 'flip', id: pick(ids) }),
+          () => T.apply(p, { t: 'shuffle', id: pick(piles) }),
+          () => T.apply(p, { t: 'draw', id: pick(piles) }),
+          () => T.apply(p, { t: 'deal', id: pick(piles), up: rnd() < 0.5, ...xy() }),
+          () => T.apply(p, { t: 'play', idx, d: c.d, i: c.i, up: rnd() < 0.5, ...xy() }),
+          () => T.apply(p, { t: 'handPile', idx, d: c.d, i: c.i, pile: pick(piles) }),
+          () => T.apply(p, { t: 'toHand', id: pick(cards) }),
+          () => T.apply(p, { t: 'toPile', id: pick(cards), pile: pick(piles) }),
+          () => T.apply(p, { t: 'stack', id: pick(cards), onto: pick(cards) }),
+          () => T.apply(p, { t: 'merge', id: pick(piles), pile: pick(piles) }),
+          () => T.apply(p, { t: 'del', id: pick(cards) }),
+          () => T.apply(p, { t: 'peek', id: pick(ids) }),
+          () => T.apply(p, { t: 'chat', msg: `hi ${n}` }),
+          () => T.apply(p, { t: 'name', name: `N${n % 7}` }),
+          () => T.apply(HOST, { t: 'size', size: pick([1300, 1800, 2400]) }),
+          () => t.dealToAll(pick(piles), 1, { onlineOnly: false }),
+          () => t.takeHand(p, pick(piles)),
+          () => hand.length && t.playFromHand(p, 0, { ...xy(), up: rnd() < 0.5 }),
+          () => t.toHand(p, pick(cards)),
+          () => t.newPile([{ d: 'x', i: 1 }, { d: 'x', i: 2, up: true }], xy()),
+          () => t.say('rules say ' + n),
+          () => { t.public.note = n; t.data.n = n; }, // private and public rules data, no op
+          () => T.leave(pick([BOB, CAROL])),
+          () => T.join(pick([BOB, CAROL]), 'Back', 'k'.repeat(32)),
+          () => T.runTimers(),
+        ];
+        if (ids.length < 6) t.addStandardDeck(xy());
+        const k = Math.floor(rnd() * ops.length);
+        kinds.add(k);
+        ops[k]();
+        T.drain();
+        const full = T.publicItems();
+        if (canon(Object.fromEntries(T.pub)) !== canon(full)) pubBad++;
+        skipped += tick(T, views, rnd() < 0.15 ? pick([0, 1, 2]) : -1); // now and then a peer reloads: a snapshot
+        for (const r of views) {
+          const snap = T.snapContent(), want = r.to && T.state.players[r.to].hand;
+          const bad = canon(r.view.items) !== canon(snap.items) ? 'items' : canon(r.view.players) !== canon(snap.players) ? 'players'
+            : JSON.stringify(r.view.log) !== JSON.stringify(snap.log) ? 'log' : want && JSON.stringify(r.view.hand) !== JSON.stringify(want) ? 'hand'
+              : JSON.stringify(r.view.rules) !== JSON.stringify(snap.rules) ? 'rules' : r.view.size !== snap.size ? 'size' : '';
+          if (bad && !viewBad) viewBad = `op ${n} (#${k}), ${r.to || 'anonymous'}: ${bad}`;
+        }
+      }
+    } finally { [console.warn, console.error] = quiet; }
+    ok(kinds.size === 27, `every op kind ran (${kinds.size})`);
+    ok(!pubBad, `T.pub deep-equals publicItems() after every op (${pubBad} mismatches)`);
+    ok(!viewBad, `host, guest and anonymous views folded from patches equal a fresh snapshot after every tick, hands included${viewBad ? ` — first mismatch: ${viewBad}` : ''}`);
+    ok(skipped > 0, `ticks with nothing for a recipient (private-only commits, others' hands) send nothing and keep its base (${skipped})`);
+  });
+
+  section('Phase 1: one tick, one patch: only what changed travels');
+  guard(() => {
+    const { T } = seeded(3);
+    const pile = [...T.byKind.get('p')][0];
+    for (let k = 0; k < 40; k++) T.api.deal(pile, { x: 100 + k * 20, y: 300, up: true });
+    T.takeDirty();
+    const card = [...T.byKind.get('c')][5];
+    T.apply(BOB, { t: 'move', id: card, x: 700, y: 700 });
+    const c = T.patchContent(T.takeDirty());
+    ok(Object.keys(c.items).join() === card && c.log.length === 1 && !c.players && !c.del && !('rules' in c), `a move sends that item and its log line (${Object.keys(c).join(', ')})`);
+    T.apply(BOB, { t: 'draw', id: pile });
+    const d = T.takeDirty(), c2 = T.patchContent(d);
+    ok(d.hands.has(BOB) && !d.hands.has(HOST) && Object.keys(c2.players).join() === BOB && !JSON.stringify(c2).includes('"hand"'), "a draw marks Bob's hand dirty; the shared part carries his count, never the hand");
+    T.apply(HOST, { t: 'setRules', enabled: true, code: '({ name: "Quiet" })' });
+    T.takeDirty();
+    T.api.data.secret = 'x'.repeat(100);
+    ok(!Object.keys(T.patchContent(T.takeDirty())).length, 'a change to t.data only (host-private) makes an empty patch');
+    T.api.public.round = 2;
+    ok(JSON.stringify(T.patchContent(T.takeDirty()).rules) === '{"name":"Quiet","enabled":true,"public":{"round":2}}', 't.public changed in place is found by comparison');
+    const ids = Object.keys(T.snapContent().items);
+    ok(ids.join() === [...ids].sort().join(), 'snapshot items are in sorted id order');
+  });
+
+  section('Phase 1: trimLog keeps the newest of each bucket, however entries are batched');
+  guard(() => {
+    let s = 5;
+    const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+    const mixed = Array.from({ length: 1000 }, (_, k) => ({ p: 'x', txt: `e${k}`, ts: k, ...(rnd() < 0.3 ? { c: 1 } : rnd() < 0.1 ? { k: 1 } : rnd() < 0.05 ? { n: 'old' } : {}) }));
+    let one = [];
+    for (const e of mixed) one = trimLog([...one, e]);                    // the host: after every entry
+    let batched = [];
+    for (let k = 0; k < 1000; k += 137) batched = trimLog(batched.concat(mixed.slice(k, k + 137))); // a guest: per patch
+    const all = trimLog(mixed.slice());
+    ok(JSON.stringify(one) === JSON.stringify(batched) && JSON.stringify(one) === JSON.stringify(all), `one by one, in batches and all at once agree (${one.length} entries kept)`);
+    const count = (l, f) => l.filter(f).length;
+    ok(count(one, (e) => e.c || 'n' in e) === 100 && count(one, (e) => e.k) === 50 && count(one, (e) => !e.c && !('n' in e) && !e.k) === 200, 'talk 100, peeks 50, actions 200');
+    ok(one.every((e, k) => k === 0 || e.ts > one[k - 1].ts), 'in order');
+    const short = [{ p: 'a', txt: 'x', ts: 1 }];
+    ok(trimLog(short) === short, 'a log that fits comes back as is');
+    // 250 act entries in ONE action: host and guest keep the same 200
+    const { T } = seeded(2);
+    const g = snapView(T, BOB);
+    T.apply(HOST, { t: 'setRules', enabled: true, code: '({ name: "Spam", buttons: () => [{ id: "go", label: "Go" }], onButton(t) { for (let k = 0; k < 250; k++) t.say("line " + k); } })' });
+    T.apply(HOST, { t: 'rulesBtn', id: 'go' });
+    tick(T, [g]);
+    const txt = T.state.log.map((e) => e.txt);
+    ok(JSON.stringify(g.view.log) === JSON.stringify(T.state.log) && txt.length === 200 && txt.at(-1) === 'line 249' && !txt.includes('line 49') && txt.includes('line 50'),
+      'one action logging 250 lines leaves the same newest 200 on both sides');
+  });
+
+  section('Phase 1: z is a running max');
+  guard(() => {
+    const { T } = seeded(4);
+    const pile = [...T.byKind.get('p')][0], zs = [];
+    for (let k = 0; k < 5; k++) { T.apply(HOST, { t: 'deal', id: pile, x: 300, y: 300 }); zs.push(T.state.zMax); }
+    const card = [...T.byKind.get('c')][0];
+    T.apply(HOST, { t: 'move', id: card, x: 500, y: 500 });
+    ok(zs.every((z, k) => k === 0 || z > zs[k - 1]) && T.state.items[card].z === T.state.zMax, `zTop() rises with every op (${zs.join(' ')} … ${T.state.zMax}), the moved card on top`);
+    const top = T.state.zMax;
+    T.apply(HOST, { t: 'del', id: card });
+    const T2 = createTable(json(T.snapshot()), { pid: HOST });
+    ok(T2.state.zMax === top, 'createTable restores zMax from the save (not just the highest item left)');
+    const T3 = createTable({ items: { a: { k: 'c', x: 0, y: 0, rot: 0, z: 41, d: 'x', i: 0, up: true } }, players: {} }, { pid: HOST });
+    ok(T3.state.zMax === 41, 'and computes it for a save without one');
+  });
+
+  section('Phase 1: t.item and t.find return detached copies');
+  guard(() => {
+    const { T } = seeded(6);
+    const t = T.api, pile = [...T.byKind.get('p')][0];
+    t.deal(pile, { x: 300, y: 300, up: true });
+    t.deal(pile, { x: 500, y: 300 });
+    const named = t.newPile([{ d: 'x', i: 0, up: true }], { name: 'Discard' });
+    const card = [...T.byKind.get('c')][0], it = t.item(card), p = t.item(pile);
+    ok(it.id === card && it.k === 'c' && t.item('nope') === null && t.item('__proto__') === null, 't.item finds by id (null when absent)');
+    it.x = -1; p.cards.length = 0; p.cards.push({ d: 'zz' });
+    ok(T.state.items[card].x !== -1 && T.state.items[pile].cards.length === 50, 'mutating a copy (a pile\'s cards too) leaves the table alone');
+    ok(t.find({ kind: 'pile' }).length === 2 && t.find({ kind: 'card' }).length === 2 && t.find().length === 4, 't.find by kind');
+    ok(t.find({ name: 'discard' }).map((x) => x.id).join() === named && t.find({ kind: 'card', up: true }).length === 1 && t.find({ kind: 'pile', up: true }).map((x) => x.id).join() === named, 'by name (any case) and by face');
+    const throws = (q) => { try { t.find(q); return ''; } catch (e) { return e instanceof TypeError ? e.message : ''; } };
+    ok(throws({ zone: 'a' }) === "t.find: unknown filter 'zone' — known: kind, name, up" && /unknown kind/.test(throws({ kind: 'die' })) && /unknown kind/.test(throws({ kind: '__proto__' })), 'an unknown filter or kind throws a TypeError');
+    ok(t.piles().length === 2 && t.piles().every((x) => x.k === 'p'), 't.piles() reads the pile index');
+  });
+
+  section('Phase 1: t.data has a size limit');
+  guard(() => {
+    const { T } = seeded(7);
+    T.apply(HOST, { t: 'setRules', enabled: true, code: '({ name: "Hoard", buttons: () => [{ id: "go", label: "Go" }], onButton(t) { t.data.big = "x".repeat(4e6); } })' });
+    T.drain();
+    T.apply(HOST, { t: 'rulesBtn', id: 'go' });
+    ok(!T.state.rules.enabled && /^onButton\(\): t\.data is too large \(4,000,0\d\d chars, max 4,000,000\)$/.test(T.rulesError), `a hook that grows t.data past 4e6 chars disables the rules ("${T.rulesError}")`);
+    ok(T.drain().some((e) => e.t === 'toast' && /t\.data is too large/.test(e.msg)), 'loudly');
+  });
+
+  section('Phase 1: MIGRATE[1] lifts a v1 save');
+  guard(() => {
+    const v1 = { seq: 4, items: { a: { k: 'c', x: 0, y: 0, rot: 0, z: 7, d: 'x', i: 0, up: true }, b: { k: 'p', x: 0, y: 0, rot: 0, z: 12, name: '', cards: [] } },
+      players: { [BOB]: { name: 'Bob', key: 'k'.repeat(32), hand: [], online: true, seat: 90 }, [CAROL]: { name: 'Carol', hand: [] } } };
+    const s = MIGRATE[1](json(v1));
+    ok(s.v === 2 && s.keys[BOB] === 'k'.repeat(32) && !('key' in s.players[BOB]) && !(CAROL in s.keys) && s.zMax === 12, 'keys move to state.keys, zMax is the highest z, v becomes 2');
+    ok(STATE_V === 2 && migrate(json(v1)).v === 2 && migrate({ v: 2, x: 1 }).x === 1, 'migrate() runs the chain up to STATE_V');
+    let err = '';
+    try { migrate({ v: STATE_V + 1 }); } catch (e) { err = e.message; }
+    ok(/newer Card Table/.test(err), 'a save from a newer version is refused, never downgraded');
+    const T = createTable(json(v1), { pid: HOST });
+    T.resume('Alice');
+    ok(T.state.v === 2 && T.state.keys[BOB] === 'k'.repeat(32) && T.join(BOB, 'Bob', 'wrong'.padEnd(32, '!')) && T.state.keys[BOB] === 'k'.repeat(32), 'a v1 save resumes on v2, the seat still bound to its key');
+    ok(!JSON.stringify(T.publicPlayers()).includes('k'.repeat(32)) && !JSON.stringify(T.patchContent(T.takeDirty())).includes('k'.repeat(32)), 'no seat key in a patch or the public view');
+  });
+
+  section('Phase 1: a refusal re-sends what the action named');
+  guard(() => {
+    const { T } = seeded(8);
+    const pile = [...T.byKind.get('p')][0];
+    T.apply(HOST, { t: 'deal', id: pile, x: 300, y: 300 });
+    T.apply(BOB, { t: 'draw', id: pile });
+    T.apply(HOST, { t: 'setRules', enabled: true, code: '({ name: "No", validate: () => "no" })' });
+    T.takeDirty();
+    const card = [...T.byKind.get('c')][0], c = T.state.players[BOB].hand[0];
+    T.apply(BOB, { t: 'move', id: card, x: 900, y: 900 });
+    let d = T.takeDirty();
+    ok(d.items.has(card) && T.state.items[card].x !== 900, 'a vetoed move touches the item (its true spot goes out again)');
+    T.apply(BOB, { t: 'play', idx: 0, d: c.d, i: c.i, x: 500, y: 500 });
+    d = T.takeDirty();
+    ok(d.hands.has(BOB) && T.state.players[BOB].hand.length === 1, "a vetoed play re-sends Bob's hand");
+    T.apply(BOB, { t: 'toPile', id: card, pile });
+    d = T.takeDirty();
+    ok(d.items.has(card) && d.items.has(pile), 'a vetoed drop touches the card and the pile');
+    const seq = T.state.seq;
+    ok(T.refreshFor(BOB, { t: 'move', id: card, onto: '__proto__' }) && T.state.seq === seq + 1 && T.takeDirty().items.has(card), 'refreshFor (a flood refusal) touches and renumbers; junk ids are ignored');
+  });
+
+  section('Phase 1: bodies are spliced from one shared text');
+  guard(() => {
+    const parse = (s) => { try { return JSON.parse(s); } catch { return null; } };
+    const hand = [{ d: 'x', i: 1 }];
+    const a = parse(spliceBody({ to: BOB, tp: 'p1', base: 4 }, '{}')), b = parse(spliceBody({ to: BOB, tp: 'p1', base: 4, hand }, '{}'));
+    const c = parse(spliceBody({ to: null, tp: 'p2', base: 4 }, '{"v":2,"kind":"patch","seq":5}')), e = parse(spliceBody({ to: BOB, tp: 'p1', hand }, '{"v":2,"kind":"snap"}'));
+    ok(a?.base === 4 && b?.hand?.[0].i === 1 && c?.seq === 5 && c.to === null && e?.kind === 'snap' && e.hand.length === 1, 'the body parses for an empty and a non-empty shared part, with and without a hand');
+  });
+
+  section('Phase 1: applyStatePatch mirrors a table (the seam for a rules Worker)');
+  guard(() => {
+    const { T } = seeded(9);
+    const M = createTable(json(T.snapshot()), { pid: HOST });
+    M.state.decks = json(T.state.decks);
+    M.takeDirty();
+    const pile = [...T.byKind.get('p')][0];
+    T.takeDirty();
+    T.apply(BOB, { t: 'draw', id: pile });
+    T.apply(HOST, { t: 'deal', id: pile, x: 300, y: 300, up: true });
+    T.apply(HOST, { t: 'addDeck', deck: { name: 'New', cards: [{ n: 'a' }] } });
+    T.apply(HOST, { t: 'setRules', enabled: true, code: '({ name: "Mirror", setup(t) { t.public.x = 1; } })' });
+    const d = T.takeDirty(), newDecks = T.drain().filter((e) => e.t === 'deck').map((e) => e.id);
+    const patch = json({
+      items: Object.fromEntries([...[...d.items].map((id) => [id, T.state.items[id]]), ...[...d.removed].map((id) => [id, null])]),
+      players: Object.fromEntries([...d.players].map((p) => [p, T.state.players[p]])),
+      decks: Object.fromEntries(newDecks.map((id) => [id, T.state.decks[id]])),
+      rules: T.state.rules || undefined, log: d.log, zMax: T.state.zMax, refresh: [pile],
+    });
+    M.applyStatePatch(patch);
+    const strip = (t) => json({ ...t.snapshot(), seq: 0, decks: t.state.decks });
+    ok(JSON.stringify(strip(M)) === JSON.stringify(strip(T)), 'the mirror equals the table after the patch');
+    const md = M.takeDirty();
+    ok(canon(Object.fromEntries(M.pub)) === canon(M.publicItems()) && md.hands.has(BOB) && md.items.has(pile) && md.log.length === d.log.length, 'its dirty sets and T.pub follow (the hand that changed, the items, the log)');
+    ok(M.drain().some((e) => e.t === 'deck'), 'a new deck is announced for the decks channel');
   });
 
   h.report();

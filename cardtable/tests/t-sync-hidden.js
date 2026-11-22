@@ -44,12 +44,13 @@ const PILE = '.item.pile:has(.pname)';
   const fdId = await (await guest.waitForFunction((b) => [...document.querySelectorAll('.item')].find((e) => !b.includes(e.dataset.id))?.dataset.id, before)).jsonValue();
   await S.waitForFunction((id) => (window.S.got.state || []).some((s) => s.items?.[id]), fdId, { timeout: 15000 });
   const states = await S.evaluate(() => window.S.got.state);
-  const last = states.filter((s) => s.items).at(-1);
+  // the patch that carries the deal: the new card and the pile it came from (deltas send only what changed)
+  const last = states.find((s) => s.kind === 'patch' && s.items?.[fdId]);
   const pile = Object.values(last.items).find((it) => it.k === 'p');
   ok(states.every((s) => !JSON.stringify(s.items || {}).includes('"cards"')), 'no state ever ships a pile\'s card list (SEC-7/GAME-13)');
   ok(pile.n === 50 && pile.top && pile.top.up === false && !('i' in pile.top), `a pile is {n, top} with a face-down top reduced to its deck (n=${pile.n})`);
   ok(last.items[fdId].up === false && !('i' in last.items[fdId]) && typeof last.items[fdId].d === 'string', 'a face-down table card carries its deck (for the back) but no index (CORE-S1)');
-  ok(JSON.stringify(last).length < 1200, `a state with a 50-card pile stays small (${JSON.stringify(last).length} bytes — independent of pile size, SEC-11)`);
+  ok(JSON.stringify(last).length < 1200, `the patch carrying a 50-card pile stays small (${JSON.stringify(last).length} bytes — independent of pile size, SEC-11)`);
   const hostSig = await host.$eval(`.item[data-id="${fdId}"]`, (el) => el.dataset.sig);
   ok(!/^c\|[^|]+\|\d+\|/.test(hostSig), "the host renders the same public shape (no index in the host's DOM either)");
 

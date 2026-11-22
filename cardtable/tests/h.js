@@ -25,6 +25,8 @@ const { chromium } = playwright;
 
 const CDN_DIR = path.join(__dirname, '.cdn-cache');
 const APP_ROOT = path.resolve(process.env.APP_ROOT || path.join(__dirname, '../..'));
+/** The wire version raw test peers put on every action (`_v`): read from the app's core, never hard-coded. */
+const { PROTO } = require(path.join(APP_ROOT, 'cardtable/core.js'));
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml' };
 
 let failures = 0;
@@ -144,7 +146,8 @@ async function start(opts = {}) {
       await ctx.route('https://cdn.jsdelivr.net/**', (route) => cdnFile(route.request().url()).then(
         (f) => route.fulfill({ body: fs.readFileSync(f, 'utf8'), contentType: 'text/javascript' }),
         (err) => { console.error('[cdn]', err.message); return route.abort(); }));
-      await ctx.addInitScript((r) => { window.CARDTABLE_RELAYS = [r]; }, o.relay || relayUrl);
+      // CARDTABLE_TEST: the app exposes window.__ct (act, view, hand, log, perf).
+      await ctx.addInitScript((r) => { window.CARDTABLE_RELAYS = [r]; window.CARDTABLE_TEST = true; }, o.relay || relayUrl);
       const page = await ctx.newPage();
       page.on('console', (m) => {
         if (m.type() === 'error' && !opts.quietConsole) console.log(`[${label} console.error]`, m.text().slice(0, 200));
@@ -209,6 +212,30 @@ async function enableRules(page, { tpl, code }) {
   await page.click('#rules-enable');
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** The bodies of raw `state` messages a test peer recorded: snapshots and
+ *  patches alike, unwrapped from their signature envelope ({b, s, k}). */
+const bodies = (raw) => raw.map((m) => (typeof m?.b === 'string' ? JSON.parse(m.b) : m));
+/** Folds bodies (in arrival order) into the view they add up to, as a guest
+ *  would: {seq, items, players, rules, size, log, hand} — or null before any
+ *  snapshot. The log keeps every entry received (untrimmed): "what did this
+ *  peer see". A patch that doesn't follow is skipped, as a guest would. */
+function viewFrom(list) {
+  let v = null;
+  for (const d of list) {
+    if (d.kind === 'snap') v = { boot: d.boot, seq: d.seq, items: { ...d.items }, players: { ...d.players }, rules: d.rules, size: d.size, log: [...d.log], hand: d.hand || v?.hand || [] };
+    else if (d.kind === 'patch' && v && d.boot === v.boot && d.base === v.seq) {
+      Object.assign(v.items, d.items);
+      for (const id of d.del || []) delete v.items[id];
+      Object.assign(v.players, d.players);
+      if ('rules' in d) v.rules = d.rules;
+      if (d.size) v.size = d.size;
+      if (d.log) v.log.push(...d.log);
+      if (d.hand) v.hand = d.hand;
+      v.seq = d.seq;
+    }
+  }
+  return v;
+}
 function crash(e) { console.error('TEST CRASHED:', e); process.exit(2); }
 
-module.exports = { start, ok, section, report, joinAs, hostAndGuest, logHas, toastHas, handCount, waitHand, playFromHand, enableRules, sleep, crash, playwright, APP_ROOT };
+module.exports = { start, ok, section, report, joinAs, hostAndGuest, logHas, toastHas, handCount, waitHand, playFromHand, enableRules, sleep, crash, bodies, viewFrom, playwright, APP_ROOT, PROTO };
