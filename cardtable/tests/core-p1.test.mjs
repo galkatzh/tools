@@ -17,17 +17,38 @@
 //  (7) A veto or refusal re-sends the items the action named, and the hand.
 //  (8) The body splice parses, with an empty or non-empty shared part and
 //      with or without a hand; the sealed text verifies.
+//  (9) imageDims reads the pixel size of PNG, JPEG (baseline, extended,
+//      progressive), WebP (VP8, VP8L, VP8X) and GIF headers — made in code
+//      (img-lib.js) and by real encoders (tests/fixtures) — and refuses every
+//      truncated header. Then the image checks and deck ingestion (§1a).
 // Then the t.data cap, the applyStatePatch seam (§1f), and regressions for
 // what the Phase 1A review found (each names what it guards).
 // Every random sequence is seeded and every failure names its seed: SEED=n
 // replays one.
 import { isDeepStrictEqual } from 'node:util';
-import { core, RULES_TEMPLATES, ok, section, report, crash, guard, seeds, rng, env, json, canon, keyOf, HOST, BOB, CAROL, DAVE } from './node-lib.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import { core, store, FIXTURES, RULES_TEMPLATES, ok, section, report, crash, guard, seeds, rng, env, json, canon, keyOf, HOST, BOB, CAROL, DAVE } from './node-lib.mjs';
+import imgLib from './img-lib.js';
 
 const { createTable, own, PROTO, STATE_V, MIGRATE, migrate, trimLog, spliceBody, sharedText, sealText, SIG, viewFromSnap, applyViewPatch, playR, CARD_W, CARD_H } = core;
 const map = (o, f) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, f(v)]));
 const pileOf = (T) => Object.keys(T.state.items).find((id) => T.state.items[id].k === 'p');
 const maxZ = (s) => Math.max(0, ...Object.values(s.items).map((it) => it.z));
+const { png, gif, jpeg, webpVP8, webpVP8L, webpVP8X, dataURL, sha256 } = imgLib;
+/** A JPEG's first frame header (SOFn but DHT C4, JPG C8, DAC CC): its marker
+ *  and the offset of the 0xFF before it, found by walking the segments from
+ *  the SOI by their lengths; {} if there is none. */
+function sofOf(b) {
+  for (let o = 2; o + 4 <= b.length;) {
+    if (b[o] !== 0xff) return {};
+    while (b[o] === 0xff) o++;
+    const m = b[o];
+    if (m >= 0xc0 && m <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(m)) return { m, at: o - 1 };
+    o += 1 + b.readUInt16BE(o + 1);
+  }
+  return {};
+}
 
 // --- the spec's oracles ---------------------------------------------------------
 /** An item as §1d says everyone receives it. */
@@ -705,6 +726,85 @@ function quietly(fn) {
     const verify = (t) => crypto.subtle.verify(SIG, kp.publicKey, Buffer.from(sealed.s, 'base64'), new TextEncoder().encode(t));
     ok(sealed.b === text && sealed.k === pub && await verify(text), 'sealText signs the text itself: {b: the text, s, k: the public key}, and it verifies');
     ok(!(await verify(text.replace('"base":8', '"base":7'))), 'a changed body does not verify');
+  });
+
+  section('(9) imageDims reads PNG, JPEG, WebP and GIF headers, and refuses truncated ones');
+  await guard('imageDims', () => {
+    const { imageDims } = store;
+    /** The pixel size imageDims reads, or the error it refuses with. */
+    const read = (b, mime) => { try { const r = imageDims(new Uint8Array(b), mime); return `${r.w}×${r.h}`; } catch (e) { return `refused (${e.message})`; } };
+    // Made in code (img-lib.js): every size field written in full, width ≠ height.
+    const made = [
+      ['PNG', png(1234, 567), 'image/png', '1234×567'],
+      ['PNG header only, 70000 × 3 (no pixels)', png(70000, 3, undefined, { pixels: false }), 'image/png', '70000×3'],
+      ['JPEG baseline (SOF0)', jpeg(1234, 567, 0xc0), 'image/jpeg', '1234×567'],
+      ['JPEG extended (SOF1)', jpeg(2001, 3000, 0xc1), 'image/jpeg', '2001×3000'],
+      ['JPEG progressive (SOF2)', jpeg(1234, 567, 0xc2), 'image/jpeg', '1234×567'],
+      ['WebP VP8 (upscaling bits set)', webpVP8(1234, 567), 'image/webp', '1234×567'],
+      ['WebP VP8L', webpVP8L(16384, 3001), 'image/webp', '16384×3001'],
+      ['WebP VP8X', webpVP8X(5000, 3000), 'image/webp', '5000×3000'],
+      ['WebP VP8X animation, a 24-bit canvas', webpVP8X(70000, 300, { anim: true }), 'image/webp', '70000×300'],
+      ['GIF89a', gif(300, 513), 'image/gif', '300×513'],
+      ['GIF87a', gif(37, 23, { v87: true }), 'image/gif', '37×23'],
+    ];
+    for (const [what, b, mime, want] of made) ok(read(b, mime) === want, `${what}: ${read(b, mime)} (want ${want})`);
+    // Made by real encoders (ImageMagick, tests/fixtures): 37 × 23 each, as
+    // their names say; the format details each one claims are checked here.
+    const fx = (f) => fs.readFileSync(path.join(FIXTURES, f));
+    const real = [
+      ['37x23.png', 'image/png', (b) => b.toString('latin1', 12, 16) === 'IHDR', 24],
+      ['37x23-baseline.jpg', 'image/jpeg', (b) => sofOf(b).m === 0xc0, (b) => sofOf(b).at + 9],
+      ['37x23-progressive.jpg', 'image/jpeg', (b) => sofOf(b).m === 0xc2, (b) => sofOf(b).at + 9],
+      ['37x23-vp8.webp', 'image/webp', (b) => b.toString('latin1', 12, 16) === 'VP8 ', 30],
+      ['37x23-vp8l.webp', 'image/webp', (b) => b.toString('latin1', 12, 16) === 'VP8L', 25],
+      ['37x23-vp8x.webp', 'image/webp', (b) => b.toString('latin1', 12, 16) === 'VP8X', 30],
+      ['37x23.gif', 'image/gif', (b) => b.toString('latin1', 0, 6) === 'GIF89a', 10],
+    ].map(([f, mime, is, hdr]) => { const b = fx(f); return [f, Object.assign(b, { hdr: typeof hdr === 'function' ? hdr(b) : hdr }), mime, '37×23', is(b)]; });
+    for (const [f, b, mime, want, is] of real) ok(is && read(b, mime) === want, `${f} (${is ? 'its format checked' : 'NOT the format its name says'}): ${read(b, mime)}`);
+    // A header cut anywhere before the last byte of its pixel size can't be read.
+    for (const [what, b, mime] of [...made, ...real]) {
+      const read2 = Array.from({ length: b.hdr }, (_, n) => [n, read(b.subarray(0, n), mime)]).filter(([, r]) => !r.startsWith('refused'));
+      ok(!read2.length, `${what} cut short (every length 0–${b.hdr - 1} of ${b.length} bytes): refused${read2.length ? `; read anyway at ${read2.slice(0, 4).map(([n, r]) => `${n} B → ${r}`).join(', ')}` : ''}`);
+    }
+  });
+
+  section('image checks and deck ingestion (§1a, store.js in Node: memory only)');
+  await guard('putAsset', async () => {
+    const { putAsset } = store, { ASSET_MAX_BYTES } = core;
+    const refused = (b, mime) => putAsset(new Uint8Array(b), mime).then(() => '', (e) => e.message || 'refused');
+    const a = png(41, 29, [10, 200, 90]);
+    ok(await putAsset(new Uint8Array(a), 'image/png') === sha256(a), 'putAsset stores an image under the hex SHA-256 of its bytes');
+    const bomb = png(30000, 30000, undefined, { pixels: false });
+    const why = await refused(bomb, 'image/png');
+    ok(/30000 × 30000/.test(why), `a ${bomb.length}-byte PNG declaring 30000 × 30000 px is refused before anything decodes it ("${why}")`);
+    ok(!!await refused(png(4097, 1), 'image/png') && !!await refused(png(1, 4097), 'image/png') && !await refused(png(4096, 1), 'image/png'),
+      'over 4,096 px on a side is refused, 4,096 is not');
+    ok(!await refused(png(4000, 4000, undefined, { pixels: false }), 'image/png'), '4000 × 4000 px (16 Mpx) is not refused');
+    ok(!!await refused(jpeg(10, 10), 'image/png') && !!await refused(a, 'image/jpeg') && !!await refused(a, 'image/svg+xml') && !!await refused(Buffer.from('<svg/>'), 'image/png'),
+      'bytes whose magic number is not the declared type, a type outside PNG/JPEG/WebP/GIF, or no image at all: refused');
+    const big = Buffer.concat([a, Buffer.alloc(ASSET_MAX_BYTES + 1 - a.length)]);
+    ok(!!await refused(big, 'image/png') && !await refused(big.subarray(0, ASSET_MAX_BYTES), 'image/png'), `an image over ASSET_MAX_BYTES (${ASSET_MAX_BYTES} B) is refused, one at the limit is not`);
+  });
+  await guard('ingestDeck', async () => {
+    const { ingestDeck } = store, { cleanDeck, cleanDeckV1, ASSET_RE } = core;
+    const [r, g, back] = [png(30, 42, [200, 0, 0]), png(30, 42, [0, 200, 0]), png(30, 42, [0, 0, 200])];
+    const v1 = { name: 'Pics', back: dataURL(back), imgs: [dataURL(r), dataURL(g), dataURL(png(9, 9))],
+      cards: [{ n: 'Plain' }, { img: dataURL(r), n: 'Copy' }, { g: 1, n: 'Green' }, { g: 0, n: 'Red' }] };
+    const { deck, cost } = await ingestDeck(structuredClone(v1));
+    ok(cost === JSON.stringify(cleanDeckV1(structuredClone(v1))).length, `cost is the transport size the guest budget counts (${cost})`);
+    ok(!JSON.stringify(deck).includes('data:') && canon(cleanDeck(structuredClone(deck))) === canon(deck), 'the result is a v2 deck (cleanDeck keeps it as it is), with no data URL left');
+    const at = (c) => deck.imgs[c.g];
+    ok(deck.imgs.every((x) => x === null || ASSET_RE.test(x)) && at(deck.cards[3]) === sha256(r) && at(deck.cards[2]) === sha256(g),
+      'each card names its image by the SHA-256 of the bytes');
+    ok(at(deck.cards[1]) === sha256(r) && deck.cards[1].g === deck.cards[3].g && !('img' in deck.cards[1]) && new Set(deck.imgs.filter(Boolean)).size === deck.imgs.filter(Boolean).length,
+      `a card's own img becomes an imgs entry plus its g, and the same bytes share one entry (${JSON.stringify(deck.cards)})`);
+    ok(deck.backImg === sha256(back) && deck.back === null && !('g' in deck.cards[0]) && deck.cards[0].n === 'Plain', 'an image back becomes backImg; an image-less card stays as it was');
+    for (const [what, bad] of [['a decompression bomb', dataURL(png(30000, 30000, undefined, { pixels: false }))], ['a JPEG declared as PNG', dataURL(jpeg(20, 20), 'image/png')]]) {
+      const deck2 = structuredClone(v1);
+      deck2.cards[2] = { img: bad };
+      const err = await ingestDeck(deck2).then(() => '', (e) => e.message);
+      ok(/^card \d+: /.test(err), `${what} on a card fails the deck, naming the card ("${err}")`);
+    }
   });
 
   section('t.data has a size limit, checked after validate() and once per job (§1e)');
