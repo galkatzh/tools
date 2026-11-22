@@ -138,7 +138,7 @@ top of `core.js` and README "How it works".
 - **Raw peers and images.** final-lib's Mallory also joins the `asset`
   channel: `M.send.asset(bytes, target, {h, mime})` sends an image, and
   `M.got.asset` records `{m, peerId, metadata}`. (Phase 2: she joins the
-  `boxes` channel too — `M.got.boxes`, `M.send.boxes`.)
+  `boxes` channel too — `M.got.boxes`, `M.send.boxes`; see p2-lib's `arm`.)
 - **The suites.** `core-p1.test.mjs`: the seeded fuzz of the public view and
   the patch fold, trimLog, z, indexed reads, MIGRATE, refusals, the splice,
   imageDims and deck ingestion, the t.data cap, applyStatePatch, and the
@@ -219,6 +219,33 @@ top of `core.js` and README "How it works".
   ("12345678") first, so key order is checked against sorted insertion
   (`inOrder`). `core-p2-bench.mjs` (serial): B9, a 20-dice roll on the
   1,000-piece bench box of §2k.
+- **`p2-lib.js`** (browser suites): `act(page, a)` (the page's own act),
+  `loadBox(host, box, {setup, clear})` → the box's catalog id, `items(page)`
+  and `at(items, x, y, pred?)` (test boxes give every item its own top-left,
+  so tests find even hidden ones by place); the test boxes `SPY` (a 3000 ×
+  2000 table, three named seats, `lockable: 'anyone'`, the `SECRETS` types
+  only ever face down or in bags), `GHOST` (one hidden piece, one shown) and
+  `PARLOUR` (spec §2i's `table` examples). **`arm(M)`** gives Mallory's page
+  `M.fold()` (her view, folded as a guest folds), `M.scan(needles, refs)`
+  (the recursive scan of every key and string of every body on `state`,
+  `note` and `boxes`; on the public catalog only full type refs count),
+  `M.forms(hiddenIds)` (§2d's public forms), `M.unsorted()` (bodies whose
+  items aren't in sorted-id order), and returns `send` (paced under the
+  flood limit), `barrier(marker)` (she turns a piece of hers to a fresh
+  angle and waits for it: everything she sent before is applied),
+  `attempt(a, marker, quiet?)` → `{notes, since}`, `view(expr)`, `marks`,
+  `notesSince`, `bodiesSince`. final-lib's `mallory(env, invite, peers)`
+  waits for `peers` other peers (2 by default; 1 with a host alone).
+- **The browser suites.** `t-p2-hidden.js`: spec §2j's attacker cases 1–14
+  as Mallory (the host's own refusals of a guest's host-only actions come
+  one per 10 s, so case 6 is spread out; case 13 deletes a box's catalog
+  record on `h.plain` and reloads the host; case 8 fills the table to 4,990
+  with two setups first). `t-p2-cli.js`: cli.js and cli.py in parity (§2i)
+  — each new command's action through a fake tab and, through real tabs,
+  as the host received it (a probe script's `validate()` records every
+  ruled action in `t.public`); the bridge API; the snapshot captured from
+  the tab's `/state` POST (`page.route`); `table`, `players` and `hand` as
+  text, the same in both REPLs, control characters stripped.
 
 ## Storage and images (Phase 1B)
 

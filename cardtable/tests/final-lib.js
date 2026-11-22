@@ -3,11 +3,12 @@
 const path = require('path');
 const h = require('./h');
 
-/** Mallory: a RAW Trystero peer (no app code) in the room, seated with her own key. */
-async function mallory(env, invite) {
+/** Mallory: a RAW Trystero peer (no app code) in the room, seated with her own
+ *  key. Resolves once she sees `peers` others (default 2: a host and a guest). */
+async function mallory(env, invite, peers = 2) {
   const page = await env.page('Mallory');
   await page.goto(`${env.base}/cardtable/cah-cards.js`); // any same-origin page; the app does not run
-  await page.evaluate(async ({ invite, relay, v }) => {
+  await page.evaluate(async ({ invite, relay, v, peers }) => {
     const { joinRoom } = await import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm');
     const [, roomId, password] = invite.match(/#room~([0-9a-f]+)~([0-9a-f]+)/);
     const room = joinRoom({ appId: 'gk-cardtable', password, relayConfig: { urls: [relay] } }, roomId);
@@ -22,8 +23,8 @@ async function mallory(env, invite) {
     M.notes = () => M.got.note.map(({ m }) => body(m));
     // every action carries the wire version: without it the host refuses it before the code under test runs
     M.act = (a) => a && M.send.act({ _v: v, ...a, _pid: 'ffffffffffffffff', _name: 'Mallory', _key: 'm'.repeat(32) });
-    await new Promise((r) => { const t = setInterval(() => { if (Object.keys(room.getPeers()).length >= 2) { clearInterval(t); r(); } }, 100); });
-  }, { invite, relay: env.relayUrl, v: h.PROTO });
+    await new Promise((r) => { const t = setInterval(() => { if (Object.keys(room.getPeers()).length >= peers) { clearInterval(t); r(); } }, 100); });
+  }, { invite, relay: env.relayUrl, v: h.PROTO, peers });
   page.act = (a) => page.evaluate((x) => window.M.act(x), a);
   page.notes = () => page.evaluate(() => window.M.notes().map((n) => n.msg || (n.peek ? 'PEEK' : '')));
   return page;
