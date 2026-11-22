@@ -43,6 +43,14 @@ function png(w, h, { seed, rgb = [200, 60, 60], rows = h } = {}) {
 }
 /** n small, distinct, flat-colour PNGs (a few hundred bytes each). */
 const tinyPngs = (n, salt = 0) => Array.from({ length: n }, (_, k) => png(24 + (k % 5), 32, { rgb: [(k * 37 + salt) % 256, (k * 91 + 7 * salt) % 256, (k * 13 + 50) % 256] }));
+/** Two decks of 9 noise PNGs, 800 × 800 (≈ 1.92 MB each, 34.6 MB in all: a
+ *  deck in the transport shape holds at most 24 MB of data URLs). {decks:
+ *  [bufs, bufs], ids, bytes}. Twice that is more than the 64 MB a peer may
+ *  pull a minute. */
+function bigDecks() {
+  const decks = [0, 1].map((d) => Array.from({ length: 9 }, (_, k) => png(800, 800, { seed: 100 * (d + 1) + k })));
+  return { decks, ids: decks.flat().map(sha256), bytes: decks.flat().reduce((n, b) => n + b.length, 0) };
+}
 /** Spec §1j case 9: a PNG of a few hundred bytes whose IHDR declares 30,000 × 30,000 px. */
 const bomb = () => png(30000, 30000, { rows: 1 });
 /** An asset id: the hex SHA-256 of an image's bytes. */
@@ -180,6 +188,14 @@ function dropMissingNotes() {
   });
 }
 
+/** Init script (or page.evaluate): every 10 ms, window.__pace gets
+ *  [Date.now(), image bytes received, the x this page shows card `id` at (-1:
+ *  not at all)] — what stopMoves() reads. */
+function paceMonitor(id) {
+  window.__pace = [];
+  setInterval(() => window.__pace.push([Date.now(), window.__rtc?.recv.asset || 0, window.__ct?.view().items[id]?.x ?? -1]), 10);
+}
+
 /** window.__longTasks: main-thread long tasks, as {start, ms} (performance.now() clock). */
 function longTasks() {
   const lt = (window.__longTasks = []);
@@ -237,11 +253,27 @@ const decodedBomb = (page) => page.evaluate(async () => {
   }
   return window.__decode.dataImgs > 0;
 });
+/** The host starts moving card `id` every 100 ms, one unit further right each
+ *  time (so a guest's x tells which moves reached it). */
+const startMoves = (host, id) => host.evaluate((id) => {
+  const P = (window.__moves = []);
+  let x = Math.round(window.__ct.view().items[id].x);
+  window.__moveT = setInterval(() => { P.push([Date.now(), ++x]); window.__ct.act({ t: 'move', id, x, y: 650 }); }, 100);
+}, id);
+/** Stops the host's moves; then, from guest's samples (paceMonitor, taken
+ *  and cleared), each move's latency there: {at, x, ms} (ms Infinity: it
+ *  never showed). Resolves {moves, samples}. */
+async function stopMoves(host, guest) {
+  const moves = await host.evaluate(() => { clearInterval(window.__moveT); return window.__moves; });
+  await h.sleep(1500); // the last ones arrive
+  const samples = await guest.evaluate(() => window.__pace.splice(0));
+  return { samples, moves: moves.map(([at, x]) => ({ at, x, ms: (samples.find(([t, , sx]) => t >= at && sx >= x)?.[0] ?? Infinity) - at })) };
+}
 /** The toasts page showed since `since` (Date.now()). */
 const toastsSince = (page, since = 0) => page.evaluate((t) => window.__toasts.filter((x) => x.at >= t).map((x) => x.msg), since);
 
 module.exports = {
-  png, tinyPngs, bomb, sha256, dataURL, imgDeck,
-  hostWire, needLog, toastLog, decodeWatch, dropMissingNotes, longTasks,
-  seat, pileOf, addDeck, assetBytes, asked, stored, decodedBomb, toastsSince,
+  png, tinyPngs, bigDecks, bomb, sha256, dataURL, imgDeck,
+  hostWire, needLog, toastLog, decodeWatch, dropMissingNotes, paceMonitor, longTasks,
+  seat, pileOf, addDeck, assetBytes, asked, stored, decodedBomb, startMoves, stopMoves, toastsSince,
 };

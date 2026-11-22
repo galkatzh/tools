@@ -1,15 +1,15 @@
 #!/bin/bash
 # Runs the ES-module parse check, then every suite: the t-*.js suites and the
 # Node-only *.test.mjs ones in parallel (each suite has its own relay and
-# server ports), then the SERIAL ones (the benchmarks) one at a time, still
-# under the lock: their timings need a machine nothing else is loading. Logs
-# go to out/<suite>.log, overwritten by the next run (the lock keeps runs from
-# sharing them).
+# server ports), then the SERIAL ones (benchmarks, and suites with a timing
+# budget) one at a time, still under the lock: their timings need a machine
+# nothing else is loading. Logs go to out/<suite>.log, overwritten by the next
+# run (the lock keeps runs from sharing them).
 #   $1                   optional suite-name filter: ./run-all.sh holdem
 #   APP_ROOT             repo checkout to serve (default: this one)
 #   JOBS                 suites at once (default: 2 per CPU; each drives a Chromium)
 #   SERIAL               the suites run alone, after the others, comma-separated
-#                        names (default: t-p1-bench,core-p1-bench)
+#                        names (default: t-p1-bench,core-p1-bench,t-p1-flood)
 #   CARDTABLE_TEST_LOCK  lock file (default /tmp/cardtable-tests.lock)
 cd "$(dirname "$0")" || exit 2
 mkdir -p out
@@ -20,7 +20,7 @@ flock 9
 echo "[run-all] APP_ROOT=${APP_ROOT:-$(cd ../.. && pwd)}"
 node --experimental-vm-modules parse.js || exit 1
 shopt -s nullglob
-IFS=, read -ra names <<< "${SERIAL-t-p1-bench,core-p1-bench}"
+IFS=, read -ra names <<< "${SERIAL-t-p1-bench,core-p1-bench,t-p1-flood}"
 serial=() missing=()
 for n in "${names[@]}"; do
   [[ $n == *"$1"* ]] || continue

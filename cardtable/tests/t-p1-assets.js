@@ -1,5 +1,5 @@
 // E2E: card images pulled by hash (spec §1b.5), late arrivals (§1g), and the
-// attacker cases on images (§1j cases 2, 3, 8, 9) — spec §1l t-p1-assets:
+// attacker cases on images (§1j cases 2, 8, 9) — spec §1l t-p1-assets:
 //   (1) pull      a guest joins and asks the host for the decks' images (≤ 64
 //                 ids a request); every format renders, and is cached by hash
 //   (2) warm      the guest reloads: 0 asset bytes, and no request (B8)
@@ -23,9 +23,8 @@
 //                 note suppressed, the guest gives up after 20 s and one retry
 //   (9) pacing    during a 34 MB pull, the host's moves reach the pulling guest
 //                 in ≤ 1 s each
-//       case 3    1,000 `need` requests from Mallory: each image goes to her at
-//                 most twice a minute, the 64 MB a minute budget holds (one
-//                 "slow down" note), no host long task ≥ 50 ms, play goes on
+// (§1j case 3, 1,000 `need` requests, is t-p1-flood.js: its budget is a host
+// long task under 50 ms, so it runs alone, in run-all.sh's SERIAL list.)
 // Images are made in code (assets-lib.js), so every asset id — the SHA-256 of
 // the bytes — is known here, independently of the app.
 'use strict';
@@ -73,17 +72,11 @@ async function dealAll(host, pile, x, y) {
   for (let k = 0; k < n; k++) await L.act(host, { t: 'deal', id: pile, up: true, x: x + (k % 8) * 110, y: y + Math.floor(k / 8) * 150 });
 }
 const count = (list, x) => list.filter((y) => y === x).length;
-/** Init script: every 10 ms, window.__pace gets [Date.now(), image bytes
- *  received, the x this page shows card `id` at (-1: not at all)]. */
-function paceMonitor(id) {
-  window.__pace = [];
-  setInterval(() => window.__pace.push([Date.now(), window.__rtc?.recv.asset || 0, window.__ct?.view().items[id]?.x ?? -1]), 10);
-}
 const b64 = (buf) => Buffer.from(buf).toString('base64');
 
 (async () => {
   const env = await h.start();
-  const host = await A.seat(env, 'Alice', env.url, [A.hostWire, A.toastLog, A.decodeWatch, A.longTasks]);
+  const host = await A.seat(env, 'Alice', env.url, [A.hostWire, A.toastLog, A.decodeWatch]);
   const invite = host.url();
   const room = invite.match(/#room~([0-9a-f]+)/)[1];
   const guestHooks = [A.needLog, A.toastLog, A.decodeWatch];
@@ -94,7 +87,7 @@ const b64 = (buf) => Buffer.from(buf).toString('base64');
   const fmtIds = fmt.map((x) => A.sha256(x.buf));
   const many = A.tinyPngs(66, 1), manyIds = many.map(A.sha256);
   let fmtDeck = null, manyDeck = null, bob = null, M = null, tamIds = [], tamDeck = null, lateIds = [], swapId = null;
-  // The standard deck the host's table starts with: the card it deals moves in (9).
+  // The standard deck the host's table starts with: a card dealt from it moves in (9).
   const stdPile = Object.entries((await L.view(host)).items).find(([, it]) => it.k === 'p')[0];
 
   await guard('setup', async () => {
@@ -336,90 +329,11 @@ const b64 = (buf) => Buffer.from(buf).toString('base64');
   });
   await dave?.close();
 
-  section('(9) pacing: the host’s moves reach a guest pulling 34 MB');
-  const big = [0, 1].map((d) => Array.from({ length: 9 }, (_, k) => A.png(800, 800, { seed: 100 * (d + 1) + k })));
-  const bigIds = big.flat().map(A.sha256), bigBytes = big.flat().reduce((n, b) => n + b.length, 0);
-  /** The host moves card `id` every 100 ms, x one further each time. */
-  const startMoves = (id) => host.evaluate((id) => {
-    const P = (window.__moves = []);
-    let x = Math.round(window.__ct.view().items[id].x);
-    window.__moveT = setInterval(() => { P.push([Date.now(), ++x]); window.__ct.act({ t: 'move', id, x, y: 650 }); }, 100);
-  }, id);
-  /** Stops the host's moves; then, from Bob's samples (paceMonitor), each
-   *  move's latency at Bob: {at, x, ms} (Infinity if it never showed). */
-  const stopMoves = async () => {
-    const moves = await host.evaluate(() => { clearInterval(window.__moveT); return window.__moves; });
-    await h.sleep(1500);
-    const samples = await bob.evaluate(() => window.__pace.splice(0));
-    return { samples, moves: moves.map(([at, x]) => ({ at, x, ms: (samples.find(([t, , sx]) => t >= at && sx >= x)?.[0] ?? Infinity) - at })) };
-  };
-  let mover = null;
-  await guard('(9)', async () => {
-    await L.act(host, { t: 'deal', id: stdPile, up: true, x: 300, y: 650 });
-    mover = Object.entries((await L.view(host)).items).filter(([, it]) => it.k === 'c').sort(([, a], [, b]) => b.z - a.z)[0][0];
-    await bob.addInitScript(paceMonitor, mover);
-    // Bob steps away while the host takes the decks in (their ingestion is
-    // the host's own work, not the pull's), then comes back and pulls them.
-    await bob.goto(h.plain(env));
-    for (const [d, imgs] of big.entries()) ok((await A.addDeck(host, A.imgDeck(`Big ${d + 1}`, imgs), 400 + 300 * d, 300)).ok, `the host adds a deck of 9 noise images (${(imgs.reduce((n, b) => n + b.length, 0) / 1e6).toFixed(1)} MB)`);
-    await startMoves(mover);
-    await bob.goto(invite);
-    await bob.waitForSelector('.item.pile .count', { timeout: 30000 });
-    ok(await L.until(async () => (await A.assetBytes(bob)) >= bigBytes, 60000, 250), `Bob, back, pulls all ${(bigBytes / 1e6).toFixed(1)} MB`);
-    const { samples, moves } = await stopMoves();
-    const start = samples.find(([, b]) => b > 0)?.[0], end = samples.find(([, b]) => b >= bigBytes)?.[0];
-    const during = moves.filter((m) => m.at >= start && m.at <= end);
-    console.log(`  pull: ${((end - start) / 1000).toFixed(2)} s; ${during.length} moves during it, latency at Bob (ms): ${during.map((m) => m.ms).join(', ')}`);
-    ok(during.length >= 3, `the host moved ${during.length} times during the pull`);
-    ok(during.every((m) => m.ms <= 1000), `each of those moves reached Bob in ≤ 1 s (max ${Math.max(...during.map((m) => m.ms))} ms)`);
-    ok(moves.filter((m) => m.at >= start).every((m) => m.ms < Infinity), 'all of them reached him');
-    const rec = await A.stored(bob, bigIds);
-    ok(bigIds.every((id) => rec[id]?.ok), 'and he stored all 18 images');
-  });
-
-  section('(6) 1j case 3: 1,000 image requests from Mallory');
-  await guard('case 3', async () => {
-    await M.evaluate(() => { window.M.got.state = []; });
-    await M.act({ t: 'hello' }); // the host reloaded: seat her again
-    ok(await L.until(() => M.evaluate(() => window.M.got.state.some(({ m }) => JSON.parse(m.b).to === 'ffffffffffffffff'))), 'Mallory is seated at the reloaded host');
-    await M.evaluate(() => { window.M.got.asset = []; window.M.got.note = []; });
-    const t0 = await host.evaluate(() => performance.now());
-    await bob.evaluate(() => { window.__pace = []; });
-    await startMoves(mover);
-    const junk = Array.from({ length: 64 }, (_, k) => k.toString(16).padStart(2, '0').repeat(32));
-    const sent = await M.evaluate(async ([ids, junk]) => {
-      for (let k = 0; k < 1000; k++) {
-        window.M.act({ t: 'need', a: k % 2 ? ids : junk });
-        if (k % 50 === 49) await new Promise((r) => setTimeout(r, 100));
-      }
-      return 1000;
-    }, [bigIds, junk]);
-    const got = () => M.evaluate(() => (window.M.got.asset || []).map((x) => [x.metadata?.h, x.m?.byteLength ?? 0]));
-    await L.until(async () => new Set((await got()).map(([id]) => id)).size >= bigIds.length, 30000, 250);
-    // A second round, once she holds each image: past the budget (2 × 34.6 MB > 64 MB).
-    await M.evaluate(async (ids) => { for (let k = 0; k < 20; k++) { window.M.act({ t: 'need', a: ids }); await new Promise((r) => setTimeout(r, 100)); } }, bigIds);
-    let last = -1;
-    await L.until(async () => { const n = (await got()).length; const still = n === last; last = n; return still; }, 30000, 2000);
-    const t1 = await host.evaluate(() => performance.now());
-    const { moves } = await stopMoves();
-    const list = await got(), bytes = list.reduce((n, [, b]) => n + b, 0);
-    const slow = await M.evaluate((s) => window.M.notes().filter((n) => n.msg === s).length, SLOW);
-    console.log(`  ${sent} requests: ${list.length} images (${(bytes / 1e6).toFixed(1)} MB) sent to Mallory; "${SLOW}" × ${slow}`);
-    ok(list.every(([id]) => bigIds.includes(id)), 'she gets only images this table shows');
-    ok(bigIds.every((id) => count(list.map(([x]) => x), id) <= 2), 'each at most twice a minute (a damaged one may be asked for again)');
-    ok(bytes <= 64e6 && bytes > bigBytes, `the 64 MB a minute budget holds, and binds (${(bytes / 1e6).toFixed(1)} MB sent)`);
-    ok(slow === 1, `she is told "${SLOW}" once (${slow})`);
-    const long = (await host.evaluate(() => window.__longTasks)).filter((x) => x.start >= t0 && x.start <= t1);
-    ok(long.every((x) => x.ms < 50), `no host long task ≥ 50 ms (${long.map((x) => Math.round(x.ms)).join(', ') || 'none'})`);
-    ok(moves.length >= 10 && moves.every((m) => m.ms <= 1000), `the host’s ${moves.length} moves meanwhile reached Bob in ≤ 1 s each (max ${Math.max(...moves.map((m) => m.ms))} ms)`);
-    const flip = await L.act(host, { t: 'flip', id: mover });
-    ok(flip.ok, 'and the host still acts');
-  });
-
   section('(8) a `missing` note that never arrives: the guest gives up');
+  let erin = null;
   await guard('(8) timeout', async () => {
     const lost = tamIds[0];
-    const erin = await A.seat(env, 'Erin', invite, [A.needLog, A.toastLog, A.dropMissingNotes]);
+    erin = await A.seat(env, 'Erin', invite, [A.needLog, A.toastLog, A.dropMissingNotes]);
     ok(await L.until(() => erin.evaluate((id) => window.__needs.some((n) => n.a.includes(id)), lost), 30000), 'Erin asks for the lost image');
     ok(await L.until(async () => (await A.toastsSince(erin)).includes(MISSING(1)), 80000, 500), `she gives up: "${MISSING(1)}"`);
     const reqs = await erin.evaluate((id) => window.__needs.filter((n) => n.a.includes(id)).map((n) => n.at), lost);
@@ -431,6 +345,32 @@ const b64 = (buf) => Buffer.from(buf).toString('base64');
     const s = await sides(erin, tamDeck);
     ok(s.filter((x) => x.state === 'missing').length === 1, `the card shows .face.missing (${JSON.stringify(s)})`);
     ok(erin.logs.some((x) => x.type === 'error'), 'with a console.error');
+  });
+  await erin?.close();
+
+  section('(9) pacing: the host’s moves reach a guest pulling 34 MB');
+  await guard('(9)', async () => {
+    const big = A.bigDecks();
+    await L.act(host, { t: 'deal', id: stdPile, up: true, x: 300, y: 650 });
+    const mover = Object.entries((await L.view(host)).items).filter(([, it]) => it.k === 'c').sort(([, a], [, b]) => b.z - a.z)[0][0];
+    await bob.addInitScript(A.paceMonitor, mover);
+    // Bob steps away while the host takes the decks in (their ingestion is
+    // the host's own work, not the pull's), then comes back and pulls them.
+    await bob.goto(h.plain(env));
+    for (const [d, imgs] of big.decks.entries()) ok((await A.addDeck(host, A.imgDeck(`Big ${d + 1}`, imgs), 400 + 300 * d, 300)).ok, `the host adds a deck of 9 noise images (${(imgs.reduce((n, b) => n + b.length, 0) / 1e6).toFixed(1)} MB)`);
+    await A.startMoves(host, mover);
+    await bob.goto(invite);
+    await bob.waitForSelector('.item.pile .count', { timeout: 30000 });
+    ok(await L.until(async () => (await A.assetBytes(bob)) >= big.bytes, 60000, 250), `Bob, back, pulls all ${(big.bytes / 1e6).toFixed(1)} MB`);
+    const { samples, moves } = await A.stopMoves(host, bob);
+    const start = samples.find(([, b]) => b > 0)?.[0], end = samples.find(([, b]) => b >= big.bytes)?.[0];
+    const during = moves.filter((m) => m.at >= start && m.at <= end);
+    console.log(`  pull: ${((end - start) / 1000).toFixed(2)} s; ${during.length} moves during it, latency at Bob (ms): ${during.map((m) => m.ms).join(', ')}`);
+    ok(during.length >= 3, `the host moved ${during.length} times during the pull`);
+    ok(during.every((m) => m.ms <= 1000), `each of those moves reached Bob in ≤ 1 s (max ${Math.max(...during.map((m) => m.ms))} ms)`);
+    ok(moves.filter((m) => m.at >= start).every((m) => m.ms < Infinity), 'all of them reached him');
+    const rec = await A.stored(bob, big.ids);
+    ok(big.ids.every((id) => rec[id]?.ok), 'and he stored all 18 images');
   });
 
   for (const [n, p] of [['the host', host], ['Bob', bob]]) ok((await p.evaluate(() => window.__decode.dataImgs)) === 0, `${n} drew every image from a blob: URL, never a data: URL`);
