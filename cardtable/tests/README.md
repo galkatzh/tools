@@ -41,7 +41,7 @@ node t-smoke.js         # one suite, output on the terminal
 - **The serial list.** The benchmarks, and the suites with a timing budget
   (a host long task under 50 ms), run alone, one at a time after the
   parallel batch, under the same lock: `SERIAL`, a comma-separated list of
-  suite names, default `t-p1-bench,core-p1-bench,t-p1-flood`. A listed suite
+  suite names, default `t-p1-bench,core-p1-bench,core-p2-bench,t-p1-flood`. A listed suite
   that doesn't exist fails the run.
 - Runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
   `/tmp/cardtable-tests.lock`): concurrent runs on a small machine starve each
@@ -204,6 +204,21 @@ top of `core.js` and README "How it works".
   face `.pface` (`.pback` for a hidden piece's back) holding its layers
   (`img.face` / `.face.loading`, `.plabel`, `.ptext`, `.pips`), and
   `.pface.placeholder` ("?") when its box isn't here.
+- **The core suites.** `core-p2.test.mjs` (Node, spec §2l 1–7): grid.js's
+  formulas and address round trips; cleanBox (defaults, shorthand, every
+  cap at n and n + 1, backs, addresses, a 2,000-mutation fuzz checked by
+  its own field-by-field oracle `boxProblems`), canon, boxKey, isBuiltin;
+  every action of §2c with the mayHandle / notLocked table row by row,
+  cap(), the hidden-item rule, the bag flag; setup order (Spearman over 20
+  seeds); the public reduction against §2d's table (`specPub`, `specHandy`)
+  after 500 random piece ops; seats; MIGRATE[2] and the board z band;
+  randInt; the built-in boxes. Its tables are built by `mk(items, o)` from
+  the test box `TESTBOX` (one type per behaviour) and `run(T, p, a)` returns
+  what an action did (notes, log lines, effects, changed). Ids are random
+  hex, as `uid()` makes them: a JS object lists integer-like keys
+  ("12345678") first, so key order is checked against sorted insertion
+  (`inOrder`). `core-p2-bench.mjs` (serial): B9, a 20-dice roll on the
+  1,000-piece bench box of §2k.
 
 ## Storage and images (Phase 1B)
 
