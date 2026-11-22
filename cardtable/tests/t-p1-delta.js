@@ -1,19 +1,21 @@
 // E2E (Phase 1, spec §1l "t-p1-delta.js"): delta sync keeps every screen equal
 // to the host. Ground truth is the host's own save, recomputed in Node by
 // core.js (publicItems / publicPlayers, the log, each player's hand).
+// The reloads come first (see the note on stalled connections below).
+//   (3)  the host reloads mid-game: guests take the new epoch's snapshot, hands intact
+//   (4)  a guest reloads: a snapshot brings its table and its hand back
 //   (6)  the version gate: `_v: 1` or no `_v` gets the reload note, no seat and no state
+//   (9)  knock spam (1j case 5) and snap spam (1j case 4): at most one snapshot per 3 s
+//   1j-1 a patch signed with another key, and a host patch relayed to the wrong peer: dropped
 //   (1)  500 random UI and __ct.act actions from three screens: views and hands converge
 //   (7)  the log rides inside patches: 250 actions, and one action of 250 lines, trim alike
 //   (5)  a vetoed play reverts on the guest with deltas (Turn order); a veto re-sends what it names
-//   (4)  a guest reloads: a snapshot brings its table and its hand back
 //   (8)  private-only commits (Turn order's timer, a script writing only t.data): nothing is
 //        sent, 0 snapshot requests, and the next patch still applies
 //   (2)  a dropped patch: the gap is noticed, a snapshot is requested and the guest converges;
 //        while waiting the status tooltip says so, and requests are rate-limited
-//   1j-1 a patch signed with another key, and a host patch relayed to the wrong peer: dropped
-//   (9)  knock spam (1j case 5) and snap spam (1j case 4): at most one snapshot per 3 s
 //   1j-7 `_join` and `__proto__` actions are refused with no state change
-//   (3)  the host reloads mid-game: guests take the new epoch's snapshot, hands intact
+//   §0.2 items travel in id order
 const h = require('./h');
 const L = require('./p1-lib');
 const { mallory } = require('./final-lib');
@@ -73,42 +75,183 @@ const NAMES = { host: 'Alice', a: 'Bob', b: 'Carol' };
     return last;
   }
 
-  /** A raw Trystero peer (final-lib's Mallory: no app code), once she is
-   *  connected to the three players and holds the public snapshot every
-   *  newcomer is sent. What she receives is stamped with its arrival time. */
-  async function rawPeer() {
-    const R = await mallory(env, invite);
-    await R.evaluate(() => {
-      for (const ch of ['state', 'note']) {
-        const arr = (window.M.got[ch] ||= []);
-        arr.push = function (...xs) { for (const x of xs) x.at = performance.now(); return Array.prototype.push.apply(this, xs); };
-      }
-    });
-    if (await L.until(() => R.evaluate(() => Object.keys(window.M.room.getPeers()).length >= 3 && window.M.got.state.length > 0), 40000, 250)) return R;
-    console.error('  the raw peer never got going:', JSON.stringify(await R.evaluate(() => ({ peers: Object.keys(window.M.room.getPeers()), got: Object.fromEntries(Object.entries(window.M.got).map(([k, v]) => [k, v.length])) }))),
-      '— host:', await host.$eval('#net-status', (el) => `${el.textContent} ${el.title}`));
-    throw new Error('a raw peer could not join the room');
+  /** Trystero's id for page p (a raw peer addresses it by this). */
+  const peerOf = (p) => p.evaluate(() => import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm').then((m) => m.selfId));
+  const bPeer = await peerOf(b);
+  // In this harness a new WebRTC connection now and then never forms: Trystero's
+  // signalling stalls (Phase 0 alike: a host reloaded every 15 s lost its guests
+  // for over a minute on its 5th and 6th reloads). The helpers below try again
+  // when the connection itself never came up, and only then: a page that is
+  // connected but doesn't catch up is a failure.
+  /** A raw Trystero peer (final-lib's Mallory: no app code), once the host has
+   *  sent her the public snapshot every newcomer gets and she is connected to
+   *  the peers in `also`. What she receives is stamped with its arrival time. */
+  async function rawPeer(also = []) {
+    const need = [await peerOf(host), ...also];
+    for (let k = 1; ; k++) {
+      const R = await mallory(env, invite);
+      await R.evaluate(() => {
+        for (const ch of ['state', 'note']) {
+          const arr = (window.M.got[ch] ||= []);
+          arr.push = function (...xs) { for (const x of xs) x.at = performance.now(); return Array.prototype.push.apply(this, xs); };
+        }
+      });
+      const linked = () => R.evaluate((need) => need.every((x) => window.M.room.getPeers()[x]), need);
+      if (await L.until(async () => (await linked()) && R.evaluate(() => window.M.got.state.length > 0), 45000, 250)) return R;
+      const st = await R.evaluate(() => ({ peers: Object.keys(window.M.room.getPeers()), states: window.M.got.state.length }));
+      if (await linked()) throw new Error(`the host never sent a newcomer its public snapshot (${JSON.stringify(st)})`);
+      console.log(`  (a raw peer's connections never formed: ${JSON.stringify(st)}, needed ${need} — ${k < 3 ? 'trying a fresh one' : 'giving up'})`);
+      await R.context().close();
+      if (k === 3) throw new Error('a raw peer could not join the room');
+    }
   }
-  // Raw peers join first: in this harness a peer arriving once the room has
-  // been up for a minute or so can take 20 s or more to connect (Trystero's
-  // signalling; Phase 0 behaves the same), so a late one would time out.
-  const M = await rawPeer(); // Mallory, anonymous until 1j case 7
+  /** Reloads page p until `back()` holds (45 s each try). A reload whose
+   *  connections never formed (`linked()` false) is tried again, twice at most. */
+  async function reload(p, back, linked) {
+    for (let k = 1; ; k++) {
+      await p.reload();
+      if (await L.until(() => back().catch(() => false), 45000, 300)) return true;
+      if (k === 3 || (await linked().catch(() => false))) return false;
+      console.log(`  (the reloaded page's connections never formed — reloading again, try ${k + 1})`);
+    }
+  }
+  /** Host move number k: item k (in id order) to a spot of its own; returns {id, x, y}. */
+  const hostMove = async (k) => {
+    const all = await ids(host);
+    const to = { id: all[k % all.length], x: 300 + ((k * 97) % 600), y: 330 + ((k * 61) % 500) };
+    await L.act(host, { t: 'move', ...to });
+    return to;
+  };
+  /** Deals cards until the table holds n items (the moves below each name a different one). */
+  const ensureItems = async (n) => {
+    for (let k = (await ids(host)).length; k < n; k++) {
+      const v = await L.view(host), pile = Object.keys(v.items).sort().find((id) => v.items[id].k === 'p');
+      await L.act(host, { t: 'deal', id: pile, up: true, x: 300 + k * 40, y: 700, rot: 0 });
+    }
+  };
+  const at = async (p, m) => { const it = (await L.view(p)).items[m.id]; return !!it && Math.abs(it.x - m.x) < 0.5 && Math.abs(it.y - m.y) < 0.5; };
+  const title = () => b.$eval('#net-status', (el) => el.title);
+
+  // =========================================================================
+  section('(3) the host reloads mid-game: the guests take the new snapshot and converge');
+  {
+    // a short game first: cards in both guests' hands and on the table
+    const pile = (await ids(host))[0];
+    for (let k = 0; k < 2; k++) for (const g of [a, b]) await L.act(g, { t: 'draw', id: pile });
+    for (let k = 0; k < 3; k++) await L.act(host, { t: 'deal', id: pile, up: k !== 1, x: 380 + k * 140, y: 420, rot: 0 });
+    await L.act(host, { t: 'move', id: pile, x: 600, y: 700 });
+    await L.act(b, { t: 'chat', msg: 'before the reload' });
+    await converged('before the host reloads', { quiet: 1500 });
+    const rec = await L.saved(host), before = L.truthOf(rec, pids.host), k0 = await counters();
+    const back = async () => { const v = await L.view(host); return v.seq > 0 && !!v.players[pids.a]?.online && !!v.players[pids.b]?.online; };
+    const linked = () => host.$eval('#net-status', (el) => +(/● (\d+)/.exec(el.textContent)?.[1] || 1) >= 3); // "● n": n − 1 peers
+    ok(await reload(host, back, linked), 'both guests are back at the reloaded host');
+    const r3 = await converged('host reloaded', { timeout: 30000 });
+    const k1 = await counters();
+    ok(k1.a.boot > k0.a.boot && k1.b.boot > k0.b.boot && k1.a.boot === k1.host.boot, `the guests follow the new epoch (boot ${k0.a.boot} → ${k1.a.boot})`);
+    ok(k1.a.snaps > k0.a.snaps && k1.b.snaps > k0.b.snaps, 'by way of a snapshot');
+    for (const k of ['a', 'b']) ok(L.same(r3.views[k].hand, before.hands[pids[k]]), `${NAMES[k]}'s hand survived the host's reload (${r3.views[k].hand.length} cards)`);
+    ok(L.same(r3.views.a.items, before.items), 'the table is the one that was saved');
+  }
+
+  // =========================================================================
+  section('(4) a guest reloads: it gets a snapshot, and its hand is intact');
+  {
+    const rec = await L.saved(host), handA = L.truthOf(rec, pids.host).hands[pids.a];
+    ok(handA.length > 0, `Bob holds ${handA.length} cards before reloading`);
+    ok(await reload(a, () => a.evaluate(() => window.__ct.view().seq > 0 && !!window.__ct.view().players[localStorage.getItem('ct-pid')]?.online),
+      () => a.evaluate(() => window.__ct.view().seq > 0)), 'Bob is back at the table');
+    const r4 = await converged('Bob reloaded');
+    ok(L.same(r4.views.a.hand, handA), `Bob's hand is intact after the reload (${r4.views.a.hand.length} cards)`);
+    ok(r4.views.a.perf.snaps >= 1, `Bob's fresh page was sent a snapshot (${r4.views.a.perf.snaps})`);
+  }
+
+  // The raw peers join together, first: their connections form in parallel.
+  const [M, ...V] = await Promise.all([rawPeer([bPeer]), rawPeer(), rawPeer()]); // M: Mallory, anonymous until (8)
 
   // =========================================================================
   section('(6) the version gate: another wire version gets the reload note, no seat and no state');
-  for (const [label, v, vpid] of [['_v: 1', 1, 'eeeeeeeeeeeeeeee'], ['no _v', undefined, 'dddddddddddddddd']]) {
-    const V = await rawPeer();
-    await V.evaluate(({ v, vpid }) => window.M.send.act({ t: 'hello', ...(v === undefined ? {} : { _v: v }), _pid: vpid, _name: 'Old tab', _key: 'o'.repeat(32) }), { v, vpid });
-    const noteOf = () => V.evaluate(() => window.M.notes().map((n) => n.msg).find(Boolean) || '');
+  for (const [k, label, v, vpid] of [[0, '_v: 1', 1, 'eeeeeeeeeeeeeeee'], [1, 'no _v', undefined, 'dddddddddddddddd']]) {
+    const R = V[k];
+    await R.evaluate(({ v, vpid }) => window.M.send.act({ t: 'hello', ...(v === undefined ? {} : { _v: v }), _pid: vpid, _name: 'Old tab', _key: 'o'.repeat(32) }), { v, vpid });
+    const noteOf = () => R.evaluate(() => window.M.notes().map((n) => n.msg).find(Boolean) || '');
     await L.until(noteOf, 10000, 200);
     const note = await noteOf();
     ok(/different version of Card Table — reload this page/.test(note), `${label}: refused with the reload note ("${note}")`);
-    const states = await V.evaluate(() => window.M.got.state.length);
+    const states = await R.evaluate(() => window.M.got.state.length);
     await L.act(host, { t: 'chat', msg: `after the ${label} refusal` });
     await h.sleep(1500);
     ok(!(await L.view(host)).players[vpid] && !(L.truthOf(await L.saved(host), pids.host).players[vpid]), `${label}: no seat is created`);
-    ok((await V.evaluate(() => window.M.got.state.length)) === states, `${label}: and no more state is sent to that peer`);
-    await V.context().close();
+    ok((await R.evaluate(() => window.M.got.state.length)) === states, `${label}: and no more state is sent to that peer`);
+    await R.context().close();
+  }
+
+  // =========================================================================
+  section('(9) knock spam (1j case 5): at most one snapshot per 3 s');
+  const snapsAfter = (since) => M.evaluate((since) => window.M.got.state.filter((x) => (x.at ?? 0) > since)
+    .map(({ m, at }) => ({ at, kind: (typeof m.b === 'string' ? JSON.parse(m.b) : m).kind })).filter((x) => x.kind === 'snap'), since);
+  // the host spaces them ≥ 3 s apart; arrival times jitter, so allow some slack (an unlimited host sends dozens)
+  const spaced = (s) => s.every((x, k) => !k || x.at - s[k - 1].at >= 2500);
+  {
+    await h.sleep(3200); // Mallory's join snapshot is out of the window
+    const n0 = cons.host.length;
+    const t0 = await M.evaluate(async (v) => {
+      const t0 = performance.now();
+      for (let k = 0; k < 100; k++) { window.M.send.act({ t: 'hello', _v: v }); await new Promise((r) => setTimeout(r, 9)); }
+      return t0;
+    }, h.PROTO);
+    await h.sleep(5500);
+    const s = await snapsAfter(t0);
+    ok(s.length >= 1 && s.length <= 2 && spaced(s), `100 anonymous knocks in ~1 s got ${s.length} snapshots in 6.5 s, ${s.length > 1 ? `${Math.round(s[1].at - s[0].at)} ms apart` : 'one'} (≤ 1 per 3 s)`);
+    ok(consoleSince('host', n0, /snapshot request/i).length === 1, `the extra requests are reported once (${consoleSince('host', n0, /snapshot request/i).length} console.warn)`);
+  }
+
+  // =========================================================================
+  section('1j case 1: a patch signed by another key, and a host patch relayed to another peer, are dropped');
+  await ensureItems(12);
+  {
+    await converged('Mallory is in the room', { quiet: 600 });
+    const vb = await L.view(b), n0 = cons.b.length;
+    const id = Object.keys(vb.items).sort()[0];
+    const forged = { to: null, tp: bPeer, base: vb.seq, v: h.PROTO, kind: 'patch', boot: vb.boot, seq: vb.seq + 1, host: vb.host,
+      items: { [id]: { ...vb.items[id], x: 40, y: 600 } }, log: [{ p: 'RULES', txt: 'FORGED PATCH', ts: Date.now() }] };
+    await M.evaluate(async ({ body, to }) => {
+      const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+      const b64 = (u) => btoa(String.fromCharCode(...new Uint8Array(u)));
+      const text = JSON.stringify(body);
+      const s = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, kp.privateKey, new TextEncoder().encode(text));
+      await window.M.send.state({ b: text, s: b64(s), k: b64(await crypto.subtle.exportKey('raw', kp.publicKey)) }, to);
+    }, { body: forged, to: bPeer });
+    await h.sleep(1000);
+    const v1 = await L.view(b);
+    ok(v1.seq === vb.seq && L.same(v1.items[id], vb.items[id]) && !JSON.stringify(v1.log).includes('FORGED'), "a patch signed with Mallory's own key changes nothing on Carol's screen");
+    ok(consoleSince('b', n0, /not signed by the host/).length >= 1, 'Carol drops it as not signed by the host');
+
+    // the real patch to Carol is lost, and Mallory relays her own (validly signed) copy instead
+    await b.evaluate(() => { window.__rtc.drop = ['patch']; window.__rtc.dropped = []; });
+    await M.evaluate((to) => {
+      const n = window.M.got.state.length;
+      const t = setInterval(() => {
+        for (const { m } of window.M.got.state.slice(n)) {
+          const d = typeof m.b === 'string' ? JSON.parse(m.b) : m;
+          if (d.kind !== 'patch') continue;
+          clearInterval(t);
+          window.M.relayed = d;
+          window.M.send.state(m, to);
+          return;
+        }
+      }, 5);
+    }, bPeer);
+    const m7 = await hostMove(7);
+    await L.until(() => M.evaluate(() => !!window.M.relayed), 5000, 50);
+    await h.sleep(800);
+    const relayed = await M.evaluate(() => window.M.relayed);
+    const v2 = await L.view(b);
+    ok(relayed?.base === v1.seq && relayed.tp !== bPeer, `Mallory relayed the host's patch that Carol missed (base ${relayed?.base}, bound to Mallory's connection)`);
+    ok(v2.seq === v1.seq && !(await at(b, m7)), "Carol drops it: it isn't bound to her connection (tp)");
+    ok(consoleSince('b', n0, /relayed by/).length >= 1, 'and says so (console.warn)');
+    const m8 = await hostMove(8);
+    ok(await L.until(async () => (await at(b, m8)) && (await at(b, m7)), 6000, 50), 'the next real patch shows the gap and Carol catches up');
   }
 
   // =========================================================================
@@ -296,24 +439,15 @@ const NAMES = { host: 'Alice', a: 'Bob', b: 'Carol' };
   }
 
   // =========================================================================
-  section('(4) a guest reloads: it gets a snapshot, and its hand is intact');
-  {
-    const rec = await L.saved(host), handA = L.truthOf(rec, pids.host).hands[pids.a];
-    ok(handA.length > 0, `Bob holds ${handA.length} cards before reloading`);
-    await a.reload();
-    await a.waitForFunction(() => window.__ct?.view().seq > 0 && window.__ct.view().players[localStorage.getItem('ct-pid')]?.online, null, { timeout: 60000 });
-    const r4 = await converged('Bob reloaded');
-    ok(L.same(r4.views.a.hand, handA), `Bob's hand is intact after the reload (${r4.views.a.hand.length} cards)`);
-    ok(r4.views.a.perf.snaps >= 1, `Bob's fresh page was sent a snapshot (${r4.views.a.perf.snaps})`);
-  }
-
-  // =========================================================================
   section('(8) private-only commits: nothing is sent, no snapshot is requested, and the chain holds');
   {
+    await M.evaluate(() => window.M.act({ t: 'hello' })); // Mallory takes a seat: Turn order's onJoin arms its timer
+    await host.waitForFunction(() => window.__ct.view().players.ffffffffffffffff?.online, null, { timeout: 10000 });
+    await converged('Mallory took a seat', { quiet: 800 });
     const k0 = await counters();
     const rec0 = await L.saved(host);
     const away = (rec) => (rec?.state.rules?.data?._timers || []).some((x) => x.tag === 'away');
-    ok(rec0.state.rules?.name === 'Turn order' && away(rec0), "Bob's return armed Turn order's 10 s 'away' timer");
+    ok(rec0.state.rules?.name === 'Turn order' && away(rec0), "Mallory's arrival armed Turn order's 10 s 'away' timer");
     const fired = await L.until(async () => !away(await L.saved(host)), 20000, 300);
     ok(fired, "Turn order's timer fired (a commit that only changes rules.data)");
     await h.sleep(1000);
@@ -348,20 +482,7 @@ const NAMES = { host: 'Alice', a: 'Bob', b: 'Carol' };
 
   // =========================================================================
   section('(2) a dropped patch: the guest notices the gap, asks for a snapshot and converges');
-  /** Host move number k: item k (in id order) to a spot of its own; returns {id, x, y}. */
-  const hostMove = async (k) => {
-    const all = await ids(host);
-    const to = { id: all[k % all.length], x: 300 + ((k * 97) % 600), y: 330 + ((k * 61) % 500) };
-    await L.act(host, { t: 'move', ...to });
-    return to;
-  };
-  // the moves below must each name a different item
-  for (let n = (await ids(host)).length; n < 12; n++) {
-    const v = await L.view(host), pile = Object.keys(v.items).sort().find((id) => v.items[id].k === 'p');
-    await L.act(host, { t: 'deal', id: pile, up: true, x: 300 + n * 40, y: 700, rot: 0 });
-  }
-  const at = async (p, m) => { const it = (await L.view(p)).items[m.id]; return !!it && Math.abs(it.x - m.x) < 0.5 && Math.abs(it.y - m.y) < 0.5; };
-  const title = () => b.$eval('#net-status', (el) => el.title);
+  await ensureItems(12);
   {
     await converged('before the drop', { quiet: 400 });
     const k0 = await counters(), n0 = cons.b.length;
@@ -409,84 +530,9 @@ const NAMES = { host: 'Alice', a: 'Bob', b: 'Carol' };
   }
 
   // =========================================================================
-  section('1j case 1: a patch signed by another key, and a host patch relayed to another peer, are dropped');
-  const bPeer = await b.evaluate(() => import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm').then((m) => m.selfId));
-  {
-    await converged('Mallory is in the room', { quiet: 600 });
-    const vb = await L.view(b), n0 = cons.b.length;
-    const id = Object.keys(vb.items).sort()[0];
-    const forged = { to: null, tp: bPeer, base: vb.seq, v: h.PROTO, kind: 'patch', boot: vb.boot, seq: vb.seq + 1, host: vb.host,
-      items: { [id]: { ...vb.items[id], x: 40, y: 600 } }, log: [{ p: 'RULES', txt: 'FORGED PATCH', ts: Date.now() }] };
-    await M.evaluate(async ({ body, to }) => {
-      const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
-      const b64 = (u) => btoa(String.fromCharCode(...new Uint8Array(u)));
-      const text = JSON.stringify(body);
-      const s = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, kp.privateKey, new TextEncoder().encode(text));
-      await window.M.send.state({ b: text, s: b64(s), k: b64(await crypto.subtle.exportKey('raw', kp.publicKey)) }, to);
-    }, { body: forged, to: bPeer });
-    await h.sleep(1000);
-    const v1 = await L.view(b);
-    ok(v1.seq === vb.seq && L.same(v1.items[id], vb.items[id]) && !JSON.stringify(v1.log).includes('FORGED'), "a patch signed with Mallory's own key changes nothing on Carol's screen");
-    ok(consoleSince('b', n0, /not signed by the host/).length >= 1, 'Carol drops it as not signed by the host');
-
-    // the real patch to Carol is lost, and Mallory relays her own (validly signed) copy instead
-    await b.evaluate(() => { window.__rtc.drop = ['patch']; window.__rtc.dropped = []; });
-    await M.evaluate((to) => {
-      const n = window.M.got.state.length;
-      const t = setInterval(() => {
-        for (const { m } of window.M.got.state.slice(n)) {
-          const d = typeof m.b === 'string' ? JSON.parse(m.b) : m;
-          if (d.kind !== 'patch') continue;
-          clearInterval(t);
-          window.M.relayed = d;
-          window.M.send.state(m, to);
-          return;
-        }
-      }, 5);
-    }, bPeer);
-    const m7 = await hostMove(7);
-    await L.until(() => M.evaluate(() => !!window.M.relayed), 5000, 50);
-    await h.sleep(800);
-    const relayed = await M.evaluate(() => window.M.relayed);
-    const v2 = await L.view(b);
-    ok(relayed?.base === v1.seq && relayed.tp !== bPeer, `Mallory relayed the host's patch that Carol missed (base ${relayed?.base}, bound to Mallory's connection)`);
-    ok(v2.seq === v1.seq && !(await at(b, m7)), "Carol drops it: it isn't bound to her connection (tp)");
-    ok(consoleSince('b', n0, /relayed by/).length >= 1, 'and says so (console.warn)');
-    await h.sleep(2500); // Carol's last snapshot request was over 3 s ago
-    const m8 = await hostMove(8);
-    ok(await L.until(async () => (await at(b, m8)) && (await at(b, m7)), 6000, 50), 'the next real patch shows the gap and Carol catches up');
-  }
-
-  // =========================================================================
-  section('(9) knock spam (1j case 5): at most one snapshot per 3 s');
-  const snapsAfter = (since) => M.evaluate((since) => window.M.got.state.filter((x) => (x.at ?? 0) > since)
-    .map(({ m, at }) => ({ at, kind: (typeof m.b === 'string' ? JSON.parse(m.b) : m).kind })).filter((x) => x.kind === 'snap'), since);
-  // the host spaces them ≥ 3 s apart; arrival times jitter, so allow some slack (an unlimited host sends dozens)
-  const spaced = (s) => s.every((x, k) => !k || x.at - s[k - 1].at >= 2500);
-  {
-    await h.sleep(3200); // Mallory's join snapshot is out of the window
-    const n0 = cons.host.length;
-    const t0 = await M.evaluate(async (v) => {
-      const t0 = performance.now();
-      for (let k = 0; k < 100; k++) { window.M.send.act({ t: 'hello', _v: v }); await new Promise((r) => setTimeout(r, 9)); }
-      return t0;
-    }, h.PROTO);
-    await h.sleep(5500);
-    const s = await snapsAfter(t0);
-    ok(s.length >= 1 && s.length <= 2 && spaced(s), `100 anonymous knocks in ~1 s got ${s.length} snapshots in 6.5 s, ${s.length > 1 ? `${Math.round(s[1].at - s[0].at)} ms apart` : 'one'} (≤ 1 per 3 s)`);
-    ok(consoleSince('host', n0, /snapshot request/i).length === 1, `the extra requests are reported once (${consoleSince('host', n0, /snapshot request/i).length} console.warn)`);
-    // §0.2: every `items` object lists its ids in sorted order, so the order never tells which card came first
-    const order = await M.evaluate(() => window.M.got.state.map(({ m }) => [...String(m.b).matchAll(/"([0-9a-f]{8})":\{"k"/g)].map((x) => x[1])));
-    ok(order.length > 5 && order.every((l) => l.every((id, k) => !k || l[k - 1] < id)),
-      `each of the ${order.length} snapshots and patches she got lists its items in id order (${order.reduce((n, l) => n + l.length, 0)} entries)`);
-  }
-
-  // =========================================================================
   section('1j case 7: `_join` and `__proto__` are refused, with no state change');
   {
-    await M.evaluate(() => window.M.act({ t: 'hello' })); // Mallory takes a seat
-    await host.waitForFunction(() => window.__ct.view().players.ffffffffffffffff, null, { timeout: 10000 });
-    await h.sleep(1500);
+    await h.sleep(1500); // the last commit is saved (at most one save per second)
     const s0 = (await L.saved(host)).state.seq, n0 = await M.evaluate(() => window.M.got.note.length), c0 = cons.host.length;
     await M.evaluate(() => { window.M.act({ t: '_join' }); window.M.act({ t: '__proto__' }); });
     await h.sleep(1500);
@@ -499,7 +545,6 @@ const NAMES = { host: 'Alice', a: 'Bob', b: 'Carol' };
 
   section('1j case 4: 100 `snap` requests in 1 s from a seated peer: at most one snapshot per 3 s');
   {
-    await h.sleep(3200); // her seat's snapshot is out of the window
     const t0 = await M.evaluate(async () => {
       const t0 = performance.now();
       for (let k = 0; k < 100; k++) { window.M.act({ t: 'snap' }); await new Promise((r) => setTimeout(r, 9)); }
@@ -509,27 +554,18 @@ const NAMES = { host: 'Alice', a: 'Bob', b: 'Carol' };
     const s = await snapsAfter(t0);
     ok(s.length >= 1 && s.length <= 2 && spaced(s), `she got ${s.length} snapshots in 6.5 s, ${s.length > 1 ? `${Math.round(s[1].at - s[0].at)} ms apart` : 'one'} (≤ 1 per 3 s)`);
   }
-  await M.context().close();
 
-  // =========================================================================
-  section('(3) the host reloads mid-game: the guests take the new snapshot and converge');
+  section('§0.2: items travel in id order, never in creation order');
   {
-    await converged('before the host reloads', { quiet: 1500 });
-    const rec = await L.saved(host), before = L.truthOf(rec, pids.host), k0 = await counters();
-    await host.reload();
-    await host.waitForFunction(() => window.__ct?.view().seq > 0, null, { timeout: 30000 });
-    const ready = await L.until(async () => {
-      const v = await L.view(host);
-      return v.players[pids.a]?.online && v.players[pids.b]?.online;
-    }, 40000, 300);
-    ok(ready, 'both guests are back at the reloaded host');
-    const r3 = await converged('host reloaded', { timeout: 30000 });
-    const k1 = await counters();
-    ok(k1.a.boot > k0.a.boot && k1.b.boot > k0.b.boot && k1.a.boot === k1.host.boot, `the guests follow the new epoch (boot ${k0.a.boot} → ${k1.a.boot})`);
-    ok(k1.a.snaps > k0.a.snaps && k1.b.snaps > k0.b.snaps, 'by way of a snapshot');
-    for (const k of ['a', 'b']) ok(L.same(r3.views[k].hand, before.hands[pids[k]]), `${NAMES[k]}'s hand survived the host's reload (${r3.views[k].hand.length} cards)`);
-    ok(L.same(r3.views.a.items, before.items), 'the table is the one that was saved');
+    // Every `items` object is built in sorted id order, so the order on the wire never tells which
+    // card came first. (A JS object puts all-digit keys such as "12345678" first, in numeric order:
+    // that order too depends on the ids alone.)
+    const order = await M.evaluate(() => window.M.got.state.map(({ m }) => [...String(m.b).matchAll(/"([0-9a-f]{8})":\{"k"/g)].map((x) => x[1])));
+    const sorted = (l) => Object.keys(Object.fromEntries([...l].sort().map((id) => [id, 0])));
+    const bad = order.find((l) => !L.same(l, sorted(l)));
+    ok(order.length > 5 && !bad, `each of the ${order.length} snapshots and patches she got lists its items in id order (${order.reduce((n, l) => n + l.length, 0)} entries)${bad ? ` — not: ${bad.join(' ').slice(0, 300)}` : ''}`);
   }
+  await M.context().close();
 
   section('the retired `log` channel carries nothing');
   for (const [k, p] of Object.entries(P)) {
