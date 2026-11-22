@@ -159,7 +159,9 @@ A thin wrapper over the table's existing ops (today in `core.js`):
   `only({d, i} | {t, f, up?})` picks, e.g. `(c) => c.d === myDeck` to
   leave another game's cards; an entry that doesn't go onto that pile —
   a piece onto a card deck, a card onto a pile of pieces, another size —
-  stays in the hand, with a `console.warn`), `t.toHand(pid, cardId)`,
+  stays in the hand, with a `console.warn`; an empty pile takes cards
+  when any are picked, so a fresh "Set aside" pile never becomes a pile
+  of pieces), `t.toHand(pid, cardId)`,
   `t.shuffle`, `t.flip`, `t.move`, `t.rot`, `t.toPile`,
   `t.stack(cardId, ontoCardId)` (→ the new pile id), `t.merge`,
   `t.newPile(cards, {x,y,name})` (→ the new pile id), `t.remove`,

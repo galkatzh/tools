@@ -125,17 +125,19 @@ export const RULES_TEMPLATES = {
     const std = (p) => p.id !== t.data.muckId && p.cards.length && p.cards.every((c) => c.d === p.cards[0].d) && !!(t.card(p.cards[0]) || {}).rank;
     return t.piles().filter(std).sort((a, b) => b.cards.length - a.cards.length)[0];
   },
-  // Cards of another deck than D leave the hands, onto a pile of their own.
+  // Cards of another deck than D leave the hands, onto a pile of their own
+  // (only cards: a piece held in a hand stays there).
   aside(t, D) {
-    const g = t.geom();
+    const g = t.geom(), other = (c) => 'd' in c && c.d !== D;
     let id = null;
     for (const p of t.players()) {
-      if (!t.hand(p.id).some((c) => c.d !== D)) continue;
+      if (!t.hand(p.id).some(other)) continue;
       id = id || t.newPile([], { x: g.cx + 190, y: g.cy - 240, name: 'Set aside' });
-      t.takeHand(p.id, id, (c) => c.d !== D);
+      t.takeHand(p.id, id, other);
     }
   },
-  contenders(t) { return t.players().filter((p) => p.handCount === 2 && !t.data.folded.includes(p.id)); },
+  // Who is in the hand: dealt two cards (a piece held in a hand doesn't count) and not folded.
+  contenders(t) { return t.players().filter((p) => t.hand(p.id).filter((c) => 'd' in c).length === 2 && !t.data.folded.includes(p.id)); },
   active(t) { return this.contenders(t).filter((p) => t.data.stacks[p.id] > 0); },
   // The next player in list clockwise from p, by seat. Not t.nextSeat: that
   // skips offline players, and after a host reload everyone is offline until
@@ -165,7 +167,7 @@ export const RULES_TEMPLATES = {
       const g = t.geom();
       d.muckId = t.newPile([], { x: g.cx + 70, y: g.cy - 240, name: 'muck' });
     }
-    t.takeHand(p, d.muckId);
+    t.takeHand(p, d.muckId, (c) => 'd' in c); // (the muck takes cards only)
   },
   /** Calls the hand off: every bet goes back to its owner. */
   abandon(t, msg) {
@@ -255,7 +257,7 @@ export const RULES_TEMPLATES = {
     for (const it of t.items()) if (it.k === 'c' && ours(it)) { if (it.up) t.flip(it.id); t.toPile(it.id, deckP.id); }
     for (const p of t.piles()) if (p.id !== deckP.id && p.cards.every(ours)) t.merge(p.id, deckP.id);
     this.aside(t, D);
-    for (const p of t.players()) t.takeHand(p.id, deckP.id);
+    for (const p of t.players()) t.takeHand(p.id, deckP.id, ours);
     t.shuffle(deckP.id);
     // Layout: burns | deck | muck in a row above the board row through the
     // center — all clear of the hole cards revealed by the seats.
@@ -440,11 +442,12 @@ export const RULES_TEMPLATES = {
     const players = this.contenders(t);
     const scores = {};
     for (const p of players) {
-      const hole = t.hand(p.id);
-      // reveal by the seat, outside the board row
+      // the hole cards and where they are in the hand (a piece held there stays)
+      const hand = t.hand(p.id), at = hand.flatMap((c, k) => ('d' in c ? [k] : [])), hole = at.map((k) => hand[k]);
+      // reveal by the seat, outside the board row (the last first: the others keep their index)
       const rad = (p.seat * Math.PI) / 180, tx = -Math.sin(rad), ty = Math.cos(rad);
-      for (let k = t.hand(p.id).length - 1; k >= 0; k--) {
-        t.playFromHand(p.id, k, {
+      for (let k = hole.length - 1; k >= 0; k--) {
+        t.playFromHand(p.id, at[k], {
           x: g.cx + Math.cos(rad) * (g.r - 130) + tx * (k * 72 - 36) - 50,
           y: g.cy + Math.sin(rad) * (g.r - 130) + ty * (k * 72 - 36) - 70,
           up: true, rot: ((p.seat - 90) % 360 + 360) % 360,
@@ -525,7 +528,7 @@ export const RULES_TEMPLATES = {
     ? 'Bridge deals to exactly 4 online players (' + n + ' online) — waiting for ' + (4 - n) + ' more.'
     : 'Bridge deals to exactly 4 online players (' + n + ' online) — extra players must leave before the deal; anyone who joins later watches.',
   buttons: (t) => (t.data.phase === 'play' || t.data.phase === 'bid' ? [] : [{ id: 'deal', label: '🂠 Deal (13 each)' }]),
-  deck(t) { return t.piles().sort((a, b) => b.cards.length - a.cards.length)[0]; },
+  deck(t) { return t.piles().filter((p) => p.cards.length && 'd' in p.cards[0]).sort((a, b) => b.cards.length - a.cards.length)[0]; }, // (the biggest pile of cards)
   suitOf(t, c) { return t.cardName(c).slice(-1); },
   rankOf(t, c) {
     const r = t.cardName(c).slice(0, -1);
@@ -569,12 +572,13 @@ export const RULES_TEMPLATES = {
     for (const it of t.items()) if (it.k === 'c' && it.d === D) t.toPile(it.id, deckId);
     for (const p of t.piles()) if (p.id !== deckId && ours(p)) t.merge(p.id, deckId);
     let aside = null;
+    const other = (c) => 'd' in c && c.d !== D; // (only cards: a piece held in a hand stays there)
     for (const p of t.players()) {
-      if (!t.hand(p.id).some((c) => c.d !== D)) continue;
+      if (!t.hand(p.id).some(other)) continue;
       aside = aside || t.newPile([], { x: g.cx + 250, y: g.cy - 390, name: 'Set aside' });
-      t.takeHand(p.id, aside, (c) => c.d !== D);
+      t.takeHand(p.id, aside, other);
     }
-    for (const p of t.players()) t.takeHand(p.id, deckId);
+    for (const p of t.players()) t.takeHand(p.id, deckId, (c) => c.d === D);
     if (!t.piles().find((p) => p.id === deckId).cards.length) { t.remove(deckId); return t.tell(by, 'No deck on the table!'); }
     t.data.deckD = D;
     t.shuffle(deckId);
@@ -865,12 +869,14 @@ export const RULES_TEMPLATES = {
         .concat({ name: '🏆 Winner', bg: '#22c55e' }) });
     if (t.players().length < 3) t.say('CAH plays best with 3+ players — you can still try it.');
     if (!this.online(t, d.czar)) d.czar = (t.players().find((p) => p.online) || t.players()[0]).id;
-    // another game's cards (another deck) leave the hands: refill counts only answers
+    // another game's cards (another deck) leave the hands: refill counts only
+    // answers (only cards: a piece held in a hand stays there)
     let aside = null;
+    const other = (c) => 'd' in c && c.d !== d.wd;
     for (const p of t.players()) {
-      if (!t.hand(p.id).some((c) => c.d !== d.wd)) continue;
+      if (!t.hand(p.id).some(other)) continue;
       aside = aside || t.newPile([], { ...this.at(t, 340, 0), name: 'Set aside' });
-      t.takeHand(p.id, aside, (c) => c.d !== d.wd);
+      t.takeHand(p.id, aside, other);
     }
     // setup re-runs on every Enable: a game in progress restarts its round
     if (d.phase !== 'over') { this.clearRound(t); this.startRound(t); }
@@ -901,9 +907,12 @@ export const RULES_TEMPLATES = {
     const pile = this.stock(t, 'w', n);
     for (let k = 0; k < n; k++) t.deal(pile.id, { to: p });
   },
+  /** How many answers player p holds (a piece held in a hand isn't one). */
+  answers(t, p) { return t.hand(p).filter((c) => 'd' in c).length; },
   refill(t) {
     for (const p of t.players()) {
-      if (p.online && p.handCount < this.HAND) this.dealWhite(t, p.id, this.HAND - p.handCount);
+      const n = this.HAND - this.answers(t, p.id);
+      if (p.online && n > 0) this.dealWhite(t, p.id, n);
     }
   },
   badges(t) {
@@ -1069,8 +1078,8 @@ export const RULES_TEMPLATES = {
   onJoin(t, p) {
     const d = t.data;
     if (!d.phase || d.phase === 'over') return;
-    const pl = t.players().find((x) => x.id === p);
-    if (pl && pl.handCount < this.HAND) this.dealWhite(t, p, this.HAND - pl.handCount);
+    const n = t.players().some((x) => x.id === p) ? this.HAND - this.answers(t, p) : 0;
+    if (n > 0) this.dealWhite(t, p, n);
     // onJoin also fires on a reconnect: only a newcomer sits this round out
     if (p !== d.czar && !(d.roundPlayers || []).includes(p)) t.tell(p, 'You deal in next round');
   },

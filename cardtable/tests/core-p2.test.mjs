@@ -773,13 +773,13 @@ const NAMES = { [HOST]: 'Alice', [BOB]: 'Bob', [CAROL]: 'Carol', [DAVE]: 'Dave' 
 
 /** A host table (state v3) holding `items`, the test boxes and a standard
  *  deck, with Alice (the host, at the bottom), Bob (top) and Carol (right)
- *  seated and online. o: {hands: {pid: entries}, table, seats, players, env, boxes}. */
+ *  seated and online. o: {hands: {pid: entries}, table, seats, players, env, boxes, decks (more decks)}. */
 function mk(items = {}, o = {}) {
   const s = {
     v: 3, seq: 1, table: o.table || { shape: 'round', w: 1800, h: 1800 }, seats: o.seats || null, boardSeq: 0, zMax: 0,
     items: json(items), keys: {}, log: [], rules: null, guestDeckChars: 0,
     players: o.players || { [HOST]: player('Alice', 90), [BOB]: player('Bob', 270), [CAROL]: player('Carol', 0) },
-    decks: { [DK]: core.standardDeck(false) }, boxes: o.boxes || { [BX]: cleanBox(TESTBOX), [LBX]: cleanBox(LOCKBOX) }, boxSrc: {},
+    decks: { [DK]: core.standardDeck(false), ...o.decks }, boxes: o.boxes || { [BX]: cleanBox(TESTBOX), [LBX]: cleanBox(LOCKBOX) }, boxSrc: {},
   };
   for (const [p, hand] of Object.entries(o.hands || {})) s.players[p].hand = json(hand);
   const T = quietly(() => createTable(s, o.env || renv(o.seed ?? 7))).value;
@@ -2283,6 +2283,75 @@ function testReviewFixes() {
     const r2 = run(T, 'RULES', (t) => t.takeHand(BOB, 'tp'));
     ok(isDeepStrictEqual(T.state.players[BOB].hand, [hand[1]]) && isDeepStrictEqual(items(T).tp.cards.at(-1), { t: ref('open'), f: 1, up: true }) && r2.warn.length === 1,
       `a pile of tiles takes the tile (face up: it has no back), not the token (${JSON.stringify(items(T).tp.cards)})`);
+  }
+
+  section('(R) t.takeHand onto an empty pile: the cards picked decide it, whatever the hand\'s order — a card game\'s fresh "Set aside" never becomes a pile of pieces');
+  {
+    const D2 = 'd0000002', hand = [{ t: ref('open'), f: 0 }, { d: D2, i: 0 }, { d: D2, i: 1 }, { d: DK, i: 5 }];
+    const T = mk({ deck: PILE(cardsOf(3)), aside: PILE([], { x: 400, name: 'Set aside' }) }, { hands: { [BOB]: hand }, decks: { [D2]: core.standardDeck(false) } });
+    // (the templates' filter used to be (c) => c.d !== D: it picks pieces too)
+    const r = run(T, 'RULES', (t) => t.takeHand(BOB, 'aside', (c) => c.d !== DK));
+    ok(isDeepStrictEqual(items(T).aside.cards, [{ d: D2, i: 0, up: false }, { d: D2, i: 1, up: false }]), `the empty pile takes the other deck's two cards, though a tile (which stacks as a pile) comes first in the hand (${JSON.stringify(items(T).aside.cards)})`);
+    ok(isDeepStrictEqual(T.state.players[BOB].hand, [hand[0], hand[3]]) && r.warn.some((w) => /^t\.takeHand: 1 of Bob's hand stayed there/.test(w)), `the tile stays in the hand, said (${JSON.stringify(r.warn)})`);
+    run(T, 'RULES', (t) => t.takeHand(BOB, 'deck'));
+    ok(items(T).deck.cards.length === 4 && items(T).deck.cards.every((m) => m.d === DK), `then the game deck takes back only its own card: it stays one deck (${JSON.stringify(items(T).deck.cards.map((m) => m.d))})`);
+    const tiles = run(T, 'RULES', (t) => t.newPile([], { name: 'Tiles' })).ret, r2 = run(T, 'RULES', (t) => t.takeHand(BOB, tiles));
+    ok(isDeepStrictEqual(items(T)[tiles].cards, [{ t: ref('open'), f: 0, up: true }]) && !T.state.players[BOB].hand.length && !r2.warn.length, 'with no card picked, an empty pile still takes a piece that stacks as a pile');
+  }
+
+  section('(R) Hold\'em with a piece in a hand: New hand sets aside only the other deck\'s cards, a fold mucks only the cards');
+  {
+    const D2 = 'd0000002';
+    const T = mk({ deck: PILE(range(52).map((i) => ({ d: DK, i, up: false }))), s: S('open', { x: 300, y: 300 }) }, { hands: { [BOB]: [{ d: D2, i: 7 }] }, decks: { [D2]: core.standardDeck(false) } });
+    run(T, HOST, { t: 'setRules', enabled: true, code: RULES_TEMPLATES.holdem });
+    ok(happened(run(T, BOB, { t: 'take', id: 's', hand: true })) && T.state.players[BOB].hand.length === 2, 'Bob holds a card of another deck and takes a tile into his hand');
+    T.state.players[BOB].hand.reverse(); // the tile first: what the empty pile used to take
+    const before = Object.keys(items(T)), r = run(T, HOST, { t: 'rulesBtn', id: 'new' });
+    const aside = newIds(T, before).find((id) => items(T)[id].k === 'p' && items(T)[id].name === 'Set aside');
+    ok(!r.error.length && T.state.rules.data.stage === 'hand', `a new hand is dealt${r.error.length ? ` — error ${r.error[0]}` : ''}`);
+    ok(aside && isDeepStrictEqual(items(T)[aside].cards, [{ d: D2, i: 7, up: false }]), `the "Set aside" pile holds the other deck's card alone (${aside && JSON.stringify(items(T)[aside].cards)})`);
+    const bob = T.state.players[BOB].hand;
+    ok(bob.length === 3 && isDeepStrictEqual(bob[0], { t: ref('open'), f: 0 }) && bob.slice(1).every((c) => c.d === DK), `Bob keeps his tile and is dealt two cards of the game's deck (${JSON.stringify(bob)})`);
+    ok(items(T).deck.cards.every((m) => m.d === DK) && !r.warn.some((w) => /takeHand/.test(w)), `the deck holds only its own cards, gathered without a warning (${JSON.stringify(r.warn)})`);
+    const d = T.state.rules.data, calls = (done) => { for (let k = 0; k < 30 && d.turn && !done(); k++) run(T, d.turn, { t: 'chat', msg: '!call' }); };
+    calls(() => d.turn === BOB);
+    ok(d.turn === BOB, `the others call round to Bob: the tile in his hand doesn't keep him out of the hand (turn: ${NAMES[d.turn] || d.turn})`);
+    run(T, BOB, { t: 'rulesBtn', id: 'fold' });
+    ok(d.muckId && isDeepStrictEqual(items(T)[d.muckId]?.cards.map((m) => m.d), [DK, DK]) && isDeepStrictEqual(T.state.players[BOB].hand, [{ t: ref('open'), f: 0 }]),
+      `Bob folds: his two cards go to a fresh muck, his tile stays in his hand (muck ${JSON.stringify(items(T)[d.muckId]?.cards)}, hand ${JSON.stringify(T.state.players[BOB].hand)})`);
+    calls(() => false);
+    const r2 = run(T, HOST, { t: 'rulesBtn', id: 'new' });
+    ok(!r2.error.length && d.stage === 'hand' && T.state.players[BOB].hand.length === 3, `the next hand deals Bob in again, tile first (${JSON.stringify(T.state.players[BOB].hand)})`);
+    let errors = 0;
+    for (let k = 0; k < 30 && d.turn; k++) errors += run(T, d.turn, { t: 'chat', msg: '!call' }).error.length;
+    ok(!errors && d.stage !== 'hand' && isDeepStrictEqual(T.state.players[BOB].hand, [{ t: ref('open'), f: 0 }]) && T.state.log.some((e) => / (wins|split) \d+/.test(e.txt)),
+      `checked down to the showdown: Bob's two cards are shown, the tile stays in his hand, the pot is paid (stage ${d.stage}, hand ${JSON.stringify(T.state.players[BOB].hand)})`);
+  }
+
+  section('(R) Cards Against Humanity counts answers, not a piece held in a hand: everyone draws to 10 cards');
+  {
+    globalThis.window = { CAH_CARDS: { white: range(60).map((i) => `white ${i}`), black: range(10).map((i) => [`black ${i} _`, 1]) } };
+    try {
+      const T = mk({}, { hands: { [BOB]: [{ t: ref('open'), f: 0 }] } });
+      const r = run(T, HOST, { t: 'setRules', enabled: true, code: RULES_TEMPLATES.cah });
+      const wd = T.state.rules.data.wd, answers = (p) => T.state.players[p].hand.filter((c) => c.d === wd).length;
+      ok(!r.error.length && [HOST, BOB, CAROL].every((p) => answers(p) === 10), `10 answers each (${[HOST, BOB, CAROL].map(answers)}${r.error.length ? `, error ${r.error[0]}` : ''})`);
+      ok(isDeepStrictEqual(T.state.players[BOB].hand[0], { t: ref('open'), f: 0 }) && T.state.players[BOB].hand.length === 11, 'Bob keeps his tile besides');
+    } finally { delete globalThis.window; }
+  }
+
+  section('(R) Bridge with pieces about: its deck is the biggest pile of cards, a held piece stays in the hand');
+  {
+    const D2 = 'd0000002', ps = { [HOST]: player('Alice', 90), [BOB]: player('Bob', 180), [CAROL]: player('Carol', 270), [DAVE]: player('Dave', 0) };
+    const T = mk({ deck: PILE(range(52).map((i) => ({ d: DK, i, up: false }))), tiles: PILE(piecesOf('open', 60), { x: 300, y: 300 }) },
+      { players: ps, hands: { [BOB]: [{ t: ref('open'), f: 1 }, { d: D2, i: 9 }] }, decks: { [D2]: core.standardDeck(false) } });
+    run(T, HOST, { t: 'setRules', enabled: true, code: RULES_TEMPLATES.bridge });
+    const before = Object.keys(items(T)), r = run(T, HOST, { t: 'rulesBtn', id: 'deal' });
+    const aside = newIds(T, before).find((id) => items(T)[id].name === 'Set aside'), hands = Object.values(T.state.players).map((pl) => pl.hand);
+    ok(!r.error.length && T.state.rules.data.phase === 'bid', `the deal goes ahead past a bigger pile of 60 tiles (phase ${T.state.rules.data.phase}${r.error.length ? `, error ${r.error[0]}` : ''})`);
+    ok(aside && isDeepStrictEqual(items(T)[aside].cards, [{ d: D2, i: 9, up: false }]) && items(T).tiles.cards.length === 60, `"Set aside" holds the other deck's card alone; the tiles are untouched (${aside && JSON.stringify(items(T)[aside].cards)})`);
+    ok(hands.every((h) => h.filter((c) => c.d === DK).length === 13 && h.every((c) => !('d' in c) || c.d === DK)) && isDeepStrictEqual(T.state.players[BOB].hand[0], { t: ref('open'), f: 1 }) && T.state.players[BOB].hand.length === 14,
+      `13 cards of the game's deck each; Bob keeps his tile (${T.state.players[BOB].hand.length} entries)`);
   }
 
   section('(R) the bridge script survives a player who stood up mid-trick (t.players() leaves watchers out)');

@@ -2800,16 +2800,19 @@ export function createTable(host, env = {}) {
    *  picks (scripts: "my game's deck", leaving others' cards). An entry that
    *  doesn't go onto the pile (goesOn, checked as it grows: cards with
    *  pieces, other sizes; or the pile is full) stays in the hand, said with
-   *  a console.warn — a card deck never takes in a piece. */
+   *  a console.warn — a card deck never takes in a piece. An empty pile
+   *  takes cards when any are picked, whatever the hand's order: a card
+   *  game's fresh "Set aside" or muck never becomes a pile of pieces. */
   function opTakeHand(actor, p, pileId, only) {
     const pl = own(host.players, p), pile = own(host.items, pileId);
     if (!pl || pile?.k !== 'p') return false;
-    const picked = typeof only === 'function' ? new Set(pl.hand.filter((c) => only({ ...c }))) : null, n0 = pl.hand.length;
+    const picked = new Set(typeof only === 'function' ? pl.hand.filter((c) => only({ ...c })) : pl.hand), n0 = pl.hand.length;
+    const cardsOnly = !pile.cards.length && [...picked].some(isCard);
     let stayed = 0;
     pl.hand = pl.hand.filter((c) => {
-      if (picked && !picked.has(c)) return true;
+      if (!picked.has(c)) return true;
       const m = isCard(c) ? { d: c.d, i: c.i, up: false } : { t: c.t, f: c.f, up: mustShow(c.t) };
-      if (!goesOn(m, pile) || pile.cards.length >= MAX_PILE) { stayed++; return true; }
+      if ((cardsOnly && !isCard(m)) || !goesOn(m, pile) || pile.cards.length >= MAX_PILE) { stayed++; return true; }
       pile.cards.push(m);
       return false;
     });

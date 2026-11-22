@@ -1,5 +1,6 @@
-// E2E: UI surface — deck dialog, QR invite, card zoom, table size, view
-// zoom/pan/reset, hand-tray resize, help, log panel, iPhone 13 layout.
+// E2E: UI surface — deck dialog, QR invite, card zoom, table size, seat
+// labels, view zoom/pan/reset, hand-tray resize, help, log panel, iPhone 13
+// layout.
 const h = require('./h');
 const { ok, section, logHas } = h;
 const { devices } = h.playwright;
@@ -109,6 +110,35 @@ const addStdDeck = async (page, name, jokers) => {
   ok(await allOnFelt(guest), 'shrinking clamps every item back onto the felt (guest)');
   ok(await allOnFelt(host), '... and on the host');
 
+  section('seat labels follow a new table size');
+  // A view big enough that no size here draws the labels small (small ones are redrawn anyway).
+  for (const page of [host, guest]) await page.setViewportSize({ width: 1600, height: 1400 });
+  const { seatR } = require(`${h.APP_ROOT}/cardtable/core.js`);
+  /** Each seat label's distance from the table's centre, over the table's on-screen half-width; and the table's width. */
+  const rim = () => {
+    const t = document.getElementById('table'), r = t.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    return { w: getComputedStyle(t).width, seats: [...document.querySelectorAll('.seat')].map((el) => {
+      const b = el.getBoundingClientRect();
+      return Math.hypot(b.left + b.width / 2 - cx, b.top + b.height / 2 - cy) / (r.width / 2);
+    }) };
+  };
+  /** Waits until the table is `w` wide and every seat label (the bot tab's too) is centred on its seat: by
+   *  default on the rim, seatR(w) from the centre; else at fraction `f` of the half-width from it. */
+  const onRim = (page, w, f = seatR(w) / (w / 2)) => page.waitForFunction(([src, w, f]) => {
+    const { w: tw, seats } = eval(src)();
+    return tw === `${w}px` && seats.length > 1 && seats.every((x) => Math.abs(x - f) < 0.015);
+  }, [`(${rim})`, w, f], { timeout: 10000 }).then(() => true, async (e) => (console.error(e.message, JSON.stringify(await page.evaluate(rim))), false));
+  ok(await onRim(host, 1300) && await onRim(guest, 1300), 'at 1300 the labels sit on their seats');
+  for (const w of [1800, 2400, 1300]) {
+    await host.selectOption('#size-sel', String(w));
+    ok(await onRim(host, w) && await onRim(guest, w), `at ${w} they move with the rim (host and guest)`);
+  }
+  for (const page of [host, guest]) {
+    const big = await tf(page);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await tfChanged(page, big.raw); // (the view refits before the next section measures it)
+  }
+
   section('view: wheel zoom, felt pan, 🧭 reset');
   const t0 = await tf(guest);
   let p = await feltPoint(guest);
@@ -209,6 +239,16 @@ const addStdDeck = async (page, name, jokers) => {
   await phone.waitForSelector('#peek:not(.hidden)', { timeout: 3000 });
   await h.sleep(300);
   ok(await phone.isVisible('#peek'), 'tapping a hand card zooms it (and it stays open)');
+
+  section('seat labels follow named seats placed with `at`');
+  // A second box with the same seats at other points: the players keep their seats, the labels move.
+  for (const page of [host, guest]) await page.setViewportSize({ width: 1600, height: 1400 });
+  for (const y of [200, 350]) {
+    const box = { name: `Seats ${y}`, types: { m: { kind: 'token', name: 'Marker', faces: ['M'] } },
+      seats: [{ id: 'n', name: 'North', at: [650, y] }, { id: 's', name: 'South', at: [650, 1300 - y] }] };
+    await host.evaluate((box) => window.__ct.act({ t: 'loadBox', box }), box);
+    ok(await onRim(host, 1300, (650 - y) / 650) && await onRim(guest, 1300, (650 - y) / 650), `the labels sit on North and South, ${650 - y} from the centre`);
+  }
 
   await env.done();
 })().catch(h.crash);

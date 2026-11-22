@@ -1442,7 +1442,7 @@ function kind(el, cls, w, h) {
 }
 
 // Seat labels: everyone sees the same seating, each from their own rotation.
-let seatSig = '', seatEls = []; // what the labels show; [{p, el, at (table coords: seatXY), hw, hh}]
+let seatSig = '', seatEls = []; // what the labels show; [{p, el, hw, hh}]
 /** Whose move the rules wait on: public.turn is one player id or a list of them. */
 const turnOf = () => [].concat((view.rules?.enabled && view.rules.public?.turn) || []);
 /** Draws the seat labels when what they say changed, and places them
@@ -1457,7 +1457,7 @@ function renderPlayers(viewMoved) {
   // ones would reach into the felt and hide the cards the game puts there.
   const small = scale < 0.4;
   // (the "What are we playing?" strip moves the notices: placeSeats)
-  const sig = `${JSON.stringify(view.players)}|${turn}|${winners.join()}|${JSON.stringify(badges)}|${hostGone}|${small}|${$('game-strip').className}`;
+  const sig = `${JSON.stringify(view.players)}|${JSON.stringify(view.seats)}|${turn}|${winners.join()}|${JSON.stringify(badges)}|${hostGone}|${small}|${$('game-strip').className}`;
   if (sig !== seatSig) {
     seatSig = sig;
     for (const s of seatEls) s.el.remove();
@@ -1470,7 +1470,7 @@ function renderPlayers(viewMoved) {
       el.className = `seat${pl.online && p !== hostGone ? '' : ' offline'}${p === pid ? ' me' : ''}${waited ? ' turn' : ''}${winners.includes(p) ? ' winner' : ''}`;
       el.style.borderColor = pl.color;
       el.textContent = `${winners.includes(p) ? '🏆 ' : ''}${waited ? '⏳ ' : ''}${pl.name || 'Player'} 🂠${pl.handCount}${badges[p] ? ` ${badges[p]}` : ''}`;
-      seatEls.push({ p, el, at: seatXY(p) });
+      seatEls.push({ p, el });
     }
     wrapEl.append(...seatEls.map((s) => s.el));
     // All sizes are read before any position is written: one layout for all the labels.
@@ -1486,8 +1486,10 @@ let seatSpots = ''; // where placeSeats last put the button row and the notices
 function placeSeats() {
   const W = wrapEl.clientWidth, H = wrapEl.clientHeight;
   let rowBottom = 12, noticeTop = 10; // #rules-btns' and #notices' default spots (CSS)
-  for (const { p, el, at, hw, hh } of seatEls) {
-    const [sx, sy] = tableToScreen(at.x, at.y);
+  for (const { p, el, hw, hh } of seatEls) {
+    // (the seat's point is read here, not kept with the label: a new table
+    // size moves it, and layout() places the labels again then)
+    const at = seatXY(p), [sx, sy] = tableToScreen(at.x, at.y);
     // Keep the whole label on screen (side seats sit on the rim, which a
     // phone's fit zoom puts right at the screen edge).
     const y = clamp(sy, hh, H - hh);

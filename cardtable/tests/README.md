@@ -215,7 +215,11 @@ top of `core.js` and README "How it works".
   after 500 random piece ops; seats; MIGRATE[2] and the board z band;
   randInt; the built-in boxes; and (R), one regression check per issue the
   Phase 2A review found (a board's back, a bag's fixed box, missing boxes,
-  the hand and pile caps, t.takeHand, the bridge script with a watcher,
+  the hand and pile caps, t.takeHand (also onto an empty pile, a piece
+  first in the hand), the card games with a piece in a hand (Hold'em's
+  set aside, fold and showdown; CAH's refill, with `globalThis.window`
+  holding stub `CAH_CARDS`; Bridge's deal beside a bigger pile of tiles),
+  the bridge script with a watcher,
   seats that are gone, rotation snapping, flagsOf on public piles and bags,
   …). Its tables are built by `mk(items, o)` from
   the test box `TESTBOX` (one type per behaviour) and `run(T, p, a)` returns
@@ -256,7 +260,11 @@ top of `core.js` and README "How it works".
   text, the same in both REPLs, control characters stripped (a supply of a
   box the tab lacks: `? unknown piece`); a double-click on a locked board
   or on another player's die sends nothing and their bar stays empty; `roll
-  all` over more than 20 dice is said, and sends nothing.
+  all` over more than 20 dice is said, and sends nothing. `t-ui.js`'s
+  "seat labels follow a new table size": at a 1600 × 1400 view (no size
+  draws small labels there, which are redrawn anyway), every seat label
+  stays centred on its seat, `seatR(w)` from the centre, as the host's size
+  selector goes 1300 → 1800 → 2400 → 1300, on the host and the guest.
 
 ## Storage and images (Phase 1B)
 
