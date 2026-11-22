@@ -17,12 +17,14 @@
 //  (7) A veto or refusal re-sends the items the action named, and the hand.
 //  (8) The body splice parses, with an empty or non-empty shared part and
 //      with or without a hand; the sealed text verifies.
+// Then the t.data cap, the applyStatePatch seam (§1f), and regressions for
+// what the Phase 1A review found (each names what it guards).
 // Every random sequence is seeded and every failure names its seed: SEED=n
 // replays one.
 import { isDeepStrictEqual } from 'node:util';
 import { core, RULES_TEMPLATES, ok, section, report, crash, guard, seeds, rng, env, json, canon, keyOf, HOST, BOB, CAROL, DAVE } from './node-lib.mjs';
 
-const { createTable, own, PROTO, STATE_V, MIGRATE, migrate, trimLog, spliceBody, sealText, SIG, viewFromSnap, applyViewPatch, playR, CARD_W, CARD_H } = core;
+const { createTable, own, PROTO, STATE_V, MIGRATE, migrate, trimLog, spliceBody, sharedText, sealText, SIG, viewFromSnap, applyViewPatch, playR, CARD_W, CARD_H } = core;
 const map = (o, f) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, f(v)]));
 const pileOf = (T) => Object.keys(T.state.items).find((id) => T.state.items[id].k === 'p');
 const maxZ = (s) => Math.max(0, ...Object.values(s.items).map((it) => it.z));
@@ -703,6 +705,157 @@ function quietly(fn) {
     const verify = (t) => crypto.subtle.verify(SIG, kp.publicKey, Buffer.from(sealed.s, 'base64'), new TextEncoder().encode(t));
     ok(sealed.b === text && sealed.k === pub && await verify(text), 'sealText signs the text itself: {b: the text, s, k: the public key}, and it verifies');
     ok(!(await verify(text.replace('"base":8', '"base":7'))), 'a changed body does not verify');
+  });
+
+  section('t.data has a size limit, checked once per job (§1e)');
+  await guard('data cap', () => {
+    const T = createTable({}, env(12));
+    T.open('Alice');
+    T.join(BOB, 'Bob', keyOf(BOB));
+    T.apply(HOST, { t: 'setRules', enabled: true, code: '({ name: "Hoard", validate() {}, onAction() {}, buttons: () => [{ id: "go", label: "Go" }], onButton(t) { t.data.big = "x".repeat(4e6); } })' });
+    T.drain();
+    const js = JSON.stringify, data = T.api.data;
+    let n = 0;
+    JSON.stringify = function (v, ...rest) { if (v === data) n++; return js.call(this, v, ...rest); };
+    try { T.apply(BOB, { t: 'move', id: pileOf(T), x: 300, y: 300 }); } finally { JSON.stringify = js; }
+    ok(n === 1, `a move runs validate, onAction and buttons, and measures t.data once (${n} times)`);
+    const seq = T.state.seq;
+    quietly(() => T.apply(BOB, { t: 'rulesBtn', id: 'go' }));
+    ok(!T.state.rules.enabled && /^onButton\(\), onAction\(\), buttons\(\): t\.data is too large \(4,000,0\d\d chars, max 4,000,000\)$/.test(T.rulesError),
+      `a hook that grows t.data past 4e6 chars disables the rules, naming the job's hooks ("${T.rulesError}")`);
+    ok(T.drain().some((e) => e.t === 'toast' && /t\.data is too large/.test(e.msg)) && T.state.seq > seq, 'loudly, and the table is renumbered');
+  });
+
+  section('applyStatePatch mirrors a table (§1f: the seam for a rules Worker)');
+  await guard('mirror', () => {
+    const E = env(13), T = createTable({}, E);
+    T.open('Alice');
+    T.join(BOB, 'Bob', keyOf(BOB));
+    const M = createTable(json(T.snapshot()), { ...env(13), pid: HOST });
+    M.state.decks = json(T.state.decks);
+    M.takeDirty();
+    const pile = pileOf(T);
+    T.takeDirty();
+    T.apply(BOB, { t: 'draw', id: pile });
+    T.apply(HOST, { t: 'deal', id: pile, x: 300, y: 300, up: true });
+    T.apply(HOST, { t: 'addDeck', deck: { name: 'New', cards: [{ n: 'a' }] } });
+    T.apply(HOST, { t: 'setRules', enabled: true, code: '({ name: "Mirror", setup(t) { t.public.x = 1; } })' });
+    const d = T.takeDirty(), newDecks = T.drain().filter((e) => e.t === 'deck').map((e) => e.id);
+    M.applyStatePatch(json({
+      items: Object.fromEntries([...[...d.items].map((id) => [id, T.state.items[id]]), ...[...d.removed].map((id) => [id, null])]),
+      players: Object.fromEntries([...d.players].map((p) => [p, T.state.players[p]])),
+      decks: Object.fromEntries(newDecks.map((id) => [id, T.state.decks[id]])),
+      rules: T.state.rules || undefined, log: d.log, zMax: T.state.zMax, refresh: [pile],
+    }));
+    const strip = (t) => canon({ ...t.snapshot(), seq: 0, decks: t.state.decks });
+    ok(strip(M) === strip(T), 'the mirror equals the table after the patch');
+    const md = M.takeDirty();
+    ok(isDeepStrictEqual(Object.fromEntries(M.pub), M.publicItems()) && md.hands.has(BOB) && md.items.has(pile) && md.log.length === d.log.length,
+      'its dirty sets and T.pub follow (the hand that changed, the items, the log)');
+    ok(M.drain().some((e) => e.t === 'deck'), 'a new deck is announced for the decks channel');
+  });
+
+  section('regressions from the Phase 1A review');
+  await guard('a draw by a player with no seat', () => {
+    const T = createTable({}, env(14));
+    T.open('Alice');
+    const P = pileOf(T), before = canon(T.state.items[P]);
+    T.takeDirty();
+    quietly(() => T.apply(DAVE, { t: 'draw', id: P }));
+    ok(canon(T.state.items[P]) === before && !own(T.state.players, DAVE) && isDeepStrictEqual(Object.fromEntries(T.pub), T.publicItems()),
+      'takes nothing: the card stays on the pile, and T.pub still equals the table');
+  });
+  await guard('crafted keys', () => {
+    const T = createTable({}, env(15));
+    T.open('Alice');
+    T.join(BOB, 'Bob', keyOf(BOB));
+    const P = pileOf(T), evil = { toString: 1 }, threw = [];
+    const tryIt = (what, fn) => { try { quietly(fn); } catch (e) { threw.push(`${what}: ${e.message}`); } };
+    const hostile = [{ t: 'move', id: evil, x: 1, y: 1 }, { t: 'play', idx: 0, ids: [evil, P] }, { t: 'toPile', id: P, pile: evil, onto: [evil] },
+      { t: 'chat', msg: evil }, { t: 'name', name: evil }, { t: 'rulesBtn', id: evil }, { t: 'size', size: evil }];
+    for (const a of hostile) { tryIt(`apply ${a.t}`, () => T.apply(BOB, a)); tryIt(`refreshFor ${a.t}`, () => T.refreshFor(BOB, a)); }
+    T.apply(HOST, { t: 'setRules', enabled: true, code: '({ name: "No", validate: () => "no", buttons: () => [{ id: "x", label: "X" }] })' });
+    for (const a of hostile) tryIt(`vetoed ${a.t}`, () => T.apply(BOB, a));
+    tryIt('join', () => T.join(BOB, evil, keyOf(BOB)));
+    ok(!threw.length, `peer values that can't be keys or text ({"toString": 1}) never throw out of apply, refreshFor or join ${threw.join('; ')}`);
+  });
+  await guard('a ruled action that does nothing', () => {
+    const T = createTable({}, env(16)), t = T.api;
+    T.open('Alice');
+    T.join(BOB, 'Bob', keyOf(BOB));
+    const P = pileOf(T), c1 = t.deal(P, { x: 300, y: 300 }).id;
+    t.draw(BOB, P, 1);
+    const W = wire(T, 'no-ops'), bob = W.add('peer-bob', BOB);
+    W.tick();
+    const bad = [];
+    for (const [a, named, hand] of [[{ t: 'toPile', id: c1, pile: 'deadbeef' }, [c1]], [{ t: 'stack', id: c1, onto: 'deadbeef' }, [c1]], [{ t: 'merge', id: P, pile: 'deadbeef' }, [P]],
+      [{ t: 'play', idx: 3, d: 'nope', i: 0, x: 400, y: 400 }, [], true], [{ t: 'draw', id: c1 }, [c1], true]]) {
+      T.apply(BOB, a);
+      W.tick();
+      const b = W.sent.has(bob) ? JSON.parse(W.sent.get(bob)) : {};
+      if (named.some((id) => canon(b.items?.[id]) !== canon(specItem(T.state.items[id]))) || (hand && canon(b.hand) !== canon(T.state.players[BOB].hand))) bad.push(a.t);
+    }
+    ok(!bad.length, `re-sends the items it named and the actor's hand, so an optimistic drop snaps back (toPile, stack and merge onto a vanished pile, a play of a card not in hand, a draw from a card) ${bad.join(', ')}`);
+  });
+  await guard('refusal re-sends are rate-limited', () => {
+    const clock = { now: 1.7e12 }, T = createTable({}, { ...env(17), now: () => clock.now }), t = T.api;
+    T.open('Alice');
+    T.join(BOB, 'Bob', keyOf(BOB));
+    for (let k = 0; k < 4; k++) t.addStandardDeck({ x: 300 + 100 * k, y: 300 });
+    for (const P of t.piles().map((x) => x.id)) for (let k = 0; k < 52; k++) t.deal(P, { x: 200 + (k % 13) * 60, y: 200 + Math.floor(k / 13) * 80, up: true });
+    const cards = Object.keys(T.state.items);
+    T.takeDirty();
+    const seq = T.state.seq;
+    let any = 0;
+    for (let k = 0; k < 400; k++) {
+      const n = (i) => cards[(k * 11 + i) % cards.length];
+      any += T.refreshFor(BOB, { t: 'play', id: n(0), pile: n(1), onto: n(2), ids: Array.from({ length: 50 }, (_, i) => n(3 + i)) });
+    }
+    const d = T.takeDirty();
+    ok(cards.length >= 200 && any <= 10 && T.state.seq - seq === any && d.items.size <= 10 * 11,
+      `400 flood refusals at once re-send at most a burst of 10, each naming at most 11 items (${any} re-sends, ${d.items.size} of ${cards.length} items, seq +${T.state.seq - seq})`);
+    clock.now += 1000;
+    const after = [T.refreshFor(BOB, { t: 'move', id: cards[0] }), T.refreshFor(BOB, { t: 'move', id: 'nope', ids: ['gone'] })];
+    ok(after[0] === true && after[1] === false, 'the bucket refills (5 per second), and a refusal that names nothing on the table re-sends nothing and renumbers nothing');
+    T.apply(HOST, { t: 'setRules', enabled: true, code: '({ name: "No", validate: () => "no" })' });
+    T.takeDirty();
+    quietly(() => T.apply(BOB, { t: 'move', id: cards[0], x: 1, y: 1, ids: cards.slice(1, 201) }));
+    ok(T.takeDirty().items.size <= 9, 'a vetoed action re-sends its id and at most 8 of its ids');
+  });
+  await guard('registration touches only what changed', () => {
+    const T = createTable({}, env(18));
+    T.open('Alice');
+    T.join(BOB, 'Bob', keyOf(BOB));
+    const P = pileOf(T);
+    T.takeDirty();
+    const seq = T.state.seq, again = T.join(BOB, 'Bob', keyOf(BOB)), d = T.takeDirty();
+    ok(!again.changed && T.state.seq === seq && !d.players.size, `an action from a seated, online player registers nothing new: no player re-sent, no renumbering (seq ${seq} → ${T.state.seq})`);
+    ok(!T.apply(BOB, { t: 'hello' }) && !T.apply(BOB, { t: 'snap' }) && T.state.seq === seq, 'a hello or a snapshot request changes nothing either');
+    T.join(BOB, 'Bob', keyOf(BOB));
+    T.apply(BOB, { t: 'move', id: P, x: 500, y: 500 });
+    const c = T.patchContent(T.takeDirty());
+    ok(Object.keys(c).sort().join() === 'items,log' && Object.keys(c.items).join() === P, `so a guest's move (registered on arrival) sends its item and its log line only (${Object.keys(c)})`);
+    T.leave(BOB);
+    T.takeDirty();
+    const back = T.join(BOB, 'Bob', keyOf(BOB));
+    ok(back.changed && back.back && T.takeDirty().players.has(BOB), 'one who comes back online is re-sent and renumbered');
+    const old = createTable({ items: {}, players: { [CAROL]: { name: 'Carol', color: '#30bced', online: true, hand: [], seat: 90 } } }, env(18));
+    const adopt = old.join(CAROL, 'Carol', keyOf(CAROL));
+    ok(adopt.changed && old.state.keys[CAROL] === keyOf(CAROL), 'a seat without a key that adopts its first claimant changes the table (the save must keep the binding)');
+  });
+  await guard('the shared part never carries a recipient field', () => {
+    const throwsOn = (k) => { try { sharedText({ v: PROTO, kind: 'patch', [k]: 1 }); return false; } catch (e) { return /may not carry/.test(e.message); } };
+    ok(['to', 'tp', 'base', 'hand'].every(throwsOn) && sharedText({ v: PROTO, kind: 'patch', seq: 3 }) === '{"v":2,"kind":"patch","seq":3}'.replace('2', PROTO),
+      'sharedText refuses to, tp, base and hand (JSON.parse keeps the last duplicate: a shared one would override the binding)');
+  });
+  await guard('an index the table does not match', () => {
+    const T = createTable({}, env(19)), t = T.api;
+    T.open('Alice');
+    const id = t.deal(pileOf(T), { x: 300, y: 300 }).id;
+    delete T.state.items[id]; // behind the table's back
+    let found = null;
+    const noise = quietly(() => { found = t.find({ kind: 'card' }); });
+    ok(found.length === 0 && noise.some((m) => /index holds/.test(m)), `is said out loud (console.error), not trusted (${noise.join(' | ')})`);
   });
 
   report();

@@ -156,6 +156,15 @@
   <div id="peek" class="hidden"><div id="peek-inner"></div><div id="peek-cap"></div></div>
   <!-- Card texts for the CAH rules template (CC BY-NC-SA, Cards Against Humanity LLC). -->
   <script src="cah-cards.js"></script>
-  <script type="module" src="app.js?v=1"></script>
+  <script type="module">
+    // The app loads through import(), so a failure to load or link it (say, a
+    // cached core.js older than this app.js right after a deploy: "does not
+    // provide an export named …") is said on the page, not left a dead page.
+    import('./app.js?v=1').catch((err) => {
+      console.error('Card Table failed to load', err);
+      const el = Object.assign(document.createElement('div'), { id: 'skew-banner', textContent: `Card Table failed to load (${err.message}) — reload this page` });
+      document.body.prepend(el);
+    });
+  </script>
 </body>
 </html>

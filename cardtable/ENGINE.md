@@ -124,9 +124,9 @@ A thin wrapper over the table's existing ops (today in `core.js`):
 - **Scratch state**: `t.data` — a plain object persisted inside
   `host.rules.data` (survives host reload via the existing `persist()`
   path), so turn pointers, phases, and pending timers live there. It must
-  stay JSON and under 4,000,000 characters as JSON: after each hook a larger
-  `t.data` fails it (`t.data is too large (N chars, max 4,000,000)`), and the
-  rules disable loudly.
+  stay JSON and under 4,000,000 characters as JSON: after each action (or
+  join, leave or timer) whose hooks left it larger, the rules disable loudly,
+  naming those hooks (`t.data is too large (N chars, max 4,000,000)`).
 - **Ops — the complete primitive set**, mirroring everything `apply()` can
   do (the switch bodies get refactored into named helpers — `opDeal`,
   `opShuffle`, … — used by both the switch and this API):
@@ -186,9 +186,12 @@ In `apply(p, a)`: before the switch, if rules are enabled and `validate`
 returns a reason — and the actor is not the host-script itself — skip the
 mutation and send the actor a targeted `note` message (new tiny Trystero
 action) → toast on their screen (and, on a terminal-bridged tab, a
-`note: …` in the bridge's `msgs`). The next state broadcast reverts their
-optimistic drag automatically (the same mechanism that reconciles any
-rejected move today). Exempt from validation: `hello`, `name`, `chat`,
+`note: …` in the bridge's `msgs`). The veto re-sends the items the action
+named (`id`, `pile`, `onto`, the first few `ids`) and, for a hand action, the
+actor's hand: the next patch carries their true state, and the actor's
+optimistic drag reverts. An action that changes nothing (its target vanished
+a moment earlier) re-sends them the same way, and so does an action that
+flood control refused (those re-sends are themselves rate-limited). Exempt from validation: `hello`, `name`, `chat`,
 `rulesBtn` (the engine itself refuses a button not offered to the
 player), and the host-only `size`/`setRules` actions. `peek` IS validated:
 on a free table peeking stays a social (logged) action, but a game may

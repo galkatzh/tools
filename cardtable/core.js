@@ -23,9 +23,9 @@
 //      {t:'toast', msg}    a notice for the host's own screen (script errors)
 //      {t:'deck', id}      a new deck, to send to everyone
 //      {t:'rules'}         the script or its on/off state changed: resend the code
-//  • apply(), leave(), runTimers() and refreshFor() return true when the
-//    table changed (it was renumbered, state.seq): the app then broadcasts
-//    and saves.
+//  • apply(), leave(), runTimers() and refreshFor() return true, and join()
+//    {changed: true}, when the table changed (it was renumbered, state.seq):
+//    the app then broadcasts and saves.
 //  • Delta sync (TABLETOP.md §3): every write records what it
 //    changed in the dirty sets, and the app's broadcast tick takes them once
 //    (T.takeDirty()) to build one patch for everyone (T.patchContent()) or a
@@ -69,8 +69,9 @@ export const rand = (n) => [...crypto.getRandomValues(new Uint8Array(n))].map((b
 export const uid = () => rand(4);
 export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 /** obj[key] only when it's the object's OWN property — never Object.prototype
- *  via a crafted id like "__proto__" or "constructor". */
-export const own = (obj, key) => (key != null && Object.hasOwn(obj, key) ? obj[key] : null);
+ *  via a crafted id like "__proto__" or "constructor". Only a string or a
+ *  number is a key: a peer's {"toString": 1} would make Object.hasOwn throw. */
+export const own = (obj, key) => ((typeof key === 'string' || typeof key === 'number') && Object.hasOwn(obj, key) ? obj[key] : null);
 /** A finite number from untrusted input, else the fallback. */
 export const num = (v, fallback = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
 export const normRot = (v) => ((num(v) % 360) + 360) % 360;
@@ -127,8 +128,11 @@ export function cleanDeck(d) {
   return { name: str(d.name, 24) || 'Deck', back, imgs, cards };
 }
 
+/** Text from a peer: a string as is, a number as its digits, anything else
+ *  empty (String() of a crafted {"toString": 1} would throw). */
+export const peerText = (v) => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '');
 /** Player names: plain text, bounded, and never dressed up as the 📜 Rules actor. */
-export const cleanName = (s) => String(s).replace(CTRL, '').replace(/^[\s📜]+/u, '').trim().slice(0, 24);
+export const cleanName = (s) => peerText(s).replace(CTRL, '').replace(/^[\s📜]+/u, '').trim().slice(0, 24);
 
 export function standardDeck(jokers) {
   const cards = [];
@@ -168,7 +172,11 @@ export const RULED_ACTIONS = new Set(['move', 'rot', 'flip', 'shuffle', 'draw', 
 export const PUBLIC_ACTIONS = new Set([...RULED_ACTIONS, 'hello', 'snap', 'name', 'chat', 'rulesBtn']);
 /** Actions that take from or give to the actor's hand: a refusal re-sends it. */
 const HAND_ACTIONS = new Set(['play', 'handPile', 'toHand', 'draw']);
-/** The most t.data may hold, as JSON (checked after every hook). */
+/** How many of an action's `ids` a refusal re-sends. No Phase 1 action
+ *  carries ids; group actions (Phase 4) bring their own cap. A small one keeps
+ *  a vetoed action from making the host re-send many items to everyone. */
+const NAMED_IDS = 8;
+/** The most t.data may hold, as JSON (checked once per job that ran hooks: dataOver). */
 export const DATA_MAX_CHARS = 4e6;
 
 /** The rules runner a table drives its hooks through (env.hooks): a
@@ -266,8 +274,18 @@ export function migrate(s) {
 // rules?, items?, del?, players?, log?, fx?, ann?}, plus the recipient's own
 // fields {to, tp, base (patches), hand?}. The shared part is serialized once
 // per broadcast tick and each recipient's body is spliced from it as text.
+/** The fields a body carries for its recipient alone (spliceBody's `mine`). */
+const OWN_FIELDS = ['to', 'tp', 'base', 'hand'];
+/** A tick's shared part as JSON text. It never holds a recipient's own field:
+ *  JSON.parse keeps the last of two equal keys, so a shared `to` or `tp` would
+ *  silently override the binding spliceBody puts first. */
+export function sharedText(o) {
+  const bad = OWN_FIELDS.find((k) => k in o);
+  if (bad) throw new Error(`a shared body part may not carry "${bad}"`);
+  return JSON.stringify(o);
+}
 /** One recipient's body as JSON text: its own fields `mine` (never empty:
- *  `to` at least), then the shared JSON text. */
+ *  `to` at least), then the shared JSON text (sharedText). */
 export function spliceBody(mine, shared) {
   const head = JSON.stringify(mine);
   return head.slice(0, -1) + (shared === '{}' ? '}' : `,${shared.slice(1)}`);
@@ -386,10 +404,13 @@ export function createTable(host, env = {}) {
     stale.add(id);
   };
   /** Item `id` is about to change in place (moved, turned, flipped, its pile
-   *  changed) — or is re-sent unchanged (a refusal). Ids not on the table are ignored. */
+   *  changed) — or is re-sent unchanged (a refusal). Ids not on the table are
+   *  ignored; true when it is on the table. */
   const touch = (id) => {
-    if (own(host.items, id)) { dirty.items.add(id); stale.add(id); }
-    return id;
+    if (!own(host.items, id)) return false;
+    dirty.items.add(id);
+    stale.add(id);
+    return true;
   };
   /** Player p changed (anything publicPlayers shows); `hand`: their hand too. */
   const touchPlayer = (p, o = {}) => {
@@ -429,14 +450,20 @@ export function createTable(host, env = {}) {
     return best;
   }
 
+  /** Seats player p (new, or back online), filling an empty name. True when
+   *  that changed anything: the app registers the sender of every action
+   *  here, and an unchanged player must not travel with each of them. */
   function ensurePlayer(p, name) {
-    const pl = own(host.players, p) || (host.players[p] = { name: '', color: freeColor(), online: true, hand: [] });
+    const known = own(host.players, p), pl = known || (host.players[p] = { name: '', color: freeColor(), online: true, hand: [] });
+    const was = known && `${pl.seat}|${pl.online}|${pl.name}`;
     pl.seat ??= assignSeat();
     pl.online = true;
     // Only fill an empty name here — explicit renames go through the 'name'
     // action so they land in the log.
     if (name && !pl.name) pl.name = cleanName(name);
+    if (was === `${pl.seat}|${pl.online}|${pl.name}`) return false;
     touchPlayer(p);
+    return true;
   }
   /** A color no ONLINE player wears (offline seats don't hold one hostage); cycles once all are taken. */
   function freeColor() {
@@ -592,10 +619,18 @@ export function createTable(host, env = {}) {
     return true;
   }
 
-  /** Applies one action from player `p` to the authoritative state. True when
-   *  the table changed (render, broadcast, save); false when the action was
-   *  dropped before it could (flood control, a refused rules button). */
+  /** Applies one action from player `p` to the authoritative state, as one
+   *  job (act, then the t.data cap). True when the table changed (render,
+   *  broadcast, save); false when nothing did: a hello or a snapshot request
+   *  (registration is join()'s, the snapshot the app's), a chat over flood
+   *  control, a refused rules button. */
   function apply(p, a) {
+    const changed = act(p, a);
+    return dataOver() && !changed ? bump() : changed;
+  }
+  /** The action itself (see apply). */
+  function act(p, a) {
+    if (a.t === 'hello' || a.t === 'snap') return false;
     const items = host.items, pl = own(host.players, p);
     const it = own(items, a.id);
     // Rules veto: an enabled script may block gameplay actions with a reason.
@@ -622,10 +657,8 @@ export function createTable(host, env = {}) {
     // the ones that did happen the payload's ids were matched host-side.
     const fx0 = marks;
     switch (a.t) {
-      case 'hello': break; // registration + join logging happen in join()
-      case 'snap': break;  // a snapshot request: the app serves it (the sender registered in join())
       case 'name': {
-        const name = cleanName(a.name || '');
+        const name = cleanName(a.name);
         if (pl && name && name !== pl.name) {
           const old = pl.name;
           pl.name = name;
@@ -678,8 +711,8 @@ export function createTable(host, env = {}) {
       case 'flip': if (it) opFlip(p, a.id); break;
       case 'shuffle': if (it?.k === 'p') opShuffle(p, a.id); break;
       case 'draw': {
-        const c = it?.k === 'p' && it.cards.pop();
-        if (c && pl) {
+        const c = it?.k === 'p' && pl && it.cards.pop(); // a player with no seat takes nothing
+        if (c) {
           pl.hand.push({ d: c.d, i: c.i });
           touchPlayer(p, { hand: true });
           touch(a.id);
@@ -776,7 +809,7 @@ export function createTable(host, env = {}) {
         break;
       }
       case 'chat': {
-        const msg = String(a.msg ?? '').replace(CTRL, ' ').trim().slice(0, 300);
+        const msg = peerText(a.msg).replace(CTRL, ' ').trim().slice(0, 300);
         if (pl && msg) logEvent(p, msg, true);
         break;
       }
@@ -813,7 +846,7 @@ export function createTable(host, env = {}) {
       case 'rulesBtn': {
         // The engine enforces what the script offered: a button the player
         // can't see (another player's, or one that just went away) is refused.
-        const b = (host.rules?.enabled && host.rules.public.buttons || []).find((x) => x.id === String(a.id));
+        const b = (host.rules?.enabled && host.rules.public.buttons || []).find((x) => x.id === peerText(a.id));
         if (!b || (b.pid && b.pid !== p)) { // nothing happened: no hooks, no new state
           console.warn('refused rules button', a.id, 'from', p);
           notify(p, '🚫 That button is not available to you right now');
@@ -824,8 +857,12 @@ export function createTable(host, env = {}) {
       }
       default: console.warn('unknown action', a);
     }
+    // A ruled action that did nothing (its target had just gone: a pile merged
+    // away under a drop) re-sends what it named, like a refusal: the actor's
+    // screen still shows its optimistic move, and deltas carry only what is marked.
+    if (RULED_ACTIONS.has(a.t) && marks === fx0) touchNamed(p, a);
     if (host.rules?.enabled && (a.t === 'chat' || a.t === 'rulesBtn' || (RULED_ACTIONS.has(a.t) && marks > fx0))) {
-      if (a.t === 'chat') runHook('onChat', String(a.msg || ''), p);
+      if (a.t === 'chat') runHook('onChat', peerText(a.msg), p);
       runHook('onAction', { ...a, p });
       refreshButtons();
     }
@@ -837,19 +874,22 @@ export function createTable(host, env = {}) {
    *  a new player gets a seat, and the first contact binds the key to it
    *  (checking it is the app's job, in the same synchronous step: two claims
    *  of one seat must not both pass). Returns the player as it was before
-   *  (null if new) and whether they're back (new, or were offline). An id
-   *  that isn't a player id (PID_RE: never "__proto__") is refused. */
+   *  (null if new), whether they're back (new, or were offline) and whether
+   *  the table changed (it was renumbered: broadcast and save). An id that
+   *  isn't a player id (PID_RE: never "__proto__") is refused. */
   function join(p, name, key) {
-    if (typeof p !== 'string' || !PID_RE.test(p)) { console.error('join: refused an invalid player id', p); return { known: null, back: false }; }
+    if (typeof p !== 'string' || !PID_RE.test(p)) { console.error('join: refused an invalid player id', p); return { known: null, back: false, changed: false }; }
     const known = own(host.players, p);
     const back = !known?.online; // read BEFORE ensurePlayer flips the same object online
-    ensurePlayer(p, name);
-    host.keys[p] ||= key; // first contact binds the seat (older saves adopt their first claimant)
+    let changed = ensurePlayer(p, name);
+    if (key && !own(host.keys, p)) { host.keys[p] = key; changed = true; } // first contact binds the seat (older saves adopt their first claimant)
     if (back) {
       logEvent(p, known ? 'is back at the table' : 'joined the table');
       if (host.rules?.enabled) { runHook('onJoin', p); refreshButtons(); }
     }
-    return { known, back };
+    changed = dataOver() || changed || back;
+    if (changed) bump();
+    return { known, back, changed };
   }
   /** Player p's last connection closed. True if they had a seat (now offline). */
   function leave(p) {
@@ -859,6 +899,7 @@ export function createTable(host, env = {}) {
     touchPlayer(p);
     logEvent(p, 'left the table');
     if (host.rules?.enabled) { runHook('onLeave', p); refreshButtons(); }
+    dataOver();
     return bump();
   }
 
@@ -914,12 +955,14 @@ export function createTable(host, env = {}) {
 
   // --- the engine around the script ------------------------------------------
   const FIND_KEYS = ['kind', 'name', 'up'];
-  /** The [id, item] pairs of kind k, from the index (skipping an id a caller
-   *  deleted from state.items behind the table's back). */
+  /** The [id, item] pairs of kind k, from the index. Items change only
+   *  through put and remove, so the index holds exactly the table's items: an
+   *  id it holds that the table doesn't was deleted behind its back (a bug). */
   function* ofKind(k) {
     for (const id of byKind.get(k)) {
       const it = own(host.items, id);
       if (it?.k === k) yield [id, it];
+      else console.error(`the ${k} index holds ${id}, which the table doesn't: was state.items changed directly?`);
     }
   }
   /** A script's own copy of item `id`: changing it never changes the table. */
@@ -936,14 +979,26 @@ export function createTable(host, env = {}) {
   }
   /** Calls a hook with the facade. Hooks are synchronous: a Promise (an
    *  async hook, or a runner that answers later) would let validate's veto
-   *  pass unread, so it throws — a script error, which fails closed. So does
-   *  a t.data grown past DATA_MAX_CHARS (it is saved, and copied to a Worker). */
+   *  pass unread, so it throws — a script error, which fails closed. */
   function callHook(name, ...args) {
+    jobHooks.add(name);
     const r = hooks.call(name, tApi, ...args);
     if (typeof r?.then === 'function') throw new Error('hooks must be synchronous (it returned a Promise)');
-    const n = JSON.stringify(host.rules.data)?.length || 0;
-    if (n > DATA_MAX_CHARS) throw new Error(`t.data is too large (${n.toLocaleString('en-US')} chars, max ${DATA_MAX_CHARS.toLocaleString('en-US')})`);
     return r;
+  }
+  const jobHooks = new Set(); // the hooks the current job ran (dataOver)
+  /** Ends a job (an action, a join or leave, the timers): if it ran hooks,
+   *  t.data must still fit DATA_MAX_CHARS (it is saved, and copied to a
+   *  Worker), or the rules disable loudly, naming those hooks. One stringify
+   *  per job, not one per hook (an action runs up to three). True when the
+   *  rules were disabled (a change: the caller renumbers). */
+  function dataOver() {
+    const names = [...jobHooks].join('(), ');
+    jobHooks.clear();
+    const n = names && host.rules?.enabled ? JSON.stringify(host.rules.data)?.length || 0 : 0;
+    if (n <= DATA_MAX_CHARS) return false;
+    hookFailed(names, new Error(`t.data is too large (${n.toLocaleString('en-US')} chars, max ${DATA_MAX_CHARS.toLocaleString('en-US')})`));
+    return true;
   }
   /** A script error: disable the rules, loudly and on the record. */
   function hookFailed(name, err) {
@@ -1013,6 +1068,7 @@ export function createTable(host, env = {}) {
     host.rules.data._timers = timers.filter((x) => x.at > ts);
     for (const x of due) runHook('onTimer', x.tag);
     refreshButtons();
+    dataOver();
     return bump();
   }
 
@@ -1230,18 +1286,25 @@ export function createTable(host, env = {}) {
     const items = Object.fromEntries(Object.keys(host.items).sort().map((id) => [id, pub.get(id)]));
     return { size: host.size, rules: rulesView(), items, players: publicPlayers(), log: host.log };
   }
-  /** Marks the items action `a` names, and for a hand action p's hand, to be
-   *  re-sent unchanged: after a refusal the actor's optimistic UI (a drag, a
-   *  card taken from the hand) must snap back, and deltas only carry what is marked. */
+  /** Marks the items action `a` names (id, pile, onto, and the first
+   *  NAMED_IDS of ids), and for a hand action p's hand, to be re-sent
+   *  unchanged: after a refusal the actor's optimistic UI (a drag, a card
+   *  taken from the hand) must snap back, and deltas only carry what is
+   *  marked. True when anything was marked. */
   function touchNamed(p, a) {
-    for (const id of [a.id, a.pile, a.onto, ...(Array.isArray(a.ids) ? a.ids.slice(0, 200) : [])]) touch(id);
-    if (HAND_ACTIONS.has(a.t) && own(host.players, p)) touchPlayer(p, { hand: true });
+    let any = false;
+    for (const id of [a.id, a.pile, a.onto, ...(Array.isArray(a.ids) ? a.ids.slice(0, NAMED_IDS) : [])]) any = touch(id) || any;
+    if (HAND_ACTIONS.has(a.t) && own(host.players, p)) { touchPlayer(p, { hand: true }); any = true; }
+    return any;
   }
+  const refusals = new Map(); // player id → token bucket (refreshFor)
   /** An action of p's was refused before it reached the table (flood
-   *  control): re-send what it names (touchNamed). Returns true (renumbered). */
+   *  control): re-send what it names (touchNamed). A refused action costs no
+   *  flood token, so these re-sends have their own bucket (a burst of 10,
+   *  then 5 per second): a flood can't make the host re-send the table to
+   *  everyone. True when something was re-sent (renumbered). */
   function refreshFor(p, a) {
-    touchNamed(p, a);
-    return bump();
+    return flood(refusals, p, 10, 5) && touchNamed(p, a) ? bump() : false;
   }
   /** Applies a host-state patch (from a rules Worker running a mirror of this
    *  table, TABLETOP.md §5): items whole (null = removed), players whole (keys

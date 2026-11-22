@@ -187,7 +187,7 @@ function finish(m) { for (let k = 0; k < 60 && m.d().stage === 'hand' && m.d().t
     const commId = Object.entries(m.host.items).find(([, it]) => it.k === 'c' && it.up)[0];
     ok(v({ t: 'del', id: commId }), 'deleting a board card is blocked');
     ok(!v({ t: 'move', id: commId, x: 1, y: 1 }), 'moving one is fine');
-    delete m.host.items[deckId]; // the deck vanishes anyway (belt and braces)
+    m.T.applyStatePatch({ items: { [deckId]: null } }); // the deck vanishes anyway (belt and braces), through the table: its indexes follow
     let threw = null;
     try { finish(m); } catch (e) { threw = e; }
     ok(!threw, `the next street does not crash (${threw?.message || 'ok'})`);

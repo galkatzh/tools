@@ -19,7 +19,7 @@ import { joinRoom, selfId, getRelaySockets } from 'https://cdn.jsdelivr.net/npm/
 import {
   CARD_W, CARD_H, IMG_RE, COLOR_RE, RANKS, RULES, playR, clampToFelt,
   PID_RE, rand, clamp, own, num, cleanDeck, cleanName, standardDeck, cardName, createTable,
-  MODULE_V as CORE_V, PROTO, PUBLIC_ACTIONS, SIG, sealText, spliceBody, viewFromSnap, applyViewPatch,
+  MODULE_V as CORE_V, PROTO, PUBLIC_ACTIONS, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch,
 } from './core.js?v=1';
 import { RULES_TEMPLATES, GAMES, MODULE_V as TEMPLATES_V } from './templates.js?v=1';
 
@@ -363,9 +363,9 @@ function broadcast() {
   // boot: this host instance's epoch, host: whose seat the host is.
   const head = { v: PROTO, boot: hostBoot, seq, host: pid };
   const empty = !Object.keys(content).length;
-  const patch = JSON.stringify({ ...head, kind: 'patch', ...content });
+  const patch = sharedText({ ...head, kind: 'patch', ...content });
   let snap = ''; // the snapshot's shared text, built once if anyone needs one this tick
-  const snapText = () => (snap ||= JSON.stringify({ ...head, kind: 'snap', ...T.snapContent(), fx: content.fx || [], ann: content.ann || [] }));
+  const snapText = () => (snap ||= sharedText({ ...head, kind: 'snap', ...T.snapContent(), fx: content.fx || [], ann: content.ann || [] }));
   const hand = (p) => ({ hand: host.players[p].hand });
   for (const peer of room ? Object.keys(room.getPeers()) : []) {
     if (incompatible.has(peer)) continue;
@@ -469,12 +469,13 @@ function handleState(d, peer) {
   receive(d, peer);
 }
 
-let resyncing = false, snapAskedAt = 0; // guest: waiting for a snapshot after a gap
+let resyncing = false, resyncT = 0; // guest: waiting for a snapshot after a gap; the timer that asks again
 /** Takes one state body addressed to this tab (the host's own screen comes
  *  here too, with no peer): a snapshot replaces the view, the patch that
  *  follows it is folded in, and only what changed is redrawn. A patch that
  *  doesn't follow is never applied: older ones are stale, newer ones mean a
- *  lost message, and the guest asks for a snapshot instead. */
+ *  lost message, and the guest asks for a snapshot instead. perf.lastApplyMs
+ *  times all of it: the fold and every redraw. */
 function receive(d, peer) {
   if (d.to && d.to !== pid) return; // addressed to someone else: a replay
   const t0 = performance.now();
@@ -486,6 +487,8 @@ function receive(d, peer) {
     view = viewFromSnap(d);
     if (!Array.isArray(d.hand)) view.hand = hand; // a public snapshot: our hand stands until the host knows us again
     resyncing = false;
+    clearTimeout(resyncT);
+    resyncT = 0;
     perf.snaps++;
   } else if (d.kind === 'patch' && d.boot === view.boot && d.base === view.seq) {
     ({ items: prev, players } = applyViewPatch(view, d));
@@ -497,7 +500,6 @@ function receive(d, peer) {
     requestSnap();
     return;
   } else { console.warn('dropped a state of unknown kind', d.kind); return; }
-  const applied = performance.now() - t0;
   if (peer) {
     hostPeer = peer;
     registered = d.to === pid;
@@ -508,16 +510,19 @@ function receive(d, peer) {
   for (const f of Array.isArray(d.fx) ? d.fx : []) if (f?.p !== pid) showFx(f); // own actions stay silent
   for (const msg of Array.isArray(d.ann) ? d.ann : []) showAnnounce(msg);
   renderAll(prev, players);
-  perf.lastApplyMs = applied + perf.lastRenderMs;
+  perf.lastApplyMs = performance.now() - t0;
 }
-/** Guest: a patch didn't follow our view — ask the host for a snapshot (at
- *  most once per SNAP_MIN_MS); the status tooltip says we're re-syncing. */
+/** Guest: a patch didn't follow our view — ask the host for a snapshot, at
+ *  most once per SNAP_MIN_MS, and again every SNAP_MIN_MS until one arrives:
+ *  the request or its answer can be lost (flood control refuses it, a send
+ *  fails), and a quiet table would never show another gap. The status
+ *  tooltip says we're re-syncing. */
 function requestSnap() {
   resyncing = true;
   updateNet();
-  if (Date.now() - snapAskedAt < SNAP_MIN_MS) return;
-  snapAskedAt = Date.now();
+  if (resyncT) return; // asked less than SNAP_MIN_MS ago: the timer asks again
   act({ t: 'snap' });
+  resyncT = setTimeout(() => { resyncT = 0; if (resyncing) requestSnap(); }, SNAP_MIN_MS);
 }
 
 const refusedAt = {}; // host: peer → last refusal notice (no toast storms)
@@ -549,11 +554,23 @@ function connect() {
     sealQ = sealed.catch((err) => console.error(`signing a ${what} failed`, err)); // keeps the FIFO alive
     return sealed.then((m) => send(m, target)).catch((err) => console.error(`${what} send failed`, err));
   };
+  // A peer's states go out one at a time. Trystero chunks each message in a
+  // loop of its own, so a one-chunk patch sent while a big snapshot is still
+  // being chunked would arrive first: the guest would drop it as a gap, and
+  // every patch after it. Each send starts once the one before it to that
+  // peer is done (Trystero resolves when every chunk is on the ordered channel).
+  const lanes = new Map(); // peer → its last state send (never rejects: failures are logged)
+  const laneSend = (m, peer) => {
+    const sent = (lanes.get(peer) || Promise.resolve()).then(() => stateA.send(m, { target: peer }))
+      .catch((err) => console.error('state send failed', err)); // the lane moves on; the guest's gap recovery covers the loss
+    lanes.set(peer, sent);
+    return sent;
+  };
   // States and notes always go to one peer: its connection id (`tp`) is
   // signed into the body, so a copy relayed to anyone else is dropped.
   const bound = (send) => (data, target) => send({ ...data, tp: target }, target);
   sendAct = (data, target) => actA.send(data, target ? { target } : {});
-  sendState = signed('state', (m, target) => stateA.send(m, { target })); // the tick splices `tp` in itself
+  sendState = signed('state', laneSend); // the tick splices `tp` in itself
   sendDecks = signed('decks', (m, target) => decksA.send(m, target ? { target } : {}));
   sendNote = bound(signed('note', (m, target) => noteA.send(m, { target })));
   sendRules = signed('rules', (m, target) => rulesA.send(m, target ? { target } : {}));
@@ -604,7 +621,7 @@ function connect() {
     const { _pid: p, _name: name, _key: key, _v, ...action } = a;
     if (!PUBLIC_ACTIONS.has(action.t)) { refuse(peer, 'Unknown action — reload this page'); return; }
     const reason = p === pid ? 'This seat is already open in another tab'
-      : !PID_RE.test(p) ? 'Invalid player id'
+      : typeof p !== 'string' || !PID_RE.test(p) ? 'Invalid player id' // (a crafted {"toString": 1} would make test() throw)
       : typeof key !== 'string' || key.length < 16 ? 'Missing seat key — please reload'
       : peerPid[peer] && peerPid[peer] !== p ? 'One seat per connection'
       : own(T.state.keys, p) && T.state.keys[p] !== key ? 'That seat belongs to another player'
@@ -612,7 +629,7 @@ function connect() {
     if (reason) { refuse(peer, reason); return; }
     if (!T.mayAct(p)) {
       refuse(peer, 'Too many actions — slow down');
-      enqueue(p, { t: '_refuse', a: action }); // what it named goes out again: the guest's optimistic move snaps back
+      enqueue(p, { t: '_refuse', a: action }); // what it named goes out again (rate-limited): the guest's optimistic move snaps back
       return;
     }
     // Register/refresh the sender on EVERY action, not just hello — if the
@@ -621,7 +638,9 @@ function connect() {
     // tick sends a newly registered peer a snapshot with its hand.
     const newConn = peerPid[peer] !== p;
     peerPid[peer] = p;
-    const { known } = T.join(p, name, key);
+    const { known, changed } = T.join(p, name, key);
+    if (changed) commit(true);
+    else if (newConn) scheduleBroadcast(); // a second tab of a seated player: its first snapshot
     if (newConn) {
       // Fresh connection: hand over the (possibly large) deck images and the
       // rules code targeted, so regular broadcasts stay light.
@@ -631,10 +650,10 @@ function connect() {
     // Every action carries the sender's current name: a rename the host
     // never received (made while it was away, or in another room) syncs on
     // the next connection, through the logged (and rate-limited) rename path.
-    const nm = cleanName(name ?? '');
+    const nm = cleanName(name);
     if (known && nm && nm !== known.name && newConn && action.t !== 'name') enqueue(p, { t: 'name', name: nm });
     if (action.t === 'snap') wantSnap(peer);
-    enqueue(p, action); // its commit schedules the broadcast (which catches joiners up) and carries join()'s effects
+    enqueue(p, action);
   };
 
   room.onPeerJoin = () => {
@@ -652,6 +671,7 @@ function connect() {
     if (role !== 'host') return;
     clearTimeout(sync.get(peer)?.timer);
     sync.delete(peer);
+    lanes.delete(peer);
     incompatible.delete(peer);
     const p = peerPid[peer];
     delete peerPid[peer];
@@ -988,47 +1008,57 @@ function renderItems(prev, prevPlayers = new Map()) {
 }
 
 // Seat labels: everyone sees the same seating, each from their own rotation.
-let seatSig = '';
+let seatSig = '', seatEls = []; // what the labels show; [{p, el, seat, hw, hh}]
 /** Whose move the rules wait on: public.turn is one player id or a list of them. */
 const turnOf = () => [].concat((view.rules?.enabled && view.rules.public?.turn) || []);
-function renderPlayers() {
+/** Draws the seat labels when what they say changed, and places them
+ *  (placeSeats) when they were redrawn or, with `viewMoved`, the view did. */
+function renderPlayers(viewMoved) {
   const turn = turnOf();
   const winners = (view.rules?.enabled && view.rules.public?.winners) || [];
   const badges = (view.rules?.enabled && view.rules.public?.badges) || {};
   // Only the host publishes online flags, so a guest marks a departed host itself.
   const hostGone = role === 'guest' && !hostPeer ? view.host : null;
-  const strip = $('game-strip'); // the "What are we playing?" strip pushes the notices down too
-  const sig = `${JSON.stringify(view.players)}|${turn}|${winners.join()}|${JSON.stringify(badges)}|${hostGone}|${viewAngle.toFixed(1)}|${scale.toFixed(4)}|${panX | 0},${panY | 0}|${wrapEl.clientWidth}x${wrapEl.clientHeight}|${strip.className}`;
-  if (sig === seatSig) return;
-  seatSig = sig;
-  for (const el of wrapEl.querySelectorAll('.seat')) el.remove();
   // A table drawn small (phones) gets small, see-through labels: full-size
   // ones would reach into the felt and hide the cards the game puts there.
-  wrapEl.classList.toggle('small-table', scale < 0.4);
-  const seats = [];
-  for (const [p, pl] of Object.entries(view.players)) {
-    if (pl.seat == null) continue;
-    const rad = (pl.seat * Math.PI) / 180;
-    const [sx, sy] = tableToScreen(TABLE_W / 2 + SEAT_R * Math.cos(rad), TABLE_H / 2 + SEAT_R * Math.sin(rad));
-    const el = document.createElement('div');
-    const waited = turn.includes(p);
-    el.className = `seat${pl.online && p !== hostGone ? '' : ' offline'}${p === pid ? ' me' : ''}${waited ? ' turn' : ''}${winners.includes(p) ? ' winner' : ''}`;
-    el.style.borderColor = pl.color;
-    el.textContent = `${winners.includes(p) ? '🏆 ' : ''}${waited ? '⏳ ' : ''}${pl.name || 'Player'} 🂠${pl.handCount}${badges[p] ? ` ${badges[p]}` : ''}`;
-    seats.push({ p, el, sx, sy });
-  }
-  wrapEl.append(...seats.map((s) => s.el));
-  // All sizes are read before any position is written: one layout for all the
-  // labels, not one per seat (this runs on every pan/zoom/pinch frame).
-  for (const s of seats) { s.hw = s.el.offsetWidth / 2 + 4; s.hh = s.el.offsetHeight / 2 + 2; }
+  const small = scale < 0.4;
+  // (the "What are we playing?" strip moves the notices: placeSeats)
+  const sig = `${JSON.stringify(view.players)}|${turn}|${winners.join()}|${JSON.stringify(badges)}|${hostGone}|${small}|${$('game-strip').className}`;
+  if (sig !== seatSig) {
+    seatSig = sig;
+    for (const s of seatEls) s.el.remove();
+    wrapEl.classList.toggle('small-table', small);
+    seatEls = [];
+    for (const [p, pl] of Object.entries(view.players)) {
+      if (pl.seat == null) continue;
+      const el = document.createElement('div');
+      const waited = turn.includes(p);
+      el.className = `seat${pl.online && p !== hostGone ? '' : ' offline'}${p === pid ? ' me' : ''}${waited ? ' turn' : ''}${winners.includes(p) ? ' winner' : ''}`;
+      el.style.borderColor = pl.color;
+      el.textContent = `${winners.includes(p) ? '🏆 ' : ''}${waited ? '⏳ ' : ''}${pl.name || 'Player'} 🂠${pl.handCount}${badges[p] ? ` ${badges[p]}` : ''}`;
+      seatEls.push({ p, el, seat: num(pl.seat) });
+    }
+    wrapEl.append(...seatEls.map((s) => s.el));
+    // All sizes are read before any position is written: one layout for all the labels.
+    for (const s of seatEls) { s.hw = s.el.offsetWidth / 2 + 4; s.hh = s.el.offsetHeight / 2 + 2; }
+  } else if (!viewMoved) return; // nothing to move: no layout read (a patch's redraw stays cheap)
+  placeSeats();
+}
+let seatSpots = ''; // where placeSeats last put the button row and the notices
+/** Puts the seat labels where this view shows their seats. It runs on every
+ *  pan, zoom and pinch frame, so it moves things by transform only: a
+ *  layout per frame would also make the browser hit-test the whole table
+ *  for hover, which is slow with 1,000 cards (B4). */
+function placeSeats() {
   const W = wrapEl.clientWidth, H = wrapEl.clientHeight;
   let rowBottom = 12, noticeTop = 10; // #rules-btns' and #notices' default spots (CSS)
-  for (const { p, el, sx, sy, hw, hh } of seats) {
+  for (const { p, el, seat, hw, hh } of seatEls) {
+    const rad = (seat * Math.PI) / 180;
+    const [sx, sy] = tableToScreen(TABLE_W / 2 + SEAT_R * Math.cos(rad), TABLE_H / 2 + SEAT_R * Math.sin(rad));
     // Keep the whole label on screen (side seats sit on the rim, which a
     // phone's fit zoom puts right at the screen edge).
     const y = clamp(sy, hh, H - hh);
-    el.style.left = `${clamp(sx, hw, W - hw)}px`;
-    el.style.top = `${y}px`;
+    el.style.transform = `translate(${clamp(sx, hw, W - hw)}px, ${y}px) translate(-50%, -50%)`;
     // Your own label in the lower half: lift the rules button row just above
     // it, so the row never hides your name, ⏳, chips or score.
     if (p === pid && y > H / 2) rowBottom = Math.max(rowBottom, H - (y - hh) + 6);
@@ -1036,14 +1066,20 @@ function renderPlayers() {
     if (y < H / 4) noticeTop = Math.max(noticeTop, y + hh + 4);
   }
   // (#table-wrap and #notices both start at #main's top: the offsets agree)
+  const strip = $('game-strip'); // the "What are we playing?" strip pushes the notices down too
   if (!strip.classList.contains('hidden')) noticeTop = Math.max(noticeTop, strip.offsetTop + strip.offsetHeight + 4);
-  $('rules-btns').style.bottom = `${rowBottom}px`;
-  $('notices').style.top = `${noticeTop}px`;
   // A short, wide table area (a phone in landscape) leaves wide empty
   // margins beside the round felt: the notices move into the left one and
   // the button row into the right one, so neither covers the cards (CSS .gutters).
-  const gutter = (W - TABLE_W * scale) / 2, main = $('main');
-  main.classList.toggle('gutters', H < 500 && gutter >= 180);
+  const gutter = (W - TABLE_W * scale) / 2, gutters = H < 500 && gutter >= 180;
+  const spots = `${rowBottom}|${noticeTop}|${gutters}|${gutter | 0}`;
+  if (spots === seatSpots) return;
+  seatSpots = spots;
+  // Moved by `translate` from their CSS spots, for the same reason.
+  $('rules-btns').style.translate = `0 ${12 - rowBottom}px`;
+  $('notices').style.translate = `0 ${noticeTop - 10}px`;
+  const main = $('main');
+  main.classList.toggle('gutters', gutters);
   main.style.setProperty('--gutter', `${gutter | 0}px`);
 }
 
@@ -1100,31 +1136,36 @@ function actorInfo(p) {
   return { name: pl?.name || 'Player', color: pl?.color || '#94a3b8' };
 }
 
-let logNames = '', logShown = [], logN = 0; // the names drawn with, the entries drawn
-/** Draws the log: new entries are appended; it is rebuilt only when entries
- *  were trimmed (or replaced, by a snapshot) or a name changed. */
+let logNames = '', logOf = null; // the names the rows were drawn with; the view.log they show
+const logRows = new Map(); // log entry → its row
+/** One log entry as a row's markup. */
+function logRow(e) {
+  const who = actorInfo(e.p);
+  const name = `<b style="color:${safeColor(who.color)}">${esc(typeof e.n === 'string' ? e.n : who.name)}</b>`;
+  const time = `<span class="lt">${new Date(e.ts).toTimeString().slice(0, 5)}</span>`;
+  return `<div class="lg${e.c ? ' chat' : ''}">${time}${name}${e.c ? ':' : ''} ${esc(e.txt)}</div>`;
+}
+/** Draws the log, row by row: the rows of trimmed entries go (each bucket
+ *  trims its own oldest, so they can sit anywhere), and new entries, which
+ *  only ever arrive at the end, are appended. Everything is redrawn only when
+ *  a name changed (rows show the names of the moment) or a snapshot replaced
+ *  every entry. */
 function renderLog() {
   const log = view.log;
   // Names are resolved live from view.players, which may change (renames): key on them too.
   const names = Object.entries(view.players).map(([p, pl]) => p + pl.name + pl.color).join();
-  // Entries are only ever appended or trimmed: if the last one drawn still
-  // sits where it was, the ones drawn are all still there, in place.
-  const keep = names === logNames && logN <= log.length && (!logN || log[logN - 1] === logShown) ? logN : 0;
-  if (keep === log.length && keep === logN) return;
-  const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 60;
-  const rows = log.slice(keep).map((e) => {
-    const who = actorInfo(e.p);
-    const name = `<b style="color:${safeColor(who.color)}">${esc(typeof e.n === 'string' ? e.n : who.name)}</b>`;
-    const time = `<span class="lt">${new Date(e.ts).toTimeString().slice(0, 5)}</span>`;
-    return e.c
-      ? `<div class="lg chat">${time}${name}: ${esc(e.txt)}</div>`
-      : `<div class="lg">${time}${name} ${esc(e.txt)}</div>`;
-  }).join('');
-  if (keep) logEl.insertAdjacentHTML('beforeend', rows);
-  else logEl.innerHTML = rows;
+  if (log === logOf && names === logNames) return;
+  // (a hidden log reads no layout: the 💬 button scrolls it down when it opens)
+  const atBottom = !sideEl.classList.contains('hidden') && logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 60;
+  const keep = new Set(log);
+  const gone = names === logNames ? [...logRows.keys()].filter((e) => !keep.has(e)) : null;
+  if (!gone || gone.length === logRows.size) { logEl.textContent = ''; logRows.clear(); } else for (const e of gone) { logRows.get(e).remove(); logRows.delete(e); }
   logNames = names;
-  logN = log.length;
-  logShown = log.at(-1);
+  logOf = log;
+  let k = log.length; // the new entries: those after the last one drawn
+  while (k > 0 && !logRows.has(log[k - 1])) k--;
+  logEl.insertAdjacentHTML('beforeend', log.slice(k).map(logRow).join(''));
+  for (let j = log.length - 1, el = logEl.lastElementChild; j >= k; j--, el = el.previousElementSibling) logRows.set(log[j], el);
   if (atBottom) logEl.scrollTop = logEl.scrollHeight;
 }
 
@@ -1241,10 +1282,14 @@ function layout() {
   tableEl.style.left = `${(w - TABLE_W) / 2}px`;
   tableEl.style.top = `${(h - TABLE_H) / 2}px`;
   tableEl.style.transform = `translate(${panX}px, ${panY}px) rotate(${viewAngle}deg) scale(${scale})`;
+  // Cards drawn tiny (a phone's fit view of a big table) skip their
+  // upside-down corner index, a few pixels tall at that size: its rotation
+  // is a paint node per card, which every pan frame re-processes (B4).
+  tableEl.classList.toggle('tiny', scale < 0.25);
   hintEl.style.transform = `rotate(${-viewAngle}deg)`; // keep the hint readable
   if (sel) placeBar();
   for (const b of bulbs.values()) placeFx(b);
-  renderPlayers(); // seat labels live in screen space and track the view
+  renderPlayers(true); // seat labels live in screen space and track the view
 }
 new ResizeObserver(layout).observe(wrapEl);
 
@@ -1979,23 +2024,22 @@ $('deck-form').addEventListener('submit', async (e) => {
 
 // --- boot -----------------------------------------------------------------
 function becomeHost(saved) {
-  role = 'host';
-  hostBoot = Date.now();
-  $('size-sel').classList.remove('hidden'); // table size is the host's call
   if (saved?.lost) {
     console.error('this table could not be resumed:', saved.lost);
     toast(`Couldn't resume this table (${saved.lost}) — started a fresh one`);
     saved = null;
   }
-  if (saved) {
-    T = createTable({ ...saved.state, decks: saved.decks }, { pid }); // lifts an older save (core.js migrate)
-    T.resume(myName); // re-sanitizes the decks, reloads the rules, everyone else waits offline
-    $('size-sel').value = String(T.state.size);
-  } else {
-    T = createTable({}, { pid });
-    askGame = true;
-    T.open(myName); // the host's seat and a standard deck
-  }
+  // The table first: a save from a newer Card Table throws here (core.js
+  // migrate), and this tab must not go on as a host with no table.
+  const t = createTable(saved ? { ...saved.state, decks: saved.decks } : {}, { pid }); // lifts an older save
+  if (saved) t.resume(myName); // re-sanitizes the decks, reloads the rules, everyone else waits offline
+  else t.open(myName); // the host's seat and a standard deck
+  T = t;
+  role = 'host';
+  hostBoot = Date.now();
+  askGame = !saved;
+  $('size-sel').classList.remove('hidden'); // table size is the host's call
+  $('size-sel').value = String(T.state.size);
   commit(true);
   flush(); // this screen's first snapshot
 }

@@ -18,7 +18,8 @@ npx playwright install chromium   # once per machine
 `h.js` uses a `playwright` installed here, else the one in
 `/opt/node22/lib/node_modules` (preinstalled on the development machines).
 Node 22.12 or newer is required: the logic suites `require()` the app's ES
-modules.
+modules. (The Node-only `*.test.mjs` and `*-bench.mjs` suites `import` them
+and need only Node 22.7, which `node-lib.mjs` checks, failing loudly.)
 
 CDN libraries (Trystero, QR codes) are fetched with `curl` on first use into
 `.cdn-cache/` (gitignored), then served locally, so a run never depends on the
@@ -35,7 +36,12 @@ node t-smoke.js         # one suite, output on the terminal
 - The suites test the checkout they live in: `h.js` serves the repo two
   levels up. Set `APP_ROOT=/path/to/repo` to test another checkout.
 - At most two suites per CPU run at once (`JOBS=n` to change it): every
-  end-to-end suite drives its own Chromium.
+  end-to-end suite drives its own Chromium. `run-all.sh` runs the `t-*.js`
+  suites and the Node-only `*.test.mjs` ones.
+- **The serial list.** The benchmarks time things, so they run alone, one at
+  a time after the parallel batch, under the same lock: `SERIAL`, a
+  comma-separated list of suite names, default `t-p1-bench,core-p1-bench`. A
+  listed suite that doesn't exist fails the run.
 - Runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
   `/tmp/cardtable-tests.lock`): concurrent runs on a small machine starve each
   other into flaky timeouts, so a second run waits for the first.
@@ -97,10 +103,39 @@ top of `core.js` and README "How it works".
   screen draws (the host's own too: it takes its patches through the guest
   path), `hand()` and `log()` this player's hand and log, and `perf` the
   counters (`snaps`, `patches`, `gaps`, `snapRequests`) and the last
-  durations (`lastApplyMs`: a received body applied and its items drawn;
-  `lastRenderMs`, `lastTickMs`: the host's broadcast tick).
+  durations: `lastApplyMs`, a received body folded into the view and the
+  whole screen redrawn (items, seats, hand, log, buttons); `lastRenderMs`,
+  `renderItems` alone, on any page; `lastTickMs`, the host's broadcast tick
+  (signing and sending start; its own screen's redraw is not in it).
 - **The tick in Node.** `T.takeDirty()`, then `T.patchContent(d)` (or
   `T.snapContent()` in the same tick), wrapped in `{v, kind, boot, seq,
-  host}`, serialized once, and `spliceBody({to, tp, base, hand?}, text)` per
-  recipient; a guest folds them with `viewFromSnap` / `applyViewPatch` (the
-  app's own functions). `tick()` in `t-core-node.js` is a worked example.
+  host}`, serialized once (`sharedText`), and `spliceBody({to, tp, base,
+  hand?}, text)` per recipient; a guest folds them with `viewFromSnap` /
+  `applyViewPatch` (the app's own functions). `wire()` in
+  `core-p1.test.mjs` is a worked example, with the spec's own fold
+  (`specReceive`) beside core's.
+
+## Phase 1 helpers
+
+- **`node-lib.mjs`** (Node-only suites): the core and templates imported
+  from `APP_ROOT`, `ok`/`section`/`report`/`crash`/`guard` in `h.js`'s
+  format, a seeded RNG (`rng`, `SEED=n` replays one seed), seeded table envs
+  (`env(seed)`: a clock, an RNG and sequential ids), `canon` and `quantile`.
+- **`p1-lib.js`** (browser suites): `rtcHook`, an init script that wraps
+  `RTCDataChannel` and exposes `window.__rtc`: bytes `sent`/`recv` per
+  Trystero action, framing included (the B1' counter); `drop`, a queue of
+  kinds (`'patch'`, `'snap'`, `'any'`) whose next incoming `state` message is
+  swallowed whole before the app sees it; and `keep`/`bodies`, the incoming
+  bodies recorded while `keep` is set. Also `player`/`trio` (seated pages
+  with the hook), `view`/`pidOf`/`act` (over `window.__ct`), `saved(host)`
+  (the host's save, from localStorage or IndexedDB) and `truthOf(save)` (the
+  public table and hands, recomputed from a save by core.js in Node), and
+  `same`/`diff`, `prng`, `pct`, `until`.
+- **The suites.** `core-p1.test.mjs`: the seeded fuzz of the public view and
+  the patch fold, trimLog, z, indexed reads, MIGRATE, refusals, the splice,
+  the t.data cap, applyStatePatch. `core-p1-bench.mjs`: B1, B2, B5, B7.
+  `t-p1-delta.js`: every screen converges through deltas (random play,
+  reloads, drops, vetoes, the version gate, spam). `t-p1-review.js`: the
+  regressions the Phase 1A review found (states out of order, refusals that
+  re-send too much, a refused snapshot request, no-op drops, log rebuilds, a
+  newer save, module skew). `t-p1-bench.js`: B1', B3, B4 (serial).

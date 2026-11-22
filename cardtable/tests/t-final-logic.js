@@ -121,7 +121,7 @@ const allStd = (m, p) => m.host.players[p].hand.every((c) => c.d === 'std');
     m.btn('C', 'new');
     ok(/Need 2\+ online players with chips/.test(m.lastTell('C')), `New hand without two funded players is told to the presser ("${m.lastTell('C')}")`);
     m.d().stacks.B = 1000;
-    delete m.host.items.deck;
+    m.T.applyStatePatch({ items: { deck: null } }); // gone without a script op (items change through the table: its indexes follow)
     m.btn('B', 'new');
     ok(/No deck/.test(m.lastTell('B')), 'and so is a missing deck');
   });

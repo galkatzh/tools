@@ -90,10 +90,14 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   instead. Patches are numbered per guest (each one says which seq it
   builds on), so a guest never applies one out of order: a stale one is
   ignored, and a gap (a lost message) makes it ask for a fresh snapshot (at
-  most one per 3 s, shown as "re-syncing" in the status tooltip). A
-  1,000-card table costs a few hundred bytes per move, and every screen —
-  the host's own included, through the same path — redraws only the items
-  that changed.
+  most one per 3 s, and again every 3 s until it arrives; shown as
+  "re-syncing" in the status tooltip). A guest's states go out one at a
+  time, so a small patch never overtakes the big snapshot before it. A
+  refused or vetoed action (or one whose target had just vanished) re-sends
+  the items it named and the actor's hand, so an optimistic drag snaps
+  back. A 1,000-card table costs a few hundred bytes per move, and every
+  screen — the host's own included, through the same path — redraws only
+  the items that changed.
 - **Versions**: actions carry the wire version and host messages declare
   it; a peer on another version of Card Table is refused with a "reload this
   page" notice instead of misreading the table. Every module import carries
@@ -331,5 +335,8 @@ minimal local Nostr relay, exercising join, draw, deal, flip, drag-move,
 play from hand, stacking, merging, shuffling, custom image decks, face-down
 play, host reload/resume, the rules engine and the terminal bridge. Node
 suites run the state core and the rules templates without a browser; a
-seeded fuzzer checks that the incremental public view and every guest's
-view folded from patches equal full recomputes after each of 600 random ops.
+seeded fuzzer (`core-p1.test.mjs`) checks that the incremental public view
+and every guest's view folded from patches equal full recomputes after each
+of 600 random ops. The benchmarks (`t-p1-bench.js`, `core-p1-bench.mjs`)
+assert the Phase 1 budgets on a 1,000-card table: bytes per move, apply and
+render times, phone panning, snapshot size, indexed reads.
