@@ -8,7 +8,8 @@
 //                 (an error toast, .face.missing)
 //   (7)+(4) late  the host's image sends are held ≥ 2 s: a card in the guest's
 //                 hand and one on the table show .face.loading, then their
-//                 image, and so does an open zoom; nothing else redraws. Mean-
+//                 image, and so do an open zoom and a pile's image back;
+//                 nothing else redraws. Mean-
 //                 while Mallory (a raw peer) sends the guest a mismatched
 //                 image, the right bytes of one it is waiting for, and one
 //                 nobody asked for: all ignored, with console.warn, no toast
@@ -172,12 +173,12 @@ const b64 = (buf) => Buffer.from(buf).toString('base64');
     M = await mallory(env, invite);
     await M.act({ t: 'hello' });
     ok(await L.until(() => M.evaluate(() => window.M.got.state.some(({ m }) => JSON.parse(m.b).to === 'ffffffffffffffff'))), 'Mallory (a raw peer) is seated');
-    const late = A.tinyPngs(3, 3);
+    const late = A.tinyPngs(3, 3), back = A.png(20, 28, { rgb: [30, 60, 160] }), backId = A.sha256(back);
     lateIds = late.map(A.sha256);
     await host.evaluate(() => { window.__wire.hold = true; });
-    const r = await A.addDeck(host, A.imgDeck('Late', late), 1000, 700);
+    const r = await A.addDeck(host, { ...A.imgDeck('Late', late), back: A.dataURL(back) }, 1000, 700); // an image back too
     const lateDeck = await deckOfPile(host, r.pile);
-    ok(await L.until(async () => { const ids = await A.asked(bob); return lateIds.every((id) => ids.includes(id)); }), 'Bob asks for the 3 new images');
+    ok(await L.until(async () => { const ids = await A.asked(bob); return [...lateIds, backId].every((id) => ids.includes(id)); }), 'Bob asks for the 3 new faces and the back');
     const askedAt = await bob.evaluate(() => window.__needs.at(-1).at);
     await L.act(bob, { t: 'draw', id: r.pile });
     await L.act(host, { t: 'deal', id: r.pile, up: true, x: 560, y: 640 });
@@ -190,6 +191,7 @@ const b64 = (buf) => Buffer.from(buf).toString('base64');
       return { hand: state(document.querySelector('.hcard')), table: state(tableEl), zoom: document.getElementById('peek').classList.contains('hidden') ? 'closed' : state(document.getElementById('peek-inner')) };
     }, lateDeck);
     const before = await look();
+    ok(!(await bob.evaluate((id) => document.querySelector(`.item[data-id="${id}"] img`), r.pile)), 'the face-down pile has no back image yet');
     ok(before.hand === 'loading' && before.table === 'loading' && before.zoom === 'loading', `hand, table and open zoom show .face.loading (${JSON.stringify(before)})`);
     // Nodes that must survive the arrival: another deck's drawn face, and the standard pile.
     await bob.evaluate(([d, m]) => {
@@ -220,6 +222,7 @@ const b64 = (buf) => Buffer.from(buf).toString('base64');
     ok((await host.evaluate(() => window.__wire.release())) > 0, 'then they go out');
     ok(await L.until(async () => { const x = await look(); return x.hand === 'img' && x.table === 'img' && x.zoom === 'img'; }, 15000),
       'the hand card, the table card and the open zoom redraw with the image');
+    ok(await L.until(() => bob.evaluate((id) => !!document.querySelector(`.item[data-id="${id}"] img.back[src^="blob:"]`), r.pile)), 'and the face-down pile with its image back');
     ok(await bob.evaluate(() => !!window.__keep && document.contains(window.__keep) && !!window.__keepPile && document.contains(window.__keepPile)),
       'other items were not redrawn (another deck’s face, the standard pile)');
     const after = await A.stored(bob, [...lateIds, strayId]);
