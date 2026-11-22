@@ -4,7 +4,8 @@
 //                 ids a request); every format renders, and is cached by hash
 //   (2) warm      the guest reloads: 0 asset bytes, and no request (B8)
 //   (3) damaged   the host's send flips a byte: the guest says so, asks once
-//                 more, and renders the image
+//                 more, and renders the image; damaged twice, it gives up
+//                 (an error toast, .face.missing)
 //   (7)+(4) late  the host's image sends are held ≥ 2 s: a card in the guest's
 //                 hand and one on the table show .face.loading, then their
 //                 image, and so does an open zoom; nothing else redraws. Mean-
@@ -148,6 +149,20 @@ const b64 = (buf) => Buffer.from(buf).toString('base64');
     ok(count(ids, hit[0]) === 2 && count(ids, tamIds.find((x) => x !== hit[0])) === 1, 'he asked again for the damaged image only, once');
     const rec = await A.stored(bob, tamIds);
     ok(tamIds.every((id, k) => rec[id]?.ok && rec[id].size === tam[k].length), 'and stored the true bytes of both');
+  });
+  await guard('(3) twice', async () => {
+    const [img] = A.tinyPngs(1, 4), id = A.sha256(img);
+    await host.evaluate(() => { window.__wire.tamper = 2; }); // the image, and its one retry
+    const t0 = Date.now();
+    const r = await A.addDeck(host, A.imgDeck('Tamper twice', [img]), 1000, 500);
+    const d = await deckOfPile(host, r.pile);
+    await L.act(host, { t: 'deal', id: r.pile, up: true, x: 980, y: 520 });
+    ok(await L.until(async () => (await sides(bob, d))[0]?.state === 'missing', 30000), 'damaged twice, the image shows as .face.missing on Bob');
+    await h.sleep(1000);
+    const toasts = await A.toastsSince(bob, t0);
+    ok(count(toasts, DAMAGED) === 1 && toasts.length >= 2 && toasts.at(-1) !== DAMAGED, `after one "retrying" toast he gives up with another (${JSON.stringify(toasts)})`);
+    ok(count(await bob.evaluate((t) => window.__needs.filter((n) => n.at >= t).flatMap((n) => n.a), t0), id) === 2, 'having asked for it twice in all');
+    ok((await A.stored(bob, [id]))[id] === null, 'and stored neither copy');
   });
 
   await host.evaluate(() => { window.__wire.tamper = 0; });
