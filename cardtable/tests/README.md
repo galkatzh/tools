@@ -96,13 +96,15 @@ top of `core.js` and README "How it works".
   attack is refused before it reaches the code under test.
 - **`h.bodies(raw)`** unwraps recorded `state` messages (`{b, s, k}`) into
   bodies, snapshots and patches alike; **`h.viewFrom(bodies)`** folds them, in
-  order, into the view they add up to (`{items, players, rules, size, log,
-  hand}`, the log untrimmed: everything that peer saw).
+  order, into the view they add up to (`{items, players, rules, table,
+  seats, handy, log, hand}`, the log untrimmed: everything that peer saw).
 - **`window.__ct`.** `h.start()`'s pages set `window.CARDTABLE_TEST`, so the
-  app exposes `{act, view, hand, log, perf}`: `act(a)` is a click's own path
+  app exposes `{act, view, hand, log, boxes, perf}`: `act(a)` is a click's own path
   (on the host a Promise of `{ok, error?}`), `view()` the public view the
   screen draws (the host's own too: it takes its patches through the guest
-  path), `hand()` and `log()` this player's hand and log, and `perf` the
+  path), `hand()` and `log()` this player's hand and log, `boxes()` the
+  game boxes this page holds (`{boxId: Box}`, each passed `cleanBox`: a
+  guest's from the `boxes` channel, the host's its table's), and `perf` the
   counters (`snaps`, `patches`, `gaps`, `snapRequests`) and the last
   durations: `lastApplyMs`, a received body folded into the view and the
   whole screen redrawn (items, seats, hand, log, buttons); `lastRenderMs`,
@@ -131,11 +133,12 @@ top of `core.js` and README "How it works".
   bodies recorded while `keep` is set. Also `player`/`trio` (seated pages
   with the hook), `view`/`pidOf`/`act` (over `window.__ct`), `saved(host)`
   (the host's save record, from IndexedDB) and `truthOf(save)` (the
-  public table and hands, recomputed from a save by core.js in Node), and
+  public table, hands and `handy`, recomputed from a save by core.js in Node), and
   `same`/`diff`, `prng`, `pct`, `until`.
 - **Raw peers and images.** final-lib's Mallory also joins the `asset`
   channel: `M.send.asset(bytes, target, {h, mime})` sends an image, and
-  `M.got.asset` records `{m, peerId, metadata}`.
+  `M.got.asset` records `{m, peerId, metadata}`. (Phase 2: she joins the
+  `boxes` channel too — `M.got.boxes`, `M.send.boxes`.)
 - **The suites.** `core-p1.test.mjs`: the seeded fuzz of the public view and
   the patch fold, trimLog, z, indexed reads, MIGRATE, refusals, the splice,
   imageDims and deck ingestion, the t.data cap, applyStatePatch, and the
@@ -169,11 +172,45 @@ top of `core.js` and README "How it works".
   `toastsSince`. **`img-lib.js`**: PNG, GIF, JPEG and WebP headers made in
   code, each with the byte count its size needs (`hdr`), for imageDims.
 
+## Phase 2 (2A: the engine, wire, persistence and CLI of pieces)
+
+- **The wire, PROTO 3.** Bodies carry `table` (`{shape, w, h, felt?}`),
+  `seats` (named seats, or `null`) and `handy` (whether anything on the
+  table can be held in a hand) where they carried `size`; a patch carries
+  each only when it changed. Game boxes travel on their own signed `boxes`
+  channel (a delta, or the whole catalog for a new connection), without
+  their setups. A hidden piece's public form is `{k:'g', b: '<box>/<back>'
+  | null, x, y, rot, z, n?, owner?, lock?}`: never its `t` or `f`; a bag
+  is `{k:'b', name, n, hand?, …}`: never its `of`.
+- **Loading a box** (the host): `__ct.act({t: 'loadBox', box, setup: true,
+  clear: true})`, with `box` in the shape of `templates.js` `BOXES`
+  (`BOXES.draughts`, `BOXES.backgammon`: import `templates.js` in Node and
+  pass one to `evaluate`). Every action of spec §2c is in `PUBLIC_ACTIONS`
+  but `table`, `loadBox` and `clear` (`HOST_ACTIONS`: a guest's gets "🚫
+  Only the host can do that"). A piece in a play or handPile payload is
+  named `{type: '<box>/<type>', f}` — its type ref can't travel as `t`,
+  the action's own name.
+- **Exact texts** (refusals): "🚫 That piece is hidden" (face, roll, join
+  on a hidden piece, before any other check), "🚫 That belongs to {name}"
+  (a seat-bound owner: the seat's name), "🔒 That is locked in place", "🚫
+  The table is full (5,000 items)", "🚫 Dice are rolled, not turned", "🚫
+  Those don't stack together", "🚫 Some of those pieces have no hidden
+  side", "🚫 Those pieces can't be held in a hand", "🚫 Roll 1 to 20
+  different dice", "🚫 Box rejected: {cleanBox's message}"; a guest whose
+  box fails `cleanBox` toasts "A game box from the host couldn't be read:
+  {message}" once per box.
+- **Drawn pieces** (`pieces.js`): `.item.piece.shape-{shape}` sized w × h
+  (`.supply`, `.board`, `.pile.multi` for a pile of pieces), `.item.bag`, a
+  face `.pface` (`.pback` for a hidden piece's back) holding its layers
+  (`img.face` / `.face.loading`, `.plabel`, `.ptext`, `.pips`), and
+  `.pface.placeholder` ("?") when its box isn't here.
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores
 `saves` {room, ts, v, state} or {room, ts, lost}; `catalog` {room, id, kind:
-'deck', deck} keyed [room, id]; `assets` {h, mime, size, data, used} keyed by
+'deck', deck} or {room, id, kind: 'box', box, src, by?} keyed [room, id]
+(decks and boxes share one id space); `assets` {h, mime, size, data, used} keyed by
 the image's SHA-256). localStorage keeps only `ct-pid*`, `ct-name`,
 `ct-hostkey-*`, `ct-sort`, `ct-handh` and `ct-pending-<room>`; a legacy
 `ct-save-<room>` / `ct-decks-<room>` is migrated on the host's next boot

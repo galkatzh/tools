@@ -19,12 +19,16 @@
 // in templates.js.
 import { joinRoom, selfId, getRelaySockets } from 'https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm';
 import {
-  CARD_W, CARD_H, COLOR_RE, RANKS, RULES, playR, clampToFelt, PID_RE, ASSET_RE, rand, clamp, own, num, peerText,
-  cleanDeck, cleanDeckV1, deckOverBudget, assetRefs, cleanName, standardDeck, cardName, createTable,
-  MODULE_V as CORE_V, PROTO, PUBLIC_ACTIONS, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch,
+  CARD_W, CARD_H, RANKS, RULES, playR, clampToTable, seatPoint, sizeOf, flagsOf, typeAt, PID_RE, ASSET_RE, rand, clamp, own, num, peerText,
+  cleanDeck, cleanDeckV1, cleanBox, isBuiltin, deckOverBudget, assetRefs, cleanName, standardDeck, cardName, pieceName, faceLabel, createTable,
+  MODULE_V as CORE_V, PROTO, PUBLIC_ACTIONS, HOST_ACTIONS, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch, roundTable, FELT,
 } from './core.js?v=1';
+import { MODULE_V as GRID_V } from './grid.js?v=1';
+import * as pieces from './pieces.js?v=1';
 import { RULES_TEMPLATES, GAMES, MODULE_V as TEMPLATES_V } from './templates.js?v=1';
 import * as store from './store.js?v=1';
+
+const { esc, safeColor, contrastFor } = pieces;
 
 /** This file's code version; every module it imports must carry the same (see core.js MODULE_V). */
 export const MODULE_V = 1;
@@ -34,19 +38,23 @@ const tableEl = $('table'), wrapEl = $('table-wrap'), handEl = $('hand'), barEl 
 const hintEl = $('table-hint'), toastEl = $('toast'), netEl = $('net-status');
 const sideEl = $('side'), logEl = $('log');
 
-// The round table's diameter is part of the shared game state (state.size,
-// see core.js) — the host can grow the table for bigger groups — so the
-// rendered size lives in these variables, kept in sync via setTableSize().
-let TABLE_W = 1300, TABLE_H = 1300;
-let PLAY_R = 540; // max distance of a card's center from the table center
-let SEAT_R = 600; // radius where the seat name labels sit
+// The table's shape and size are part of the shared game state (state.table,
+// see core.js: round, 1300–2400 across, or a rectangle) — the host can
+// change them — so the rendered table lives in these variables, kept in sync
+// via setTable().
+let TABLE = roundTable(), TABLE_W = 1300, TABLE_H = 1300;
+let PLAY_R = 540; // a round table: the max distance of an item's centre from the table centre
 
-function setTableSize(size) {
-  TABLE_W = TABLE_H = size;
-  PLAY_R = playR(size);
-  SEAT_R = size / 2 - 50;
-  tableEl.style.width = `${size}px`;
-  tableEl.style.height = `${size}px`;
+/** Draws the table `tb` ({shape, w, h, felt?}, core.js cleanTable's). */
+function setTable(tb) {
+  TABLE = tb;
+  TABLE_W = tb.w;
+  TABLE_H = tb.h;
+  PLAY_R = playR(tb.w);
+  tableEl.style.width = `${tb.w}px`;
+  tableEl.style.height = `${tb.h}px`;
+  tableEl.classList.toggle('rect', tb.shape === 'rect');
+  tableEl.style.setProperty('--felt', safeColor(tb.felt, FELT));
   layout();
 }
 
@@ -67,9 +75,6 @@ window.addEventListener('unhandledrejection', (e) => {
   console.error(e.reason);
   toast(`Error: ${e.reason?.message || e.reason}`);
 });
-
-// --- small helpers (the pure ones are in core.js) --------------------------
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 // --- trust: who speaks for the host, who owns a seat, what data is safe -----
 // A peer can send anything over the room's channels, so the host is
@@ -133,8 +138,6 @@ async function unseal(m) {
   }
 }
 
-const safeColor = (v, fallback = '#64748b') => (COLOR_RE.test(v) ? v : fallback);
-
 // Optional hash extras after "#room~id~pw": "~cli~PORT-TOKEN" connects this
 // tab to a local terminal bridge (see cli.js / cli.py), "~as~Name" joins as a
 // separate scripted player (a bot's body) instead of the local identity.
@@ -166,18 +169,21 @@ let myName = AS || localStorage.getItem('ct-name') || `Player-${pid.slice(0, 4)}
 
 // --- game state -----------------------------------------------------------
 // T:      the table (host only): core.js's createTable() over the authoritative
-//         state {v, seq, size, items, players, keys, log, rules, decks, …}
+//         state {v, seq, table, seats, items, players, keys, log, rules, decks, boxes, …}
 // decks:  {deckId: {name, back, backImg?, imgs: [asset id], cards: [{g?} | {r,s,c}]}}
 //         (core.js cleanDeck) — the renderer's deck map; on the host it IS
 //         T.state.decks (commit()). Images are drawn from store.js by asset id.
+// boxes:  {boxId: Box} (core.js cleanBox) — the renderer's game boxes, the
+//         same way (T.state.boxes on the host); boxInfo: {boxId: {src, by?,
+//         builtin}}, what the host says of each (for display only).
 // view:   what render() consumes, on every tab the host's included: the PUBLIC
-//         table {seq, boot, host, size, rules, items, players, log, hand},
-//         folded from the host's snapshots and patches (core.js viewFromSnap,
-//         applyViewPatch). Items are the public shape (piles {…, n, top}, no
-//         hidden ids); `hand` is this player's own.
+//         table {seq, boot, host, table, seats, handy, rules, items, players,
+//         log, hand}, folded from the host's snapshots and patches (core.js
+//         viewFromSnap, applyViewPatch). Items are the public shape (piles
+//         {…, n, top}, no hidden ids or types); `hand` is this player's own.
 let role = null, roomId, password, room = null;
-let sendAct, sendState, sendDecks, sendNote, sendRules, stateSend, sendAsset; // (set by connect())
-let decks = {};
+let sendAct, sendState, sendDecks, sendBoxes, sendNote, sendRules, stateSend, sendAsset; // (set by connect())
+let decks = {}, boxes = {}, boxInfo = {};
 let T = null;
 let view = viewFromSnap({ seq: 0, boot: 0 });
 let peerPid = {};    // host only: Trystero peerId -> stable player id
@@ -292,7 +298,8 @@ function holdImages(assets) {
  *  (core renumbered it), broadcasts (coalesced) and saves. Returns the first
  *  refusal notice ("🚫 …") addressed to `actor`, if any. */
 function commit(changed, actor) {
-  decks = T.state.decks; // the renderer's deck map is the table's own (core may replace it)
+  decks = T.state.decks; // the renderer's deck and box maps are the table's own (core may replace them)
+  boxes = T.state.boxes;
   const refusal = drain(actor);
   if (changed) { scheduleBroadcast(); persist(); }
   return refusal;
@@ -356,7 +363,7 @@ setInterval(() => { if (role === 'host') enqueue(RULES, { t: '_tick' }); }, 700)
 // or a gap (it asks for a snapshot). Both carry the epoch `boot`: a restarted
 // host counts seq from its save, so a newer epoch always wins.
 const SNAP_MIN_MS = 3000; // a peer gets at most one requested snapshot per 3 s
-let dirtyDecks = new Set(), bcastT = 0; // deck ids not yet broadcast; the pending tick
+let dirtyDecks = new Set(), dirtyBoxes = new Set(), bcastT = 0; // deck and box ids not yet broadcast; the pending tick
 let hostBoot = 0;  // when this tab became host: the state's epoch
 let fxQueue = [];  // action markers accumulated since the last broadcast
 let annQueue = []; // script announcements (banners) since the last broadcast
@@ -384,11 +391,20 @@ function drain(actor) {
       case 'peek': if (e.p === pid) showPeek(e.c); else noteTo(e.p, { peek: e.c }); break;
       case 'toast': toast(e.msg); break;
       case 'deck': dirtyDecks.add(e.id); break;
+      case 'box': dirtyBoxes.add(e.id); break;
       case 'rules': rulesCodeDirty = true; break;
       default: console.error('unknown table effect', e);
     }
   }
   return refusal;
+}
+/** Host: box `id` as everyone may see it (spec §2b, PublicBox): the box
+ *  without its setup (which may hold hidden information), plus what the
+ *  host says of it — where it came from (`src`, `by`) and whether it is
+ *  built in (by content: isBuiltin). Guests only display those. */
+function publicBox(id) {
+  const { setup, ...box } = T.state.boxes[id], info = T.state.boxSrc[id] || { src: 'host' };
+  return { ...box, src: info.src, ...(info.by && { by: info.by }), builtin: isBuiltin(T.state.boxes[id]) };
 }
 /** Host: sends a private note (a notice, a peek answer) to each of player p's connections. */
 function noteTo(p, body) {
@@ -423,6 +439,10 @@ function broadcast() {
     // Delta, not the whole map: adding a second deck must not re-ship the first.
     if (room) sendDecks(Object.fromEntries([...dirtyDecks].map((id) => [id, decks[id]])));
     dirtyDecks.clear();
+  }
+  if (dirtyBoxes.size) { // the same for game boxes
+    if (room) sendBoxes(Object.fromEntries([...dirtyBoxes].map((id) => [id, publicBox(id)])));
+    dirtyBoxes.clear();
   }
   if (rulesCodeDirty) {
     rulesCodeDirty = false;
@@ -618,7 +638,7 @@ function receive(d, peer) {
     if (!registered) introduce(); // the host doesn't know this seat yet
     if (pendingActs.length) flushPending();
   }
-  if (view.size !== TABLE_W) setTableSize(view.size);
+  if (view.table.shape !== TABLE.shape || view.table.w !== TABLE_W || view.table.h !== TABLE_H || view.table.felt !== TABLE.felt) setTable(view.table);
   for (const f of Array.isArray(d.fx) ? d.fx : []) if (f?.p !== pid) showFx(f); // own actions stay silent
   for (const msg of Array.isArray(d.ann) ? d.ann : []) showAnnounce(msg);
   renderAll(prev, players);
@@ -666,11 +686,12 @@ const ASSET_INFLIGHT = 2, PEER_ASSET_BUDGET = 64e6, ASSET_WINDOW_MS = 60000;
  *  come: drawn struck out), or on a guest {at, tries}: asked of the host
  *  (at: when last asked, 0 while the request waits to go out; tries: how often). */
 const imgs = new Map();
+const badBoxes = new Set(); // guest: the ids of boxes from the host that failed cleanBox (said once each)
 let heardAt = 0; // guest: when the host last showed progress on our requests (an image came, it said to wait, it came back)
 /** The images this guest asks the host for. */
 const asked = () => [...imgs].filter(([, x]) => typeof x === 'object').map(([h]) => h);
 /** What the image cache's GC must spare: the images of the decks this tab shows, and those it is pulling. */
-const keepImages = () => new Set([...assetRefs(decks), ...asked()]);
+const keepImages = () => new Set([...assetRefs(decks, boxes), ...asked()]);
 /** Guest: whether the host is reachable now (act() would send to it). */
 const hostHere = () => !!(room && hostPeer && room.getPeers()[hostPeer]);
 
@@ -841,6 +862,7 @@ function connect() {
   const actA = room.makeAction('act');
   const stateA = room.makeAction('state');
   const decksA = room.makeAction('decks');
+  const boxesA = room.makeAction('boxes');
   const noteA = room.makeAction('note');
   const rulesA = room.makeAction('rules');
   const assetA = room.makeAction('asset');
@@ -870,6 +892,7 @@ function connect() {
   sendAct = (data, target) => actA.send(data, target ? { target } : {});
   sendState = signed('state', laneSend); // the tick splices `tp` in itself
   sendDecks = signed('decks', (m, target) => decksA.send(m, target ? { target } : {}));
+  sendBoxes = signed('boxes', (m, target) => boxesA.send(m, target ? { target } : {}));
   sendNote = bound(signed('note', (m, target) => noteA.send(m, { target })));
   sendRules = signed('rules', (m, target) => rulesA.send(m, target ? { target } : {}));
   // A signature proves the host wrote a message, not who delivers it: any
@@ -891,7 +914,9 @@ function connect() {
       heardAt = Math.max(heardAt, Date.now() + Math.min(num(n.wait), ASSET_WINDOW_MS));
       note(`Card images are coming slowly — the host sends at most ${PEER_ASSET_BUDGET / 1e6} MB of them a minute`);
     } else if (n.msg) note(String(n.msg)); // toast + the terminal bridge
-    if (n.peek && n.to === pid) showPeek({ d: String(n.peek.d), i: num(n.peek.i, -1) }); // the host's private answer to our peek
+    if (n.peek && n.to === pid) { // the host's private answer to our peek: a card {d, i}, or a piece {t, f}
+      showPeek('t' in n.peek ? { t: peerText(n.peek.t), f: num(n.peek.f, -1) } : { d: peerText(n.peek.d), i: num(n.peek.i, -1) });
+    }
     if (Array.isArray(n.missing)) { // images we asked for that the host doesn't hold
       const gone = n.missing.filter((h) => typeof imgs.get(h) === 'object');
       if (gone.length) giveUp(gone, `${gone.length} card images are missing on the host — ask them to re-add the deck`);
@@ -919,6 +944,29 @@ function connect() {
     wantImages(refs);
     arrived(itemsByDeck, got, (z) => got.includes(z.d));
   });
+  // Game boxes, the same way: deltas (the whole catalog for a new
+  // connection), each passing cleanBox here. A box that fails is dropped,
+  // loudly (once per box): its pieces draw as "?" placeholders. What the host
+  // says of a box (src, by, builtin) is only ever displayed.
+  boxesA.onMessage = fromHost((d) => {
+    if (role === 'host' || !d || typeof d !== 'object') return;
+    const got = [];
+    for (const [id, b] of Object.entries(d)) {
+      if (!/^[0-9a-f]{8}$/.test(id)) { console.warn('ignored a game box with a bad id', id); continue; }
+      try {
+        boxes[id] = cleanBox(b);
+        boxInfo[id] = { src: ['host', 'upload', 'script'].includes(b.src) ? b.src : 'host', ...(PID_RE.test(b.by) && { by: b.by }), builtin: b.builtin === true };
+        got.push(id);
+      } catch (err) {
+        console.error(`game box ${id} from the host rejected`, err);
+        if (!badBoxes.has(id)) { badBoxes.add(id); toast(`A game box from the host couldn't be read: ${err.message}`); }
+      }
+    }
+    const refs = [...assetRefs({}, got.map((id) => boxes[id]))];
+    for (const h of refs) if (imgs.get(h) === 'missing') imgs.delete(h);
+    wantImages(refs);
+    arrived(itemsByBox, got, (z) => 't' in z && got.includes(pieces.boxIdOf(z.t)));
+  });
 
   actA.onMessage = (a, { peerId: peer }) => {
     if (role !== 'host' || !a || typeof a !== 'object') return; // only the host adjudicates
@@ -933,6 +981,7 @@ function connect() {
     // learns who the authenticated host is before revealing its identity.
     if (a._pid == null) { if (a.t === 'hello') wantSnap(peer); return; }
     const { _pid: p, _name: name, _key: key, _v, ...action } = a;
+    if (HOST_ACTIONS.has(action.t)) { refuse(peer, 'Only the host can do that'); return; }
     if (!PUBLIC_ACTIONS.has(action.t)) { refuse(peer, 'Unknown action — reload this page'); return; }
     const reason = p === pid ? 'This seat is already open in another tab'
       : typeof p !== 'string' || !PID_RE.test(p) ? 'Invalid player id' // (a crafted {"toString": 1} would make test() throw)
@@ -956,9 +1005,10 @@ function connect() {
     if (changed) commit(true);
     else if (newConn) scheduleBroadcast(); // a second tab of a seated player: its first snapshot
     if (newConn) {
-      // Fresh connection: hand over the (possibly large) deck images and the
-      // rules code targeted, so regular broadcasts stay light.
+      // Fresh connection: hand over the (possibly large) decks, the game boxes
+      // and the rules code targeted, so regular broadcasts stay light.
       sendDecks(decks, peer);
+      sendBoxes(Object.fromEntries(Object.keys(boxes).map((id) => [id, publicBox(id)])), peer);
       if (T.state.rules) sendRules({ code: T.state.rules.code, name: T.state.rules.name }, peer);
     }
     // Every action carries the sender's current name: a rename the host
@@ -1056,7 +1106,7 @@ setInterval(() => {
 // --- host persistence -----------------------------------------------------
 // The table is saved in IndexedDB (store.js): the state at most once a
 // second (throttled, not debounced: a busy game still hits storage), one
-// write at a time; each deck once, into the room's catalog, with its images,
+// write at a time; each deck and game box once, into the room's catalog, with its images,
 // in the same transaction as the first save that has it. When storage is
 // full, store.js makes room (the image cache, then other rooms' saves,
 // oldest first); if the table still can't be saved, a tiny lost marker
@@ -1074,7 +1124,7 @@ let persistT = 0, lastSave = 0, saving = false, again = false, persistWarned = f
 let savedSeq = -1; // host: the seq of the last save that committed
 let cloneFixed = false; // host: since the last good save, the rules' state was cut down to JSON (_unsaveable) once
 let noSave = ''; // host: why this tab never writes its room's save ('' = it does)
-const savedCatalog = new Set(); // host: the deck ids this room's catalog holds
+const savedCatalog = new Set(); // host: the deck and box ids this room's catalog holds
 const pendingKey = () => `ct-pending-${roomId}`;
 /** Writes the table (host), see above; a request made while a write is in
  *  flight runs once it is done — unless the page is `leaving`: then it
@@ -1108,11 +1158,15 @@ async function doSave(leaving) {
   }
 }
 /** What a save writes (store.saveTable takes it again before a retry): the
- *  state, and the decks the room's catalog lacks. */
+ *  state, and the decks and boxes the room's catalog lacks (a box with where
+ *  it came from: src, by). */
 function snap() {
   if (role !== 'host') throw new Error('this tab is no longer the host');
-  const all = T.state.decks;
-  return { state: T.snapshot(), catalog: Object.keys(all).filter((id) => !savedCatalog.has(id)).map((id) => ({ id, kind: 'deck', deck: all[id] })) };
+  const { decks: d, boxes: b, boxSrc } = T.state, fresh = (all) => Object.keys(all).filter((id) => !savedCatalog.has(id));
+  return {
+    state: T.snapshot(),
+    catalog: [...fresh(d).map((id) => ({ id, kind: 'deck', deck: d[id] })), ...fresh(b).map((id) => ({ id, kind: 'box', box: b[id], ...(boxSrc[id] || { src: 'host' }) }))],
+  };
 }
 function persist() {
   if (role !== 'host' || noSave || persistT) return;
@@ -1145,18 +1199,6 @@ const itemEls = new Map();
 let sel = null, drag = null, handDrag = null, facedown = false;
 let scale = 1;
 
-/** Black or white text for a hex background (naive luminance split). */
-const colorCtx = document.createElement('canvas').getContext('2d');
-/** Light or dark text for any CSS background color (the canvas normalizes
- *  names, #rgb, #rrggbbaa… to #rrggbb for opaque colors). */
-function contrastFor(color) {
-  colorCtx.fillStyle = '#000';
-  colorCtx.fillStyle = color;
-  const m = colorCtx.fillStyle.match(/^#(..)(..)(..)$/);
-  if (!m) return '#1e293b';
-  const [r, g, b] = m.slice(1).map((x) => parseInt(x, 16));
-  return 0.299 * r + 0.587 * g + 0.114 * b < 140 ? '#f8fafc' : '#1e293b';
-}
 /** The image a card side shows — a face's, or its deck's image back — as
  *  an asset id; undefined for a drawn face or back, or a deck not here yet. */
 function sideImage(d, i, up) {
@@ -1194,7 +1236,12 @@ function backHTML(d) {
   return deck?.back ? `<div class="back" style="background:${safeColor(deck.back)}"></div>` : '<div class="back"></div>'; // a solid-color back, or the pattern
 }
 
-/** Markup for a PUBLIC item (see publicItems: piles carry n + top). */
+/** Whether public item `it` is drawn by pieces.js: a piece, a supply, a bag
+ *  or a pile of pieces (the rest are cards and piles of cards). */
+const pieceLike = (it) => it.k === 'g' || it.k === 's' || it.k === 'b' || (it.k === 'p' && !!it.top && !('d' in it.top));
+/** Markup for an image on a piece's face (imageHTML's, as a face). */
+const faceImage = (h) => imageHTML(h, 'face');
+/** Markup for a PUBLIC card or pile of cards (see publicItems: piles carry n + top). */
 function contentFor(it) {
   if (it.k === 'c') return `<div class="cardbox">${it.up ? faceHTML(it.d, it.i) : backHTML(it.d)}</div>`;
   const top = it.top;
@@ -1216,8 +1263,8 @@ const MOTION_MS = 260;
 
 /** A seat's spot on the rim in table coords (top-left of a card centred there). */
 function seatSpot(p) {
-  const rad = (num(view.players[p]?.seat) * Math.PI) / 180;
-  return { x: TABLE_W / 2 + SEAT_R * Math.cos(rad) - CARD_W / 2, y: TABLE_H / 2 + SEAT_R * Math.sin(rad) - CARD_H / 2 };
+  const at = seatPoint(TABLE, num(view.players[p]?.seat));
+  return { x: at.x - CARD_W / 2, y: at.y - CARD_H / 2 };
 }
 
 /** Where the cards that newly appeared came from: piles that shrank (each with
@@ -1267,15 +1314,15 @@ function showing() {
     },
   };
 }
-const itemsByDeck = showing(), itemsByAsset = showing();
-/** What arrived — `ids` of `index`: decks, or images — redraws the items
- *  showing it, the hand (it may hold placeholders: handSig) and an open zoom
- *  or peek that `zoomShows`. */
+const itemsByDeck = showing(), itemsByAsset = showing(), itemsByBox = showing();
+/** What arrived — `ids` of `index`: decks, boxes or images — redraws the
+ *  items showing it, the hand (it may hold placeholders: handSig) and an
+ *  open zoom or peek whose card or piece `zoomShows`. */
 function arrived(index, ids, zoomShows) {
   const prev = new Map();
   for (const k of ids) for (const id of index.get(k)) prev.set(id, view.items[id]);
   handSig = '';
-  if (zoomed && !peekEl.classList.contains('hidden') && zoomShows(zoomed)) showZoom(zoomed.d, zoomed.i, zoomed.caption);
+  if (zoomed && !peekEl.classList.contains('hidden') && zoomShows(zoomed.c)) showZoom(zoomed.c, zoomed.caption);
   renderAll(prev);
 }
 let landed = new Set(), landT = 0;
@@ -1291,7 +1338,7 @@ function redrawLanded() {
   const hs = [...landed];
   landed = new Set();
   landT = 0;
-  arrived(itemsByAsset, hs, (z) => hs.includes(sideImage(z.d, z.i, true)));
+  arrived(itemsByAsset, hs, (z) => hs.includes('t' in z ? pieces.imageOf({ k: 'g', ...z }, boxes) : sideImage(z.d, z.i, true)));
 }
 
 /** Draws the items: those in `prev` (a Map of id → the public item it
@@ -1305,10 +1352,11 @@ function renderItems(prev, prevPlayers = new Map()) {
   const ids = prev ? prev.keys() : new Set([...itemEls.keys(), ...Object.keys(view.items).sort((a, b) => num(view.items[a].z) - num(view.items[b].z))]);
   const move = prev && !calm.matches && motionSources(prev, prevPlayers);
   for (const id of ids) {
-    const it = view.items[id], before = prev?.get(id), side = it && (it.k === 'c' ? it : it.top);
-    const img = side && sideImage(side.d, side.i, side.up);
+    const it = view.items[id], before = prev?.get(id), piece = it && pieceLike(it), side = it && !piece && (it.k === 'c' ? it : it.top);
+    const img = piece ? pieces.imageOf(it, boxes) : side && sideImage(side.d, side.i, side.up);
     let el = itemEls.get(id);
     itemsByDeck.set(id, side?.d);
+    itemsByBox.set(id, piece ? pieces.boxOf(it) : undefined);
     itemsByAsset.set(id, img);
     if (!it) {
       if (el) { el.remove(); itemEls.delete(id); }
@@ -1327,14 +1375,19 @@ function renderItems(prev, prevPlayers = new Map()) {
         el.animate([{ left: `${src.o.x}px`, top: `${src.o.y}px` }, { left: `${it.x}px`, top: `${it.y}px` }], { duration: MOTION_MS, easing: 'ease-out' });
       }
     }
-    const sig = it.k === 'c'
-      ? `c|${it.d}|${it.i}|${it.up}|${!!decks[it.d]}|${imageState(img)}`
-      : `p|${it.n}|${JSON.stringify(it.top)}|${it.name}|${!!decks[it.top?.d]}|${imageState(img)}`;
+    const sig = piece ? `g|${looks(it)}|${!!boxes[pieces.boxOf(it)]}|${imageState(img)}`
+      : it.k === 'c' ? `c|${it.d}|${it.i}|${it.up}|${!!decks[it.d]}|${imageState(img)}`
+        : `p|${it.n}|${JSON.stringify(it.top)}|${it.name}|${!!decks[it.top?.d]}|${imageState(img)}`;
     if (el.dataset.sig !== sig) {
       el.dataset.sig = sig;
-      el.innerHTML = contentFor(it);
-      el.classList.toggle('pile', it.k === 'p');
-      el.classList.toggle('multi', it.k === 'p' && it.n > 1);
+      if (piece) {
+        const v = pieces.itemView(it, boxes, faceImage);
+        el.innerHTML = v.html;
+        kind(el, v.cls, v.w, v.h);
+      } else {
+        el.innerHTML = contentFor(it);
+        kind(el, it.k === 'p' ? ['pile', ...(it.n > 1 ? ['multi'] : [])] : []);
+      }
       // Flipped (a card, or a pile whose size didn't change): the new side turns in.
       if (move && before?.k === it.k && (it.k === 'c' ? before.up !== it.up : before.n === it.n && !!before.top?.up !== !!it.top?.up)) {
         el.firstChild.animate([{ transform: 'perspective(600px) rotateY(90deg)' }, { transform: 'none' }], { duration: MOTION_MS, easing: 'ease-out' });
@@ -1364,6 +1417,18 @@ function renderItems(prev, prevPlayers = new Map()) {
   if (sel && !view.items[sel]) select(null);
   else if (sel) placeBar();
   perf.lastRenderMs = performance.now() - t0;
+}
+
+/** What an item's drawing depends on: all of it but where it lies. */
+const looks = ({ x, y, z, rot, ...rest }) => JSON.stringify(rest);
+/** Gives item element `el` the classes of its kind (`cls`: those drawn last
+ *  go, these come) and its size (a card's by default: the CSS variables). */
+function kind(el, cls, w, h) {
+  el.classList.remove(...(el.dataset.kc ? el.dataset.kc.split(' ') : []));
+  el.classList.add(...cls);
+  el.dataset.kc = cls.join(' ');
+  el.style.width = w ? `${w}px` : '';
+  el.style.height = h ? `${h}px` : '';
 }
 
 // Seat labels: everyone sees the same seating, each from their own rotation.
@@ -1412,8 +1477,7 @@ function placeSeats() {
   const W = wrapEl.clientWidth, H = wrapEl.clientHeight;
   let rowBottom = 12, noticeTop = 10; // #rules-btns' and #notices' default spots (CSS)
   for (const { p, el, seat, hw, hh } of seatEls) {
-    const rad = (seat * Math.PI) / 180;
-    const [sx, sy] = tableToScreen(TABLE_W / 2 + SEAT_R * Math.cos(rad), TABLE_H / 2 + SEAT_R * Math.sin(rad));
+    const at = seatPoint(TABLE, seat), [sx, sy] = tableToScreen(at.x, at.y);
     // Keep the whole label on screen (side seats sit on the rim, which a
     // phone's fit zoom puts right at the screen edge).
     const y = clamp(sy, hh, H - hh);
@@ -1466,11 +1530,15 @@ function renderHand() {
     const el = document.createElement('div');
     el.className = 'hcard';
     el.dataset.idx = idx; // the REAL hand index: plays name the card the host holds there
-    el.innerHTML = faceHTML(view.hand[idx].d, view.hand[idx].i);
+    el.innerHTML = handFace(view.hand[idx]);
     handEl.appendChild(el);
   }
   fitHand();
 }
+/** A hand entry's face: a card {d, i}, or a piece {t, f, up?} (its holder sees it). */
+const handFace = (c) => ('t' in c ? pieces.handHTML(c, boxes, faceImage) : faceHTML(c.d, c.i));
+/** What names hand entry c in an action (play, handPile): a card's {d, i}, a piece's {type, f}. */
+const handRef = (c) => ('t' in c ? { type: c.t, f: c.f } : { d: c.d, i: c.i });
 /** Fans a crowded hand: the cards overlap just enough to all fit, like a
  *  hand of real cards (each keeps at least 40% showing, its corner index
  *  readable); a hand too big even for that scrolls sideways. */
@@ -1633,10 +1701,14 @@ function rotv(x, y, a) {
 
 function layout() {
   const w = wrapEl.clientWidth, h = wrapEl.clientHeight;
-  scale = Math.min(w / TABLE_W, h / TABLE_H) * zoomZ; // fit × user zoom
-  const lim = (TABLE_W * scale) / 2; // keep at least the table's center reachable
-  panX = clamp(panX, -lim, lim);
-  panY = clamp(panY, -lim, lim);
+  // The fit: a round table by its diameter (so it never refits as the view
+  // turns), a rectangle by its bounding box at the view's angle.
+  const a = (viewAngle * Math.PI) / 180, c = Math.abs(Math.cos(a)), sn = Math.abs(Math.sin(a)), rect = TABLE.shape === 'rect';
+  const bw = rect ? TABLE_W * c + TABLE_H * sn : TABLE_W, bh = rect ? TABLE_W * sn + TABLE_H * c : TABLE_H;
+  scale = Math.min(w / bw, h / bh) * zoomZ; // fit × user zoom
+  // keep at least the table's center reachable
+  panX = clamp(panX, -(bw * scale) / 2, (bw * scale) / 2);
+  panY = clamp(panY, -(bh * scale) / 2, (bh * scale) / 2);
   // Center the unscaled table on the wrap; then scale, rotate, and pan.
   tableEl.style.left = `${(w - TABLE_W) / 2}px`;
   tableEl.style.top = `${(h - TABLE_H) / 2}px`;
@@ -1698,9 +1770,20 @@ function select(id) {
   const it = view.items[sel];
   barEl.innerHTML = it.k === 'c'
     ? `<button data-cmd="flip">Flip</button>${it.up ? '<button data-cmd="zoom">🔍</button>' : '<button data-cmd="peek">Peek</button>'}<button data-cmd="rl">⟲90</button><button data-cmd="rr">⟳90</button><button data-cmd="hand">Hand</button><button data-cmd="del">🗑</button>`
-    : `<button data-cmd="draw">Draw</button><button data-cmd="peek">Peek</button><button data-cmd="dealup">Deal↑</button><button data-cmd="dealdn">Deal↓</button><button data-cmd="shuffle">Shuffle</button><button data-cmd="flip">Flip</button><button data-cmd="rr">⟳90</button><button data-cmd="del">🗑</button>`;
+    : it.k === 'p' ? `<button data-cmd="draw">Draw</button><button data-cmd="peek">Peek</button><button data-cmd="dealup">Deal↑</button><button data-cmd="dealdn">Deal↓</button><button data-cmd="shuffle">Shuffle</button><button data-cmd="flip">Flip</button><button data-cmd="rr">⟳90</button><button data-cmd="del">🗑</button>`
+      : pieceBar(it);
   barEl.classList.remove('hidden');
   placeBar();
+}
+
+/** The action bar of a piece, supply or bag: the basic moves (the full bar
+ *  of spec §2g comes with the piece interactions). Built from the public view only. */
+function pieceBar(it) {
+  const f = flagsOf(it, boxes), die = it.k === 'g' && typeAt(boxes, it.t)?.kind === 'die';
+  const b = (cmd, text) => `<button data-cmd="${cmd}">${text}</button>`;
+  if (it.k === 'b') return b('pull', 'Draw') + b('del', '🗑');
+  if (it.k === 's') return b('take', 'Take 1') + b('del', '🗑');
+  return (die ? b('roll', '🎲 Roll') : b('flip', 'Flip')) + (f.rotStep ? b('rl', '⟲') + b('rr', '⟳') : '') + (f.hand ? b('hand', '✋ Hand') : '') + b('del', '🗑');
 }
 
 // The bar lives OUTSIDE the scaled table (in screen space) so its buttons stay
@@ -1708,8 +1791,8 @@ function select(id) {
 function placeBar() {
   const it = view.items[sel];
   if (!it) return;
-  const [sx, sy] = tableToScreen(it.x + CARD_W / 2, it.y + CARD_H / 2);
-  const half = CARD_H * 0.6 * scale; // covers rotated cards too
+  const { w, h } = sizeOf(it, boxes), [sx, sy] = tableToScreen(it.x + w / 2, it.y + h / 2);
+  const half = Math.max(w, h) * 0.6 * scale; // covers rotated items too
   // The bar's real size: it wraps into rows on a narrow screen.
   const hw = barEl.offsetWidth / 2, bh = barEl.offsetHeight;
   const yAbove = sy - half - bh - 4;
@@ -1735,10 +1818,10 @@ const bulbs = new Map(); // "pid|itemId" -> {el, timer, f}
 /** Puts a bulb over its item (or the spot the item left), in screen space —
  *  re-run by layout() so bulbs follow pan, zoom, rotation and resizes. */
 function placeFx(b) {
-  const it = b.f.id && view.items[b.f.id];
-  const [sx, sy] = tableToScreen((it ? it.x : b.f.x) + CARD_W / 2, (it ? it.y : b.f.y) + CARD_H / 2);
+  const it = b.f.id && view.items[b.f.id], { w, h } = it ? sizeOf(it, boxes) : { w: CARD_W, h: CARD_H };
+  const [sx, sy] = tableToScreen((it ? it.x : b.f.x) + w / 2, (it ? it.y : b.f.y) + h / 2);
   b.el.style.left = `${clamp(sx, 30, wrapEl.clientWidth - 30)}px`;
-  b.el.style.top = `${Math.max(20, sy - CARD_H * 0.55 * scale)}px`;
+  b.el.style.top = `${Math.max(20, sy - h * 0.55 * scale)}px`;
 }
 function showFx(f) {
   // Script ops are credited "📜 Rules" in the log; a bulb per op would just
@@ -1766,11 +1849,11 @@ function showFx(f) {
   }, 1500);
 }
 
-/** A spot next to a pile for dealt cards, jittered so repeated deals stay visible. */
+/** A spot next to an item for dealt cards (or pieces), jittered so repeated deals stay visible. */
 function dealSpot(it) {
-  const j = () => Math.round(Math.random() * 24 - 12);
-  const x = it.x + CARD_W + 18;
-  return x + CARD_W <= TABLE_W ? { x: x + j(), y: it.y + j() } : { x: it.x - CARD_W - 18 + j(), y: it.y + j() };
+  const j = () => Math.round(Math.random() * 24 - 12), { w } = sizeOf(it, boxes);
+  const x = it.x + w + 18;
+  return x + w <= TABLE_W ? { x: x + j(), y: it.y + j() } : { x: it.x - w - 18 + j(), y: it.y + j() };
 }
 
 barEl.addEventListener('click', (e) => {
@@ -1779,8 +1862,8 @@ barEl.addEventListener('click', (e) => {
   if (!cmd || !it) return;
   const cmds = {
     flip: () => act({ t: 'flip', id: sel }),
-    rl: () => act({ t: 'rot', id: sel, rot: it.rot - 90 }),
-    rr: () => act({ t: 'rot', id: sel, rot: it.rot + 90 }),
+    rl: () => act({ t: 'rot', id: sel, rot: it.rot - (pieceLike(it) && flagsOf(it, boxes).rotStep || 90) }),
+    rr: () => act({ t: 'rot', id: sel, rot: it.rot + (pieceLike(it) && flagsOf(it, boxes).rotStep || 90) }),
     hand: () => act({ t: 'toHand', id: sel }),
     del: () => act({ t: 'del', id: sel }),
     draw: () => act({ t: 'draw', id: sel }),
@@ -1788,21 +1871,28 @@ barEl.addEventListener('click', (e) => {
     dealdn: () => act({ t: 'deal', id: sel, up: false, rot: uprightRot(), ...dealSpot(it) }),
     shuffle: () => act({ t: 'shuffle', id: sel }),
     peek: () => act({ t: 'peek', id: sel }), // the host logs it, then reveals the card to us alone (showPeek)
-    zoom: () => showZoom(it.d, it.i), // face-up card: public info, silent
+    zoom: () => showZoom(it), // face-up card: public info, silent
+    roll: () => act({ t: 'roll', ids: [sel] }),
+    take: () => act({ t: 'take', id: sel }),
+    pull: () => act({ t: 'pull', id: sel }),
   };
   cmds[cmd]?.();
 });
 
 // --- card zoom overlay (also used by the loud peek) -------------------------
 const peekEl = $('peek');
-let zoomed = null; // {d, i, caption}: the card the overlay shows (redrawn when its deck arrives)
-function showZoom(d, i, caption) {
-  zoomed = { d, i, caption };
+let zoomed = null; // {c, caption}: the card {d, i} or piece {t, f} the overlay shows (redrawn when its deck or box arrives)
+/** Shows card {d, i} or piece {t, f} `c` enlarged (a zoom, or a peek's answer). */
+function showZoom(c, caption) {
+  zoomed = { c, caption };
+  const v = 't' in c ? pieces.zoomView(c, boxes, faceImage) : { html: faceHTML(c.d, c.i), w: CARD_W, h: CARD_H };
   // Scale the card to comfortably fill the viewport — this is the readable
   // view for decks with small text.
-  const f = Math.min((window.innerHeight * 0.72) / CARD_H, (window.innerWidth * 0.85) / CARD_W);
-  $('peek-inner').style.transform = `scale(${f})`;
-  $('peek-inner').innerHTML = faceHTML(d, i);
+  const f = Math.min((window.innerHeight * 0.72) / v.h, (window.innerWidth * 0.85) / v.w), inner = $('peek-inner');
+  inner.style.transform = `scale(${f})`;
+  inner.style.width = 't' in c ? `${v.w}px` : '';
+  inner.style.height = 't' in c ? `${v.h}px` : '';
+  inner.innerHTML = v.html;
   $('peek-cap').textContent = caption || 'Click anywhere to close';
   peekEl.classList.remove('hidden');
 }
@@ -1814,10 +1904,10 @@ document.addEventListener('keydown', (e) => {
   if (!peekEl.classList.contains('hidden')) peekEl.classList.add('hidden');
   else select(null);
 });
-/** Reveals a peeked card {d, i} to this player only (the host's answer to a peek action). */
+/** Reveals a peeked card {d, i} or piece {t, f} to this player only (the host's answer to a peek action). */
 function showPeek(c) {
-  showZoom(c.d, c.i, 'Only you can see this — everyone knows you peeked. Click to close.');
-  if (CLI) cliMsgs.push(`peek: ${cardName(decks, c.d, c.i)}`);
+  showZoom(c, 'Only you can see this — everyone knows you peeked. Click to close.');
+  if (CLI) cliMsgs.push(`peek: ${'t' in c ? pieceName(boxes, c.t, c.f) : cardName(decks, c.d, c.i)}`);
 }
 
 // --- dragging table items / pan / pinch -------------------------------------
@@ -1889,7 +1979,7 @@ tableEl.addEventListener('pointerdown', (e) => {
       if (drag !== d || d.moved || pinch) return;
       drag = null;
       holdZoom = true;
-      showZoom(face.d, face.i, 'Release to close');
+      showZoom(face, 'Release to close');
     }, 450);
   }
 });
@@ -1926,7 +2016,8 @@ window.addEventListener('pointermove', (e) => {
     drag.el.style.zIndex = 100000; // visually on top; the host assigns the real z on move
     select(null);
   }
-  ({ x: drag.x, y: drag.y } = clampToFelt(p.x - drag.dx, p.y - drag.dy, TABLE_W));
+  const { w, h } = sizeOf(view.items[drag.id], boxes);
+  ({ x: drag.x, y: drag.y } = clampToTable(TABLE, p.x - drag.dx, p.y - drag.dy, w, h));
   drag.el.style.left = `${drag.x}px`;
   drag.el.style.top = `${drag.y}px`;
   // Throttled live position for the other players; the final one is sent on drop.
@@ -2005,9 +2096,12 @@ window.addEventListener('pointerup', (e) => {
 
 tableEl.addEventListener('dblclick', (e) => {
   const el = e.target.closest('.item');
-  const it = el && view.items[el.dataset.id];
+  const it = el && view.items[el.dataset.id], id = el?.dataset.id;
   if (!it) return;
-  act(it.k === 'c' ? { t: 'flip', id: el.dataset.id } : { t: 'draw', id: el.dataset.id });
+  // a card flips; a pile is drawn from; a die rolls, another piece turns; a supply or a bag hands one out beside it
+  const die = it.k === 'g' && typeAt(boxes, it.t)?.kind === 'die';
+  act(it.k === 'c' ? { t: 'flip', id } : it.k === 'p' ? { t: 'draw', id } : die ? { t: 'roll', ids: [id] } : it.k === 'g' ? { t: 'flip', id }
+    : { t: it.k === 's' ? 'take' : 'pull', id, ...dealSpot(it) });
 });
 
 // --- dragging out of the hand (a plain click zooms the card instead) -------
@@ -2029,7 +2123,7 @@ handEl.addEventListener('pointerdown', (e) => {
 handEl.addEventListener('click', (e) => {
   const el = e.target.closest('.hcard');
   const c = el && view.hand[+el.dataset.idx];
-  if (c && !handDragged) showZoom(c.d, c.i); // a drag dropped back on its card isn't a click
+  if (c && !handDragged) showZoom(c); // a drag dropped back on its card isn't a click
 });
 // A mouse wheel scrolls the hand sideways (it has no vertical scroll).
 handEl.addEventListener('wheel', (e) => {
@@ -2045,7 +2139,7 @@ function moveGhost(e) {
     handDrag.moved = true;
     ghost = document.createElement('div');
     ghost.id = 'ghost';
-    ghost.innerHTML = playFacedown() ? backHTML(handDrag.card.d) : faceHTML(handDrag.card.d, handDrag.card.i);
+    ghost.innerHTML = playFacedown() && !('t' in handDrag.card) ? backHTML(handDrag.card.d) : handFace(handDrag.card);
     document.body.appendChild(ghost);
   }
   ghost.style.left = `${e.clientX - handH * 5 / 14}px`; // center: half of hch*5/7 width
@@ -2065,11 +2159,11 @@ function dropGhost(e) {
   if (under?.closest('#hand-bar')) return; // dropped back into the hand
   const overItem = under?.closest('.item');
   const tgt = overItem && view.items[overItem.dataset.id]; // (view items carry no id: it is the key)
-  if (tgt?.k === 'p') { act({ t: 'handPile', idx, d: card.d, i: card.i, pile: overItem.dataset.id }); return; }
+  if (tgt?.k === 'p') { act({ t: 'handPile', idx, ...handRef(card), pile: overItem.dataset.id }); return; }
   if (!under?.closest('#table')) return;
-  const p = toTable(e);
+  const p = toTable(e), { w, h } = sizeOf('t' in card ? { k: 'g', t: card.t, f: card.f } : { k: 'c' }, boxes);
   // rot: cards land upright from the player's (possibly rotated) point of view
-  act({ t: 'play', idx, d: card.d, i: card.i, x: p.x - CARD_W / 2, y: p.y - CARD_H / 2, up: !playFacedown(), rot: uprightRot() });
+  act({ t: 'play', idx, ...handRef(card), x: p.x - w / 2, y: p.y - h / 2, up: !playFacedown(), rot: uprightRot() });
 }
 
 // Face-down mode is the player's own toggle, unless the rules script forces
@@ -2411,17 +2505,17 @@ function becomeHost(saved, unsaved) {
     console.error("this table's last save could not be resumed:", saved.behind);
     toast(`Couldn't resume this table's last save (${saved.behind}) — resumed an older one`);
   }
-  const t = createTable(saved ? { ...saved.state, decks: saved.decks } : {}, { pid });
-  if (saved) t.resume(myName); // re-sanitizes the decks, reloads the rules, everyone else waits offline
+  const t = createTable(saved ? { ...saved.state, decks: saved.decks, boxes: saved.boxes, boxSrc: saved.boxSrc } : {}, { pid });
+  if (saved) t.resume(myName); // re-sanitizes the decks and boxes, reloads the rules, everyone else waits offline
   else t.open(myName); // the host's seat and a standard deck
   T = t;
   role = 'host';
   hostBoot = Date.now();
   askGame = !saved;
   savedCatalog.clear();
-  if (saved?.stored) for (const id of Object.keys(saved.decks)) savedCatalog.add(id);
+  if (saved?.stored) for (const id of [...Object.keys(saved.decks), ...Object.keys(saved.boxes || {})]) savedCatalog.add(id);
   $('size-sel').classList.remove('hidden'); // table size is the host's call
-  $('size-sel').value = String(T.state.size);
+  $('size-sel').value = String(T.state.table.w);
   commit(true);
   flush(); // this screen's first snapshot
   // The images this table shows must be in this browser's storage: say at
@@ -2455,24 +2549,54 @@ function cliCardInfo(d, i) {
   const c = decks[d]?.cards[i];
   return { name: cardName(decks, d, i), ...(c?.txt ? { text: c.txt } : {}), ...(c?.meta !== undefined ? { meta: c.meta } : {}) };
 }
+/** Who sits in named seat `id` (from the public view), or null. */
+const seatHolder = (id) => Object.keys(view.players).find((p) => view.players[p].seatId === id) || null;
+/** How the terminal names owner `o`: a seat's name ("White"), else the player's. */
+const cliOwner = (o) => (o.startsWith('seat:') ? view.seats?.find((s) => s.id === o.slice(5))?.name || o.slice(5) : view.players[o]?.name || 'a player');
+/** What the terminal says of a shown piece face {t, f}: its type's name and
+ *  kind, the face's number, its label (or pips) and text — {} when its box isn't here. */
+function cliFace(t, f) {
+  const ty = typeAt(boxes, t), face = ty?.faces[f];
+  if (!face) return {};
+  const label = face.label ?? (face.pips !== undefined ? faceLabel(face, f) : undefined);
+  return { kind: ty.kind, type: ty.name, typeRef: t, face: f, ...(label !== undefined && { label }), ...(face.text && { text: face.text }) };
+}
+/** A public item as the terminal sees it (spec §2i). */
+function cliItemInfo(id, it) {
+  const at = { x: it.x | 0, y: it.y | 0 }, mine = { ...(it.owner && { owner: cliOwner(it.owner) }), ...(it.lock && { locked: true }) };
+  if (it.k === 'c') return { id, kind: 'card', ...at, up: !!it.up, ...(it.up ? cliCardInfo(it.d, it.i) : {}), ...mine };
+  if (it.k === 'p') {
+    const t = it.top, { type = '?', label } = t && !('d' in t) && t.up ? cliFace(t.t, t.f) : {};
+    const top = t && ('d' in t ? t.up && cliCardInfo(t.d, t.i) : t.up ? { type, ...(label !== undefined && { label }) } : { hidden: true });
+    return { id, kind: 'pile', name: it.name || null, count: it.n, ...at, ...(top && { top }), ...mine };
+  }
+  if (it.k === 'b') return { id, kind: 'bag', name: it.name || '', count: it.n, ...at, ...mine };
+  const face = 't' in it ? cliFace(it.t, it.f) : null;
+  if (it.k === 's') return { id, kind: 'supply', ...(face ? { ...face, kind: 'supply', pieceKind: face.kind } : { hidden: true }), ...at, ...mine };
+  if (!face) return { id, kind: 'hidden', ...(it.n > 1 && { n: it.n }), ...at, ...mine };
+  return face.kind ? { id, ...face, ...(it.n > 1 && { n: it.n }), ...at, ...mine } : { id, kind: 'unknown', typeRef: it.t, ...at, ...mine };
+}
 
 function cliSnapshot() {
   const rules = role === 'host' ? T?.state.rules : view.rules;
   const pub = (rules?.enabled && rules.public) || {};
   return {
     pid, name: myName, role, seq: view.seq, room: roomId,
-    // key names the card itself: a stable handle while indices shift (see cliExec 'play')
-    hand: view.hand.map((c, idx) => ({ idx, key: `${c.d}:${c.i}`, ...cliCardInfo(c.d, c.i) })),
+    table: { shape: view.table.shape, w: view.table.w, h: view.table.h },
+    seats: view.seats && view.seats.map((st) => ({ id: st.id, name: st.name, player: seatHolder(st.id) })),
+    me: { seat: view.players[pid]?.seat ?? null, ...(view.players[pid]?.seatId && { seatId: view.players[pid].seatId }) },
+    // key names the card (or piece) itself: a stable handle while indices shift (see cliExec 'play')
+    hand: view.hand.map((c, idx) => ('t' in c
+      ? { idx, key: `t:${c.t}:${c.f}`, kind: 'piece', name: typeAt(boxes, c.t)?.name || '?', ...(cliFace(c.t, c.f).label !== undefined && { label: cliFace(c.t, c.f).label }) }
+      : { idx, key: `${c.d}:${c.i}`, ...cliCardInfo(c.d, c.i) })),
     players: Object.entries(view.players).map(([id, pl]) => ({
       id, name: pl.name, seat: pl.seat, online: pl.online, cards: pl.handCount,
+      ...(pl.seatId ? { seatId: pl.seatId } : {}), ...(pl.seat == null ? { watching: true } : {}),
       ...([].concat(pub.turn).includes(id) ? { turn: true } : {}),
       ...(pub.badges?.[id] ? { badge: pub.badges[id] } : {}),
       ...(pub.winners?.includes(id) ? { winner: true } : {}),
     })),
-    items: Object.entries(view.items).map(([id, it]) => (it.k === 'c'
-      ? { id, kind: 'card', x: it.x | 0, y: it.y | 0, up: !!it.up, ...(it.up ? cliCardInfo(it.d, it.i) : {}) }
-      : { id, kind: 'pile', name: it.name || null, count: it.n, x: it.x | 0, y: it.y | 0,
-        ...(it.top?.up ? { top: cliCardInfo(it.top.d, it.top.i) } : {}) })),
+    items: Object.entries(view.items).map(([id, it]) => cliItemInfo(id, it)),
     buttons: ((rules?.enabled && rules.public?.buttons) || [])
       .filter((b) => !b.pid || b.pid === pid).map((b) => ({ id: b.id, label: b.label })),
     rules: rules?.enabled ? rules.name : null,
@@ -2485,37 +2609,42 @@ function cliSnapshot() {
   };
 }
 
-/** Resolves a command's item reference: an exact id, a pile name, or (for
- *  pile commands with no ref) the biggest pile on the table. */
+const CLI_KINDS = { p: 'pile', b: 'bag', s: 'supply' };
+/** Resolves a command's item reference: an exact id, a pile's or a bag's
+ *  name, a supply's type name, or (for pile commands with no ref) the
+ *  biggest pile on the table. */
 function cliItem(ref, kind) {
   if (ref != null && view.items[ref] && (!kind || view.items[ref].k === kind)) return String(ref);
   const ent = Object.entries(view.items).filter(([, it]) => !kind || it.k === kind);
   const s = String(ref ?? '').toLowerCase();
-  const byName = s && ent.find(([, it]) => (it.name || '').toLowerCase() === s);
+  const byName = s && ent.find(([, it]) => (it.name || '').toLowerCase() === s || (it.k === 's' && typeAt(boxes, it.t)?.name.toLowerCase() === s));
   if (byName) return byName[0];
   if (ref == null && kind === 'p') {
     const top = ent.sort((a, b) => (b[1].n || 0) - (a[1].n || 0))[0];
     if (top) return top[0];
   }
-  throw new Error(`no such ${kind === 'p' ? 'pile' : 'item'}: ${ref}`);
+  throw new Error(`no such ${CLI_KINDS[kind] || 'item'}: ${ref}`);
 }
 
-/** Drop spot for terminal plays/deals: explicit x/y, or jittered toward the
- *  player's own seat (like dropping cards in front of yourself). */
-function cliSpot(c) {
-  if (c.x != null && c.y != null) return clampToFelt(+c.x, +c.y, TABLE_W);
-  const seat = ((view.players[pid]?.seat ?? 90) * Math.PI) / 180;
-  const r = PLAY_R * (0.5 + Math.random() * 0.25);
-  return clampToFelt(TABLE_W / 2 + r * Math.cos(seat) - CARD_W / 2, TABLE_H / 2 + r * Math.sin(seat) - CARD_H / 2, TABLE_W);
+/** Drop spot for terminal plays/deals (an item w × h): explicit x/y, or
+ *  jittered toward the player's own seat (like dropping cards in front of yourself). */
+function cliSpot(c, w = CARD_W, h = CARD_H) {
+  if (c.x != null && c.y != null) return clampToTable(TABLE, +c.x, +c.y, w, h);
+  const S = seatPoint(TABLE, view.players[pid]?.seat ?? 90), cx = TABLE_W / 2, cy = TABLE_H / 2;
+  const f = (0.5 + Math.random() * 0.25) * (TABLE.shape === 'rect' ? 1 : PLAY_R / Math.hypot(S.x - cx, S.y - cy));
+  return clampToTable(TABLE, cx + (S.x - cx) * f - w / 2, cy + (S.y - cy) * f - h / 2, w, h);
 }
 
-/** The hand index a command means: by card `key` when given (on the host
- *  seat a play shows in view.hand at once, so indices shift between two queued plays), else idx. */
+/** The hand index a command means: by card (or piece) `key` when given (on
+ *  the host seat a play shows in view.hand at once, so indices shift between
+ *  two queued plays), else idx. */
 function cliHandIdx(c) {
-  const idx = c.key ? view.hand.findIndex((h) => `${h.d}:${h.i}` === c.key) : +c.idx;
+  const idx = c.key ? view.hand.findIndex((e) => ('t' in e ? `t:${e.t}:${e.f}` : `${e.d}:${e.i}`) === c.key) : +c.idx;
   if (!view.hand[idx]) throw new Error(`no hand card ${c.key || `#${c.idx}`}`);
   return idx;
 }
+/** Whether this player may handle public item `it` (nobody else owns it): what `roll all` rolls. */
+const cliMine = (it) => !it.owner || (it.owner.startsWith('seat:') ? seatHolder(it.owner.slice(5)) : it.owner) === pid;
 
 function cliExec(c) {
   try {
@@ -2523,21 +2652,25 @@ function cliExec(c) {
       case 'chat': { const msg = String(c.msg ?? '').slice(0, 300); if (msg) act({ t: 'chat', msg }); break; }
       case 'play': {
         const idx = cliHandIdx(c), card = view.hand[idx];
-        const at = cliSpot(c);
+        const { w, h } = sizeOf('t' in card ? { k: 'g', t: card.t, f: card.f } : { k: 'c' }, boxes), at = cliSpot(c, w, h);
         // as in the drag path, the rules' face-down hint wins over the default face up
-        act({ t: 'play', idx, d: card.d, i: card.i, x: at.x, y: at.y, up: c.up !== false && !forcedFacedown(), rot: uprightRot() });
+        act({ t: 'play', idx, ...handRef(card), x: at.x, y: at.y, up: c.up !== false && !forcedFacedown(), rot: uprightRot() });
         break;
       }
       case 'discard': {
         const idx = cliHandIdx(c), card = view.hand[idx];
-        act({ t: 'handPile', idx, d: card.d, i: card.i, pile: cliItem(c.pile, 'p') });
+        act({ t: 'handPile', idx, ...handRef(card), pile: cliItem(c.pile, 'p') });
         break;
       }
       case 'draw': act({ t: 'draw', id: cliItem(c.id, 'p') }); break;
       case 'deal': { const at = cliSpot(c); act({ t: 'deal', id: cliItem(c.id, 'p'), up: !!c.up, rot: uprightRot(), x: at.x, y: at.y }); break; }
       case 'shuffle': act({ t: 'shuffle', id: cliItem(c.id, 'p') }); break;
       case 'flip': act({ t: 'flip', id: cliItem(c.id) }); break;
-      case 'move': { const at = clampToFelt(+c.x || 0, +c.y || 0, TABLE_W); act({ t: 'move', id: cliItem(c.id), x: at.x, y: at.y }); break; }
+      case 'move': {
+        const id = cliItem(c.id), { w, h } = sizeOf(view.items[id], boxes), at = clampToTable(TABLE, +c.x || 0, +c.y || 0, w, h);
+        act({ t: 'move', id, x: at.x, y: at.y });
+        break;
+      }
       case 'rot': act({ t: 'rot', id: cliItem(c.id), rot: +c.deg || 0 }); break;
       case 'toHand': act({ t: 'toHand', id: cliItem(c.id) }); break;
       case 'peek': { // a face-up card is public; anything else is answered privately by the host (showPeek)
@@ -2547,6 +2680,24 @@ function cliExec(c) {
         break;
       }
       case 'btn': act({ t: 'rulesBtn', id: String(c.id) }); break;
+      case 'roll': { // `all`: every die this player may handle that isn't hidden (at most 20)
+        const ids = c.all ? Object.keys(view.items).filter((id) => { const it = view.items[id]; return it.k === 'g' && typeAt(boxes, it.t)?.kind === 'die' && cliMine(it); }).slice(0, 20)
+          : (Array.isArray(c.ids) ? c.ids : [c.ids]).map((id) => cliItem(id));
+        if (!ids.length) throw new Error('no dice to roll');
+        act({ t: 'roll', ids });
+        break;
+      }
+      case 'face': act({ t: 'face', id: cliItem(c.id), f: +c.f }); break;
+      case 'take': case 'pull': {
+        const id = cliItem(c.id, c.t === 'take' ? 's' : 'b'), at = c.x != null && c.y != null ? { x: +c.x, y: +c.y } : dealSpot(view.items[id]);
+        act({ t: c.t, id, ...(c.hand ? { hand: true } : at) });
+        break;
+      }
+      case 'split': act({ t: 'split', id: cliItem(c.id), ...(c.n != null && { n: +c.n }), ...(c.x != null && c.y != null && { x: +c.x, y: +c.y }) }); break;
+      case 'toBag': act({ t: 'toBag', id: cliItem(c.id), bag: cliItem(c.bag, 'b') }); break;
+      case 'lock': act({ t: 'lock', id: cliItem(c.id), on: c.on !== false }); break;
+      case 'owner': act({ t: 'owner', id: cliItem(c.id), to: c.to ?? null }); break;
+      case 'seat': act(c.watch ? { t: 'seat', watch: true } : c.sit ? { t: 'seat', sit: true } : { t: 'seat', id: String(c.id) }); break;
       default: throw new Error(`unknown command: ${c.t}`);
     }
   } catch (err) {
@@ -2624,7 +2775,7 @@ function askName() {
 async function boot() {
   // Module skew: a page cached across a deploy could pair this app.js with
   // other versions of its modules. Stop here, plainly, not with odd errors later.
-  const skew = [['core.js', CORE_V], ['templates.js', TEMPLATES_V], ['store.js', store.MODULE_V]].filter(([, v]) => v !== MODULE_V);
+  const skew = [['core.js', CORE_V], ['grid.js', GRID_V], ['pieces.js', pieces.MODULE_V], ['templates.js', TEMPLATES_V], ['store.js', store.MODULE_V]].filter(([, v]) => v !== MODULE_V);
   if (skew.length) {
     console.error(`module version mismatch: app.js is v${MODULE_V}, ${skew.map(([f, v]) => `${f} v${v}`).join(', ')}`);
     document.body.insertAdjacentHTML('afterbegin', '<div id="skew-banner">Card Table was updated while this page loaded — reload this page</div>');
@@ -2692,6 +2843,7 @@ async function boot() {
     (err) => console.error('image cache upkeep failed', err))), 5000);
 }
 // The test hook (the harness sets window.CARDTABLE_TEST before load): the same
-// act() a click uses, the view, this player's hand and log, and the counters.
-if (window.CARDTABLE_TEST) window.__ct = { act, view: () => view, hand: () => view.hand, log: () => view.log, perf };
+// act() a click uses, the view, this player's hand and log, the game boxes it
+// holds (cleanBox'd; the host's are its table's), and the counters.
+if (window.CARDTABLE_TEST) window.__ct = { act, view: () => view, hand: () => view.hand, log: () => view.log, boxes: () => boxes, perf };
 boot().catch((err) => { console.error('boot failed', err); toast(`Failed to start: ${err.message}`); });

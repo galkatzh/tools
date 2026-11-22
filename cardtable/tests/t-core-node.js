@@ -32,10 +32,13 @@ function guard(fn) { try { fn(); } catch (e) { ok(false, 'scenario crashed: ' + 
   const pileOf = (T) => Object.keys(T.state.items).find((id) => T.state.items[id].k === 'p');
 
   section('core.js is DOM-free and self-contained');
-  const src = fs.readFileSync(path.join(APP, 'core.js'), 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''); // code only
+  // (Phase 2: core imports the pure grid.js and templates.js — spec §0.4 — so each is held to the same rule)
+  const code = (f) => fs.readFileSync(path.join(APP, f), 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''); // code only
+  const src = code('core.js') + code('grid.js') + code('templates.js').replace(/`[\s\S]*?`/g, '``'); // (the templates' script texts are data)
   const used = src.match(/\b(window|document|localStorage|sessionStorage|setTimeout|setInterval|fetch|joinRoom)\b/g);
   ok(!used, `no DOM, storage, timer or network APIs (${used || 'none'})`);
-  ok(!/^\s*import\b/m.test(src), 'it imports nothing');
+  const imports = [...src.matchAll(/^\s*import\b.*?from\s+'([^']+)'/gm)].map((m) => m[1]);
+  ok(imports.every((f) => /^\.\/(grid|templates)\.js\?v=\d+$/.test(f)), `it imports nothing but the pure grid.js and templates.js (${imports.join(', ')})`);
 
   section('a table is created, dealt, shuffled and played');
   guard(() => {
@@ -206,7 +209,7 @@ function guard(fn) { try { fn(); } catch (e) { ok(false, 'scenario crashed: ' + 
     }, { pid: HOST });
     T.resume('Alice');
     const it = T.state.items.x1, g = T.api.geom();
-    ok(T.state.size === 1300 && Math.hypot(it.x + 50 - g.cx, it.y + 70 - g.cy) <= g.r + 1e-9, 'the size defaults and stranded items are pulled onto the felt');
+    ok(T.state.table.shape === 'round' && T.state.table.w === 1300 && Math.hypot(it.x + 50 - g.cx, it.y + 70 - g.cy) <= g.r + 1e-9, 'the size defaults and stranded items are pulled onto the felt');
     ok(T.state.players[BOB].seat === 90 && T.state.players[HOST].seat === 270, 'seats are assigned');
     ok(!T.state.rules.enabled && T.rulesError && T.drain().some((e) => e.t === 'toast' && /Saved rules failed to load/.test(e.msg)), 'a saved script that no longer loads disables the rules, loudly');
     ok(!('extra' in T.state.decks.dd) && !('bad' in T.state.decks), 'saved decks pass the sanitizer again (an unusable one is dropped)');

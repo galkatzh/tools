@@ -43,7 +43,7 @@ const NAMES = { host: 'Alice', a: 'Bob', b: 'Carol' };
   const ids = async (p) => Object.keys((await L.view(p)).items).sort();
 
   /** Waits for every screen to agree, then checks each: its view's items,
-   *  players, log, rules and size equal the public table core recomputes from
+   *  players, log, rules, table, seats and handy equal the public table core recomputes from
    *  the host's save, and its hand equals that player's hand in the save. */
   async function converged(label, o = {}) {
     let last = { problems: { host: ['no save'] } };
@@ -52,14 +52,14 @@ const NAMES = { host: 'Alice', a: 'Bob', b: 'Carol' };
       if (!rec?.state) return false;
       const t = L.truthOf(rec, pids.host);
       const want = {
-        items: t.items, players: t.players, log: t.log, size: rec.state.size,
+        items: t.items, players: t.players, log: t.log, table: rec.state.table, seats: rec.state.seats, handy: t.handy, // (Phase 2: table, seats and handy replace size)
         rules: t.rules ? { name: t.rules.name, enabled: t.rules.enabled, public: t.rules.public } : null,
       };
       const problems = {};
       const views = {};
       for (const [k, p] of Object.entries(P)) {
         const v = (views[k] = await L.view(p));
-        problems[k] = ['items', 'players', 'log', 'rules', 'size'].map((f) => L.diff(v[f], want[f], f))
+        problems[k] = ['items', 'players', 'log', 'rules', 'table', 'seats', 'handy'].map((f) => L.diff(v[f], want[f], f))
           .concat(L.diff(v.hand, t.hands[pids[k]], 'hand')).filter(Boolean);
       }
       last = { t, views, problems };

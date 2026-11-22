@@ -168,15 +168,34 @@ class Bridge:
     def draw(self, pile=None): self.send(t='draw', id=pile)
     def btn(self, bid): self.send(t='btn', id=bid)
 
+    def roll(self, *ids):
+        """Rolls dice (ids) together, in one roll."""
+        self.send(t='roll', ids=list(ids))
+
+    def take(self, supply, x=None, y=None, hand=False):
+        """Takes a piece from a supply (an id or its type's name): onto the
+        table (at x, y, or beside it), or into the hand."""
+        self.send(t='take', id=supply, x=x, y=y, hand=hand)
+
+    def seat(self, sid):
+        """Sits in named seat `sid`; '-' stands up to watch, '+' sits down
+        again (automatic seating)."""
+        if sid == '-':
+            self.send(t='seat', watch=True)
+        elif sid == '+':
+            self.send(t='seat', sit=True)
+        else:
+            self.send(t='seat', id=sid)
+
     def close(self):
         self._server.shutdown()
 
 
 # ---------------------------------------------------------------------------
 HELP = """commands:
-  hand                    your cards, with indices
-  table                   piles (with a face-up top card) and table cards
-  players                 who sits where (⏳ turn, ⭐ badges, 🏆)
+  hand                    your cards (and pieces), with indices
+  table                   cards, piles, pieces, supplies and bags
+  players                 who sits where (⏳ turn, ⭐ badges, 🏆, [seat], watching)
   log [n]                 last n log lines (default 15)
   buttons                 rules buttons you can press
   play <idx...> [--down]  play hand card(s) at your seat (--down = face down)
@@ -186,6 +205,15 @@ HELP = """commands:
   shuffle [pile]          shuffle a pile
   flip|peek|tohand <id>   flip / peek at / take a table card
   move <id> <x> <y>       move an item (table coords)
+  roll <id...> | roll all roll dice together (all: every die you may handle)
+  face <id> <f>           turn a piece to face f (0, 1, …; not a die)
+  take <supply> [x y] [--hand]  take a piece from a supply (id or type name)
+  pull <bag> [x y] [--hand]     draw a random piece from a bag (id or name)
+  split <id> [n] [x y]    take n (default 1) off a ×N stack
+  bag <id> <bag>          put a piece into a bag
+  lock|unlock <id>        lock an item in place, or free it
+  claim|release <id>      make an item yours, or nobody's
+  seat <id> | seat - | seat +   sit in a named seat; - stand up to watch; + sit down again
   btn <id>                press a rules button (see "buttons")
   chat <msg>              say something (also "!commands" for rules scripts)
   quit"""
@@ -197,6 +225,58 @@ def fmt_card(c):
     if text and c['name'].startswith('“'):
         return f'“{text}”'
     return c['name'] + (f' — {text}' if text and text != c['name'] else '')
+
+
+def fmt_piece(p):
+    """A shown piece: its face's label (if any), then its type's name."""
+    return (f"{p['label']} " if p.get('label') is not None else '') + p['type']
+
+
+def fmt_top(t):
+    """A pile's top: a hidden piece, a shown piece, or a card."""
+    return 'hidden piece' if t.get('hidden') else fmt_piece(t) if 'type' in t else fmt_card(t)
+
+
+def fmt_hand(c):
+    """A hand entry: a card, or a piece (its label, then its type's name)."""
+    return fmt_piece({'label': c.get('label'), 'type': c['name']}) if c.get('kind') == 'piece' else fmt_card(c)
+
+
+def fmt_item(it):
+    """A table item as one line: every line keeps the `  [id] … @x,y` frame
+    (parsers split on it), then the owner and 🔒 when present (spec §2i)."""
+    at = f" @{it['x']},{it['y']}"
+    tail = (f" owner:{it['owner']}" if it.get('owner') else '') + (' 🔒' if it.get('locked') else '')
+    n = f" ×{it['n']}" if it.get('n') else ''
+    head = f"  [{it['id']}] "
+    kind = it['kind']
+    if kind == 'card':
+        return f"{head}{fmt_card(it) if it['up'] else 'face-down card'}{at}{tail}"
+    if kind == 'pile':
+        top = f" top: {fmt_top(it['top'])}" if it.get('top') else ''
+        return f"{head}pile \"{it['name'] or 'stack'}\" ×{it['count']}{top}{at}{tail}"
+    if kind == 'bag':
+        return f"{head}bag \"{it['name']}\" ×{it['count']}{at}{tail}"
+    if kind == 'supply':
+        what = 'of hidden pieces' if it.get('hidden') else f"{fmt_piece(it)} ({it['pieceKind']})"
+        return f"{head}supply {what} ∞{at}{tail}"
+    if kind == 'hidden':
+        return f"{head}hidden piece{n}{at}{tail}"
+    if kind == 'board':
+        return f"{head}board {it['type']} (board){at}{tail}"
+    if kind == 'unknown':
+        return f"{head}? unknown piece{at}{tail}"
+    return f"{head}{fmt_piece(it)} ({kind}){n}{at}{tail}"
+
+
+def spot(args):
+    """Splits args into (the rest joined, x, y): x and y when the last two are numbers."""
+    try:
+        if len(args) >= 2 and all(math.isfinite(float(a)) for a in args[-2:]):
+            return ' '.join(args[:-2]), float(args[-2]), float(args[-1])
+    except ValueError:
+        pass
+    return ' '.join(args), None, None
 
 
 def out(s):
@@ -235,23 +315,21 @@ def run_cmd(bridge, line):
         raise SystemExit
     elif cmd == 'hand':
         for c in s['hand']:
-            out(f" {c['idx']:2}. {fmt_card(c)}")
+            out(f" {c['idx']:2}. {fmt_hand(c)}")
         if not s['hand']:
             out('(empty hand)')
     elif cmd == 'table':
         for it in s['items']:
-            if it['kind'] == 'pile':
-                top = f" top: {fmt_card(it['top'])}" if it.get('top') else ''
-                out(f"  [{it['id']}] pile \"{it['name'] or 'stack'}\" ×{it['count']}{top} @{it['x']},{it['y']}")
-            else:
-                out(f"  [{it['id']}] {fmt_card(it) if it['up'] else 'face-down card'} @{it['x']},{it['y']}")
+            out(fmt_item(it))
     elif cmd == 'players':
         for p in s['players']:
             mark = '🏆' if p.get('winner') else ('⏳' if p.get('turn') else ' ')
             you = ' (you)' if p['id'] == s['pid'] else ''
+            seat = f" [{p['seatId']}]" if p.get('seatId') else ''
             badge = f" {p['badge']}" if p.get('badge') else ''
+            watching = ' (watching)' if p.get('watching') else ''
             off = '' if p['online'] else ' (offline)'
-            out(f"  {mark} {p['name']}{you} 🂠{p['cards']}{badge}{off}")
+            out(f"  {mark} {p['name']}{you}{seat} 🂠{p['cards']}{badge}{watching}{off}")
     elif cmd == 'log':
         n = int(args[0]) if args else 15
         for e in s['log'][-n:]:
@@ -287,6 +365,40 @@ def run_cmd(bridge, line):
     elif cmd == 'move':
         x, y = need(args, 3, 'move <id> <x> <y>')
         bridge.send(t='move', id=args[0], x=x, y=y)
+    elif cmd == 'roll':
+        if not args:
+            raise ValueError('roll <id...> | roll all')
+        if args[0] == 'all':
+            bridge.send(t='roll', all=True)
+        else:
+            bridge.roll(*args)
+    elif cmd == 'face':
+        f, = need(args, 2, 'face <id> <f>')
+        bridge.send(t='face', id=args[0], f=f)
+    elif cmd in ('take', 'pull'):
+        ref, x, y = spot([a for a in args if a != '--hand'])
+        if not ref:
+            raise ValueError(f"{cmd} <{'supply' if cmd == 'take' else 'bag'}> [x y] [--hand]")
+        bridge.send(t=cmd, id=ref, x=x, y=y, hand='--hand' in args)
+    elif cmd == 'split':
+        nums = need(args, max(len(args), 1), 'split <id> [n] [x y]')
+        if len(nums) > 3:
+            raise ValueError('split <id> [n] [x y]')
+        n, x, y = ([None] + nums) if len(nums) == 2 else (nums + [None] * 3)[:3]
+        bridge.send(t='split', id=args[0], n=n, x=x, y=y)
+    elif cmd == 'bag':
+        if len(args) < 2:
+            raise ValueError('bag <id> <bag>')
+        bridge.send(t='toBag', id=args[0], bag=' '.join(args[1:]))
+    elif cmd in ('lock', 'unlock'):
+        need(args, 1, f'{cmd} <id>')
+        bridge.send(t='lock', id=args[0], on=cmd == 'lock')
+    elif cmd in ('claim', 'release'):
+        need(args, 1, f'{cmd} <id>')
+        bridge.send(t='owner', id=args[0], to=s['pid'] if cmd == 'claim' else None)
+    elif cmd == 'seat':
+        need(args, 1, 'seat <id> | seat - | seat +')
+        bridge.seat(args[0])
     elif cmd == 'chat':
         bridge.chat(' '.join(args))
     else:

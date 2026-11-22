@@ -307,9 +307,36 @@ and the anti-cheat record all apply unchanged. Two modes:
   hijacks the room save, even in the host's browser). That tab is a bot's
   body; your script is its brain.
 
+Game pieces have their own commands (both REPLs; `help` lists them):
+
+| Command | Does |
+|---|---|
+| `roll <id…>` / `roll all` | rolls dice together (`all`: every die you may handle) |
+| `face <id> <f>` | turns a piece to face `f` (0, 1, …) — not a die: dice are rolled |
+| `take <supply> [x y] [--hand]` | takes a piece from a supply (an id or its type's name) |
+| `pull <bag> [x y] [--hand]` | draws a random piece from a bag (an id or its name) |
+| `split <id> [n] [x y]` | takes `n` (default 1) off a ×N stack |
+| `bag <id> <bag>` | puts a piece into a bag |
+| `lock <id>` / `unlock <id>` | locks an item in place, or frees it |
+| `claim <id>` / `release <id>` | makes an item yours, or nobody's |
+| `seat <id>` / `seat -` / `seat +` | sits in a named seat; stands up to watch; sits down again |
+
+`table` lists pieces too, one per line in the same `  [id] … @x,y` frame,
+the owner and 🔒 after it when present: `[ab12cd34] ♛ Light man (token)
+×3 @412,620 owner:Alice 🔒`, `[cd34ef56] hidden piece ×2 @80,90`,
+`[ef56ab12] supply Gold (token) ∞ @200,200`, `[0a1b2c3d] bag "Tiles" ×42
+@300,300`, `[1a2b3c4d] pile "stack" ×5 top: hidden piece @500,500`,
+`[2b3c4d5e] board Chessboard (board) @0,0 🔒`. `players` shows a named
+seat as `[light]`, and a watcher as `(watching)`.
+
 Scripting: `require('./cli.js')` / `from cli import Bridge` exposes the
 bridge as a small API — the same in both languages: `state`, `send`,
-`wait`, `on`, plus `chat`, `play`, `draw`, `btn`. `play()` names the card
+`wait`, `on`, plus `chat`, `play`, `draw`, `btn`, `roll(*ids)`,
+`take(supply, x, y, hand)` and `seat(id)` (`'-'` stands up, `'+'` sits
+down again). The state also carries the table (`shape`, `w`, `h`), the
+named `seats` (each with its `player`, or null), `me` (your `seat` angle
+and `seatId`), and the pieces (`kind`, `type`, `typeRef`, `face`, `label`,
+…; a hidden one only `kind: "hidden"`). `play()` names the card
 by its `key` (each hand card has one), so the tab's own state lag can't
 change which card goes. Pass it the card itself — `play(s.hand[i])` from
 a state you hold — when you play several: a bare index is resolved

@@ -104,16 +104,31 @@ if it ever matters.
 A thin wrapper over the table's existing ops (today in `core.js`):
 
 - **Reads**: `t.players()` (id/name/seat/online/handCount, seat-ordered;
-  `host: true` marks the host's own seat, for host-only commands),
-  `t.item(id)`, `t.find(q)`, `t.piles()`, `t.items()`, `t.hand(pid)` (the
-  host already holds all hands, pile orders and face-down identities —
-  guests never receive those, see README "Honest limits").
-  - `t.item(id)` → `{id, ...item}` (a pile with its `cards`), or `null`: one
-    lookup, whatever the table's size.
-  - `t.find({kind, name, up})` → the matching items: `kind` `'card'` or
-    `'pile'`, `name` a pile's name (exact, any case), `up` the face a card
-    shows (a pile: its top card). Any other key, or another kind, throws a
-    `TypeError` naming the known ones. It reads an index by kind.
+  `host: true` marks the host's own seat, for host-only commands; `seatId`
+  for a player in a named seat). **Watchers are left out** — the players
+  who stood up, or found no free named seat — so a script that deals to
+  `t.players()` never deals one in; `t.players({all: true})` includes them,
+  with `seat: null`, last. Then `t.item(id)`, `t.find(q)`, `t.piles()`,
+  `t.items()`, `t.hand(pid)` (the host already holds all hands, pile
+  orders, face-down identities, hidden pieces and bag contents — guests
+  never receive those, see README "Honest limits").
+  - `t.item(id)` → `{id, ...item}` (a pile with its `cards`, a bag with its
+    `of`), or `null`: one lookup, whatever the table's size.
+  - `t.find({kind, name, up, type, owner})` → the matching items. `kind`:
+    `'card'`, `'pile'`, `'piece'`, `'supply'`, `'bag'`, or a piece kind
+    (`'token'`, `'tile'`, `'die'`, `'board'`: pieces of that kind); `name`:
+    a pile's or a bag's name (exact, any case); `up`: the face a card
+    shows (a pile: its top; a piece or supply: not hidden); `type`: a
+    `'box/type'` ref, or a bare type id matched in any box; `owner`: a
+    player id (it also matches items owned by that player's named seat,
+    `'seat:<id>'`) or a `'seat:<id>'`. Any other key, or another kind,
+    throws a `TypeError` naming the known ones. It reads indexes by kind,
+    type and owner.
+  - `t.type(ref)` → a piece type, copied: `{kind, name, w, h, shape, faces,
+    back?, rotStep, hand, stack, meta, box}` (`box`: its box's name), or
+    `null`. `ref` is a `'box/type'` string or an item's `{t}`. A type's
+    (and a box's) `meta` is **public**: every player's page holds the
+    boxes, so it is never a place for secrets — keep those in `t.data`.
   - `t.piles()` → every pile (the same index).
   - `t.items()` → every item: it copies the whole table, O(n) — on a
     1,000-card table, prefer `t.item` and `t.find`, especially in hooks that
@@ -152,7 +167,27 @@ A thin wrapper over the table's existing ops (today in `core.js`):
   `TypeError`, since a script deck has no images) without creating a pile, so a script can hold
   a huge deck and only materialize small piles from it via
   `t.newPile([{d, i, up}])`, keeping the broadcast state light — so a
-  script can set up its own material from scratch. Anything a human can do, a script can
+  script can set up its own material from scratch.
+  - **Pieces** (Phase 2: game boxes bring tokens, tiles, dice, boards,
+    supplies and bags). The same ops work on them, with the semantics of
+    the human actions and without the owner and lock checks — scripts own
+    the rules: `t.move` (a board keeps
+    its place below everything else), `t.rot` (in steps of the type's
+    `rotStep`), `t.flip` (a type with a back turns face down or up, two
+    faces swap, more faces turn to the next; a die returns `false` with a
+    `console.warn`: dice are rolled), `t.remove`, `t.toHand(pid, id)` (one
+    piece of a ×N stack, of a type that may be held), `t.playFromHand` (a
+    piece entry `{t, f}` lands as a piece), `t.deal` (from a pile of
+    pieces: a piece, `{id, t, f}`), and `t.newPile([{t, f, up}])` (pieces
+    that stack as a pile, of one size; a mix, or an unknown type or face,
+    throws a `TypeError`). `t.roll(id)` rolls a die with the host's crypto
+    RNG and returns its new face index (`false`: not a die, or gone); it
+    logs "📜 Rules rolled 5", or "rolled a hidden die" for one face down.
+    `t.random()` → a float in `[0, 1)` from the same RNG; an action's draws
+    are logged once ("used randomness (3 draws)"). Every op that adds items
+    stops at the table's 5,000 (it returns `false` with a `console.warn`).
+
+  Anything a human can do, a script can
   do — that is the operational definition of "can run arbitrary games".
   Ops performed by scripts act as a synthetic **"📜 Rules"** actor: they go
   through `logEvent`/`mark`, so automations are visible in the table log —
@@ -171,8 +206,10 @@ A thin wrapper over the table's existing ops (today in `core.js`):
 - **Convenience utils** (pure functions, no engine state):
   `t.hostId` (the host's own player id — for host-only buttons
   `{pid: t.hostId}` and host-only chat commands), `t.geom()` →
-  `{size, cx, cy, r}` (the table's size, centre and the radius cards may
-  lie within — for laying cards out on any table size),
+  `{shape, w, h, size, cx, cy, r}` (the table: round or rect, its width and
+  height, `size` = `w`, its centre and `r` = min(w, h) / 2 − 110, the radius
+  cards may lie within on a round table — for laying cards out on any
+  table),
   `t.nextSeat(pid)` (the next seat clockwise whose player is **online** —
   offline players are skipped, `pid` itself counts even when offline; a
   fixed-partnership game that must wait for a dropped player rotates over
@@ -190,13 +227,18 @@ returns a reason — and the actor is not the host-script itself — skip the
 mutation and send the actor a targeted `note` message (new tiny Trystero
 action) → toast on their screen (and, on a terminal-bridged tab, a
 `note: …` in the bridge's `msgs`). The veto re-sends the items the action
-named (`id`, `pile`, `onto`, the first few `ids`) and, for a hand action, the
+named (`id`, `pile`, `onto`, `bag`, the first few `ids`) and, for a hand action, the
 actor's hand: the next patch carries their true state, and the actor's
 optimistic drag reverts. An action that changes nothing (its target vanished
 a moment earlier) re-sends them the same way, and so does an action that
 flood control refused (those re-sends are themselves rate-limited). Exempt from validation: `hello`, `name`, `chat`,
 `rulesBtn` (the engine itself refuses a button not offered to the
-player), and the host-only `size`/`setRules` actions. `peek` IS validated:
+player), and the host-only `size` (= `table`), `setRules`, `loadBox` and
+`clear` actions. The piece actions (`roll`, `face`, `split`, `join`, `take`,
+`pull`, `toBag`, `lock`, `owner`, `seat`) are validated like the card ones;
+one the engine itself refuses after `validate` (an item owned by someone
+else, a locked one, a hidden one, a full table) tells the actor why and
+runs no `onAction`. `peek` IS validated:
 on a free table peeking stays a social (logged) action, but a game may
 close its piles (CAH vetoes every peek, Hold'em the deck, muck and burns
 mid-hand).

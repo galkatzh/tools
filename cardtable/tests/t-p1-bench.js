@@ -88,7 +88,7 @@ async function pan(p) {
   section('an empty large table (the B4 baseline)');
   await L.act(host, { t: 'size', size: 2400 });
   for (const id of Object.keys((await L.view(host)).items)) await L.act(host, { t: 'del', id });
-  ok(await L.until(async () => { const v = await L.view(phone); return v.size === 2400 && !Object.keys(v.items).length; }, 15000),
+  ok(await L.until(async () => { const v = await L.view(phone); return v.table.w === 2400 && !Object.keys(v.items).length; }, 15000), // (Phase 2: the size is table.w)
     'the phone shows an empty table, 2400 units across');
   await h.sleep(1000);
   const base = await pan(phone);

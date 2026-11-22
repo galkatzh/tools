@@ -118,7 +118,7 @@ function truthOf(rec, hostPid) {
   const s = JSON.parse(JSON.stringify(rec.state));
   const T = core.createTable(s, { pid: hostPid });
   const hands = Object.fromEntries(Object.entries(s.players).map(([p, pl]) => [p, pl.hand]));
-  return { items: T.publicItems(), players: T.publicPlayers(), log: s.log, rules: s.rules, hands };
+  return { items: T.publicItems(), players: T.publicPlayers(), log: s.log, rules: s.rules, hands, handy: T.handy > 0 };
 }
 
 /** JSON with sorted keys at every level: equal values ⇔ equal strings. */

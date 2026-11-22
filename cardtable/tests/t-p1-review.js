@@ -22,6 +22,7 @@
 const h = require('./h');
 const L = require('./p1-lib');
 const { mallory } = require('./final-lib');
+const { STATE_V } = require(require('path').join(h.APP_ROOT, 'cardtable/core.js'));
 const { ok, section } = h;
 
 /** The throwaway script of spec §1k: 20 standard decks, 1,000 cards dealt face up in a grid. */
@@ -146,7 +147,7 @@ const sameTable = async (x, y) => { const [a, b] = [await L.view(x), await L.vie
   const room = zed.url(), id = room.match(/#room~([0-9a-f]+)/)[1];
   await zed.goto(h.plain(env)); // leaving saves the table (pagehide); the app must not run while the save is planted
   const { state } = await h.idb(zed, 'saves', id);
-  await h.plantSave(zed, id, { ...state, v: 3 });
+  await h.plantSave(zed, id, { ...state, v: STATE_V + 1 }); // (a version this Card Table doesn't know yet)
   const planted = JSON.stringify(await h.idb(zed, 'saves', id));
   await zed.goto(room);
   await h.toastHas(zed, 'saved by a newer Card Table');

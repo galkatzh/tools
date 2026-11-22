@@ -1111,3 +1111,85 @@ export const GAMES = [
   { k: 'free', emoji: '🖐', title: 'Free table', pitch: 'No rules: deal, move and flip cards however you like', players: 'any number' },
   { k: 'custom', emoji: '📜', title: 'Custom script…', short: 'Custom…', pitch: 'Write or paste your own rules', players: '' },
 ];
+
+// --- the built-in game boxes (spec §2g) -----------------------------------------
+// Art-free classics, a few KB of JSON each, in the Box shape that core.js's
+// cleanBox checks (faces shorthand and defaults included); their coordinates
+// are computed by the small generators below. They enter a table's catalog
+// only when the host loads one (loadBox).
+const range = (n) => Array.from({ length: n }, (_, k) => k);
+
+/** Draughts: an 8 × 8 board, 12 men a side on the dark squares (rows 0–2
+ *  dark, 5–7 light, counted from the top), crowned by a flip (face 1: ♛). */
+function draughts() {
+  const W = 1400, H = 1200, B = 840, bx = (W - B) / 2, by = (H - B) / 2, cell = 100, o = 20, man = 80;
+  /** A man's top-left on square (c, r), in table coordinates. */
+  const at = (c, r) => [bx + o + c * cell + (cell - man) / 2, by + o + r * cell + (cell - man) / 2];
+  const men = (rows, side) => rows.flatMap((r) => range(8).filter((c) => (c + r) % 2 === 1).map((c) => ({ piece: side, at: at(c, r), owner: `seat:${side}` })));
+  const face = (color) => [{ color }, { color, label: '♛' }];
+  return {
+    name: 'Draughts',
+    imgs: [],
+    table: { shape: 'rect', w: W, h: H },
+    seats: [{ id: 'light', name: 'Light', color: '#f5f5f4', edge: 'bottom' }, { id: 'dark', name: 'Dark', color: '#1c1917', edge: 'top' }],
+    players: [2, 2],
+    types: {
+      board: {
+        kind: 'board', name: 'Draughts board', w: B, faces: [{ color: '#5c3a1e' }],
+        board: { grid: { type: 'square', cols: 8, rows: 8, cell, x: o, y: o, draw: 'checker', colors: ['#f0d9b5', '#b58863'], labels: 'chess' } },
+      },
+      light: { kind: 'token', name: 'Light man', w: man, stack: 'none', faces: face('#f5f5f4') },
+      dark: { kind: 'token', name: 'Dark man', w: man, stack: 'none', faces: face('#1c1917') },
+    },
+    setup: [{ piece: 'board', at: 'center' }, ...men([5, 6, 7], 'light'), ...men([0, 1, 2], 'dark')],
+  };
+}
+
+/** Backgammon: 24 points (light's numbering: light's home board is the
+ *  bottom right, point 1 next to the trays), the bar, two trays, 15 checkers
+ *  a side in the standard start, two dice side by side and the doubling cube. */
+function backgammon() {
+  const W = 1800, H = 1300, BW = 1400, BH = 1000, bx = (W - BW) / 2, by = (H - BH) / 2, man = 80;
+  /** Point k's column centre, board-local (the bar is at 610–690, the trays right of 1300). */
+  const colX = (k) => (k <= 6 ? 1240 - 100 * (k - 1) : k <= 12 ? 560 - 100 * (k - 7) : k <= 18 ? 60 + 100 * (k - 13) : 740 + 100 * (k - 19));
+  const top = (k) => k > 12;
+  const spaces = range(24).map((j) => {
+    const k = j + 1;
+    return { id: `p${k}`, x: colX(k), y: top(k) ? 220 : 780, r: 200, mark: 'tri', w: 100, h: 420, dir: top(k) ? 'down' : 'up', color: k % 2 ? '#b91c1c' : '#f1e4c3' };
+  });
+  spaces.push(
+    { id: 'bar', x: 650, y: 500, r: 200, mark: 'rect', w: 80, h: 980, color: '#2b1a0c' },
+    { id: 'off-dark', x: 1345, y: 250, r: 120, mark: 'rect', w: 90, h: 480, color: '#2b1a0c' },
+    { id: 'off-light', x: 1345, y: 750, r: 120, mark: 'rect', w: 90, h: 480, color: '#2b1a0c' },
+  );
+  /** n checkers of `side` on point k, from its base toward the board's middle. */
+  const point = (k, n, side) => ({
+    piece: side, owner: `seat:${side}`, count: n, spread: [0, top(k) ? man : -man],
+    at: [bx + colX(k) - man / 2, by + (top(k) ? 10 : BH - 10 - man)],
+  });
+  return {
+    name: 'Backgammon',
+    imgs: [],
+    table: { shape: 'rect', w: W, h: H },
+    seats: [{ id: 'light', name: 'Light', color: '#f5f5f4', edge: 'bottom' }, { id: 'dark', name: 'Dark', color: '#1c1917', edge: 'top' }],
+    players: [2, 2],
+    types: {
+      board: { kind: 'board', name: 'Backgammon board', w: BW, h: BH, faces: [{ color: '#4a2e17' }], board: { spaces } },
+      light: { kind: 'token', name: 'Light checker', w: man, stack: 'none', faces: [{ color: '#f5f5f4' }] },
+      dark: { kind: 'token', name: 'Dark checker', w: man, stack: 'none', faces: [{ color: '#1c1917' }] },
+      die: { kind: 'die', name: 'Die' },
+      cube: { kind: 'token', name: 'Doubling cube', shape: 'rect', w: 64, stack: 'none', faces: ['64', '2', '4', '8', '16', '32'] },
+    },
+    setup: [
+      { piece: 'board', at: 'center' },
+      point(24, 2, 'light'), point(13, 5, 'light'), point(8, 3, 'light'), point(6, 5, 'light'),
+      point(1, 2, 'dark'), point(12, 5, 'dark'), point(17, 3, 'dark'), point(19, 5, 'dark'),
+      { piece: 'die', count: 2, spread: [64, 0], at: [bx + 960, by + BH / 2 - 28] },
+      { piece: 'cube', at: [bx + 650 - 32, by + BH / 2 - 32] },
+    ],
+  };
+}
+
+/** The built-in boxes, by key: what the 🎲 picker's box games load (built
+ *  in by content, core.js isBuiltin). */
+export const BOXES = { draughts: draughts(), backgammon: backgammon() };

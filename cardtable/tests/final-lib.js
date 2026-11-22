@@ -12,7 +12,7 @@ async function mallory(env, invite) {
     const [, roomId, password] = invite.match(/#room~([0-9a-f]+)~([0-9a-f]+)/);
     const room = joinRoom({ appId: 'gk-cardtable', password, relayConfig: { urls: [relay] } }, roomId);
     const M = (window.M = { room, got: { state: [], note: [] }, send: {} });
-    for (const ch of ['act', 'state', 'decks', 'note', 'rules', 'asset']) {
+    for (const ch of ['act', 'state', 'decks', 'boxes', 'note', 'rules', 'asset']) {
       const a = room.makeAction(ch);
       // (an image goes out as bytes with metadata {h, mime}: M.send.asset(bytes, target, {h, mime}))
       M.send[ch] = (data, target, metadata) => a.send(data, { ...(target && { target }), ...(metadata && { metadata }) });

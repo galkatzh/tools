@@ -96,7 +96,7 @@ const addStdDeck = async (page, name, jokers) => {
   ok(!(await guest.isVisible('#size-sel')), 'guest does not');
   await host.selectOption('#size-sel', '2400');
   await guest.waitForFunction(() => document.getElementById('table').style.width === '2400px');
-  await logHas(guest, 'set the table size to large');
+  await logHas(guest, 'set the table to round (large)'); // (Phase 2: the size selector sends `size`, which becomes `table`)
   ok(await guest.evaluate(() => [...document.querySelectorAll('.item.pile')].some((el) =>
     parseFloat(el.style.left) === 1150 && parseFloat(el.style.top) === 1130)), 'growing keeps the center pile centered (guest)');
   // Park a card far out on the large felt, then shrink: it must be pulled back on.
@@ -105,7 +105,7 @@ const addStdDeck = async (page, name, jokers) => {
     Math.hypot(parseFloat(el.style.left) + 50 - 1200, parseFloat(el.style.top) + 70 - 1200) > 700));
   await host.selectOption('#size-sel', '1300');
   await guest.waitForFunction(() => document.getElementById('table').style.width === '1300px');
-  await logHas(guest, 'set the table size to small');
+  await logHas(guest, 'set the table to round (small)');
   ok(await allOnFelt(guest), 'shrinking clamps every item back onto the felt (guest)');
   ok(await allOnFelt(host), '... and on the host');
 

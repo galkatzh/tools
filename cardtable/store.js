@@ -7,7 +7,10 @@
 //   saves    key room        {room, ts, v, state}: a host's table, decks apart —
 //                            or {room, ts, lost} when it could not be saved
 //   catalog  key [room, id]  {room, id, kind: 'deck', deck}: a table's decks, in
-//            index room      the catalog shape (core.js cleanDeck), written once
+//            index room      the catalog shape (core.js cleanDeck), and {room, id,
+//                            kind: 'box', box, src, by?}: its game boxes (core.js
+//                            cleanBox; src and by are host-written, never read
+//                            from the box), each written once
 //   assets   key h           {h, mime, size, data: ArrayBuffer, used}: images by
 //            index used      the SHA-256 of their bytes, shared by every room
 //            index size      this browser hosted or joined (GC reads the two
@@ -24,7 +27,7 @@
 // message for the app to show. Nothing falls back silently: without
 // IndexedDB the app runs unsaved, loudly, and images live in memory only.
 import {
-  ASSET_MAX_BYTES, IMG_MIMES, STATE_V, cleanDeck, cleanDeckV1, assetRefs, isImgURL, migrate, num,
+  ASSET_MAX_BYTES, IMG_MIMES, STATE_V, cleanDeck, cleanDeckV1, cleanBox, assetRefs, isImgURL, migrate, num,
 } from './core.js?v=1';
 
 /** This file's code version (see core.js MODULE_V). */
@@ -281,20 +284,23 @@ function keysOf(index) {
 // --- saves and the catalog -------------------------------------------------------
 /** A host's table: ONE transaction writes the state (structured-cloned by
  *  put(), synchronously: later moves can't leak into it), the catalog
- *  records of `catalog` ({id, kind: 'deck', deck}: the decks not saved yet)
- *  and the images of those decks that IndexedDB doesn't hold yet (hold()):
- *  a catalog record never names an image the store lacks. */
+ *  records of `catalog` (the decks and boxes not saved yet: {id, kind:
+ *  'deck', deck} or {id, kind: 'box', box, src, by?}) and the images they
+ *  show that IndexedDB doesn't hold yet (hold()): a catalog record never
+ *  names an image the store lacks. */
 export function writeSave(room, state, catalog = []) {
   const imgs = unstored(catalog);
   return tx(imgs.length ? ['saves', 'catalog', 'assets'] : ['saves', 'catalog'], 'readwrite', (saves, cat, assets) => {
     saves.put({ room, ts: Date.now(), v: state.v, state });
-    for (const c of catalog) cat.put({ room, id: c.id, kind: c.kind, deck: c.deck });
+    for (const c of catalog) cat.put({ room, ...c });
     for (const [h, m] of imgs) assets.put(record(h, m));
   }).then(() => { for (const [, m] of imgs) m.stored = true; }, fail('saving the table'));
 }
-/** The images (asset id, memo entry) the decks of `catalog` show that this
- *  page holds but IndexedDB doesn't (yet). */
-const unstored = (catalog) => [...assetRefs(catalog.map((c) => c.deck))].map((h) => [h, mem.get(h)]).filter(([, m]) => m && !m.stored);
+/** Every image the catalog records `recs` show (decks and boxes alike). */
+const recordRefs = (recs) => assetRefs(recs.filter((c) => c.deck).map((c) => c.deck), recs.filter((c) => c.box).map((c) => c.box));
+/** The images (asset id, memo entry) the decks and boxes of `catalog` show
+ *  that this page holds but IndexedDB doesn't (yet). */
+const unstored = (catalog) => [...recordRefs(catalog)].map((h) => [h, mem.get(h)]).filter(([, m]) => m && !m.stored);
 const record = (h, m) => ({ h, mime: m.mime, size: m.size, data: m.data, used: Date.now() });
 /** Stores images `list` (unstored's) a few hundred, or 8 MB, at a time: the
  *  thousands of puts of a big deck in one go would hold the page up. */
@@ -386,7 +392,7 @@ export async function prune(exceptRoom, need) {
   return 1;
 }
 
-/** This room's save: {state, decks, stored, behind?} — `stored`: IndexedDB
+/** This room's save: {state, decks, boxes, boxSrc, stored, behind?} — `stored`: IndexedDB
  *  holds exactly this (false: a migrated save that couldn't be written),
  *  `behind`: why the room's latest save can't be resumed, when this is an
  *  older copy of it (below) — {lost: why} when it can't be resumed at all,
@@ -402,7 +408,9 @@ export async function prune(exceptRoom, need) {
  *  the saves since failed too, the old keys hold the table's last good copy,
  *  and it is resumed, `behind`. A record that holds no table becomes a lost
  *  marker, its catalog dropped (the fresh table's decks must not join the
- *  old ones). Every catalog deck passes cleanDeck. */
+ *  old ones). Every catalog deck passes cleanDeck, and every box cleanBox
+ *  (one that fails is dropped from the table, loudly, and kept in storage:
+ *  its pieces show as "?"); a box's src and by come from its record. */
 export async function loadSave(room) {
   const { rec, cat } = await tx(['saves', 'catalog'], 'readonly', (s, c) => ({ rec: s.get(room), cat: c.index('room').getAll(room) }))
     .catch(fail('reading the save'));
@@ -414,11 +422,16 @@ export async function loadSave(room) {
     if (v > STATE_V) return { newer: v };
     if (s.state?.items && s.state.players) {
       dropLegacy(room, s.ts);
-      const decks = {};
+      const decks = {}, boxes = {}, boxSrc = {};
       for (const c of cat.result) {
-        try { decks[c.id] = cleanDeck(c.deck); } catch (err) { console.error(`saved deck ${c.id} dropped`, err); }
+        try {
+          if (c.kind === 'box') {
+            boxes[c.id] = cleanBox(c.box);
+            boxSrc[c.id] = { src: ['host', 'upload', 'script'].includes(c.src) ? c.src : 'host', ...(typeof c.by === 'string' && { by: c.by }) };
+          } else decks[c.id] = cleanDeck(c.deck);
+        } catch (err) { console.error(`saved ${c.kind === 'box' ? 'game box' : 'deck'} ${c.id} dropped`, err); }
       }
-      return { state: s.state, decks, stored: true };
+      return { state: s.state, decks, boxes, boxSrc, stored: true };
     }
     lost = 'the save is unreadable: it holds no table';
     console.error(`the save of ${room} holds no table: marked lost`, s);
@@ -614,7 +627,7 @@ export async function gc({ keep = new Set(), need = 0 } = {}) {
     cat: c.getAll(), byUse: keysOf(a.index('used')), bySize: keysOf(a.index('size')),
   })).catch(fail('reading the image cache'));
   const refs = new Set(keep);
-  for (const r of cat.result) if (r.deck) for (const h of assetRefs({ d: r.deck })) refs.add(h);
+  for (const h of recordRefs(cat.result)) refs.add(h);
   const size = new Map(bySize.map(([s, h]) => [h, s])), now = Date.now();
   const free = byUse.filter(([, h]) => !refs.has(h)); // least recently used first
   let total = free.reduce((n, [, h]) => n + size.get(h), 0), freed = 0;

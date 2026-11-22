@@ -72,6 +72,12 @@ class Bridge {
   }
   draw(pile) { this.send({ t: 'draw', id: pile }); }
   btn(id) { this.send({ t: 'btn', id }); }
+  /** Rolls dice (ids) together, in one roll. */
+  roll(...ids) { this.send({ t: 'roll', ids }); }
+  /** Takes a piece from a supply (an id or its type's name): onto the table (at x, y, or beside it), or into the hand. */
+  take(supply, x = null, y = null, hand = false) { this.send({ t: 'take', id: supply, x, y, hand }); }
+  /** Sits in named seat `id`; '-' stands up to watch, '+' sits down again (automatic seating). */
+  seat(id) { this.send(id === '-' ? { t: 'seat', watch: true } : id === '+' ? { t: 'seat', sit: true } : { t: 'seat', id }); }
   route(req, res) {
     const url = new URL(req.url, 'http://x');
     if (url.searchParams.get('token') !== this.token) {
@@ -139,9 +145,9 @@ class Bridge {
 // ---------------------------------------------------------------------------
 // REPL
 const HELP = `commands:
-  hand                    your cards, with indices
-  table                   piles (with a face-up top card) and table cards
-  players                 who sits where (⏳ turn, ⭐ badges, 🏆)
+  hand                    your cards (and pieces), with indices
+  table                   cards, piles, pieces, supplies and bags
+  players                 who sits where (⏳ turn, ⭐ badges, 🏆, [seat], watching)
   log [n]                 last n log lines (default 15)
   buttons                 rules buttons you can press
   play <idx...> [--down]  play hand card(s) at your seat (--down = face down)
@@ -151,12 +157,49 @@ const HELP = `commands:
   shuffle [pile]          shuffle a pile
   flip|peek|tohand <id>   flip / peek at / take a table card
   move <id> <x> <y>       move an item (table coords)
+  roll <id...> | roll all roll dice together (all: every die you may handle)
+  face <id> <f>           turn a piece to face f (0, 1, …; not a die)
+  take <supply> [x y] [--hand]  take a piece from a supply (id or type name)
+  pull <bag> [x y] [--hand]     draw a random piece from a bag (id or name)
+  split <id> [n] [x y]    take n (default 1) off a ×N stack
+  bag <id> <bag>          put a piece into a bag
+  lock|unlock <id>        lock an item in place, or free it
+  claim|release <id>      make an item yours, or nobody's
+  seat <id> | seat - | seat +   sit in a named seat; - stand up to watch; + sit down again
   btn <id>                press a rules button (see "buttons")
   chat <msg>              say something (also "!commands" for rules scripts)
   quit`;
 
 /** A card for the terminal: a text-only card's name is its (cut) quoted text, so show the full text instead. */
 function fmtCard(c) { return c.text && c.name.startsWith('“') ? `“${c.text}”` : c.name + (c.text && c.text !== c.name ? ` — ${c.text}` : ''); }
+/** A table item as one line: every line keeps the `  [id] … @x,y` frame
+ *  (parsers split on it), then the owner and 🔒 when present (spec §2i). */
+function fmtItem(it) {
+  const at = ` @${it.x},${it.y}`, tail = `${it.owner ? ` owner:${it.owner}` : ''}${it.locked ? ' 🔒' : ''}`, n = it.n ? ` ×${it.n}` : '';
+  const head = `  [${it.id}] `;
+  switch (it.kind) {
+    case 'card': return `${head}${it.up ? fmtCard(it) : 'face-down card'}${at}${tail}`;
+    case 'pile': return `${head}pile "${it.name || 'stack'}" ×${it.count}${it.top ? ` top: ${fmtTop(it.top)}` : ''}${at}${tail}`;
+    case 'bag': return `${head}bag "${it.name}" ×${it.count}${at}${tail}`;
+    case 'supply': return `${head}supply ${it.hidden ? 'of hidden pieces' : `${fmtPiece(it)} (${it.pieceKind})`} ∞${at}${tail}`;
+    case 'hidden': return `${head}hidden piece${n}${at}${tail}`;
+    case 'board': return `${head}board ${it.type} (board)${at}${tail}`;
+    case 'unknown': return `${head}? unknown piece${at}${tail}`;
+    default: return `${head}${fmtPiece(it)} (${it.kind})${n}${at}${tail}`;
+  }
+}
+/** A shown piece: its face's label (if any), then its type's name. */
+const fmtPiece = (p) => `${p.label != null ? `${p.label} ` : ''}${p.type}`;
+/** A pile's top: a hidden piece, a shown piece, or a card. */
+const fmtTop = (t) => (t.hidden ? 'hidden piece' : 'type' in t ? fmtPiece(t) : fmtCard(t));
+/** A hand entry: a card, or a piece (its label, then its type's name). */
+const fmtHand = (c) => (c.kind === 'piece' ? fmtPiece({ label: c.label, type: c.name }) : fmtCard(c));
+/** Splits `args` into [the rest joined, x, y]: x and y when the last two are numbers. */
+function spot(args) {
+  const k = args.length;
+  return k >= 2 && args.slice(-2).every((a) => Number.isFinite(+a) && a !== '') ? [args.slice(0, -2).join(' '), +args[k - 2], +args[k - 1]] : [args.join(' '), null, null];
+}
+
 /** Prints table text: names, cards and log lines come from other players, and
  *  their control characters (ESC sequences: clear screen, set title, OSC 52
  *  clipboard writes) must never reach the terminal. Newlines stay. */
@@ -199,13 +242,11 @@ function runCmd(bridge, line) {
     case 'quit': return process.exit(0);
     case 'hand':
       if (!s.hand.length) return out('(empty hand)');
-      return s.hand.forEach((c) => out(` ${String(c.idx).padStart(2)}. ${fmtCard(c)}`));
+      return s.hand.forEach((c) => out(` ${String(c.idx).padStart(2)}. ${fmtHand(c)}`));
     case 'table':
-      return s.items.forEach((it) => out(it.kind === 'pile'
-        ? `  [${it.id}] pile "${it.name || 'stack'}" ×${it.count}${it.top ? ` top: ${fmtCard(it.top)}` : ''} @${it.x},${it.y}`
-        : `  [${it.id}] ${it.up ? fmtCard(it) : 'face-down card'} @${it.x},${it.y}`));
+      return s.items.forEach((it) => out(fmtItem(it)));
     case 'players':
-      return s.players.forEach((p) => out(`  ${p.winner ? '🏆' : p.turn ? '⏳' : ' '} ${p.name}${p.id === s.pid ? ' (you)' : ''} 🂠${p.cards}${p.badge ? ' ' + p.badge : ''}${p.online ? '' : ' (offline)'}`));
+      return s.players.forEach((p) => out(`  ${p.winner ? '🏆' : p.turn ? '⏳' : ' '} ${p.name}${p.id === s.pid ? ' (you)' : ''}${p.seatId ? ` [${p.seatId}]` : ''} 🂠${p.cards}${p.badge ? ' ' + p.badge : ''}${p.watching ? ' (watching)' : ''}${p.online ? '' : ' (offline)'}`));
     case 'log':
       return s.log.slice(-(+args[0] || 15)).forEach((e) => out(`  ${e.who}${e.chat ? ':' : ''} ${e.text}`));
     case 'buttons':
@@ -229,6 +270,36 @@ function runCmd(bridge, line) {
     case 'move':
       need(args, 3, 'move <id> <x> <y>');
       return bridge.send({ t: 'move', id: args[0], x: +args[1], y: +args[2] });
+    case 'roll':
+      if (!args.length) throw new Error('roll <id...> | roll all');
+      return args[0] === 'all' ? bridge.send({ t: 'roll', all: true }) : bridge.roll(...args);
+    case 'face':
+      need(args, 2, 'face <id> <f>');
+      return bridge.send({ t: 'face', id: args[0], f: +args[1] });
+    case 'take': case 'pull': {
+      const [ref, x, y] = spot(args.filter((a) => a !== '--hand'));
+      if (!ref) throw new Error(`${cmd} <${cmd === 'take' ? 'supply' : 'bag'}> [x y] [--hand]`);
+      return bridge.send({ t: cmd, id: ref, x, y, hand: args.includes('--hand') });
+    }
+    case 'split': {
+      need(args, 1, 'split <id> [n] [x y]');
+      const nums = args.slice(1).map(Number);
+      if (nums.some((v) => !Number.isFinite(v)) || nums.length > 3) throw new Error('split <id> [n] [x y]');
+      const [n, x, y] = nums.length === 2 ? [null, ...nums] : nums;
+      return bridge.send({ t: 'split', id: args[0], n: n ?? null, x: x ?? null, y: y ?? null });
+    }
+    case 'bag':
+      if (args.length < 2) throw new Error('bag <id> <bag>');
+      return bridge.send({ t: 'toBag', id: args[0], bag: args.slice(1).join(' ') });
+    case 'lock': case 'unlock':
+      need(args, 1, `${cmd} <id>`);
+      return bridge.send({ t: 'lock', id: args[0], on: cmd === 'lock' });
+    case 'claim': case 'release':
+      need(args, 1, `${cmd} <id>`);
+      return bridge.send({ t: 'owner', id: args[0], to: cmd === 'claim' ? s.pid : null });
+    case 'seat':
+      need(args, 1, 'seat <id> | seat - | seat +');
+      return bridge.seat(args[0]);
     case 'chat': return bridge.send({ t: 'chat', msg: args.join(' ') });
     default: throw new Error(`unknown command "${cmd}" — try "help"`);
   }

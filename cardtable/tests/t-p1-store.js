@@ -162,7 +162,8 @@ const plantAssets = (p, list) => h.withStore(p, async (S, list) => {
   db.close();
 }, list.map((a) => ({ ...a, bytes: [...a.bytes] })));
 /** A tiny v2 table state (another room's save), padded to about `pad` chars. */
-const tinyState = (pad = 0) => ({ v: STATE_V, seq: 1, size: 1300, items: {}, players: {}, keys: {}, log: [], guestDeckChars: 0, zMax: 0, pad: 'x'.repeat(pad) });
+// (a state of today's version: Phase 2's table, seats and boardSeq in place of size)
+const tinyState = (pad = 0) => ({ v: STATE_V, seq: 1, table: { shape: 'round', w: 1300, h: 1300 }, seats: null, boardSeq: 0, items: {}, players: {}, keys: {}, log: [], guestDeckChars: 0, zMax: 0, pad: 'x'.repeat(pad) });
 /** A one-card v2 deck showing image h. */
 const deckOf = (h) => ({ name: 'Other', back: null, imgs: [h], cards: [{ g: 0 }] });
 /** Asserts a check that waits: ok(await …) with the message. */
@@ -327,9 +328,9 @@ const okWait = async (promise, msg) => ok(await promise.then((x) => x !== false,
   }), null);
   await back(alice, invite);
   const v4 = await L.view(alice);
-  ok(await isHost(alice) && v4.items['01d00001']?.n === oldCards.length - 1 && v4.items['01d00001'].x === 500 && v4.size === 1300
+  ok(await isHost(alice) && v4.items['01d00001']?.n === oldCards.length - 1 && v4.items['01d00001'].x === 500 && v4.table.shape === 'round' && v4.table.w === 1300
     && Number.isFinite(v4.players[alicePid]?.seat) && (await h.handCount(alice)) === 1 && v4.log.some((e) => e.txt === 'resumed the table'),
-    `a save older still (decks inside it, no log, size or seats) resumes: its pile, the hand, a seat, the default size (${JSON.stringify({ pile: v4.items['01d00001'], size: v4.size, seat: v4.players[alicePid]?.seat })})`);
+    `a save older still (decks inside it, no log, size or seats) resumes: its pile, the hand, a seat, the default size (${JSON.stringify({ pile: v4.items['01d00001'], table: v4.table, seat: v4.players[alicePid]?.seat })})`);
   ok(!(await shown(alice, /Couldn't resume|Couldn't move|was dropped/)) && !(await legacyKeys(alice)).length, 'with no failure, and its key is gone');
   ok(await settled(alice), 'it is saved');
   const rec4 = await h.idb(alice, 'saves', room), cat4 = (await h.idb(alice, 'catalog')).filter((r) => r.room === room);

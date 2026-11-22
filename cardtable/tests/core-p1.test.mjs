@@ -63,7 +63,8 @@ function specItem(it) {
 const specPlayer = (pl) => ({ name: pl.name, color: pl.color, online: pl.online, handCount: pl.hand.length, seat: pl.seat });
 /** What a snapshot for `to` holds (§1b.1), from the host state alone. */
 const specSnap = (s, to) => ({
-  size: s.size, rules: s.rules ? { name: s.rules.name, enabled: s.rules.enabled, public: s.rules.public } : null,
+  // (Phase 2: the table, seats and handy replace size; every item of these runs is a card or a pile of cards, which a hand can hold)
+  table: s.table, seats: s.seats, handy: Object.keys(s.items).length > 0, rules: s.rules ? { name: s.rules.name, enabled: s.rules.enabled, public: s.rules.public } : null,
   items: map(s.items, specItem), players: map(s.players, specPlayer), log: s.log, hand: to ? s.players[to].hand : [],
 });
 /** A body item that shows a hidden identity (§1d): a face-down card's `i`, a pile's cards, a face-down top's `i`. */
@@ -86,7 +87,7 @@ function specReceive(r, d) {
   if (d.v !== PROTO || (d.to && d.to !== r.pid)) return 'dropped';
   if (d.kind === 'snap') {
     if (!takesSnap(V, d)) return 'stale';
-    r.spec = { boot: d.boot, seq: d.seq, size: d.size, rules: d.rules, items: { ...d.items }, players: { ...d.players }, log: d.log, hand: d.hand ?? [] };
+    r.spec = { boot: d.boot, seq: d.seq, table: d.table, seats: d.seats, handy: d.handy, rules: d.rules, items: { ...d.items }, players: { ...d.players }, log: d.log, hand: d.hand ?? [] };
     return 'snap';
   }
   if (V && d.boot === V.boot && d.base === V.seq) {
@@ -94,7 +95,7 @@ function specReceive(r, d) {
     for (const id of d.del || []) delete V.items[id];
     Object.assign(V.players, d.players);
     if ('rules' in d) V.rules = d.rules;
-    if (d.size) V.size = d.size;
+    for (const k of ['table', 'seats', 'handy']) if (k in d) V[k] = d[k];
     if (d.log) V.log = refTrim([...V.log, ...d.log]);
     if ('hand' in d) V.hand = d.hand;
     V.seq = d.seq;
@@ -103,7 +104,7 @@ function specReceive(r, d) {
   return V && (d.boot < V.boot || (d.boot === V.boot && d.seq <= V.seq)) ? 'stale' : 'gap';
 }
 
-const PATCH_KEYS = ['size', 'rules', 'items', 'del', 'players', 'log', 'fx', 'ann'], SNAP_KEYS = ['size', 'rules', 'items', 'players', 'log'];
+const PATCH_KEYS = ['table', 'seats', 'handy', 'rules', 'items', 'del', 'players', 'log', 'fx', 'ann'], SNAP_KEYS = ['table', 'seats', 'handy', 'rules', 'items', 'players', 'log'];
 /** The host's 'state' channel in Node. Each tick (§1b.3) takes the dirty sets
  *  once, serializes the shared part once, then sends each peer a snapshot (a
  *  new connection, or its `to` changed), a patch from that peer's own base, or
@@ -179,7 +180,7 @@ function wire(T, label) {
     /** Every peer's views against the spec's snapshot of the state now, and T.snapContent() too. */
     check(where) {
       const s = W.T.state, sc = W.T.snapContent();
-      const diff = (V, want) => ['items', 'players', 'rules', 'log', 'hand', 'size'].find((k) => canon(V[k]) !== canon(want[k]));
+      const diff = (V, want) => ['items', 'players', 'rules', 'log', 'hand', 'table', 'seats', 'handy'].find((k) => canon(V[k]) !== canon(want[k]));
       const field = diff({ ...json(sc), hand: [] }, specSnap(s, null));
       if (field) flag('snap', `${where}: T.snapContent().${field} differs from the state's public view`);
       for (const r of W.peers) {
@@ -381,7 +382,7 @@ function quietly(fn) {
       ok(!stats.spec.why, `(1) seed ${seed}: and the public shapes of §1d (no face-down i, piles as n + top)${stats.spec.why && ` — ${stats.spec.why}`}`);
       ok(!W.bad.snap.length, `(2) seed ${seed}: T.snapContent() is the state's public view after every tick ${W.bad.snap.join('; ')}`);
       ok(!W.bad.wire.length, `(2) seed ${seed}: every body is bound to its peer, sorted, hand only for its owner, no hidden identity or seat key, and no gap ${W.bad.wire.join('; ')}`);
-      ok(!W.bad.spec.length, `(2) seed ${seed}: patches folded by §1b.4 reproduce the next snapshot (items, players, log, hands, rules, size) for every peer ${W.bad.spec.join('; ')}`);
+      ok(!W.bad.spec.length, `(2) seed ${seed}: patches folded by §1b.4 reproduce the next snapshot (items, players, log, hands, rules, table, seats, handy) for every peer ${W.bad.spec.join('; ')}`);
       ok(!W.bad.impl.length, `(2) seed ${seed}: so do core's viewFromSnap/applyViewPatch ${W.bad.impl.join('; ')}`);
       ok(W.skipped > 0 && W.afterSkip > 0, `(2) seed ${seed}: ticks that send a peer nothing keep its base, and its next patch applies (${W.skipped} skipped sends, ${W.afterSkip} patches after one)`);
       ok(!stats.z, `(4) seed ${seed}: zMax never drops, no item is above it, and every lifted item lands above the old max${stats.z ? ` — ${stats.z}` : ''}`);
@@ -582,8 +583,9 @@ function quietly(fn) {
     T.apply(BOB, { t: 'merge', id: discard, pile: P });
     ok(t.item(spare) === null && t.item(discard) === null && !readsDisagree(T), 'removed and merged piles leave the index');
     const thrown = (q) => { try { t.find(q); return 'nothing'; } catch (e) { return e instanceof TypeError ? e.message : `a ${e.constructor.name}`; } };
-    ok(thrown({ zone: 'a' }) === "t.find: unknown filter 'zone' — known: kind, name, up", `an unknown filter throws a TypeError naming the known ones (${thrown({ zone: 'a' })})`);
-    ok(/unknown filter 'owner'/.test(thrown({ kind: 'card', owner: 'x' })), `even next to known ones (${thrown({ kind: 'card', owner: 'x' })})`);
+    // (Phase 2 adds the filters type and owner: §1e "Phases 2 and 3 add keys")
+    ok(thrown({ zone: 'a' }) === "t.find: unknown filter 'zone' — known: kind, name, up, type, owner", `an unknown filter throws a TypeError naming the known ones (${thrown({ zone: 'a' })})`);
+    ok(/unknown filter 'zone'/.test(thrown({ kind: 'card', zone: 'x' })), `even next to known ones (${thrown({ kind: 'card', zone: 'x' })})`);
   });
 
   section('(6) MIGRATE[1] lifts a v1 save');
@@ -603,17 +605,18 @@ function quietly(fn) {
     };
     const noKeys = (st) => ({ ...st, players: map(st.players, ({ key, ...pl }) => pl) });
     const m = MIGRATE[1](json(v1));
-    ok(STATE_V === 2 && m.v === 2, 'v becomes 2 (STATE_V in Phase 1)');
+    ok(m.v === 2, 'v becomes 2 (STATE_V in Phase 1)');
     ok(canon(m.keys) === canon({ [BOB]: keyOf(BOB) }) && !Object.values(m.players).some((pl) => 'key' in pl), "Bob's seat key moves to keys; Carol, who had none, gets none; no player keeps one");
     ok(m.zMax === 12, 'zMax is the highest z');
     const { v, keys, zMax, ...rest } = m;
     ok(canon(rest) === canon(noKeys(v1)), 'everything else is unchanged');
-    ok(canon(migrate(json(v1))) === canon(m), 'migrate() runs the chain up to STATE_V');
+    // (Phase 2: the chain goes on to v3 — MIGRATE[2] — so a v1 save ends as STATE_V)
+    ok(canon(migrate(json(v1))) === canon(MIGRATE[2](json(m))), 'migrate() runs the chain up to STATE_V');
     const T = createTable(json(v1), { ...env(10) });
-    ok(T.state.v === 2 && T.state.keys[BOB] === keyOf(BOB) && T.state.zMax === 12 && !('key' in T.state.players[BOB]), 'createTable lifts a v1 save');
+    ok(T.state.v === STATE_V && T.state.keys[BOB] === keyOf(BOB) && T.state.zMax === 12 && !('key' in T.state.players[BOB]), 'createTable lifts a v1 save');
     T.resume('Alice');
     const snap = json(T.snapshot());
-    ok(snap.v === 2 && snap.keys[BOB] === keyOf(BOB) && snap.zMax === 12 && !('key' in snap.players[BOB]), 'and saves it as v2');
+    ok(snap.v === STATE_V && snap.keys[BOB] === keyOf(BOB) && snap.zMax === 12 && !('key' in snap.players[BOB]), `and saves it as v${STATE_V}`);
     const T2 = createTable(json(snap), env(10));
     ok(T2.state.keys[BOB] === keyOf(BOB), 'a v2 save keeps its keys (MIGRATE[1] does not run again)');
     T2.join(BOB, 'Bob', keyOf(DAVE));
@@ -623,9 +626,9 @@ function quietly(fn) {
     ok(!out.includes('key-') && !/"keys?"/.test(out), 'no seat key in the public view, a snapshot, a patch or T.pub');
     const old = createTable({ items: { x1: { k: 'c', x: 5000, y: -900, rot: 0, z: 4, d: 'dd', i: 0, up: true } }, players: { [BOB]: { name: 'Bob', color: '#30bced', online: true, hand: [], key: keyOf(BOB) } } }, env(10));
     old.resume('Alice');
-    const o = old.state, it = o.items.x1, r = playR(o.size);
-    ok(o.v === 2 && o.keys[BOB] === keyOf(BOB) && o.zMax === 4, 'a save from before the round table lifts too');
-    ok(o.size === 1300 && Array.isArray(o.log) && Number.isFinite(o.players[BOB].seat) && Math.hypot(it.x + CARD_W / 2 - o.size / 2, it.y + CARD_H / 2 - o.size / 2) <= r + 1e-9,
+    const o = old.state, it = o.items.x1, size = o.table.w, r = playR(size); // (Phase 2: the size is table.w)
+    ok(o.v === STATE_V && o.keys[BOB] === keyOf(BOB) && o.zMax === 4, 'a save from before the round table lifts too');
+    ok(o.table.shape === 'round' && size === 1300 && Array.isArray(o.log) && Number.isFinite(o.players[BOB].seat) && Math.hypot(it.x + CARD_W / 2 - size / 2, it.y + CARD_H / 2 - size / 2) <= r + 1e-9,
       'with its size defaulted, a log, a seat assigned and its stranded card pulled onto the felt');
     let newer;
     try { newer = createTable({ v: STATE_V + 1, items: {}, players: {} }, env(10)).state.v; } catch (e) { newer = `thrown: ${e.message}`; }

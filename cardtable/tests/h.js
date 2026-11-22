@@ -218,19 +218,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  *  patches alike, unwrapped from their signature envelope ({b, s, k}). */
 const bodies = (raw) => raw.map((m) => (typeof m?.b === 'string' ? JSON.parse(m.b) : m));
 /** Folds bodies (in arrival order) into the view they add up to, as a guest
- *  would: {seq, items, players, rules, size, log, hand} — or null before any
+ *  would: {seq, items, players, rules, table, seats, handy, log, hand} — or null before any
  *  snapshot. The log keeps every entry received (untrimmed): "what did this
  *  peer see". A patch that doesn't follow is skipped, as a guest would. */
 function viewFrom(list) {
   let v = null;
   for (const d of list) {
-    if (d.kind === 'snap') v = { boot: d.boot, seq: d.seq, items: { ...d.items }, players: { ...d.players }, rules: d.rules, size: d.size, log: [...d.log], hand: d.hand || v?.hand || [] };
+    if (d.kind === 'snap') v = { boot: d.boot, seq: d.seq, items: { ...d.items }, players: { ...d.players }, rules: d.rules, table: d.table, seats: d.seats, handy: d.handy, log: [...d.log], hand: d.hand || v?.hand || [] };
     else if (d.kind === 'patch' && v && d.boot === v.boot && d.base === v.seq) {
       Object.assign(v.items, d.items);
       for (const id of d.del || []) delete v.items[id];
       Object.assign(v.players, d.players);
       if ('rules' in d) v.rules = d.rules;
-      if (d.size) v.size = d.size;
+      for (const k of ['table', 'seats', 'handy']) if (k in d) v[k] = d[k];
       if (d.log) v.log.push(...d.log);
       if (d.hand) v.hand = d.hand;
       v.seq = d.seq;
