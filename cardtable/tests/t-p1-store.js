@@ -13,7 +13,8 @@
 //   (3) quota    full storage prunes another room's old save (its catalog and images
 //                too; a save written moments ago is spared) and says so; with nothing
 //                to prune: a lost marker, one toast, and a reload resets loudly; a
-//                guest whose image cache is full keeps its images in memory, said once
+//                guest whose image cache is full keeps its images in memory, said once,
+//                or makes room least recently used first, sparing the last hour's
 //   (4) no IDB   indexedDB.open fails: the toast, the table plays unsaved with no
 //                fallback, and after a reload the tab still hosts its room (its host
 //                key) and its guest reconnects
@@ -363,6 +364,18 @@ const okWait = async (promise, msg) => ok(await promise.then((x) => x !== false,
   const CACHE = /^Couldn't cache card images on this device \(storage full\) — they'll download again next time$/;
   ok(await shown(erin, CACHE) === 1, `and says once that it couldn't cache them (${JSON.stringify(await toasts(erin))})`);
   ok(!(await h.idb(erin, 'assets')).some((a) => Object.values(H).includes(a.h)), 'none of them is in its storage');
+  // A guest's cache, full until one image is deleted: the least recently used image no
+  // table shows goes first (74 bytes: not enough for a 136-byte face), never one used in the last hour.
+  const fred = await newPage(env, 'Fred', h.quotaStub, fullOnce);
+  await fred.goto(h.plain(env));
+  const [O, R] = [I.png(9, 9, [11, 12, 13]), I.png(9, 9, [14, 15, 16])], [hO, hR] = [I.sha256(O), I.sha256(R)];
+  await plantAssets(fred, [{ h: hO, bytes: O, used: Date.now() - 2 * DAY }, { h: hR, bytes: R, used: Date.now() - 1800e3 }]);
+  await fred.evaluate(() => sessionStorage.setItem('__fullOnce', JSON.stringify({ store: 'assets', heal: 1 })));
+  await open(fred, alice.url(), 'Fred');
+  await okWait(L.until(async () => (await h.idb(fred, 'assets')).some((a) => Object.values(H).includes(a.h)), 20000), 'a guest whose cache is full makes room, and stores the images');
+  const fh = new Set((await h.idb(fred, 'assets')).map((a) => a.h));
+  ok(!fh.has(hO) && fh.has(hR), 'by deleting the least recently used image no table shows (2 days unused), but never one used in the last hour');
+  await okWait(L.until(async () => L.same(await faces(fred), ['50×70', '50×70']) && (await backs(fred)) === 1, 20000), 'and draws them');
 
   // ---------------------------------------------------------------------------------
   section('(4) IndexedDB refuses to open');
