@@ -43,12 +43,14 @@ function png(w, ht, { seed, rgb = [200, 60, 60], rows = ht } = {}) {
 }
 /** n small, distinct, flat-colour PNGs (a few hundred bytes each). */
 const tinyPngs = (n, salt = 0) => Array.from({ length: n }, (_, k) => png(24 + (k % 5), 32, { rgb: [(k * 37 + salt) % 256, (k * 91 + 7 * salt) % 256, (k * 13 + 50) % 256] }));
+/** n distinct flat-colour PNGs, 24 × 32 (about 90 bytes each: 4,999 fit a guest's deck budget), for up to 65,536 images per salt. */
+const distinctPngs = (n, salt = 0) => Array.from({ length: n }, (_, k) => png(24, 32, { rgb: [k & 255, (k >> 8) & 255, salt] }));
 /** Two decks of 9 noise PNGs, 800 × 800 (≈ 1.92 MB each, 34.6 MB in all: a
  *  deck in the transport shape holds at most 24 MB of data URLs). {decks:
- *  [bufs, bufs], ids, bytes}. Twice that is more than the 64 MB a peer may
- *  pull a minute. */
-function bigDecks() {
-  const decks = [0, 1].map((d) => Array.from({ length: 9 }, (_, k) => png(800, 800, { seed: 100 * (d + 1) + k })));
+ *  [bufs, bufs], ids, bytes}; another `salt` makes other images. Twice that
+ *  is more than the 64 MB a peer may pull a minute. */
+function bigDecks(salt = 0) {
+  const decks = [0, 1].map((d) => Array.from({ length: 9 }, (_, k) => png(800, 800, { seed: 100 * (d + 1) + k + salt })));
   return { decks, ids: decks.flat().map(sha256), bytes: decks.flat().reduce((n, b) => n + b.length, 0) };
 }
 /** Spec §1j case 9: a PNG of a few hundred bytes whose IHDR declares 30,000 × 30,000 px. */
@@ -274,7 +276,7 @@ async function stopMoves(host, guest) {
 const toastsSince = (page, since = 0) => page.evaluate((t) => window.__toasts.filter((x) => x.at >= t).map((x) => x.msg), since);
 
 module.exports = {
-  png, tinyPngs, bigDecks, bomb, sha256, dataURL, imgDeck,
+  png, tinyPngs, distinctPngs, bigDecks, bomb, sha256, dataURL, imgDeck,
   hostWire, needLog, toastLog, decodeWatch, dropMissingNotes, paceMonitor, longTasks,
   seat, pileOf, addDeck, assetBytes, asked, stored, decodedBomb, startMoves, stopMoves, toastsSince,
 };

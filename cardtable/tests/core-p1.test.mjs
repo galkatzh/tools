@@ -966,5 +966,35 @@ function quietly(fn) {
     ok(found.length === 0 && noise.some((m) => /index holds/.test(m)), `is said out loud (console.error), not trusted (${noise.join(' | ')})`);
   });
 
+  section('regressions from the Phase 1B review');
+  await guard('standard decks', () => {
+    const T = createTable({}, env(20));
+    T.open('Alice');
+    T.api.addStandardDeck({ jokers: true });
+    const decks = Object.values(T.state.decks);
+    ok(decks.length === 2 && decks.every((d) => canon(d) === canon(core.cleanDeck(structuredClone(d)))) && decks.every((d) => Array.isArray(d.imgs)),
+      'are held in the catalog shape, as cleanDeck returns them (imgs: [] included)');
+  });
+  await guard('t.newDeck', () => {
+    const T = createTable({}, env(21));
+    T.open('Alice');
+    const why = (back) => { try { T.api.newDeck({ name: 'x', back, cards: [{ name: 'a' }] }); return ''; } catch (e) { return `${e.name}: ${e.message}`; } };
+    ok(why('data:image/png;base64,iVBORw0KGgo=') === 'TypeError: t.newDeck: back must be a color like "#111"' && why('url(x)') === why('data:image/png;base64,iVBORw0KGgo='),
+      `a back that is no color throws a TypeError naming the call (${why('data:image/png;base64,iVBORw0KGgo=')})`);
+    ok(!why('#123') && !why(undefined) && !why(null), 'a color back, or none, is fine');
+  });
+  await guard('a rules state that can\'t be saved', () => {
+    const T = createTable({}, env(22));
+    T.open('Alice');
+    T.apply(HOST, { t: 'setRules', enabled: true, code: '({ name: "Fn", setup(t) { t.data.n = 7; t.data.fmt = (x) => String(x); t.public.p = [1, () => 2]; } })' });
+    const seq = T.state.seq;
+    const noise = quietly(() => T.unsaveable('could not be cloned'));
+    T.drain();
+    ok(T.state.seq === seq + 1 && T.state.rules.enabled === false && /t\.data \/ t\.public: they hold a value that can't be saved \(could not be cloned\)/.test(T.rulesError),
+      `disables the rules, loudly (${T.rulesError}; ${noise.length} console line)`);
+    ok(canon(T.state.rules.data) === canon({ n: 7 }) && canon(T.state.rules.public) === canon({ p: [1, null] }) && structuredClone(T.state.rules),
+      `and keeps its JSON part, which a save can copy (${JSON.stringify(T.state.rules.data)}, ${JSON.stringify(T.state.rules.public)})`);
+  });
+
   report();
 })().catch(crash);

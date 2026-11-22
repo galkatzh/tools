@@ -140,14 +140,22 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   database `cardtable`): the state at most once a second, one write at a
   time, as a structured clone (a few ms on the main thread for 1,000
   cards), and each deck once, into the room's catalog, in the same
-  transaction. Reopening the invite link in the host's browser resumes the
-  game; a save from before IndexedDB (localStorage `ct-save-<room>`) is
-  moved over on its first resume. When storage is full, other rooms' saves
-  are deleted oldest first, with the images no table needs any more (with a
-  toast saying so; saves another tab wrote in the last 30 s are spared, and
-  none are deleted when the table wouldn't fit even then); if the table
-  still can't be saved, the stale save is replaced by a "lost" marker, so a
-  reload resets the table loudly instead of silently rewinding it. A write
+  transaction (its images just before, so the catalog never names an image
+  the browser lacks). Reopening the invite link in the host's browser
+  resumes the game; a save from before IndexedDB (localStorage
+  `ct-save-<room>`) is moved over on its first resume, images included, and
+  its keys are removed only once the new storage holds it all. When storage
+  is full, the image cache gives way first (images no table needs, least
+  recently used first: they download again), then other rooms' saves,
+  oldest first, with their images (with a toast saying so; saves another
+  tab wrote in the last 30 s are spared, and none are deleted when the
+  table wouldn't fit even then); if the table still can't be saved, the
+  stale save is replaced by a "lost" marker (its decks go too), so a reload
+  resets the table loudly instead of silently rewinding it. A save the tab
+  can't even read at start is never written over: the tab hosts by its host
+  key, saves nothing, and says to reload. A rules script that leaves
+  something that isn't JSON in `t.data` (a function) loses its rules, not
+  the save. A write
   started as the tab closes may never land, so the tab also leaves a
   `ct-pending-<room>` note in localStorage, and if the save behind it never
   committed the next start says "the last moment of play before the reload
@@ -168,7 +176,12 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   uploads a deck never downloads it back. The host sends only images of the
   table at hand (never another room's), a few at a time per guest and after
   that guest's pending moves, so play stays live during a big download,
-  within 64 MB a minute per guest. Every image is checked before any peer
+  and at most 64 MB a minute per guest: a bigger table's images come over
+  more than one minute (the guest is told they come slowly). A deck is
+  checked and hashed in slices, between which everyone's moves go on, and
+  its images are kept only once it is on the table: a deck the rules or the
+  budget refuse leaves nothing in the host's browser (and a guest has one
+  deck in the works at a time). Every image is checked before any peer
   stores it: PNG, JPEG, WebP or GIF by its magic bytes, at most 2 MB, at most
   4,096 px a side and 16 Mpx in all — read from its header, so a tiny file
   that declares a huge picture is refused before anything decodes it — and,
@@ -366,8 +379,11 @@ suites run the state core and the rules templates without a browser; a
 seeded fuzzer (`core-p1.test.mjs`) checks that the incremental public view
 and every guest's view folded from patches equal full recomputes after each
 of 600 random ops. Storage and images have suites of their own
-(`t-p1-store.js`, `t-p1-assets.js`: saves, migration, quota, the image pull
-and its checks). The benchmarks (`t-p1-bench.js`, `core-p1-bench.mjs`)
+(`t-p1-store.js`, `t-p1-assets.js`, and the review regressions in
+`t-p1-review-store.js` and `t-p1-review-assets.js`: saves, migration,
+quota, storage failures, the image pull and its checks), and
+`t-p1-flood.js` floods the host with image requests and big decks while
+asserting it never blocks for 50 ms. The benchmarks (`t-p1-bench.js`, `core-p1-bench.mjs`)
 assert the Phase 1 budgets on a 1,000-card table: bytes per move, apply and
 render times, phone panning, snapshot size, indexed reads, the save's
 main-thread time and zero image bytes on a warm rejoin.

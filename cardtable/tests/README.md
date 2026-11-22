@@ -38,10 +38,11 @@ node t-smoke.js         # one suite, output on the terminal
 - At most two suites per CPU run at once (`JOBS=n` to change it): every
   end-to-end suite drives its own Chromium. `run-all.sh` runs the `t-*.js`
   suites and the Node-only `*.test.mjs` ones.
-- **The serial list.** The benchmarks time things, so they run alone, one at
-  a time after the parallel batch, under the same lock: `SERIAL`, a
-  comma-separated list of suite names, default `t-p1-bench,core-p1-bench`. A
-  listed suite that doesn't exist fails the run.
+- **The serial list.** The benchmarks, and the suites with a timing budget
+  (a host long task under 50 ms), run alone, one at a time after the
+  parallel batch, under the same lock: `SERIAL`, a comma-separated list of
+  suite names, default `t-p1-bench,core-p1-bench,t-p1-flood`. A listed suite
+  that doesn't exist fails the run.
 - Runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
   `/tmp/cardtable-tests.lock`): concurrent runs on a small machine starve each
   other into flaky timeouts, so a second run waits for the first.
@@ -137,12 +138,34 @@ top of `core.js` and README "How it works".
   `M.got.asset` records `{m, peerId, metadata}`.
 - **The suites.** `core-p1.test.mjs`: the seeded fuzz of the public view and
   the patch fold, trimLog, z, indexed reads, MIGRATE, refusals, the splice,
-  the t.data cap, applyStatePatch. `core-p1-bench.mjs`: B1, B2, B5, B7.
-  `t-p1-delta.js`: every screen converges through deltas (random play,
+  imageDims and deck ingestion, the t.data cap, applyStatePatch, and the
+  core regressions of both Phase 1 reviews. `core-p1-bench.mjs`: B1, B2, B5,
+  B7. `t-p1-delta.js`: every screen converges through deltas (random play,
   reloads, drops, vetoes, the version gate, spam). `t-p1-review.js`: the
   regressions the Phase 1A review found (states out of order, refusals that
   re-send too much, a refused snapshot request, no-op drops, log rebuilds, a
-  lost registration snapshot, a newer save, module skew). `t-p1-bench.js`: B1', B3, B4 (serial).
+  lost registration snapshot, a newer save, module skew). `t-p1-store.js`:
+  saves, the legacy migration, quota, a blocked IndexedDB, the pending
+  marker, a newer save, module skew, upkeep (spec §1l). `t-p1-assets.js`:
+  the image pull, a warm rejoin, damaged and missing images, late arrivals,
+  attacker cases 2, 8 and 9, a guest's own upload, pacing.
+  `t-p1-review-store.js` and `t-p1-review-assets.js`: the regressions the
+  Phase 1B review found (a migration whose images can't be stored, a save
+  that can't be read, a lost marker's catalog, a function in t.data, the
+  image cache evicted before saves, no BroadcastChannel; refused decks leave
+  nothing, a lost image heals, serving keeps no copies, a database upgrade,
+  3,000 images, a host away for 45 s). `t-p1-bench.js`: B1', B3, B4, B6, B8
+  (serial). `t-p1-flood.js` (serial): attacker case 3 (1,000 `need`s), no
+  host long task while ingesting 34.6 MB or a guest's 4,999 images, and an
+  honest 69.2 MB pull paced past the budget.
+- **`assets-lib.js`** (image suites): PNGs written in code (`png`,
+  `tinyPngs`, `distinctPngs`, `bigDecks`, the `bomb`), `sha256`, `dataURL`,
+  `imgDeck`; init scripts `hostWire` (hold, damage or swap the host's
+  `asset` frames), `needLog`, `toastLog`, `decodeWatch`, `dropMissingNotes`,
+  `paceMonitor`, `longTasks`; page helpers `seat`, `pileOf`, `addDeck`,
+  `assetBytes`, `asked`, `stored`, `decodedBomb`, `startMoves`/`stopMoves`,
+  `toastsSince`. **`img-lib.js`**: PNG, GIF, JPEG and WebP headers made in
+  code, each with the byte count its size needs (`hdr`), for imageDims.
 
 ## Storage and images (Phase 1B)
 
@@ -169,7 +192,9 @@ the image's SHA-256). localStorage keeps only `ct-pid*`, `ct-name`,
 - **`h.withStore(page, fn, arg)`**: runs `fn(store, arg)` in the page with
   store.js imported and opened (the database created with the app's own
   schema) — e.g. `S.putAsset(bytes, 'image/png')` plants an image of
-  another room. `fn` is serialized: it sees only its arguments.
+  another room. On a page running the app it is the app's own module, so
+  `S.holds(id)` tells whether the app holds an image in memory. `fn` is
+  serialized: it sees only its arguments.
 - **`h.quotaStub`**: an init script. While `window.__quota` names a store
   (`'saves'`, `'catalog'`, `'assets'`) — or is `{store, heal: n}` —
   `IDBObjectStore.prototype.put` into it throws `QuotaExceededError` for
@@ -179,7 +204,8 @@ the image's SHA-256). localStorage keeps only `ct-pid*`, `ct-name`,
 - **`h.MODULE_V`**: the modules' code version (`store.js?v=…`).
 
 **`node-lib.mjs`** also exports `store` (imageDims, checkImage, sha256hex,
-and ingestDeck in memory all run in Node; IndexedDB does not) and
+putAsset and ingestDeck — which stores nothing: it resolves `{deck, cost,
+assets}` — all run in Node; IndexedDB does not) and
 **`FIXTURES`**, the directory of image fixtures: `37x23.png`,
 `37x23-baseline.jpg` (SOF0), `37x23-progressive.jpg` (SOF2), `37x23.gif`,
 `37x23-vp8.webp`, `37x23-vp8l.webp`, `37x23-vp8x.webp` — each 37 × 23 px,
@@ -190,13 +216,19 @@ alpha colour for VP8X).
 **What the app exposes and says** (for checks; texts are exact):
 
 - `window.__ct.perf.lastSaveSyncMs`: the main-thread part of the last save
-  (B6): `T.snapshot()`, the new catalog entries and the transaction's
-  `put()`s, which clone the state.
+  (B6): the save transaction's `put()`s, which clone the state. A new deck's
+  images are stored just before, in batches of their own, so the catalog
+  never names an image the store lacks.
 - The `asset` channel carries image bytes with metadata `{h, mime}`; a
   guest's image request is the action `{t: 'need', a: [≤ 64 ids]}`; the
   host's note `{missing: [ids]}` names the ones it lacks. A guest gathers its
-  requests for 50 ms, asks again once after 20 s without an answer (`NEED_TIMEOUT_MS`;
-  the clock restarts whenever an image arrives), then gives up.
+  requests for 50 ms and sends at most 8 a second, only while the host is
+  connected; it asks again once after 20 s without an answer
+  (`NEED_TIMEOUT_MS`; the clock restarts whenever an image arrives, stops
+  while the host is away, and waits out a `wait` the host gave), then gives
+  up. Past a guest's 64 MB a minute the host keeps its queue for the next
+  minute and sends one note `{msg: '🚫 Too many image requests — slow down',
+  wait: ms}`.
 - Faces: `img.face[src^="blob:"]` once drawn, `.face.loading` while on the
   way, `.face.missing` (or `.back.missing` for an image back) for good. An
   item's `data-sig` ends with the image's state: `u` drawn, `l` loading, `x`
@@ -210,9 +242,14 @@ alpha colour for VP8X).
   N old table save(s) to keep this one"; "Can't save this table (browser
   storage is full) — reloading the host tab would reset it"; "Couldn't cache
   card images on this device (storage full) — they'll download again next
-  time" (a host: "Couldn't store card images in this browser (storage full)
-  — reloading the host tab would lose them"); "Card Table was updated in
-  another tab — reload this tab to keep saving"; "N card images of this
+  time"; "Card Table was updated in another tab — reload this tab to keep
+  saving" (a guest: "… to keep caching card images"; both pinned);
+  "Couldn't read this table's save (…) — this tab won't save over it;
+  reload this page to try again" (pinned: the tab hosts by its host key,
+  and saves nothing); "Rules disabled — error in t.data / t.public: they
+  hold a value that can't be saved (…) — keep them JSON"; "Card images are
+  coming slowly — the host sends at most 64 MB of them a minute" (a guest
+  told to wait); "N card images of this
   table are missing from this browser's storage" (host boot); "N card images
   are missing on the host — ask them to re-add the deck"; "A card image from
   the host was damaged in transit — retrying", then "A card image from the
@@ -220,9 +257,11 @@ alpha colour for VP8X).
   "🚫 Deck rejected: card 12: image is 30000 × 30000 px (max 4096 per side,
   16 Mpx)" (or "…: not a PNG/JPEG/WebP/GIF image", "the image claims to be
   image/png but is image/jpeg", "image is 2.4 MB (max 2 MB)", "the image's
-  header can't be read"); a host over a guest's image budget sends "🚫 Too
-  many image requests — slow down".
+  header can't be read"), or "🚫 Deck rejected: your last deck is still
+  being added" (a guest has one deck in the works at a time); a host over a
+  guest's image budget sends "🚫 Too many image requests — slow down".
 - Limits: `IMG_MAX_SIDE` 4,096 px and `IMG_MAX_PX` 16,000,000 px (store.js;
   a 4096 × 4096 image is over), `ASSET_MAX_BYTES` 2,000,000 (core.js); per
   guest the host keeps at most 2 image sends in flight, sends one image at
-  most twice a minute, and at most 64 MB a minute.
+  most twice a minute, and at most 64 MB a minute (the rest waits for the
+  next minute).

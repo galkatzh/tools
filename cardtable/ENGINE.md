@@ -126,7 +126,9 @@ A thin wrapper over the table's existing ops (today in `core.js`):
   path), so turn pointers, phases, and pending timers live there. It must
   stay JSON and under 4,000,000 characters as JSON: after each action (or
   join, leave or timer) whose hooks left it larger, the rules disable loudly,
-  naming those hooks (`t.data is too large (N chars, max 4,000,000)`).
+  naming those hooks (`t.data is too large (N chars, max 4,000,000)`). A
+  value the save can't copy in `t.data` or `t.public` (a function, a DOM
+  node) disables the rules too, and both keep only their JSON part.
 - **Ops — the complete primitive set**, mirroring everything `apply()` can
   do (the switch bodies get refactored into named helpers — `opDeal`,
   `opShuffle`, … — used by both the switch and this API):
@@ -146,7 +148,8 @@ A thin wrapper over the table's existing ops (today in `core.js`):
   `t.addStandardDeck({jokers, x, y})` (→ the new pile id), and
   `t.newDeck({name, cards, back})` — registering a script-defined deck of
   image-less cards (`{name, text, color, bg, meta}` each; `back` may be a
-  solid color like `"#111"`) without creating a pile, so a script can hold
+  solid color like `"#111"`, and nothing else: anything else throws a
+  `TypeError`, since a script deck has no images) without creating a pile, so a script can hold
   a huge deck and only materialize small piles from it via
   `t.newPile([{d, i, up}])`, keeping the broadcast state light — so a
   script can set up its own material from scratch. Anything a human can do, a script can

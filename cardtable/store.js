@@ -13,16 +13,18 @@
 //            index size      this browser hosted or joined (GC reads the two
 //                            indexes, never the bytes)
 // Images are content-addressed: a deck names its images by hash, and a peer
-// that holds those bytes needs nothing else. Bytes enter only through
-// putAsset — an upload being ingested, an image pulled from the host — which
-// checks them first (checkImage: the type and its magic bytes, the size, and
-// the pixel size the header declares, since a few hundred bytes of PNG can
-// declare a picture no page could decode) and, for a pulled image, its hash.
+// that holds those bytes needs nothing else. Bytes enter a page only checked
+// (checkImage: the type and its magic bytes, the size, and the pixel size the
+// header declares, since a few hundred bytes of PNG can declare a picture no
+// page could decode): an upload through ingestDeck, which keeps nothing — the
+// host holds a deck's images once the deck is on the table, and saves them
+// with it — and an image pulled from the host through putAsset, which checks
+// its hash too.
 // Every function logs a failure (console.error) and rejects with a readable
 // message for the app to show. Nothing falls back silently: without
 // IndexedDB the app runs unsaved, loudly, and images live in memory only.
 import {
-  ASSET_MAX_BYTES, IMG_MIMES, IMG_RE, STATE_V, cleanDeck, cleanDeckV1, assetRefs, migrate, num,
+  ASSET_MAX_BYTES, IMG_MIMES, STATE_V, cleanDeck, cleanDeckV1, assetRefs, isImgURL, migrate, num,
 } from './core.js?v=1';
 
 /** This file's code version (see core.js MODULE_V). */
@@ -121,34 +123,56 @@ export function checkImage(bytes, mime) {
 export const sha256hex = async (bytes) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', u8(bytes)))]
   .map((x) => x.toString(16).padStart(2, '0')).join('');
 
+/** How long ingestion works before it lets the page run (ms): a big deck never holds anyone's moves up. */
+const SLICE_MS = 8;
 /** Turns a deck in the transport shape (core.js cleanDeckV1: images as data
  *  URLs; an image-less deck is the same in both shapes) into the catalog
- *  shape: every image a card shows is decoded, checked and stored
- *  (putAsset), and named by its asset id; a card's own `img` joins `imgs`
- *  (with its `g`), the same bytes share one entry, and an image back becomes
- *  `backImg`. Images no card shows are dropped. Resolves {deck (v2, cleanDeck),
- *  cost: the transport size the guests' deck budget counts}; rejects with a
- *  readable message naming the image ("card 12: not a PNG/JPEG/WebP/GIF
- *  image"). The deck's images are only ever ones it brought the bytes of.
- *  (Its bytes need no cap of their own: cleanDeckV1's 24 MB of base64 is
- *  under 18 MB decoded.) */
+ *  shape, in memory: every image a card shows is decoded, checked
+ *  (checkImage) and hashed, and named by its asset id; a card's own `img`
+ *  joins `imgs` (with its `g`), the same bytes share one entry, and an image
+ *  back becomes `backImg`. Images no card shows are dropped. Resolves {deck
+ *  (v2, cleanDeck), cost: the transport size the guests' deck budget counts
+ *  (measured when read: the host's own decks never need it), assets:
+ *  Map<asset id, {mime, data: ArrayBuffer}>}. Nothing is stored: the caller
+ *  keeps the images of a deck that was taken (hold, cache), so a deck refused
+ *  later leaves nothing behind. Rejects with a readable message naming the
+ *  image ("card 12: not a PNG/JPEG/WebP/GIF image"). The work comes in slices
+ *  of about SLICE_MS, between which the page runs (other players' moves go on
+ *  meanwhile). (The bytes need no cap of their own: cleanDeckV1's 24 MB of
+ *  base64 is under 18 MB decoded.) */
 export async function ingestDeck(raw) {
-  const d = cleanDeckV1(raw), cost = JSON.stringify(d).length;
+  let t0 = performance.now();
+  const d = cleanDeckV1(raw);
   const label = new Map(); // data URL → what an error calls it
   d.cards.forEach((c, k) => {
     const url = c.img || d.imgs[c.g];
     if (url && !label.has(url)) label.set(url, `card ${k + 1}`);
   });
-  if (IMG_RE.test(d.back)) label.set(d.back, 'the back');
-  const ids = new Map(await Promise.all([...label].map(async ([url, what]) => {
-    const [, mime, b64] = /^data:([^;]+);base64,(.*)$/s.exec(url);
-    try { return [url, await putAsset(unb64(b64), mime)]; } catch (err) { throw new Error(`${what}: ${err.message}`); }
-  })));
+  if (isImgURL(d.back)) label.set(d.back, 'the back');
+  const ids = new Map(), assets = new Map(); // data URL → asset id; asset id → {mime, data}
+  let slice = [];
+  /** Ends a slice: its hashes are in, then the page runs a moment. */
+  const settle = async () => {
+    for (const [url, h, mime, data] of await Promise.all(slice)) { ids.set(url, h); assets.set(h, { mime, data }); }
+    slice = [];
+    await new Promise((r) => setTimeout(r)); // (a digest may resolve without letting the page run)
+    t0 = performance.now();
+  };
+  for (const [url, what] of label) {
+    if (performance.now() - t0 > SLICE_MS) await settle();
+    const mime = url.slice(5, url.indexOf(';')); // data:<mime>;base64,<bytes> (isImgURL)
+    try {
+      const b = unb64(url.slice(url.indexOf(',') + 1));
+      checkImage(b, mime);
+      slice.push(sha256hex(b).then((h) => [url, h, mime, b.buffer]));
+    } catch (err) { throw new Error(`${what}: ${err.message}`); }
+  }
+  await settle();
   const imgs = [], slot = new Map(); // asset id → its index in imgs
   const index = (url) => { const h = ids.get(url); if (!slot.has(h)) slot.set(h, imgs.push(h) - 1); return slot.get(h); };
   const cards = d.cards.map(({ img, g, ...c }) => (img || g !== undefined ? { ...c, g: index(img || d.imgs[g]) } : c));
   const backImg = ids.get(d.back);
-  return { deck: cleanDeck({ name: d.name, back: backImg ? null : d.back, backImg, imgs, cards }), cost };
+  return { deck: cleanDeck({ name: d.name, back: backImg ? null : d.back, backImg, imgs, cards }), get cost() { return JSON.stringify(d).length; }, assets };
 }
 function unb64(s) {
   const bin = atob(s), out = new Uint8Array(bin.length);
@@ -158,19 +182,26 @@ function unb64(s) {
 
 // --- the database ------------------------------------------------------------
 let db = null, opening = null;
-/** What the app hands open(): notify(msg) shows a notice (a toast);
- *  keep() is the Set of asset ids GC must spare (what this tab's decks show,
- *  and what it is pulling); hosting() says whether this tab is the host;
- *  onVersionChange() runs once another tab upgraded the database (closed
- *  here); onPruned(room) once another tab deleted that room's save (prune). */
-const opts = { notify: (msg) => console.warn(msg), keep: () => new Set(), hosting: () => false, onVersionChange: () => {}, onPruned: () => {} };
+/** Why IndexedDB can't be used any more although it opened (another tab
+ *  upgraded it): reads then fail with this, never pass for "not held". */
+let gone = '';
+/** Memory only: IndexedDB never opened here (the app said so at boot). */
+const noDB = () => !db && !gone;
+/** What the app hands open(): notify(msg) shows a notice (a toast); keep()
+ *  is the Set of asset ids GC must spare (what this tab's decks show, and
+ *  what it is pulling); onVersionChange() runs once another tab upgraded the
+ *  database (closed here); onPruned(room) once another tab deleted that
+ *  room's save (prune). */
+const opts = { notify: (msg) => console.warn(msg), keep: () => new Set(), onVersionChange: () => {}, onPruned: () => {} };
 /** This browser's tabs tell each other which room's save prune() deleted: a
- *  tab hosting that room must write its whole catalog again. */
+ *  tab hosting that room must write its whole catalog again, images
+ *  included (the pruning tab's GC may take them). No BroadcastChannel (an
+ *  old Safari): a tab is not told, and its next save writes only the state. */
 let tabs = null;
 
 /** Logs a failure and rethrows it as an Error whose message says what
  *  failed and why ("browser storage is full" for a quota error); the name
- *  (QuotaExceededError, …) is kept for callers that tell them apart. */
+ *  (QuotaExceededError, DataCloneError, …) is kept for callers that tell them apart. */
 const fail = (what) => (err) => {
   console.error(`${what} failed`, err);
   const quota = err?.name === 'QuotaExceededError';
@@ -195,10 +226,15 @@ export function open(o = {}) {
     };
     r.onsuccess = () => {
       db = r.result;
-      tabs = new BroadcastChannel('cardtable-store');
-      tabs.onmessage = (e) => opts.onPruned(e.data?.pruned);
       // A newer Card Table in another tab wants to upgrade: let it, and stop here.
-      db.onversionchange = () => { db.close(); db = null; opts.onVersionChange(); };
+      db.onversionchange = () => { db.close(); db = null; gone = 'the database was upgraded in another tab'; opts.onVersionChange(); };
+      if (typeof BroadcastChannel === 'function') {
+        tabs = new BroadcastChannel('cardtable-store');
+        tabs.onmessage = (e) => {
+          for (const m of mem.values()) m.stored = false; // the pruned room's images may be gone with it: the next save that names one writes it again
+          opts.onPruned(e.data?.pruned);
+        };
+      }
       resolve();
     };
     r.onerror = () => reject(r.error || new Error('it failed to open'));
@@ -217,7 +253,7 @@ export function open(o = {}) {
  *  ends: a page that is going away (pagehide) may never finish its task. */
 function tx(names, mode, fn) {
   return new Promise((resolve, reject) => {
-    if (!db) throw new Error('the database is not open');
+    if (!db) throw new Error(gone || 'the database is not open');
     const t = db.transaction(names, mode);
     let out;
     t.oncomplete = () => resolve(out);
@@ -244,42 +280,86 @@ function keysOf(index) {
 
 // --- saves and the catalog -------------------------------------------------------
 /** A host's table: ONE transaction writes the state (structured-cloned by
- *  put(), synchronously: later moves can't leak into it) and the catalog
- *  records of `catalog` ({id, kind: 'deck', deck}: the decks not saved yet). */
+ *  put(), synchronously: later moves can't leak into it), the catalog
+ *  records of `catalog` ({id, kind: 'deck', deck}: the decks not saved yet)
+ *  and the images of those decks that IndexedDB doesn't hold yet (hold()):
+ *  a catalog record never names an image the store lacks. */
 export function writeSave(room, state, catalog = []) {
-  return tx(['saves', 'catalog'], 'readwrite', (saves, cat) => {
+  const imgs = unstored(catalog);
+  return tx(imgs.length ? ['saves', 'catalog', 'assets'] : ['saves', 'catalog'], 'readwrite', (saves, cat, assets) => {
     saves.put({ room, ts: Date.now(), v: state.v, state });
     for (const c of catalog) cat.put({ room, id: c.id, kind: c.kind, deck: c.deck });
-  }).catch(fail('saving the table'));
+    for (const [h, m] of imgs) assets.put(record(h, m));
+  }).then(() => { for (const [, m] of imgs) m.stored = true; }, fail('saving the table'));
 }
-/** Replaces a room's save with a lost marker {room, ts, lost: why}: a reload
- *  then resets the table loudly instead of resuming a stale one. */
-const markLost = (room, why, ts = Date.now()) => tx(['saves'], 'readwrite', (s) => { s.put({ room, ts, lost: why }); })
-  .catch(fail('marking the save as lost'));
+/** The images (asset id, memo entry) the decks of `catalog` show that this
+ *  page holds but IndexedDB doesn't (yet). */
+const unstored = (catalog) => [...assetRefs(catalog.map((c) => c.deck))].map((h) => [h, mem.get(h)]).filter(([, m]) => m && !m.stored);
+const record = (h, m) => ({ h, mime: m.mime, size: m.size, data: m.data, used: Date.now() });
+/** Stores images `list` (unstored's) a few hundred, or 8 MB, at a time: the
+ *  thousands of puts of a big deck in one go would hold the page up. */
+async function putImages(list) {
+  for (let k = 0; k < list.length;) {
+    const batch = [];
+    for (let bytes = 0; k < list.length && batch.length < 256 && bytes < 8e6; k++) { batch.push(list[k]); bytes += list[k][1].size; }
+    await tx(['assets'], 'readwrite', (a) => { for (const [h, m] of batch) a.put(record(h, m)); }).catch(fail('storing images'));
+    for (const [, m] of batch) m.stored = true;
+  }
+}
+/** Replaces a room's save with a lost marker {room, ts, lost: why}, and drops
+ *  its catalog (the next save that fits writes every deck again): a reload
+ *  then resets the table loudly, with none of the old decks, instead of
+ *  resuming a stale one. */
+const markLost = (room, why, ts = Date.now()) => tx(['saves', 'catalog'], 'readwrite', (s, c) => {
+  s.put({ room, ts, lost: why });
+  c.delete(IDBKeyRange.bound([room], [room, []]));
+}).catch(fail('marking the save as lost'));
 
-/** Saves a host's table (writeSave), making room when storage is full:
- *  other rooms' saves go, oldest first (prune), each followed by a sweep of
- *  the images no table shows any more (gc), until it fits. Resolves how many
- *  saves it deleted. When it still can't save, the room's save becomes a
- *  lost marker, and it rejects with the reason ("browser storage is full").
- *  Its synchronous part is the first write's structured clone (B6). */
-export async function saveTable(room, state, catalog) {
-  let pruned = 0, need = 0;
-  for (;;) {
-    try {
-      await writeSave(room, state, catalog);
-      return pruned;
-    } catch (err) {
-      const full = err.name === 'QuotaExceededError';
-      if (full && await prune(room, need ||= JSON.stringify({ state, catalog }).length)) {
-        pruned++;
-        await gc({ keep: opts.keep(), need: Infinity });
-        continue;
-      }
-      const why = full ? 'browser storage is full' : `auto-save failed: ${err.message}`;
-      await markLost(room, why).catch((e) => console.error('could not even mark the save as lost', e));
-      throw Object.assign(new Error(why), { name: err.name });
+/** Saves a host's table: what `snap()` returns ({state, catalog}), taken
+ *  again before each try, and after the wait for its new decks' images
+ *  (stored first, in batches: putImages), so the state written is never
+ *  torn between two moments; then writeSave. When storage is full it makes
+ *  room: first the image cache (gc: images no table needs, least recently
+ *  used first — they download again), then other rooms' saves, oldest first
+ *  (prune), each followed by a sweep of the images no table shows any more,
+ *  until it fits. Resolves {state, catalog (what it wrote), pruned (how many
+ *  saves it deleted), syncMs (the main-thread time of writeSave: the state's
+ *  structured clone, B6)}. When it still can't save, the room's save becomes
+ *  a lost marker, and it rejects with the reason ("browser storage is full")
+ *  — but not for a state that can't be stored at all (DataCloneError: a
+ *  rules script put a function in t.data): the last save stands, and the
+ *  caller fixes the state. */
+export async function saveTable(room, snap) {
+  let pruned = 0, swept = false;
+  /** After a failed write: true to try again (room was made), else the save becomes a lost marker and this throws. */
+  const failed = async (err, s) => {
+    if (err.name === 'DataCloneError') throw err;
+    if (err.name === 'QuotaExceededError') {
+      try {
+        const need = JSON.stringify(s).length + unstored(s.catalog).reduce((n, [, m]) => n + m.size, 0);
+        if (!swept) {
+          swept = true;
+          if ((await gc({ keep: opts.keep(), need })).deleted) return true;
+        }
+        if (await prune(room, need)) { pruned++; await gc({ keep: opts.keep(), need: Infinity }); return true; }
+      } catch (e) { console.error('making room in browser storage failed', e); }
     }
+    const why = err.name === 'QuotaExceededError' ? 'browser storage is full' : `auto-save failed: ${err.message}`;
+    await markLost(room, why).catch((e) => console.error('could not even mark the save as lost', e));
+    throw Object.assign(new Error(why), { name: err.name });
+  };
+  for (;;) {
+    let s = snap();
+    const imgs = unstored(s.catalog);
+    if (imgs.length) {
+      try { await putImages(imgs); } catch (err) { if (await failed(err, s)) continue; }
+      s = snap(); // the table as it is now
+    }
+    const t0 = performance.now(), write = writeSave(room, s.state, s.catalog), syncMs = performance.now() - t0;
+    try {
+      await write;
+      return { ...s, pruned, syncMs };
+    } catch (err) { if (await failed(err, s)) continue; }
   }
 }
 
@@ -302,7 +382,7 @@ export async function prune(exceptRoom, need) {
   console.warn('browser storage full — deleting the save of an older room', room);
   await tx(['saves', 'catalog'], 'readwrite', (s, c) => { s.delete(room); c.delete(IDBKeyRange.bound([room], [room, []])); })
     .catch(fail('deleting an old save'));
-  tabs.postMessage({ pruned: room });
+  tabs?.postMessage({ pruned: room });
   return 1;
 }
 
@@ -310,16 +390,19 @@ export async function prune(exceptRoom, need) {
  *  exactly this (false: a migrated save that couldn't be written), {lost:
  *  why} when it can't be resumed, {newer: v} when a newer Card Table wrote
  *  it (never to be resumed or overwritten here), or null if this browser
- *  never hosted the room. A save from before Phase 1 (localStorage
- *  ct-save-<room> and ct-decks-<room>) is migrated: its state lifted
- *  (core.js migrate), its decks ingested (a deck that fails is dropped, and
- *  said so), and the result written in one transaction; only once that
- *  commits do the old keys go. Every catalog deck passes cleanDeck. */
+ *  never hosted the room. Rejects when the save can't be READ (the caller
+ *  must not write over what it couldn't read). A save from before Phase 1
+ *  (localStorage ct-save-<room> and ct-decks-<room>) is migrated: its state
+ *  lifted (core.js migrate), its decks ingested (a deck that fails is
+ *  dropped, and said so), and the result — images included — written in one
+ *  transaction; only once that commits do the old keys go (or once a later
+ *  save of the room supersedes them). Every catalog deck passes cleanDeck. */
 export async function loadSave(room) {
   const { rec, cat } = await tx(['saves', 'catalog'], 'readonly', (s, c) => ({ rec: s.get(room), cat: c.index('room').getAll(room) }))
     .catch(fail('reading the save'));
   const s = rec.result;
   if (!s) return migrateLegacy(room);
+  dropLegacy(room, s.ts);
   if (typeof s.lost === 'string') return { lost: s.lost };
   const v = Math.max(num(s.v, 1), num(s.state?.v, 1));
   if (v > STATE_V) return { newer: v };
@@ -329,6 +412,17 @@ export async function loadSave(room) {
     try { decks[c.id] = cleanDeck(c.deck); } catch (err) { console.error(`saved deck ${c.id} dropped`, err); }
   }
   return { state: s.state, decks, stored: true };
+}
+/** Removes room's pre-Phase 1 save, left behind when its migration couldn't
+ *  be written, once a save at least as new (written at `ts`) supersedes it. */
+function dropLegacy(room, ts) {
+  const raw = localStorage.getItem(`ct-save-${room}`);
+  if (raw === null) return;
+  let at = 0;
+  try { at = num(JSON.parse(raw)?.ts); } catch (err) { console.error('an unreadable pre-Phase 1 save, superseded', err); }
+  if (at > num(ts)) { console.warn(`the pre-Phase 1 save of ${room} is newer than its IndexedDB save: kept`); return; }
+  localStorage.removeItem(`ct-save-${room}`);
+  localStorage.removeItem(`ct-decks-${room}`);
 }
 /** The pre-Phase 1 save of `room` (localStorage), migrated: see loadSave. */
 async function migrateLegacy(room) {
@@ -346,7 +440,11 @@ async function migrateLegacy(room) {
       if (!old || typeof old !== 'object') throw new Error('the saved decks are missing');
       const decks = {};
       for (const [id, deck] of Object.entries(old)) {
-        try { decks[id] = (await ingestDeck(deck)).deck; } catch (err) {
+        try {
+          const ing = await ingestDeck(deck);
+          hold(ing.assets); // drawn from memory, and written with the save below
+          decks[id] = ing.deck;
+        } catch (err) {
           console.error(`saved deck ${id} dropped`, err);
           opts.notify(`The deck "${String(deck?.name || id).slice(0, 24)}" of this table's save was dropped: ${err.message}`);
         }
@@ -370,21 +468,31 @@ async function migrateLegacy(room) {
 }
 
 // --- assets ---------------------------------------------------------------------
-/** This tab's images, by asset id: {mime, size, blob, url (an object URL,
- *  what faces show), stored (IndexedDB holds it)}. Never evicted: a page
- *  shows its decks for its lifetime. */
+/** This page's images, by asset id: {mime, size, data (ArrayBuffer), url (an
+ *  object URL, what faces show: made on first use), stored (IndexedDB holds
+ *  it)}. Never evicted: a page shows its decks for its lifetime. */
 const mem = new Map();
 const memo = (h, mime, data, stored) => {
-  if (!mem.has(h)) { const blob = new Blob([data], { type: mime }); mem.set(h, { mime, size: blob.size, blob, url: URL.createObjectURL(blob), stored }); }
-  return mem.get(h);
+  const m = mem.get(h) || mem.set(h, { mime, size: data.byteLength, data, url: '', stored }).get(h);
+  m.stored ||= stored;
+  return m;
 };
 let cacheWarned = false;
 
-/** Checks an image (checkImage), hashes it and stores it: in memory at once
- *  (getAssetURL), then in IndexedDB. Resolves its asset id. With `expect`
- *  (an image pulled from the host) the hash must be that id. When storage
- *  is full it makes room once (gc, least recently used first) and retries;
- *  failing that, the image lives in memory only, for this page, said once.
+/** This page now holds images `assets` (ingestDeck's: already checked), to
+ *  draw and serve; IndexedDB gets them with the save that first writes a
+ *  deck naming them (writeSave). The host's way to keep a deck's images —
+ *  only once the deck is on the table. */
+export function hold(assets) {
+  for (const [h, a] of assets) memo(h, a.mime, a.data, false);
+}
+/** A guest's own upload: holds images `assets` (ingestDeck's) and caches
+ *  them in IndexedDB, as if pulled (putAsset). */
+export const cache = (assets) => Promise.all([...assets].map(([h, a]) => keep(h, a.mime, a.data)));
+
+/** Checks an image (checkImage), hashes it and keeps it: in memory at once
+ *  (getAssetURL), then in IndexedDB (keep). Resolves its asset id. With
+ *  `expect` (an image pulled from the host) the hash must be that id.
  *  Rejects, readably, for an image that fails a check. */
 export async function putAsset(data, mime, expect) {
   const b = u8(data);
@@ -397,9 +505,18 @@ export async function putAsset(data, mime, expect) {
     console.error('an image was refused', err);
     throw err;
   }
-  const m = memo(h, mime, b, false);
-  if (m.stored || !db) return h;
-  const rec = { h, mime, size: b.length, data: b.byteOffset || b.byteLength !== b.buffer.byteLength ? b.slice().buffer : b.buffer, used: Date.now() };
+  await keep(h, mime, b.byteOffset || b.byteLength !== b.buffer.byteLength ? b.slice().buffer : b.buffer);
+  return h;
+}
+/** Holds a checked image in memory, and caches it in IndexedDB. When storage
+ *  is full it makes room once (gc, least recently used first) and retries;
+ *  failing that, the image lives in memory only, for this page, said once.
+ *  (With no IndexedDB at all the app said so at boot, or when another tab
+ *  upgraded it.) */
+async function keep(h, mime, data) {
+  const m = memo(h, mime, data, false);
+  if (m.stored || !db) return;
+  const rec = { h, mime, size: m.size, data, used: Date.now() };
   const write = () => tx(['assets'], 'readwrite', (a) => { a.put(rec); }).catch(fail('storing an image'));
   try {
     await write().catch(async (err) => {
@@ -411,35 +528,48 @@ export async function putAsset(data, mime, expect) {
   } catch (err) {
     if (!cacheWarned) {
       cacheWarned = true;
-      const why = err.name === 'QuotaExceededError' ? 'storage full' : err.message;
-      opts.notify(opts.hosting() ? `Couldn't store card images in this browser (${why}) — reloading the host tab would lose them`
-        : `Couldn't cache card images on this device (${why}) — they'll download again next time`);
+      opts.notify(`Couldn't cache card images on this device (${err.name === 'QuotaExceededError' ? 'storage full' : err.message}) — they'll download again next time`);
     }
   }
-  return h;
 }
-/** The object URL of image `h` if this page holds it (a synchronous memo lookup), else null. */
-export const getAssetURL = (h) => mem.get(h)?.url ?? null;
-/** The object URL of image `h`: from memory, else read from IndexedDB; null when neither holds it. */
+/** The object URL of image `h` if this page holds it (made on first use), else null. */
+export function getAssetURL(h) {
+  const m = mem.get(h);
+  return m ? (m.url ||= URL.createObjectURL(new Blob([m.data], { type: m.mime }))) : null;
+}
+/** Whether this page holds image `h` (a synchronous memo lookup). */
+export const holds = (h) => mem.has(h);
+/** The object URL of image `h`: from memory, else read from IndexedDB; null
+ *  when neither holds it. Rejects when IndexedDB can't be read. */
 export async function loadAsset(h) {
-  if (mem.has(h) || !db) return getAssetURL(h);
+  if (mem.has(h) || noDB()) return getAssetURL(h);
   const r = (await tx(['assets'], 'readonly', (a) => a.get(h)).catch(fail('reading an image'))).result;
   if (!r) return null;
   memo(h, r.mime, r.data, true);
   touch(r);
   return getAssetURL(h);
 }
-/** Image `h` to send to a peer, {mime, data: ArrayBuffer}, or null when this browser doesn't hold it. */
+/** Image `h` to send to a peer, {mime, data: ArrayBuffer}, or null when this
+ *  browser doesn't hold it. Read straight from IndexedDB when this page
+ *  doesn't hold it: serving an image doesn't make the host keep a copy. */
 export async function getAsset(h) {
-  await loadAsset(h);
   const m = mem.get(h);
-  return m ? { mime: m.mime, data: await m.blob.arrayBuffer() } : null;
+  if (m || noDB()) return m ? { mime: m.mime, data: m.data } : null;
+  const r = (await tx(['assets'], 'readonly', (a) => a.get(h)).catch(fail('reading an image'))).result;
+  if (r) touch(r);
+  return r ? { mime: r.mime, data: r.data } : null;
+}
+/** Which of images `ids` neither this page nor IndexedDB holds, read in one
+ *  transaction. Rejects when IndexedDB can't be read: an image this browser
+ *  can't read is not reported as missing. */
+export async function lacking(ids) {
+  const out = ids.filter((h) => !mem.has(h));
+  if (!out.length || noDB()) return out;
+  const n = await tx(['assets'], 'readonly', (a) => out.map((h) => a.count(h))).catch(fail('looking up images'));
+  return out.filter((_, k) => !n[k].result);
 }
 /** Whether this page or IndexedDB holds image `h`. */
-export async function has(h) {
-  if (mem.has(h) || !db) return mem.has(h);
-  return (await tx(['assets'], 'readonly', (a) => a.count(h)).catch(fail('looking up an image'))).result > 0;
-}
+export const has = async (h) => !(await lacking([h])).length;
 
 // `used` is bumped at most once a day per image, in one batched write: a
 // record holds its bytes too, so every bump rewrites them.

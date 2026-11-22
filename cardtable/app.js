@@ -187,9 +187,10 @@ const perf = { snaps: 0, patches: 0, gaps: 0, snapRequests: 0, lastApplyMs: 0, l
 
 // --- the host's action queue ------------------------------------------------
 // Every state change on the host runs through one FIFO, in arrival order: a
-// player's action, and the internal jobs `_leave` (a player's last connection
-// closed), `_tick` (the rules' timers) and `_refuse` (an action turned away
-// before it ran: re-send what it named). Jobs are synchronous today, so a job
+// player's action, and the internal jobs (JOBS) `_leave` (a player's last
+// connection closed), `_tick` (the rules' timers), `_refuse` (an action
+// turned away before it ran: re-send what it named) and `_unsaveable` (the
+// save couldn't copy the rules' state). Jobs are synchronous today, so a job
 // on an empty queue runs at once, in the caller's task, and the host's own
 // clicks feel instant. Asynchronous preprocessing (deck ingestion) runs
 // before a job enters the queue (submit), and a rules Worker would make a
@@ -209,10 +210,17 @@ function enqueue(p, a) {
     } finally { running = false; }
   });
 }
+/** The host's internal jobs, by type (never from the wire: PUBLIC_ACTIONS). */
+const JOBS = {
+  _leave: (p) => T.leave(p),
+  _tick: () => T.runTimers(),
+  _refuse: (p, a) => T.refreshFor(p, a.a),
+  _unsaveable: (p, a) => T.unsaveable(a.why),
+};
 function runJob({ p, a, resolve }) {
   let changed = true; // a job that threw may have changed something: broadcast and save it
   try {
-    changed = a.t === '_leave' ? T.leave(p) : a.t === '_tick' ? T.runTimers() : a.t === '_refuse' ? T.refreshFor(p, a.a) : T.apply(p, a);
+    changed = own(JOBS, a.t) ? JOBS[a.t](p, a) : T.apply(p, a);
   } catch (err) {
     console.error('action failed', a, err);
     toast(`Error: ${err.message}`);
@@ -224,33 +232,58 @@ function runJob({ p, a, resolve }) {
   resolve(error ? { ok: false, error } : { ok: changed });
 }
 
-const ingests = new Map(); // host: player → their deck ingestion in progress (one at a time each)
+const ingesting = new Map(); // host: player → their deck ingestion in progress
+let reserved = 0; // host: the deck budget the guests' decks being ingested will take
 /** Host: hands player p's action to the queue — after its preprocessing,
- *  for an action that has one. A deck (addDeck) is checked and measured at
- *  once (cleanDeckV1; a guest's against the deck budget, before anything is
- *  decoded), then ingested (store.js: its images decoded, checked and
- *  stored) OUTSIDE the queue, one ingestion per player at a time: a big deck
- *  takes seconds, and nobody's moves wait for it. It is queued once
+ *  for an action that has one. A deck (addDeck) is ingested (store.js: its
+ *  images decoded, checked and hashed, in memory) OUTSIDE the queue: a big
+ *  deck takes seconds, and nobody's moves wait for it. It is queued once
  *  ingested, so decks commit in the order their ingestion ends (nothing can
- *  refer to a deck before it commits). A failure tells the actor and queues
- *  nothing. Resolves like enqueue(). */
+ *  refer to a deck before it commits), and its images are kept only if it
+ *  did commit (holdImages): a deck refused by the rules or the budget leaves
+ *  nothing in the host's memory or storage. A guest has one deck in the
+ *  works at a time, checked and measured on receipt (cleanDeckV1), before
+ *  anything is decoded, against the deck budget minus what the guests' decks
+ *  in the works will take (`reserved`) — and again at commit. A failure
+ *  tells the actor and queues nothing. Resolves like enqueue(). */
 function submit(p, a) {
   if (a.t !== 'addDeck') return enqueue(p, a);
-  const reject = (err) => {
-    console.error('rejected a deck', err);
-    tell(p, `🚫 Deck rejected: ${err.message}`);
-    return { ok: false, error: err.message };
+  const refuse = (why) => {
+    console.error('rejected a deck:', why);
+    tell(p, `🚫 Deck rejected: ${why}`);
+    return { ok: false, error: why };
   };
-  try {
-    const over = p !== pid && deckOverBudget(T.state.guestDeckChars || 0, JSON.stringify(cleanDeckV1(a.deck)).length);
-    if (over) throw new Error(over);
-  } catch (err) { return Promise.resolve(reject(err)); }
-  const run = (ingests.get(p) || Promise.resolve()).then(() => store.ingestDeck(a.deck)).then(({ deck, cost }) => (role === 'host'
-    ? enqueue(p, { ...a, deck, cost }) // the budget is checked again at commit: another guest's deck may come first
-    : { ok: false, error: 'this tab is no longer the host' }), reject);
-  ingests.set(p, run);
-  run.finally(() => { if (ingests.get(p) === run) ingests.delete(p); });
+  let deck = a.deck, cost = 0;
+  if (p !== pid) {
+    if (ingesting.has(p)) return Promise.resolve(refuse('your last deck is still being added'));
+    try { deck = cleanDeckV1(a.deck); } catch (err) { return Promise.resolve(refuse(err.message)); }
+    cost = JSON.stringify(deck).length;
+    const over = deckOverBudget((T.state.guestDeckChars || 0) + reserved, cost);
+    if (over) return Promise.resolve(refuse(over));
+    reserved += cost;
+  }
+  const run = (ingesting.get(p) || Promise.resolve()).then(() => store.ingestDeck(deck)).then(async ({ deck: v2, assets }) => {
+    if (role !== 'host') return { ok: false, error: 'this tab is no longer the host' };
+    const done = await enqueue(p, { ...a, deck: v2, cost });
+    holdImages(assets);
+    return done;
+  }, (err) => refuse(err.message)).finally(() => {
+    reserved -= cost;
+    if (ingesting.get(p) === run) ingesting.delete(p);
+  });
+  ingesting.set(p, run);
   return run;
+}
+/** Host: a deck's ingestion is over, and its job ran: of its images
+ *  (`assets`), those the table now shows are held — drawn, served, and
+ *  saved with the deck (store.js hold) — and any this table showed as
+ *  missing show again (the deck was added again). The others go with the job. */
+function holdImages(assets) {
+  if (role !== 'host') return;
+  const refs = T.assetRefs(), ids = [...assets.keys()].filter((h) => refs.has(h));
+  store.hold(new Map(ids.map((h) => [h, assets.get(h)])));
+  for (const h of ids) imgs.delete(h);
+  if (ids.length) imagesArrived(ids);
 }
 
 /** Host, after a job: carries out what the table queued and, when it changed
@@ -468,6 +501,7 @@ function demote() {
   clearTimeout(persistT);
   bcastT = persistT = 0;
   for (const job of queue.splice(0)) job.resolve({ ok: false, error: 'this tab is no longer the host' });
+  for (const box of outbox.values()) clearTimeout(box.wait);
   outbox.clear();
   T = null;
   view.boot = 0;
@@ -614,54 +648,76 @@ function refuse(peer, reason) {
 // Decks name their images by asset id; the bytes travel apart, on their own
 // channel, only when asked for, and only from the host. A guest asks for the
 // ones it holds neither in memory nor in IndexedDB (`need`, NEED_BATCH ids
-// a request). The host sends each one this table shows — never another
-// room's: its image store is shared by every room this browser hosted —
-// paced per peer, after that peer's pending states, within a byte budget,
-// and names the ones it lacks (a `missing` note). Nothing waits forever: a
-// request left unanswered for NEED_TIMEOUT_MS is asked again once, then the
-// image counts as missing, as does one that arrives damaged twice.
-const NEED_BATCH = 64, NEED_TIMEOUT_MS = 20000;
+// a request, a few requests a second). The host sends each one this table
+// shows — never another room's: its image store is shared by every room this
+// browser hosted — paced per peer, after that peer's pending states, within
+// a byte budget a minute (past it, the rest waits for the next minute, and
+// the guest is told so), and names the ones it lacks (a `missing` note).
+// Nothing waits forever: a request the host (while it is here) leaves
+// unanswered for NEED_TIMEOUT_MS is asked again once, then the image counts
+// as missing, as does one that arrives damaged twice.
+const NEED_BATCH = 64, NEED_PER_S = 8, NEED_TIMEOUT_MS = 20000;
 const ASSET_INFLIGHT = 2, PEER_ASSET_BUDGET = 64e6, ASSET_WINDOW_MS = 60000;
-const pending = new Map(); // guest: image asked of the host → {at: when, tries: requests so far}
-const missingImgs = new Set(); // images that won't come: their sides show as missing
-const loadingImgs = new Set(); // images being read from IndexedDB
-let lastImageAt = 0; // guest: when the host last delivered an image (a long pull is progress, not a timeout)
+/** What this tab knows of each image it shows but doesn't hold yet
+ *  (store.holds): 'load' (being read from IndexedDB — for good on a host
+ *  whose storage went away: it was told to reload), 'missing' (it won't
+ *  come: drawn struck out), or on a guest {at, tries}: asked of the host
+ *  (at: when last asked, 0 while the request waits to go out; tries: how often). */
+const imgs = new Map();
+let heardAt = 0; // guest: when the host last showed progress on our requests (an image came, it said to wait, it came back)
+/** The images this guest asks the host for. */
+const asked = () => [...imgs].filter(([, x]) => typeof x === 'object').map(([h]) => h);
 /** What the image cache's GC must spare: the images of the decks this tab shows, and those it is pulling. */
-const keepImages = () => new Set([...assetRefs(decks), ...pending.keys()]);
+const keepImages = () => new Set([...assetRefs(decks), ...asked()]);
+/** Guest: whether the host is reachable now (act() would send to it). */
+const hostHere = () => !!(room && hostPeer && room.getPeers()[hostPeer]);
 
 /** Gets images `ids` this tab doesn't hold yet: from IndexedDB, else (a
  *  guest) from the host. The host's own images come from its storage only:
  *  what that lacks is missing (the boot check said so). */
 function wantImages(ids) {
-  const fresh = ids.filter((h) => !store.getAssetURL(h) && !missingImgs.has(h) && !loadingImgs.has(h) && !pending.has(h));
+  const fresh = ids.filter((h) => !store.holds(h) && !imgs.has(h));
   if (!fresh.length) return;
-  for (const h of fresh) loadingImgs.add(h);
-  Promise.all(fresh.map((h) => store.loadAsset(h).catch((err) => { console.error('reading a cached image failed', h, err); return null; })))
+  for (const h of fresh) imgs.set(h, 'load');
+  Promise.all(fresh.map((h) => store.loadAsset(h).catch((err) => { console.error('reading a cached image failed', h, err); return undefined; })))
     .then((urls) => {
-      for (const h of fresh) loadingImgs.delete(h);
-      const lack = fresh.filter((_, k) => !urls[k]);
-      if (lack.length < fresh.length) imagesArrived(fresh.filter((_, k) => urls[k]));
-      if (lack.length && role === 'host') giveUp(lack);
-      else if (lack.length) askHost(lack);
+      const got = fresh.filter((_, k) => urls[k]);
+      const lack = fresh.filter((_, k) => urls[k] === null), unread = fresh.filter((_, k) => urls[k] === undefined);
+      for (const h of got) imgs.delete(h);
+      if (got.length) imagesArrived(got);
+      if (role !== 'host') { askHost([...lack, ...unread]); return; }
+      if (lack.length) giveUp(lack);
+      if (unread.length) toast(`Couldn't read ${unread.length} card images from this browser's storage — reload this page`); // (they stay loading: never "missing")
     });
 }
-let asking = new Set(), askT = 0; // guest: images to ask for in the next request(s)
-/** Guest: asks the host for images `ids` — gathered for a moment, so faces
- *  that want their images one by one make few requests (each costs a token
- *  of the host's flood control). */
+let askT = 0;
+/** Guest: asks the host for images `ids`. Requests are gathered for a
+ *  moment (faces want their images one by one, and each request costs a
+ *  token of the host's flood control), then go out NEED_BATCH ids each, at
+ *  most NEED_PER_S a second, and only while the host is here. */
 function askHost(ids) {
-  const now = Date.now();
-  for (const h of ids) { pending.set(h, { at: now, tries: (pending.get(h)?.tries || 0) + 1 }); asking.add(h); }
-  askT ||= setTimeout(() => {
-    const all = [...asking];
-    asking = new Set();
-    askT = 0;
-    for (let k = 0; k < all.length; k += NEED_BATCH) act({ t: 'need', a: all.slice(k, k + NEED_BATCH) });
-  }, 50);
+  for (const h of ids) imgs.set(h, { at: 0, tries: imgs.get(h)?.tries || 0 });
+  askT ||= setTimeout(sendAsks, 50);
 }
-// Requests the host left unanswered: asked again once, then given up on.
+function sendAsks() {
+  askT = 0;
+  const now = Date.now(), wait = asked().filter((h) => !imgs.get(h).at);
+  if (!wait.length) return;
+  if (hostHere()) {
+    const go = wait.slice(0, NEED_BATCH * NEED_PER_S);
+    for (let k = 0; k < go.length; k += NEED_BATCH) act({ t: 'need', a: go.slice(k, k + NEED_BATCH) });
+    for (const h of go) Object.assign(imgs.get(h), { at: now, tries: imgs.get(h).tries + 1 });
+    if (go.length === wait.length) return;
+  }
+  askT = setTimeout(sendAsks, 1000);
+}
+// Requests the host left unanswered: asked again once, then given up on. A
+// host that is away isn't late: the clock starts again once it is back.
 setInterval(() => {
-  const now = Date.now(), late = [...pending].filter(([, x]) => now - Math.max(x.at, lastImageAt) > NEED_TIMEOUT_MS);
+  if (role !== 'guest') return;
+  const now = Date.now();
+  if (!hostHere()) { heardAt = now; return; }
+  const late = [...imgs].filter(([, x]) => x.at && now - Math.max(x.at, heardAt) > NEED_TIMEOUT_MS);
   const again = late.filter(([, x]) => x.tries < 2).map(([h]) => h), gone = late.filter(([, x]) => x.tries >= 2).map(([h]) => h);
   if (again.length) { console.warn(`${again.length} image requests went unanswered — asking again`); askHost(again); }
   if (gone.length) giveUp(gone, `${gone.length} card images are missing on the host — ask them to re-add the deck`);
@@ -669,10 +725,10 @@ setInterval(() => {
 /** Stops waiting for images `ids`: their sides show as missing, loudly
  *  (`msg`: a toast too). */
 function giveUp(ids, msg) {
-  for (const h of ids) { pending.delete(h); missingImgs.add(h); }
+  for (const h of ids) imgs.set(h, 'missing');
   console.error(msg || 'card images are missing from this browser\'s storage', ids);
+  imagesArrived(ids, true);
   if (msg) toast(msg);
-  imagesArrived(ids);
 }
 
 /** Guest: image bytes on the `asset` channel. Unsigned, so taken only from
@@ -681,84 +737,97 @@ function giveUp(ids, msg) {
  *  in the header (imageDims), and the hash. Anything else is dropped; a
  *  damaged image is asked for again once. */
 function receiveImage(data, peer, meta) {
-  const h = peerText(meta?.h);
+  const h = peerText(meta?.h), x = imgs.get(h);
   if (role !== 'guest' || peer !== hostPeer) { console.warn('dropped an image that did not come from the host', peer); return; }
-  if (!pending.has(h)) { console.warn('dropped an image nobody asked for', h.slice(0, 16)); return; }
-  lastImageAt = Date.now();
+  if (typeof x !== 'object') { console.warn('dropped an image nobody asked for', h.slice(0, 16)); return; }
+  heardAt = Math.max(heardAt, Date.now()); // (a host that said to wait has its say until then)
   store.putAsset(ArrayBuffer.isView(data) ? data : new Uint8Array(0), peerText(meta?.mime), h).then(() => {
-    pending.delete(h);
+    imgs.delete(h);
     imagesArrived([h]);
   }, (err) => {
     console.error('a card image from the host failed its checks', h, err);
-    if (!pending.has(h)) return; // another copy made it
-    if (pending.get(h).tries < 2) {
+    if (store.holds(h) || imgs.get(h) !== x) return; // another copy made it, or it was asked for again meanwhile
+    if (x.tries < 2) {
       toast('A card image from the host was damaged in transit — retrying');
       askHost([h]);
     } else giveUp([h], 'A card image from the host arrived damaged again — it shows as missing');
   });
 }
 
-const outbox = new Map(); // host: peer → its image queue {q, queued, inflight, sent: Map<id, {at, n}>, since, bytes, warned}
-/** Host: peer (player p) asked for images `list` (a need, ≤ NEED_BATCH ids):
- *  queues the ones this table shows and this browser holds, names the ones
- *  it lacks in a `missing` note, and ignores the rest. The same image goes
- *  to the same peer at most twice a minute (a guest asks again once, when
- *  one arrives damaged). */
-async function serveImages(peer, p, list) {
+const outbox = new Map(); // host: peer → its image queue {q, queued, inflight, sent: Map<id, {at, n}>, since, bytes, warned, wait}
+/** Host: peer asked for images `list` (a need, ≤ NEED_BATCH ids): queues
+ *  the ones this table shows and this browser holds, names the ones it lacks
+ *  (missing), and ignores the rest. The same image goes to the same peer at
+ *  most twice a minute (a guest asks again once, when one arrives damaged). */
+async function serveImages(peer, list) {
   const refs = T.assetRefs(), now = Date.now();
-  const box = outbox.get(peer) || outbox.set(peer, { q: [], queued: new Set(), inflight: 0, sent: new Map(), since: now, bytes: 0, warned: false }).get(peer);
-  const asked = (Array.isArray(list) ? list.slice(0, NEED_BATCH) : []).filter((h) => typeof h === 'string' && ASSET_RE.test(h));
-  const ids = asked.filter((h) => {
+  const box = outbox.get(peer) || outbox.set(peer, { q: [], queued: new Set(), inflight: 0, sent: new Map(), since: now, bytes: 0, warned: false, wait: 0 }).get(peer);
+  const want = (Array.isArray(list) ? list.slice(0, NEED_BATCH) : []).filter((h) => typeof h === 'string' && ASSET_RE.test(h));
+  const ids = want.filter((h) => {
     const s = box.sent.get(h);
     return refs.has(h) && !box.queued.has(h) && !(s && now - s.at < ASSET_WINDOW_MS && s.n >= 2);
   });
-  const foreign = asked.filter((h) => !refs.has(h)).length;
+  const foreign = want.filter((h) => !refs.has(h)).length;
   if (foreign) console.warn(`${peer} asked for ${foreign} images this table doesn't show — ignored`);
   for (const h of ids) box.queued.add(h);
-  const held = await Promise.all(ids.map((h) => store.has(h).catch((err) => { console.error('looking up an image failed', h, err); return false; })));
-  const lack = ids.filter((_, k) => !held[k]);
-  for (const h of lack) box.queued.delete(h);
-  if (lack.length) {
-    console.error(`${peer} asked for ${lack.length} images of this table that this browser doesn't hold`, lack);
-    sendNote({ missing: lack, to: p }, peer);
+  let lack;
+  try { lack = new Set(await store.lacking(ids)); } catch (err) { // never "missing": this browser can't read them now
+    console.error(`looking up the images ${peer} asked for failed`, err);
+    for (const h of ids) box.queued.delete(h);
+    return;
   }
+  for (const h of lack) box.queued.delete(h);
+  if (lack.size) missing(peer, [...lack]);
   if (outbox.get(peer) !== box) return; // the peer left meanwhile
-  box.q.push(...ids.filter((_, k) => held[k]));
+  box.q.push(...ids.filter((h) => !lack.has(h)));
   pumpImages(peer, box);
 }
-/** Host: keeps up to ASSET_INFLIGHT image sends going to peer. */
+/** Host: tells peer, loudly, that this browser lacks images `ids` of this table (a `missing` note). */
+function missing(peer, ids) {
+  console.error(`${peer} asked for ${ids.length} images of this table that this browser doesn't hold`, ids);
+  sendNote({ missing: ids, to: peerPid[peer] ?? null }, peer);
+}
+/** Host: keeps up to ASSET_INFLIGHT image sends going to peer (none while its budget waits for the next window). */
 function pumpImages(peer, box) {
-  while (box.inflight < ASSET_INFLIGHT && box.q.length) {
+  while (!box.wait && box.inflight < ASSET_INFLIGHT && box.q.length) {
     const h = box.q.shift();
     box.inflight++;
-    sendImage(peer, box, h).catch((err) => console.error('sending an image failed', h, err)).finally(() => {
+    sendImage(peer, box, h).then((done) => { if (done) box.queued.delete(h); }, (err) => {
+      console.error('sending an image failed', h, err);
       box.queued.delete(h);
+    }).finally(() => {
       box.inflight--;
       if (outbox.get(peer) === box) pumpImages(peer, box);
     });
   }
 }
-/** Host: sends image h to peer, once its pending states are out, if the
- *  peer's byte budget (PEER_ASSET_BUDGET per ASSET_WINDOW_MS) allows. */
+/** Host: sends image h to peer, once its pending states are out. A peer
+ *  gets at most PEER_ASSET_BUDGET bytes of images per ASSET_WINDOW_MS: past
+ *  that, h and the rest of its queue wait for the next window (false), and
+ *  the peer is told once, with how long (`wait`), so a guest pulling a big
+ *  table keeps waiting rather than giving up, and nobody can make the host
+ *  send more. True once h is sent, or reported missing. */
 async function sendImage(peer, box, h) {
   await laneIdle(peer); // states first: play stays live during a big pull
   const img = await store.getAsset(h), now = Date.now();
-  if (!img) {
-    console.error('an image of this table is gone from this browser\'s storage', h);
-    sendNote({ missing: [h], to: peerPid[peer] ?? null }, peer);
-    return;
-  }
+  if (!img) { missing(peer, [h]); return true; }
   if (now - box.since > ASSET_WINDOW_MS) Object.assign(box, { since: now, bytes: 0, warned: false });
   if (box.bytes + img.data.byteLength > PEER_ASSET_BUDGET) {
-    console.warn(`${peer} is over its image budget (${PEER_ASSET_BUDGET / 1e6} MB a minute): dropped its requests`);
-    for (const x of box.q.splice(0)) box.queued.delete(x);
-    if (!box.warned) { box.warned = true; sendNote({ msg: '🚫 Too many image requests — slow down', to: peerPid[peer] ?? null }, peer); }
-    return;
+    const wait = box.since + ASSET_WINDOW_MS - now;
+    box.q.unshift(h);
+    box.wait ||= setTimeout(() => { box.wait = 0; if (outbox.get(peer) === box) pumpImages(peer, box); }, wait + 1);
+    if (!box.warned) {
+      box.warned = true;
+      console.warn(`${peer} is over its image budget (${PEER_ASSET_BUDGET / 1e6} MB a minute): the rest waits ${Math.ceil(wait / 1000)} s`);
+      sendNote({ msg: '🚫 Too many image requests — slow down', wait, to: peerPid[peer] ?? null }, peer);
+    }
+    return false;
   }
   box.bytes += img.data.byteLength;
   const s = box.sent.get(h);
   box.sent.set(h, s && now - s.at < ASSET_WINDOW_MS ? { at: s.at, n: s.n + 1 } : { at: now, n: 1 });
   await sendAsset(img.data, peer, { h, mime: img.mime });
+  return true;
 }
 
 function connect() {
@@ -816,10 +885,13 @@ function connect() {
   };
   noteA.onMessage = fromHost((n) => {
     if (role === 'host' || !n || (n.to && n.to !== pid)) return;
-    if (n.msg) note(String(n.msg)); // toast + the terminal bridge
+    if (num(n.wait) > 0) { // the host paces our image pull (its budget a minute): we keep waiting, and say why
+      heardAt = Math.max(heardAt, Date.now() + Math.min(num(n.wait), ASSET_WINDOW_MS));
+      note(`Card images are coming slowly — the host sends at most ${PEER_ASSET_BUDGET / 1e6} MB of them a minute`);
+    } else if (n.msg) note(String(n.msg)); // toast + the terminal bridge
     if (n.peek && n.to === pid) showPeek({ d: String(n.peek.d), i: num(n.peek.i, -1) }); // the host's private answer to our peek
     if (Array.isArray(n.missing)) { // images we asked for that the host doesn't hold
-      const gone = n.missing.filter((h) => pending.has(h));
+      const gone = n.missing.filter((h) => typeof imgs.get(h) === 'object');
       if (gone.length) giveUp(gone, `${gone.length} card images are missing on the host — ask them to re-add the deck`);
     }
   }, true);
@@ -839,10 +911,10 @@ function connect() {
     }
     // Their images: from memory, IndexedDB or the host, all in one go (before
     // the redraw asks for them face by face). A new decks message (the host
-    // is back, say) gives the images we gave up on another chance.
-    const imgs = [...assetRefs(Object.fromEntries(got.map((id) => [id, decks[id]])))];
-    for (const h of imgs) missingImgs.delete(h);
-    wantImages(imgs);
+    // is back, or added the deck again) gives the images we gave up on another chance.
+    const refs = [...assetRefs(got.map((id) => decks[id]))];
+    for (const h of refs) if (imgs.get(h) === 'missing') imgs.delete(h);
+    wantImages(refs);
     arrived(itemsByDeck, got, (z) => got.includes(z.d));
   });
 
@@ -895,7 +967,7 @@ function connect() {
     // A keyed hello comes only from a guest that hasn't had a state addressed
     // to it (introduce): one that answers it may be lost, so it asks for one too.
     if (action.t === 'snap' || action.t === 'hello') wantSnap(peer);
-    if (action.t === 'need') serveImages(peer, p, action.a);
+    if (action.t === 'need') serveImages(peer, action.a);
     submit(p, action);
   };
 
@@ -916,6 +988,7 @@ function connect() {
     sync.delete(peer);
     if (lanes.has(peer)) lanes.get(peer).q.length = 0;
     lanes.delete(peer);
+    clearTimeout(outbox.get(peer)?.wait);
     outbox.delete(peer);
     incompatible.delete(peer);
     const p = peerPid[peer];
@@ -981,49 +1054,61 @@ setInterval(() => {
 // --- host persistence -----------------------------------------------------
 // The table is saved in IndexedDB (store.js): the state at most once a
 // second (throttled, not debounced: a busy game still hits storage), one
-// write at a time; each deck once, into the room's catalog, in the same
-// transaction as the first save that has it. When storage is full, store.js
-// makes room (other rooms' saves, oldest first); if the table still can't
-// be saved, a tiny lost marker replaces the save, so a reload never quietly
-// rewinds to stale state — it resets the table loudly (and this browser
-// stays the host instead of waiting in its own room).
+// write at a time; each deck once, into the room's catalog, with its images,
+// in the same transaction as the first save that has it. When storage is
+// full, store.js makes room (the image cache, then other rooms' saves,
+// oldest first); if the table still can't be saved, a tiny lost marker
+// replaces the save, so a reload never quietly rewinds to stale state — it
+// resets the table loudly (and this browser stays the host instead of
+// waiting in its own room). A state that can't be stored at all (a rules
+// script left a function in t.data) costs the rules, not the save (_unsaveable).
 // An IndexedDB write started as the page goes away may never commit, so
 // pagehide also leaves the seq it meant to save in localStorage (synchronous):
 // ct-pending-<room>. A commit of that seq removes it; a boot that finds it
 // ahead of the save says the last moment of play was lost.
 let persistT = 0, lastSave = 0, saving = false, again = false, persistWarned = false;
 let savedSeq = -1; // host: the seq of the last save that committed
+let cloneFixed = false; // host: since the last good save, the rules' state was cut down to JSON (_unsaveable) once
 let noSave = ''; // host: why this tab never writes its room's save ('' = it does)
 const savedCatalog = new Set(); // host: the deck ids this room's catalog holds
 const pendingKey = () => `ct-pending-${roomId}`;
 /** Writes the table (host), see above; a request made while a write is in
  *  flight runs once it is done — unless the page is `leaving`: then it
  *  starts at once (IndexedDB runs the two in order). perf.lastSaveSyncMs:
- *  its main-thread part. */
+ *  the main-thread part of its state write (B6). */
 async function doSave(leaving) {
   if (role !== 'host' || noSave) return; // a demoted host's pending timer must not clobber the winner's save
   if (saving && !leaving) { again = true; return; }
   saving = true;
   lastSave = Date.now();
   try {
-    const t0 = performance.now(), state = T.snapshot(), all = T.state.decks;
-    const fresh = Object.keys(all).filter((id) => !savedCatalog.has(id)).map((id) => ({ id, kind: 'deck', deck: all[id] }));
-    const write = store.saveTable(roomId, state, fresh); // synchronously, the structured clone of the state
-    perf.lastSaveSyncMs = performance.now() - t0;
-    const pruned = await write;
+    const { state, catalog, pruned, syncMs } = await store.saveTable(roomId, snap);
+    perf.lastSaveSyncMs = syncMs;
     savedSeq = state.seq;
-    for (const c of fresh) savedCatalog.add(c.id);
+    for (const c of catalog) savedCatalog.add(c.id);
     if (pruned) toast(`Browser storage was full — deleted ${pruned} old table save${pruned > 1 ? 's' : ''} to keep this one`);
-    persistWarned = false;
+    persistWarned = cloneFixed = false;
     if (+localStorage.getItem(pendingKey()) <= state.seq) localStorage.removeItem(pendingKey());
   } catch (err) {
     console.error('failed to persist game', err);
-    savedCatalog.clear(); // the save is a lost marker now: the next one that fits writes every deck again
-    if (!persistWarned) { persistWarned = true; toast(`Can't save this table (${err.message}) — reloading the host tab would reset it`); }
+    if (err.name === 'DataCloneError' && !cloneFixed) { // the last save stands; the next one follows
+      cloneFixed = true;
+      enqueue(RULES, { t: '_unsaveable', why: err.message });
+    } else {
+      savedCatalog.clear(); // the save is a lost marker now: the next one that fits writes every deck again
+      if (role === 'host' && !persistWarned) { persistWarned = true; toast(`Can't save this table (${err.message}) — reloading the host tab would reset it`); }
+    }
   } finally {
     saving = false;
     if (again) { again = false; doSave(); }
   }
+}
+/** What a save writes (store.saveTable takes it again before a retry): the
+ *  state, and the decks the room's catalog lacks. */
+function snap() {
+  if (role !== 'host') throw new Error('this tab is no longer the host');
+  const all = T.state.decks;
+  return { state: T.snapshot(), catalog: Object.keys(all).filter((id) => !savedCatalog.has(id)).map((id) => ({ id, kind: 'deck', deck: all[id] })) };
 }
 function persist() {
   if (role !== 'host' || noSave || persistT) return;
@@ -1076,7 +1161,7 @@ function sideImage(d, i, up) {
   return g === undefined ? undefined : deck.imgs[g];
 }
 /** Whether image h is drawn ('u'), missing for good ('x') or on its way ('l'): part of an item's signature. */
-const imageState = (h) => (!h ? '' : store.getAssetURL(h) ? 'u' : missingImgs.has(h) ? 'x' : 'l');
+const imageState = (h) => (!h ? '' : store.holds(h) ? 'u' : imgs.get(h) === 'missing' ? 'x' : 'l');
 /** An image side (cls: face or back): the picture once this tab holds it
  *  (an object URL from store.js, never a peer's string), else a placeholder
  *  while it is fetched (wantImages), or the missing look for good. */
@@ -1084,7 +1169,7 @@ function imageHTML(h, cls) {
   const url = store.getAssetURL(h);
   if (url) return `<img class="${cls}" src="${esc(url)}" alt="">`;
   wantImages([h]);
-  if (missingImgs.has(h)) return `<div class="${cls} missing" title="This card's image is missing"><s>🖼</s></div>`;
+  if (imgs.get(h) === 'missing') return `<div class="${cls} missing" title="This card's image is missing"><s>🖼</s></div>`;
   return cls === 'face' ? '<div class="face loading">🂠</div>' : '<div class="back"></div>';
 }
 function faceHTML(d, i) {
@@ -1189,15 +1274,19 @@ function arrived(index, ids, zoomShows) {
   renderAll(prev);
 }
 let landed = new Set(), landT = 0;
-/** Images `ids` arrived, or turned out missing: their items redraw, in batches (a big pull lands many at once). */
-function imagesArrived(ids) {
+/** Images `ids` arrived, or turned out missing: their items redraw — in
+ *  batches (a big pull lands many at once), or `now`, before a toast says why. */
+function imagesArrived(ids, now) {
   for (const h of ids) landed.add(h);
-  landT ||= setTimeout(() => {
-    const hs = [...landed];
-    landed = new Set();
-    landT = 0;
-    arrived(itemsByAsset, hs, (z) => hs.includes(sideImage(z.d, z.i, true)));
-  }, 30);
+  if (!now) { landT ||= setTimeout(redrawLanded, 30); return; }
+  clearTimeout(landT);
+  redrawLanded();
+}
+function redrawLanded() {
+  const hs = [...landed];
+  landed = new Set();
+  landT = 0;
+  arrived(itemsByAsset, hs, (z) => hs.includes(sideImage(z.d, z.i, true)));
 }
 
 /** Draws the items: those in `prev` (a Map of id → the public item it
@@ -2281,7 +2370,7 @@ $('deck-form').addEventListener('submit', async (e) => {
     }
     // A guest ingests its own deck first (store.js: the same checks the host
     // runs), so it holds every image before the host's deck message names them.
-    if (role === 'guest') await store.ingestDeck(deck);
+    if (role === 'guest') await store.cache((await store.ingestDeck(deck)).assets);
     if (run !== deckBuild) return; // the player cancelled while it was building
     act({ t: 'addDeck', deck, x: TABLE_W / 2 - CARD_W / 2, y: TABLE_H / 2 - CARD_H / 2 });
     $('deck-dialog').close();
@@ -2296,8 +2385,8 @@ $('deck-form').addEventListener('submit', async (e) => {
 
 // --- boot -----------------------------------------------------------------
 /** Takes the host role over this room's save (store.js loadSave: a table,
- *  {lost}, {newer} or null), or a fresh table. `unsaved`: why this tab can't
- *  save at all (no IndexedDB), said at boot. */
+ *  {lost}, {newer} or null), or a fresh table. `unsaved`: why this tab must
+ *  not save at all (no IndexedDB, or a save it couldn't read), said at boot. */
 function becomeHost(saved, unsaved) {
   noSave = unsaved || '';
   if (saved?.newer) {
@@ -2329,10 +2418,9 @@ function becomeHost(saved, unsaved) {
   flush(); // this screen's first snapshot
   // The images this table shows must be in this browser's storage: say at
   // once if some are gone (their cards show as missing, never as loading forever).
-  const refs = [...T.assetRefs()];
-  Promise.all(refs.map((h) => store.has(h).catch((err) => { console.error('looking up an image failed', h, err); return false; }))).then((held) => {
-    const lack = refs.filter((_, k) => !held[k]);
-    if (lack.length) giveUp(lack, `${lack.length} card images of this table are missing from this browser's storage`);
+  store.lacking([...T.assetRefs()]).then((lack) => { if (lack.length) giveUp(lack, `${lack.length} card images of this table are missing from this browser's storage`); }, (err) => {
+    console.error("checking this table's images failed", err);
+    toast(`Couldn't check this table's card images (${err.message})`);
   });
 }
 
@@ -2536,12 +2624,13 @@ async function boot() {
   }
   // Storage first: the role depends on it. A failure is said, never covered
   // by a fallback (localStorage couldn't hold a big table anyway).
-  let idbFailed = '';
+  let idbFailed = '', readFailed = '';
   await store.open({
-    notify: toast, keep: keepImages, hosting: () => role === 'host',
+    notify: toast, keep: keepImages,
     onVersionChange() { // a newer Card Table upgraded the database in another tab
-      console.warn('the database was upgraded in another tab — this tab stops saving');
-      if (role === 'host') { noSave = 'an upgrade in another tab'; toast('Card Table was updated in another tab — reload this tab to keep saving', false, true); }
+      console.warn('the database was upgraded in another tab — this tab stops using it');
+      if (role === 'host') noSave = 'an upgrade in another tab';
+      toast(`Card Table was updated in another tab — reload this tab to keep ${role === 'host' ? 'saving' : 'caching card images'}`, false, true);
     },
     onPruned(room) { // another tab deleted our (idle) save to make room: write it again, every deck included
       if (room !== roomId) return;
@@ -2554,7 +2643,7 @@ async function boot() {
   if (m) {
     [, roomId, password] = m;
     // (a bot tab never hosts, so it never reads, or migrates, the host's save)
-    if (!AS && !idbFailed) saved = await store.loadSave(roomId).catch((err) => ({ lost: `the save is unreadable: ${err.message}` }));
+    if (!AS && !idbFailed) saved = await store.loadSave(roomId).catch((err) => { readFailed = err.message; return null; });
   } else {
     roomId = await newHostKey(); // the room id IS the host key's fingerprint
     password = rand(8);
@@ -2566,8 +2655,9 @@ async function boot() {
   // where the room's save would otherwise make this tab claim the table. A
   // browser that can't read its storage but holds the room's host key is the
   // host still (it lives in localStorage): a reload must not make the host a
-  // guest of its own room.
-  let hosting = !AS && (!m || !!saved || (!!idbFailed && localStorage.getItem(`ct-hostkey-${roomId}`) !== null));
+  // guest of its own room. One that couldn't read the save never writes over
+  // it: what it holds may be intact, and a reload may read it.
+  let hosting = !AS && (!m || !!saved || (!!(idbFailed || readFailed) && localStorage.getItem(`ct-hostkey-${roomId}`) !== null));
   if (hosting && signedRoom && !(await useHostKey(roomId))) {
     console.error('this browser has the save but not the host key for this room');
     toast('This room\'s host key is missing here — joining as a guest');
@@ -2577,7 +2667,11 @@ async function boot() {
     toast(hosting ? `This browser blocks storage (${idbFailed}) — the table can't be saved; reloading the host tab will reset it`
       : `This browser blocks storage (${idbFailed}) — card images will download again next time`);
   }
-  if (hosting) becomeHost(saved, idbFailed);
+  if (readFailed) {
+    toast(hosting ? `Couldn't read this table's save (${readFailed}) — this tab won't save over it; reload this page to try again`
+      : `Couldn't read this browser's storage (${readFailed}) — reload this page to try again`, false, hosting);
+  }
+  if (hosting) becomeHost(saved, idbFailed || (readFailed && "its save couldn't be read"));
   else role = 'guest';
   if (window.innerWidth <= 820) sideEl.classList.add('hidden');
   layout();

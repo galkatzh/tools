@@ -95,10 +95,15 @@ const cryptoRandom = () => {
 // The transport shape (v1, cleanDeckV1) carries the images as data URLs: an
 // upload, a save from before Phase 1. It only ever goes to store.js's
 // ingestDeck, which checks every image and turns the deck into the v2 shape.
-export const IMG_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+=*$/;
+const IMG_HEAD = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]/;
+/** Whether `s` is an image as a data URL, as
+ *  /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+=*$/ would say,
+ *  tested by parts: a deck carries megabytes of them, and searching for a
+ *  bad character is many times faster than matching that whole pattern. */
+export const isImgURL = (s) => typeof s === 'string' && IMG_HEAD.test(s) && !/[^A-Za-z0-9+/=]|=[^=]/.test(s.slice(s.indexOf(',') + 1));
 /** An image's asset id: the hex SHA-256 of its bytes. */
 export const ASSET_RE = /^[0-9a-f]{64}$/;
-/** The image types a deck may carry (as IMG_RE's data URLs, or as assets). */
+/** The image types a deck may carry (as data URLs, isImgURL, or as assets). */
 export const IMG_MIMES = new Set(['image/webp', 'image/png', 'image/jpeg', 'image/gif']);
 /** The largest image a peer stores or accepts, in bytes. */
 export const ASSET_MAX_BYTES = 2e6;
@@ -157,15 +162,15 @@ export function cleanDeck(d) {
 }
 
 /** The transport gate (v1): a deck as uploads and pre-Phase 1 saves carry it,
- *  images as data URLs (IMG_RE) in `imgs`, a card's `img` or the `back`, at
+ *  images as data URLs (isImgURL) in `imgs`, a card's `img` or the `back`, at
  *  most 24 MB of them. It runs first on every addDeck, and the guests' deck
  *  budget is measured on its result (JSON length) before anything is decoded;
  *  then store.js's ingestDeck turns it into the v2 shape. Throws on unusable decks. */
 export function cleanDeckV1(d) {
-  const { name, imgs, cards } = deckParts(d, (s) => IMG_RE.test(s), true);
+  const { name, imgs, cards } = deckParts(d, isImgURL, true);
   const bytes = [...imgs, ...cards.map((c) => c.img)].reduce((n, s) => n + (s?.length || 0), 0);
   if (bytes > MAX_DECK_BYTES) throw new Error('deck images are too large (24 MB max)');
-  return { name, back: IMG_RE.test(d.back) || COLOR_RE.test(d.back) ? d.back : null, imgs, cards };
+  return { name, back: isImgURL(d.back) || COLOR_RE.test(d.back) ? d.back : null, imgs, cards };
 }
 
 /** Every asset id the decks of `decks` (a deck map) show: their images and image backs. */
@@ -190,7 +195,7 @@ export function standardDeck(jokers) {
     for (const r of ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']) cards.push({ r, s, c });
   }
   if (jokers) cards.push({ r: 'JOKER', s: '🃏', c: 'r' }, { r: 'JOKER', s: '🃏', c: 'b' });
-  return { name: 'Standard', back: null, cards };
+  return { name: 'Standard', back: null, imgs: [], cards }; // the catalog shape (cleanDeck): it is stored as it is
 }
 
 /** Human name for card i of deck d (in the deck map `decks`) when it is
@@ -1027,7 +1032,7 @@ export function createTable(host, env = {}) {
     try {
       return callHook(name, ...args);
     } catch (err) {
-      hookFailed(name, err);
+      hookFailed(`${name}()`, err);
       return undefined;
     }
   }
@@ -1048,21 +1053,37 @@ export function createTable(host, env = {}) {
    *  per job (plus one after validate), not one per hook. True when the
    *  rules were disabled (a change: the caller renumbers). */
   function dataOver() {
-    const names = [...jobHooks].join('(), ');
+    const names = [...jobHooks].map((h) => `${h}()`).join(', ');
     jobHooks.clear();
     const n = names && host.rules?.enabled ? JSON.stringify(host.rules.data)?.length || 0 : 0;
     if (n <= DATA_MAX_CHARS) return false;
     hookFailed(names, new Error(`t.data is too large (${n.toLocaleString('en-US')} chars, max ${DATA_MAX_CHARS.toLocaleString('en-US')})`));
     return true;
   }
-  /** A script error: disable the rules, loudly and on the record. */
-  function hookFailed(name, err) {
-    console.error(`rules hook ${name}() failed`, err);
-    lastRulesError = `${name}(): ${err.message}`;
+  /** A script error (`where`: the hooks, as "validate()", or the state at
+   *  fault): disable the rules, loudly and on the record. */
+  function hookFailed(where, err) {
+    console.error(`rules: ${where} failed`, err);
+    lastRulesError = `${where}: ${err.message}`;
     host.rules.enabled = false;
     emit({ t: 'rules' });
-    logEvent(RULES, `rules disabled — script error in ${name}()`);
-    emit({ t: 'toast', msg: `Rules disabled — error in ${name}(): ${err.message}` });
+    logEvent(RULES, `rules disabled — script error in ${where}`);
+    emit({ t: 'toast', msg: `Rules disabled — error in ${where}: ${err.message}` });
+  }
+  /** The save couldn't copy the rules' state: t.data or t.public hold
+   *  something that isn't data (a function, a DOM node — they must stay
+   *  JSON). The rules disable loudly, and both keep their JSON part, which
+   *  is all a save ever kept of them. True: a change (renumbered). */
+  function unsaveable(why) {
+    if (!host.rules) return false;
+    for (const k of ['data', 'public']) {
+      try { host.rules[k] = JSON.parse(JSON.stringify(host.rules[k] ?? {})); } catch (err) {
+        console.error(`t.${k} has no JSON form: emptied`, err);
+        host.rules[k] = {};
+      }
+    }
+    if (host.rules.enabled) hookFailed('t.data / t.public', new Error(`they hold a value that can't be saved (${why}) — keep them JSON`));
+    return bump();
   }
 
   /** Sends a private text notice to a player (toast on their screen). Each
@@ -1107,7 +1128,7 @@ export function createTable(host, env = {}) {
       const btns = callHook('buttons') || [];
       host.rules.public.buttons = btns.map((b) => ({ id: String(b.id), label: String(b.label).slice(0, 30), ...(b.pid ? { pid: b.pid } : {}) }));
     } catch (err) {
-      hookFailed('buttons', err);
+      hookFailed('buttons()', err);
     }
   }
 
@@ -1237,8 +1258,10 @@ export function createTable(host, env = {}) {
     /** Registers a script-defined deck of image-less cards ({name, text, color,
      *  bg, meta} each) and returns its deckId — it creates NO pile, so scripts
      *  can keep big decks off the table (small piles via t.newPile([{d,i,up}])
-     *  keep the broadcast state light). `back` may be a solid color ("#111"). */
+     *  keep the broadcast state light). `back` may be a solid color ("#111"),
+     *  and nothing else: a script deck has no images (a TypeError says so). */
     newDeck(def) {
+      if (def.back != null && !COLOR_RE.test(def.back)) throw new TypeError('t.newDeck: back must be a color like "#111"');
       const deckId = mint(host.decks);
       host.decks[deckId] = cleanDeck({
         name: def.name, back: def.back,
@@ -1408,7 +1431,7 @@ export function createTable(host, env = {}) {
     get pub() { refresh(); return pub; },
     /** The last rules-script error, for the rules dialog ('' after a successful enable). */
     get rulesError() { return lastRulesError; },
-    apply, join, leave, open, resume, runTimers, mayAct, publicItems, publicPlayers,
+    apply, join, leave, open, resume, runTimers, mayAct, publicItems, publicPlayers, unsaveable,
     /** Every asset id the table's decks show: the only images the host serves (app.js). */
     assetRefs: () => assetRefs(host.decks),
     takeDirty, patchContent, snapContent, refreshFor, applyStatePatch,
