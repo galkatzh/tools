@@ -437,7 +437,12 @@ function demote() {
 
 let registered = false; // guest: the host has bound our seat (we got a state addressed to us)
 let lastIntro = 0;
-/** Guest: presents identity + seat key to the (authenticated) host. Throttled. */
+/** Guest, until a state addressed to us arrives: presents identity + seat key
+ *  to the (authenticated) host — or knocks, while we don't know which peer that
+ *  is. Either way the host answers with a snapshot (rate-limited, wantSnap):
+ *  the one that registered us may have been lost, and a quiet table would
+ *  never send another. At most once per 2 s, so a registration snapshot that
+ *  is merely slow isn't asked for twice. */
 function introduce() {
   if (Date.now() - lastIntro < 2000) return;
   lastIntro = Date.now();
@@ -652,14 +657,16 @@ function connect() {
     // the next connection, through the logged (and rate-limited) rename path.
     const nm = cleanName(name);
     if (known && nm && nm !== known.name && newConn && action.t !== 'name') enqueue(p, { t: 'name', name: nm });
-    if (action.t === 'snap') wantSnap(peer);
+    // A keyed hello comes only from a guest that hasn't had a state addressed
+    // to it (introduce): one that answers it may be lost, so it asks for one too.
+    if (action.t === 'snap' || action.t === 'hello') wantSnap(peer);
     enqueue(p, action);
   };
 
   room.onPeerJoin = () => {
     updateNet();
     if (role === 'host') scheduleBroadcast(); // the newcomer gets a signed public snapshot
-    else act({ t: 'hello' });
+    else if (!registered) act({ t: 'hello' }); // a host may be back; a bound seat has nothing to ask
   };
   room.onPeerLeave = (peer) => {
     updateNet();
@@ -679,8 +686,9 @@ function connect() {
   };
 }
 // Belt and braces: until the host has bound our seat, keep knocking — covers
-// hellos lost in connection churn and a host that comes back after a reload.
-setInterval(() => { if (room && role === 'guest' && !registered) act({ t: 'hello' }); }, 3000);
+// hellos (or their answers) lost in connection churn and a host that comes
+// back after a reload.
+setInterval(() => { if (room && role === 'guest' && !registered) introduce(); }, 3000);
 window.addEventListener('pagehide', () => { try { room?.leave(); } catch (e) { console.error(e); } });
 
 /** Open WebSockets to signaling relays right now. 0 = we're invisible. */

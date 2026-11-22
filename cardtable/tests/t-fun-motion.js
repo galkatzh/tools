@@ -141,13 +141,17 @@ const { devices } = h.playwright;
   for (let k = 1; k <= 8; k++) { await guest.mouse.move(sb.x + sb.width / 2 + 17 * k, sb.y + sb.height / 2 + 9 * k); await h.sleep(30); }
   await guest.mouse.up();
   const t0 = Date.now();
+  // Where the script puts the card: the drop spot (held on the guest's
+  // screen), snapped. The mid-drag moves are snapped too, so on a loaded
+  // machine the host can still show an earlier grid spot when it is read.
+  const final = await guest.$eval(CARD, (el) => [el.style.left, el.style.top].map((v) => `${Math.round(parseFloat(v) / 100) * 100}px`).join());
   await logHas(host, 'Bob moved');
-  const hostAt = () => host.$eval(CARD, (el) => [el.style.left, el.style.top].join());
-  await host.waitForFunction((s) => { const el = document.querySelector(s); return parseFloat(el.style.left) % 100 === 0 && parseFloat(el.style.top) % 100 === 0; }, CARD, { timeout: 5000 }).catch(() => {});
-  const want = await hostAt();
-  await guest.waitForFunction(([s, w]) => { const el = document.querySelector(s); return [el.style.left, el.style.top].join() === w; }, [CARD, want], { timeout: 4000 }).catch(() => {});
+  const at = (s) => { const el = document.querySelector(s[0]); return [el.style.left, el.style.top].join() === s[1]; };
+  await host.waitForFunction(at, [CARD, final], { timeout: 5000 }).catch(() => {});
+  const want = await host.$eval(CARD, (el) => [el.style.left, el.style.top].join());
+  await guest.waitForFunction(at, [CARD, want], { timeout: 4000 }).catch(() => {});
   const got = await guest.$eval(CARD, (el) => [el.style.left, el.style.top].join());
-  ok(got === want && Date.now() - t0 < 3000, `the guest shows the card where the host has it within ~2 s (${got} vs ${want}, ${Date.now() - t0} ms)`);
+  ok(want === final && got === want && Date.now() - t0 < 3000, `the guest shows the card where the host has it within ~2 s (${got} vs ${want}, snapped drop ${final}, ${Date.now() - t0} ms)`);
 
   await env.done();
 })().catch(h.crash);

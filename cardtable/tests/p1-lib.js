@@ -11,10 +11,11 @@ const core = require(path.join(h.APP_ROOT, 'cardtable/core.js'));
  *  channels and exposes window.__rtc =
  *    sent / recv   bytes per Trystero action ('state', 'act', …), framing
  *                  included (a chunk's 36-byte header names its action);
- *    drop          a queue of kinds ('patch' | 'snap' | 'any'): the next
- *                  incoming `state` message of the kind at its head is
+ *    drop          a queue of kinds ('patch' | 'snap' | 'any', or 'reg': a
+ *                  snapshot addressed to a player, i.e. with its hand): the
+ *                  next incoming `state` message of the kind at its head is
  *                  swallowed whole (every chunk of it) before the app sees it;
- *    dropped       the kinds swallowed so far;
+ *    dropped       the kinds ('patch' | 'snap') swallowed so far;
  *    keep / bodies while keep is true, every incoming `state` body
  *                  (unsealed JSON) is recorded as {at, body}.
  *  Trystero 0.25 wraps each frame for its room: byte 0 = 1 (room data; 2 is
@@ -54,8 +55,9 @@ function rtcHook() {
           const msgs = inflight.get(this), nonce = (u[32] << 8) | u[33], last = u[34] & 1;
           let m = msgs.get(nonce);
           if (!m) { // a message's first chunk: its body starts with the recipient's fields, then the kind
-            const kind = /kind\\?":\\?"(\w+)/.exec(dec.decode(u.subarray(36)))?.[1] || '?';
-            const drop = R.drop.length > 0 && (R.drop[0] === 'any' || R.drop[0] === kind);
+            const head = dec.decode(u.subarray(36)), kind = /kind\\?":\\?"(\w+)/.exec(head)?.[1] || '?';
+            const reg = kind === 'snap' && /\bto\\?":\\?"\w/.test(head); // "to":"<pid>", not "to":null
+            const drop = R.drop.length > 0 && (R.drop[0] === 'any' || R.drop[0] === kind || (R.drop[0] === 'reg' && reg));
             if (drop) R.drop.shift();
             msgs.set(nonce, (m = { drop, kind, parts: [] }));
           }

@@ -124,8 +124,9 @@ top of `core.js` and README "How it works".
 - **`p1-lib.js`** (browser suites): `rtcHook`, an init script that wraps
   `RTCDataChannel` and exposes `window.__rtc`: bytes `sent`/`recv` per
   Trystero action, framing included (the B1' counter); `drop`, a queue of
-  kinds (`'patch'`, `'snap'`, `'any'`) whose next incoming `state` message is
-  swallowed whole before the app sees it; and `keep`/`bodies`, the incoming
+  kinds (`'patch'`, `'snap'`, `'any'`, or `'reg'`: a snapshot addressed to a
+  player) whose next incoming `state` message is swallowed whole before the
+  app sees it; and `keep`/`bodies`, the incoming
   bodies recorded while `keep` is set. Also `player`/`trio` (seated pages
   with the hook), `view`/`pidOf`/`act` (over `window.__ct`), `saved(host)`
   (the host's save, from localStorage or IndexedDB) and `truthOf(save)` (the
@@ -138,4 +139,4 @@ top of `core.js` and README "How it works".
   reloads, drops, vetoes, the version gate, spam). `t-p1-review.js`: the
   regressions the Phase 1A review found (states out of order, refusals that
   re-send too much, a refused snapshot request, no-op drops, log rebuilds, a
-  newer save, module skew). `t-p1-bench.js`: B1', B3, B4 (serial).
+  lost registration snapshot, a newer save, module skew). `t-p1-bench.js`: B1', B3, B4 (serial).

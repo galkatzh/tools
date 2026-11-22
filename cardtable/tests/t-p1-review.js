@@ -11,6 +11,9 @@
 //             until one arrives, so it converges on a table that has gone quiet
 //   flood     a raw peer flooding refused actions that name many items makes the
 //             host re-send little to everyone else
+//   register  a reloading guest whose registering snapshot (the first addressed
+//             to it) is lost still gets its hand back on a quiet table: its next
+//             keyed hello asks for a snapshot (no change, so no patch to show a gap)
 //   newer     a save from a newer Card Table: the tab says so and stops, loudly,
 //             with no misleading errors after, and the save is left alone
 //   skew      a stale module that fails to link, or carries another MODULE_V: the
@@ -121,6 +124,16 @@ const sameTable = async (x, y) => { const [a, b] = [await L.view(x), await L.vie
   await h.sleep(3000);
   const kb = ((await carol.evaluate(() => window.__rtc.recv.state || 0)) - c0) / 1024;
   ok(kb < 150, `Carol received ${kb.toFixed(0)} KB of states while Mallory sent 300 actions naming 200 items each (≤ 150 KB)`);
+
+  section('register: a reloading guest loses the snapshot that registers it');
+  const pile = await host.evaluate(() => Object.keys(window.__ct.view().items).find((id) => window.__ct.view().items[id].k === 'p'));
+  for (let k = 0; k < 3; k++) await L.act(carol, { t: 'draw', id: pile });
+  ok(await L.until(() => carol.evaluate(() => window.__ct.hand().length === 3)), 'Carol holds 3 cards');
+  await carol.addInitScript(() => window.__rtc.drop.push('reg'));
+  await carol.reload();
+  ok(await L.until(() => carol.evaluate(() => window.__rtc.dropped.includes('snap')), 20000, 200), 'the first snapshot addressed to her is lost on the way');
+  const healed = await L.until(async () => (await carol.evaluate(() => window.__ct?.hand().length === 3)) && sameTable(carol, host), 15000, 300);
+  ok(healed, `with nothing else moving, Carol gets her 3 cards and the table back (${JSON.stringify(await carol.evaluate(() => ({ hand: window.__ct.hand().length, ...window.__ct.perf })))})`);
 
   section('newer: a save from a newer Card Table');
   const zed = await env.page('Zed');

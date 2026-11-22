@@ -107,7 +107,9 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   reloaded guest reclaims their hand (WebRTC peer ids change per page load).
   Every guest action carries that id + nickname, and the host registers the
   sender on *any* action — so a lost join handshake can't permanently mute a
-  guest (guests also retry the hello every 3s until the first state arrives).
+  guest. Until a state addressed to it arrives, a guest repeats its hello
+  every 3s, and the host answers each with a snapshot (at most one per 3s),
+  so a lost answer heals even on a quiet table.
 - **Signaling health**: public Nostr relays are best-effort, so the status
   dot shows the truth — green with a player count when peers are connected,
   `● …` while searching, red `● ✕` when zero relays are reachable. A watchdog
