@@ -6,15 +6,15 @@
 //   B3   a guest applies and draws a one-item patch: p95 ≤ 4 ms (__ct.perf.lastApplyMs)
 //   B4   panning on an emulated phone (iPhone 13, CPU × 2): no long task over 50 ms,
 //        and rAF interval p95 ≤ max(20 ms, 1.25 × the same pan over an empty table)
-//   TODO(phase 1B): B6 — the host save's main-thread time ≤ 8 ms at 1,000 items
-//        (__ct.perf.lastSaveSyncMs around doSave's synchronous IndexedDB put), and
-//        B8 — a guest with a 40-image deck reloads: 0 `asset` bytes re-sent (the
-//        __rtc byte counter, per channel). Both need store.js and the asset channel.
+//   B6   the host saves the 1,000-card table: every save's main-thread part ≤ 8 ms
+//        (__ct.perf.lastSaveSyncMs, around doSave's synchronous IndexedDB put)
+//   TODO(phase 1B): B8 — a guest with a 40-image deck reloads: 0 `asset` bytes
+//        re-sent (the __rtc byte counter, per channel).
 const h = require('./h');
 const L = require('./p1-lib');
 const { ok, section } = h;
 
-const B1_MAX = 1.5 * 1024, B3_MAX = 4, B4_LONG = 50, B4_FLOOR = 20;
+const B1_MAX = 1.5 * 1024, B3_MAX = 4, B4_LONG = 50, B4_FLOOR = 20, B6_MAX = 8;
 const PAN_MS = 3000;
 
 /** The throwaway script that builds the table (spec §1k): 20 standard decks,
@@ -132,5 +132,25 @@ async function pan(p) {
   ok(full.moved && full.gaps.length > 30, `the pan moves the view (${full.gaps.length} frames)`);
   ok(!full.long.some((d) => d > B4_LONG), `B4: no long task over ${B4_LONG} ms while panning (${full.long.length ? full.long.join(', ') + ' ms' : 'none'})`);
   ok(fullP95 <= limit, `B4: rAF interval p95 ${fullP95.toFixed(1)} ms ≤ max(${B4_FLOOR}, 1.25 × ${baseP95.toFixed(1)}) = ${limit.toFixed(1)} ms`);
+
+  section('B6: the host saves the 1,000-card table');
+  // One host move, then its save (throttled to one a second): once IndexedDB
+  // holds that seq, perf.lastSaveSyncMs is that save's main-thread part.
+  const room = host.url().match(/#room~([0-9a-f]+)/)[1], saveMs = [];
+  let items = 0;
+  for (let k = 0; k < 10; k++) {
+    const m = { id: cards[(k * 37) % cards.length], x: 900 + 25 * k, y: 1500 - 25 * k };
+    await L.act(host, { t: 'move', ...m });
+    await host.waitForFunction((m) => { const it = window.__ct.view().items[m.id]; return it && it.x === m.x && it.y === m.y; }, m, { timeout: 10000 });
+    const seq = await host.evaluate(() => window.__ct.view().seq);
+    let rec = null;
+    const saved = await L.until(async () => (rec = await h.idb(host, 'saves', room))?.state?.seq >= seq, 15000, 100);
+    if (!saved) { ok(false, `B6: the save of seq ${seq} reached IndexedDB (it holds ${rec?.state?.seq})`); break; }
+    items = Object.keys(rec.state.items).length;
+    saveMs.push(await host.evaluate(() => window.__ct.perf.lastSaveSyncMs));
+  }
+  console.log(`  lastSaveSyncMs per save: ${saveMs.map((x) => x.toFixed(2)).join(', ')} ms (${items} items saved)`);
+  ok(saveMs.length === 10 && items >= 1000 && saveMs.every((x) => x > 0 && x <= B6_MAX),
+    `B6: each of ${saveMs.length} saves of ${items} items takes ≤ ${B6_MAX} ms on the main thread (max ${Math.max(...saveMs).toFixed(2)} ms)`);
   await env.done();
 })().catch(h.crash);
