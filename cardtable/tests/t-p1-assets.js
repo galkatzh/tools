@@ -156,7 +156,7 @@ const b64 = (buf) => Buffer.from(buf).toString('base64');
   await guard('(7)+(4)', async () => {
     M = await mallory(env, invite);
     await M.act({ t: 'hello' });
-    ok(await L.until(() => M.evaluate(() => window.M.got.state.length > 0)), 'Mallory (a raw peer) is seated');
+    ok(await L.until(() => M.evaluate(() => window.M.got.state.some(({ m }) => JSON.parse(m.b).to === 'ffffffffffffffff'))), 'Mallory (a raw peer) is seated');
     const late = A.tinyPngs(3, 3);
     lateIds = late.map(A.sha256);
     await host.evaluate(() => { window.__wire.hold = true; });
@@ -234,6 +234,10 @@ const b64 = (buf) => Buffer.from(buf).toString('base64');
     ok(!(await got()).includes(otherId), 'but never the other room’s');
     ok((await missingNotes()) === 0, 'and no `missing` note about it either');
     ok(host.logs.filter((x) => x.type === 'warning').length > warns0, 'the host logs a console.warn');
+    // §1j: `need` requires a registered player — an anonymous one (no seat) gets nothing.
+    await M.evaluate(([v, id]) => window.M.send.act({ _v: v, t: 'need', a: [id] }), [h.PROTO, fmtIds[1]]);
+    await h.sleep(1500);
+    ok(!(await got()).includes(fmtIds[1]), 'an anonymous `need` (no seat) gets nothing either');
   });
 
   section('(6) 1j case 9: a PNG that declares 30,000 × 30,000 px');
