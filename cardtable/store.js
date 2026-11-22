@@ -386,35 +386,48 @@ export async function prune(exceptRoom, need) {
   return 1;
 }
 
-/** This room's save: {state, decks, stored} — `stored`: IndexedDB holds
- *  exactly this (false: a migrated save that couldn't be written), {lost:
- *  why} when it can't be resumed, {newer: v} when a newer Card Table wrote
- *  it (never to be resumed or overwritten here), or null if this browser
- *  never hosted the room. Rejects when the save can't be READ (the caller
- *  must not write over what it couldn't read). A save from before Phase 1
- *  (localStorage ct-save-<room> and ct-decks-<room>) is migrated: its state
- *  lifted (core.js migrate), its decks ingested (a deck that fails is
- *  dropped, and said so), and the result — images included — written in one
- *  transaction; only once that commits do the old keys go (or once a later
- *  save of the room supersedes them). Every catalog deck passes cleanDeck. */
+/** This room's save: {state, decks, stored, behind?} — `stored`: IndexedDB
+ *  holds exactly this (false: a migrated save that couldn't be written),
+ *  `behind`: why the room's latest save can't be resumed, when this is an
+ *  older copy of it (below) — {lost: why} when it can't be resumed at all,
+ *  {newer: v} when a newer Card Table wrote it (never to be resumed or
+ *  overwritten here), or null if this browser never hosted the room.
+ *  Rejects when the save can't be READ (the caller must not write over what
+ *  it couldn't read). A save from before Phase 1 (localStorage ct-save-<room>
+ *  and ct-decks-<room>) is migrated: its state lifted (core.js migrate), its
+ *  decks ingested (a deck that fails is dropped, and said so), and the result
+ *  — images included — written in one transaction; only once that commits do
+ *  the old keys go, or once IndexedDB holds a later table of the room. A lost
+ *  marker never stands for one: when the migration couldn't be written and
+ *  the saves since failed too, the old keys hold the table's last good copy,
+ *  and it is resumed, `behind`. A record that holds no table becomes a lost
+ *  marker, its catalog dropped (the fresh table's decks must not join the
+ *  old ones). Every catalog deck passes cleanDeck. */
 export async function loadSave(room) {
   const { rec, cat } = await tx(['saves', 'catalog'], 'readonly', (s, c) => ({ rec: s.get(room), cat: c.index('room').getAll(room) }))
     .catch(fail('reading the save'));
   const s = rec.result;
   if (!s) return migrateLegacy(room);
-  dropLegacy(room, s.ts);
-  if (typeof s.lost === 'string') return { lost: s.lost };
-  const v = Math.max(num(s.v, 1), num(s.state?.v, 1));
-  if (v > STATE_V) return { newer: v };
-  if (!s.state?.items || !s.state.players) return { lost: 'the save is unreadable: it holds no table' };
-  const decks = {};
-  for (const c of cat.result) {
-    try { decks[c.id] = cleanDeck(c.deck); } catch (err) { console.error(`saved deck ${c.id} dropped`, err); }
+  let lost = typeof s.lost === 'string' ? s.lost : '';
+  if (!lost) {
+    const v = Math.max(num(s.v, 1), num(s.state?.v, 1));
+    if (v > STATE_V) return { newer: v };
+    if (s.state?.items && s.state.players) {
+      dropLegacy(room, s.ts);
+      const decks = {};
+      for (const c of cat.result) {
+        try { decks[c.id] = cleanDeck(c.deck); } catch (err) { console.error(`saved deck ${c.id} dropped`, err); }
+      }
+      return { state: s.state, decks, stored: true };
+    }
+    lost = 'the save is unreadable: it holds no table';
+    console.error(`the save of ${room} holds no table: marked lost`, s);
+    await markLost(room, lost);
   }
-  return { state: s.state, decks, stored: true };
+  return (await migrateLegacy(room, lost)) ?? { lost };
 }
 /** Removes room's pre-Phase 1 save, left behind when its migration couldn't
- *  be written, once a save at least as new (written at `ts`) supersedes it. */
+ *  be written, once a table saved at least as late (at `ts`) supersedes it. */
 function dropLegacy(room, ts) {
   const raw = localStorage.getItem(`ct-save-${room}`);
   if (raw === null) return;
@@ -424,8 +437,10 @@ function dropLegacy(room, ts) {
   localStorage.removeItem(`ct-save-${room}`);
   localStorage.removeItem(`ct-decks-${room}`);
 }
-/** The pre-Phase 1 save of `room` (localStorage), migrated: see loadSave. */
-async function migrateLegacy(room) {
+/** The pre-Phase 1 save of `room` (localStorage), migrated: see loadSave.
+ *  `behind`: why the room's later save can't be resumed (the migrated table
+ *  says so), when IndexedDB holds a lost marker for it. */
+async function migrateLegacy(room, behind) {
   const key = `ct-save-${room}`, raw = localStorage.getItem(key);
   if (raw === null) return null;
   let out;
@@ -449,7 +464,7 @@ async function migrateLegacy(room) {
           opts.notify(`The deck "${String(deck?.name || id).slice(0, 24)}" of this table's save was dropped: ${err.message}`);
         }
       }
-      out = { state: migrate(s.state), decks };
+      out = { state: migrate(s.state), decks, ...(behind && { behind }) };
     }
   } catch (err) {
     console.error('corrupt save discarded', err);

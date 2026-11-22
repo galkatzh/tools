@@ -150,9 +150,11 @@ top of `core.js` and README "How it works".
   the image pull, a warm rejoin, damaged and missing images, late arrivals,
   attacker cases 2, 8 and 9, a guest's own upload, pacing.
   `t-p1-review-store.js` and `t-p1-review-assets.js`: the regressions the
-  Phase 1B review found (a migration whose images can't be stored, a save
-  that can't be read, a lost marker's catalog, a function in t.data, the
-  image cache evicted before saves, no BroadcastChannel; refused decks leave
+  Phase 1B review found (a migration whose images can't be stored, and a
+  reload while storage is still full, a save that can't be read, a lost
+  marker's catalog, a function in t.data, the image cache evicted before
+  saves, no BroadcastChannel, a lost marker beside a legacy save it never
+  replaced, a save record that holds no table; refused decks leave
   nothing, a lost image heals, serving keeps no copies, a database upgrade,
   3,000 images, a host away for 45 s). `t-p1-bench.js`: B1', B3, B4, B6, B8
   (serial). `t-p1-flood.js` (serial): attacker case 3 (1,000 `need`s), no
@@ -257,8 +259,7 @@ alpha colour for VP8X).
   "🚫 Deck rejected: card 12: image is 30000 × 30000 px (max 4096 per side,
   16 Mpx)" (or "…: not a PNG/JPEG/WebP/GIF image", "the image claims to be
   image/png but is image/jpeg", "image is 2.4 MB (max 2 MB)", "the image's
-  header can't be read"), or "🚫 Deck rejected: your last deck is still
-  being added" (a guest has one deck in the works at a time); a host over a
+  header can't be read"); a host over a
   guest's image budget sends "🚫 Too many image requests — slow down".
 - Limits: `IMG_MAX_SIDE` 4,096 px and `IMG_MAX_PX` 16,000,000 px (store.js;
   a 4096 × 4096 image is over), `ASSET_MAX_BYTES` 2,000,000 (core.js); per

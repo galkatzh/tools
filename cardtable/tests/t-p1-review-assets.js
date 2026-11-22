@@ -2,8 +2,9 @@
 // one section each:
 //   (1) refused   a guest's deck that is refused — its last image fails a check,
 //                 or the rules veto it — leaves none of its images in the host's
-//                 memory or storage; a guest has one deck in the works at a time;
-//                 a deck that commits is held, and saved with its images
+//                 memory or storage; a guest's second deck, sent while the first
+//                 is ingested, waits for it (one chain per player, §1c); a deck
+//                 that commits is held, and saved with its images
 //   (2) heal      an image the host lost shows again on the host once the deck is
 //                 added again; serving images doesn't make the host keep copies
 //   (3) upgrade   another tab upgrades the database: every tab says so, and the
@@ -99,10 +100,11 @@ const okWait = async (promise, msg) => ok(await promise.then((x) => x !== false,
       await window.M.act({ t: 'addDeck', deck: a, x: 500, y: 600 });
       window.M.act({ t: 'addDeck', deck: b, x: 700, y: 600 });
     }, [A.imgDeck('One', one), A.imgDeck('Two', two)]);
-    await okWait(L.until(async () => (await notes()).includes('🚫 Deck rejected: your last deck is still being added')), 'a second deck sent while the first is ingested is refused');
     await okWait(L.until(async () => !!(await A.pileOf(host, 'One'))), 'the first one is added');
     await host.evaluate(() => { window.__slowHash = false; });
-    ok(!(await A.pileOf(host, 'Two')), 'the second is not');
+    await okWait(L.until(async () => !!(await A.pileOf(host, 'Two'))), 'and the second one, sent while the first was ingested, after it');
+    const order = (await L.view(host)).log.map((e) => /^added deck "(One|Two)"/.exec(e.txt)?.[1]).filter(Boolean);
+    ok(L.same(order, ['One', 'Two']) && !(await notes()).some((m) => /One|Two|still/.test(m)), `in the order they were sent, neither refused (${JSON.stringify(order)})`);
     await okWait(L.until(async () => (await inMemory(host, oneIds)).length === 4), 'the host holds the added deck\'s images');
     ok(await settled(host) && (await inDB(host, oneIds)).length === 4, 'and stores them with the save that writes the deck');
   })().catch((e) => ok(false, `(1) crashed: ${e.stack}`));

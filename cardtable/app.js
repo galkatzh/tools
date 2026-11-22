@@ -232,20 +232,22 @@ function runJob({ p, a, resolve }) {
   resolve(error ? { ok: false, error } : { ok: changed });
 }
 
-const ingesting = new Map(); // host: player → their deck ingestion in progress
-let reserved = 0; // host: the deck budget the guests' decks being ingested will take
+const ingesting = new Map(); // host: player → the last of their decks in the works (a chain)
+let reserved = 0; // host: the deck budget the guests' decks in the works will take
 /** Host: hands player p's action to the queue — after its preprocessing,
  *  for an action that has one. A deck (addDeck) is ingested (store.js: its
  *  images decoded, checked and hashed, in memory) OUTSIDE the queue: a big
- *  deck takes seconds, and nobody's moves wait for it. It is queued once
- *  ingested, so decks commit in the order their ingestion ends (nothing can
- *  refer to a deck before it commits), and its images are kept only if it
- *  did commit (holdImages): a deck refused by the rules or the budget leaves
- *  nothing in the host's memory or storage. A guest has one deck in the
- *  works at a time, checked and measured on receipt (cleanDeckV1), before
- *  anything is decoded, against the deck budget minus what the guests' decks
- *  in the works will take (`reserved`) — and again at commit. A failure
- *  tells the actor and queues nothing. Resolves like enqueue(). */
+ *  deck takes seconds, and nobody's moves wait for it. Each player's decks
+ *  are ingested one at a time, in order (a chain per player); a deck is
+ *  queued once ingested, so decks commit in the order their ingestion ends
+ *  (nothing can refer to a deck before it commits), and its images are kept
+ *  only if it did commit (holdImages): a deck refused by the rules or the
+ *  budget leaves nothing in the host's memory or storage. A guest's deck is
+ *  checked and measured on receipt (cleanDeckV1), before anything is
+ *  decoded, against the deck budget minus what the guests' decks in the
+ *  works will take (`reserved`: so the chains never hold more than the
+ *  budget) — and again at commit. A failure tells the actor and queues
+ *  nothing. Resolves like enqueue(). */
 function submit(p, a) {
   if (a.t !== 'addDeck') return enqueue(p, a);
   const refuse = (why) => {
@@ -255,14 +257,14 @@ function submit(p, a) {
   };
   let deck = a.deck, cost = 0;
   if (p !== pid) {
-    if (ingesting.has(p)) return Promise.resolve(refuse('your last deck is still being added'));
     try { deck = cleanDeckV1(a.deck); } catch (err) { return Promise.resolve(refuse(err.message)); }
     cost = JSON.stringify(deck).length;
     const over = deckOverBudget((T.state.guestDeckChars || 0) + reserved, cost);
     if (over) return Promise.resolve(refuse(over));
     reserved += cost;
   }
-  const run = (ingesting.get(p) || Promise.resolve()).then(() => store.ingestDeck(deck)).then(async ({ deck: v2, assets }) => {
+  const ingest = () => store.ingestDeck(deck); // after the player's previous deck, however that one ended (its caller hears how)
+  const run = (ingesting.get(p) || Promise.resolve()).then(ingest, ingest).then(async ({ deck: v2, assets }) => {
     if (role !== 'host') return { ok: false, error: 'this tab is no longer the host' };
     const done = await enqueue(p, { ...a, deck: v2, cost });
     holdImages(assets);
@@ -1060,8 +1062,10 @@ setInterval(() => {
 // oldest first); if the table still can't be saved, a tiny lost marker
 // replaces the save, so a reload never quietly rewinds to stale state — it
 // resets the table loudly (and this browser stays the host instead of
-// waiting in its own room). A state that can't be stored at all (a rules
-// script left a function in t.data) costs the rules, not the save (_unsaveable).
+// waiting in its own room), or resumes, as loudly, the pre-Phase 1 save
+// whose migration couldn't be written (store.js loadSave). A state that
+// can't be stored at all (a rules script left a function in t.data) costs
+// the rules, not the save (_unsaveable).
 // An IndexedDB write started as the page goes away may never commit, so
 // pagehide also leaves the seq it meant to save in localStorage (synchronous):
 // ct-pending-<room>. A commit of that seq removes it; a boot that finds it
@@ -1125,12 +1129,13 @@ window.addEventListener('pagehide', () => {
   }
   try { room?.leave(); } catch (err) { console.error('leaving the room failed', err); }
 });
-/** Host, at boot: a save this tab left pending (pagehide) that never committed is said, once. */
+/** Host, at boot: a save this tab left pending (pagehide) that never
+ *  committed is said, once — unless the boot says worse (a save lost). */
 function checkPending(save) {
   const mark = localStorage.getItem(pendingKey());
   if (mark === null) return;
   localStorage.removeItem(pendingKey());
-  if (save?.lost || +mark <= num(save?.state?.seq)) return;
+  if (save?.lost || save?.behind || +mark <= num(save?.state?.seq)) return;
   console.warn(`the last save before the reload never committed (seq ${mark}; the save has ${save?.state?.seq ?? 'none'})`);
   toast("The last moment of play before the reload wasn't saved (the browser closed first)");
 }
@@ -2402,6 +2407,9 @@ function becomeHost(saved, unsaved) {
     console.error('this table could not be resumed:', saved.lost);
     toast(`Couldn't resume this table (${saved.lost}) — started a fresh one`);
     saved = null;
+  } else if (saved?.behind) { // its last save is lost, an older copy isn't (a pre-Phase 1 save its migration couldn't replace)
+    console.error("this table's last save could not be resumed:", saved.behind);
+    toast(`Couldn't resume this table's last save (${saved.behind}) — resumed an older one`);
   }
   const t = createTable(saved ? { ...saved.state, decks: saved.decks } : {}, { pid });
   if (saved) t.resume(myName); // re-sanitizes the decks, reloads the rules, everyone else waits offline

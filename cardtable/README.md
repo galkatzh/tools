@@ -144,14 +144,17 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   the browser lacks). Reopening the invite link in the host's browser
   resumes the game; a save from before IndexedDB (localStorage
   `ct-save-<room>`) is moved over on its first resume, images included, and
-  its keys are removed only once the new storage holds it all. When storage
+  its keys are removed only once the new storage holds it all (or a later
+  table of the room); until then a reload after failed saves resumes that
+  old save, saying the last one was lost, rather than a fresh table. When storage
   is full, the image cache gives way first (images no table needs, least
   recently used first: they download again), then other rooms' saves,
   oldest first, with their images (with a toast saying so; saves another
   tab wrote in the last 30 s are spared, and none are deleted when the
   table wouldn't fit even then); if the table still can't be saved, the
   stale save is replaced by a "lost" marker (its decks go too), so a reload
-  resets the table loudly instead of silently rewinding it. A save the tab
+  resets the table loudly instead of silently rewinding it (as does a save
+  record that holds no table, its decks dropped too). A save the tab
   can't even read at start is never written over: the tab hosts by its host
   key, saves nothing, and says to reload. A rules script that leaves
   something that isn't JSON in `t.data` (a function) loses its rules, not
@@ -180,8 +183,8 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   more than one minute (the guest is told they come slowly). A deck is
   checked and hashed in slices, between which everyone's moves go on, and
   its images are kept only once it is on the table: a deck the rules or the
-  budget refuse leaves nothing in the host's browser (and a guest has one
-  deck in the works at a time). Every image is checked before any peer
+  budget refuse leaves nothing in the host's browser (a guest's decks are
+  taken one at a time, and those waiting count against the budget). Every image is checked before any peer
   stores it: PNG, JPEG, WebP or GIF by its magic bytes, at most 2 MB, at most
   4,096 px a side and 16 Mpx in all — read from its header, so a tiny file
   that declares a huge picture is refused before anything decodes it — and,

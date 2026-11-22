@@ -2,7 +2,9 @@
 // section each:
 //   (1) migrate   a legacy save whose images can't be stored (the asset store
 //                 is full): its keys stay, the host is told, and plays from
-//                 memory; once storage frees up, the next save stores the table
+//                 memory; its saves fail too (a lost marker), and a reload with
+//                 storage still full resumes the legacy table, loudly, its keys
+//                 kept; once storage frees up, the next save stores the table
 //                 with its images, a reload resumes it, and only then the keys go
 //   (2) read      one failed read of the save at boot: the tab still hosts, says
 //                 so (pinned), and never writes over the save — the next boot
@@ -16,6 +18,11 @@
 //                 again), and deletes another table's save only when that is
 //                 not enough
 //   (6) no BroadcastChannel (an old Safari): the app still boots, hosts and saves
+//   (7) lost+old  a lost marker with a legacy save still in localStorage (its
+//                 migration couldn't be written, nor any save since): a boot
+//                 with room resumes the legacy table, loudly, and migrates it
+//   (8) no table  a save record that holds no table: the fresh table that
+//                 replaces it never inherits the old table's catalog
 'use strict';
 const h = require('./h');
 const L = require('./p1-lib');
@@ -84,34 +91,58 @@ async function unbacked(p, room) {
 const okWait = async (promise, msg) => ok(await promise.then((x) => x !== false, () => false), msg);
 
 const PICS = { name: 'Pics', back: null, imgs: [A.dataURL(A.png(50, 70, { rgb: [220, 40, 40] })), A.dataURL(A.png(50, 70, { rgb: [40, 160, 60] }))], cards: [{ g: 1, n: 'Green' }, { g: 0, n: 'Red' }] };
+/** A host `name` with the image deck PICS and two of its cards dealt face
+ *  up, saved: {p, room, invite}. */
+async function picsTable(env, name, scripts) {
+  const p = await A.seat(env, name, env.url, scripts);
+  const room = await roomOf(p), invite = p.url();
+  await L.act(p, { t: 'addDeck', deck: PICS, x: 260, y: 820 });
+  const pics = await waitPile(p, 'Pics');
+  for (const x of [480, 620]) await L.act(p, { t: 'deal', id: pics, x, y: 470, up: true });
+  await L.until(async () => (await faces(p)) === 2);
+  ok(await settled(p), 'a table with an image deck is saved');
+  return { p, room, invite };
+}
+/** Turns room's save into a pre-Phase 1 one, saved a minute ago: its state
+ *  in the old shape in ct-save-<room>, its decks (PICS in the transport
+ *  shape, with data: URLs) in ct-decks-<room>; IndexedDB is deleted. Leaves
+ *  p on a page with no app (plain). */
+async function toLegacy(p, env, room) {
+  await p.goto(h.plain(env));
+  const rec = await h.idb(p, 'saves', room), cat = await catalogOf(p, room);
+  const legacy = structuredClone(rec.state);
+  for (const [pid, k] of Object.entries(legacy.keys)) legacy.players[pid].key = k;
+  delete legacy.keys; delete legacy.zMax; delete legacy.v;
+  const save = JSON.stringify({ ts: Date.now() - 60000, state: legacy });
+  const decks = JSON.stringify(Object.fromEntries(cat.map((r) => [r.id, r.deck.name === 'Pics' ? PICS : r.deck])));
+  await dropDB(p);
+  await p.evaluate(([room, s, d]) => { localStorage.setItem(`ct-save-${room}`, s); localStorage.setItem(`ct-decks-${room}`, d); }, [room, save, decks]);
+}
+const OLDER = /^Couldn't resume this table's last save \(browser storage is full\) — resumed an older one$/;
 
 (async () => {
   const env = await h.start();
 
   section('(1) a legacy save whose images can\'t be stored is never lost');
   await (async () => {
-    const pat = await A.seat(env, 'Pat', env.url, [A.toastLog, h.quotaStub, fullOnce]);
-    const room = await roomOf(pat), invite = pat.url();
-    await L.act(pat, { t: 'addDeck', deck: PICS, x: 260, y: 820 });
-    const pics = await waitPile(pat, 'Pics');
-    for (const x of [480, 620]) await L.act(pat, { t: 'deal', id: pics, x, y: 470, up: true });
-    await L.until(async () => (await faces(pat)) === 2);
-    ok(await settled(pat), 'a table with an image deck is saved');
-    await pat.goto(h.plain(env));
-    const rec = await h.idb(pat, 'saves', room), cat = await catalogOf(pat, room);
-    const legacy = structuredClone(rec.state);
-    for (const [p, k] of Object.entries(legacy.keys)) legacy.players[p].key = k;
-    delete legacy.keys; delete legacy.zMax; delete legacy.v;
-    const save = JSON.stringify({ ts: Date.now() - 60000, state: legacy });
-    const decks = JSON.stringify(Object.fromEntries(cat.map((r) => [r.id, r.deck.name === 'Pics' ? PICS : r.deck])));
-    await dropDB(pat);
-    await pat.evaluate(([room, s, d]) => { localStorage.setItem(`ct-save-${room}`, s); localStorage.setItem(`ct-decks-${room}`, d); }, [room, save, decks]);
+    const { p: pat, room, invite } = await picsTable(env, 'Pat', [A.toastLog, h.quotaStub, fullOnce]);
+    await toLegacy(pat, env, room);
     await pat.evaluate(() => sessionStorage.setItem('__fullOnce', JSON.stringify('assets'))); // the asset store is full on the next boot
     await back(pat, invite);
     await okWait(toasted(pat, /^Couldn't move this table's save to the new storage: .+/), 'its images can\'t be stored: the host is told the save couldn\'t be moved');
     ok((await legacyKeys(pat)).length === 2, 'and the legacy keys stay (they hold the only copy of the images)');
     await okWait(L.until(async () => (await faces(pat)) === 2), 'the host plays on from memory, its images drawn');
     ok(!(await unbacked(pat, room)).length, 'no catalog record names an image the store lacks');
+    await okWait(L.until(async () => (await h.idb(pat, 'saves', room))?.lost === 'browser storage is full'), 'its saves fail too: the save is a lost marker');
+    // A reload while storage is still full, nothing saved since: the lost
+    // marker must not stand for a save that replaced the legacy one.
+    await pat.evaluate(() => sessionStorage.setItem('__fullOnce', JSON.stringify('assets')));
+    await pat.reload();
+    await pat.waitForSelector('.item.pile .count', { timeout: 30000 });
+    await okWait(toasted(pat, OLDER), 'a reload with storage still full says the last save is lost, and resumes an older one');
+    ok((await legacyKeys(pat)).length === 2, 'the legacy keys survive it');
+    await okWait(L.until(async () => (await faces(pat)) === 2 && (await L.view(pat)).log.some((e) => e.txt === 'resumed the table')), 'and the legacy table is back, its images drawn');
+    ok(!(await toasts(pat)).some((t) => /started a fresh one/.test(t)), 'not a fresh table');
     await pat.evaluate(() => { window.__quota = null; }); // storage frees up
     await L.act(pat, { t: 'chat', msg: 'storage is back' });
     ok(await settled(pat), 'the next save goes through');
@@ -219,6 +250,52 @@ const PICS = { name: 'Pics', back: null, imgs: [A.dataURL(A.png(50, 70, { rgb: [
     ok(await isHost(u) && await settled(u), 'the app boots, hosts and saves without it');
     await u.context().close();
   })().catch((e) => ok(false, `(6) crashed: ${e.stack}`));
+
+  section('(7) a lost marker never deletes the legacy save it couldn\'t replace');
+  await (async () => {
+    const { p: v, room, invite } = await picsTable(env, 'Vic', [A.toastLog]);
+    await toLegacy(v, env, room);
+    // What a failed migration and a failed save leave: the legacy keys, a lost
+    // marker in IndexedDB — and a pagehide's pending seq, far ahead.
+    await h.withStore(v, async (S, room) => {
+      const db = await new Promise((res, rej) => { const r = indexedDB.open('cardtable'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+      const x = db.transaction('saves', 'readwrite');
+      x.objectStore('saves').put({ room, ts: Date.now(), lost: 'browser storage is full' });
+      await new Promise((res, rej) => { x.oncomplete = res; x.onabort = () => rej(x.error); });
+      db.close();
+      localStorage.setItem(`ct-pending-${room}`, '999');
+    }, room);
+    await back(v, invite);
+    await okWait(toasted(v, OLDER), 'the host is told the last save is lost, and an older one resumed');
+    await okWait(L.until(async () => (await faces(v)) === 2 && (await L.view(v)).log.some((e) => e.txt === 'resumed the table')), 'the legacy table is back, its images drawn');
+    await okWait(L.until(async () => !!(await h.idb(v, 'saves', room))?.state), 'and migrated: IndexedDB holds it');
+    ok(!(await legacyKeys(v)).length && !(await unbacked(v, room)).length && (await catalogOf(v, room)).length === 2, 'its keys gone only now, its decks and images stored');
+    const said = await toasts(v);
+    ok(!said.some((t) => /started a fresh one|Couldn't move|wasn't saved/.test(t)), `with no other notice (${JSON.stringify(said)})`);
+    await v.context().close();
+  })().catch((e) => ok(false, `(7) crashed: ${e.stack}`));
+
+  section('(8) a save that holds no table takes its catalog with it');
+  await (async () => {
+    const w = await A.seat(env, 'Wren', env.url, [A.toastLog]);
+    const room = await roomOf(w), invite = w.url();
+    await L.act(w, { t: 'addDeck', deck: { ...PICS, name: 'Old' }, x: 260, y: 820 });
+    await waitPile(w, 'Old');
+    ok(await settled(w) && (await catalogOf(w, room)).length === 2, 'a table with 2 decks is saved');
+    await w.goto(h.plain(env));
+    await h.plantSave(w, room, { v: 2 }); // the record keeps its place, but holds no table
+    await back(w, invite);
+    await okWait(toasted(w, /^Couldn't resume this table \(the save is unreadable: it holds no table\) — started a fresh one$/), 'the host resets the table loudly');
+    ok(await settled(w), 'the fresh table is saved');
+    const cat = await catalogOf(w, room);
+    ok(cat.length === 1 && cat[0].deck.name === 'Standard', `its catalog holds its own deck only (${cat.map((c) => c.deck.name).join(', ')})`);
+    await w.reload();
+    await w.waitForSelector('.item.pile .count', { timeout: 30000 });
+    await okWait(L.until(async () => (await L.view(w)).log.some((e) => e.txt === 'resumed the table')), 'a reload resumes the fresh table');
+    const piles = Object.values((await L.view(w)).items).filter((it) => it.k === 'p').map((it) => it.name);
+    ok(L.same(piles, ['Standard']) && (await catalogOf(w, room)).length === 1, `with none of the old decks (${piles.join(', ')})`);
+    await w.context().close();
+  })().catch((e) => ok(false, `(8) crashed: ${e.stack}`));
 
   await env.done();
 })().catch(h.crash);
