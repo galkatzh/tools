@@ -8,10 +8,11 @@
 //        and rAF interval p95 ≤ max(20 ms, 1.25 × the same pan over an empty table)
 //   B6   the host saves the 1,000-card table: every save's main-thread part ≤ 8 ms
 //        (__ct.perf.lastSaveSyncMs, around doSave's synchronous IndexedDB put)
-//   TODO(phase 1B): B8 — a guest with a 40-image deck reloads: 0 `asset` bytes
-//        re-sent (the __rtc byte counter, per channel).
+//   B8   a guest that pulled a 40-image deck reloads: 0 `asset` bytes received
+//        (the __rtc byte counter, per channel), and no image asked for
 const h = require('./h');
 const L = require('./p1-lib');
+const A = require('./assets-lib');
 const { ok, section } = h;
 
 const B1_MAX = 1.5 * 1024, B3_MAX = 4, B4_LONG = 50, B4_FLOOR = 20, B6_MAX = 8;
@@ -152,5 +153,21 @@ async function pan(p) {
   console.log(`  lastSaveSyncMs per save: ${saveMs.map((x) => x.toFixed(2)).join(', ')} ms (${items} items saved)`);
   ok(saveMs.length === 10 && items >= 1000 && saveMs.every((x) => x > 0 && x <= B6_MAX),
     `B6: each of ${saveMs.length} saves of ${items} items takes ≤ ${B6_MAX} ms on the main thread (max ${Math.max(...saveMs).toFixed(2)} ms)`);
+
+  section('B8: a guest with a 40-image deck rejoins on a warm cache');
+  const drawn = (p) => p.evaluate(() => [...document.querySelectorAll('.item img.face')].filter((i) => i.src.startsWith('blob:') && i.complete && i.naturalWidth > 0).length);
+  const deck = await A.addDeck(host, A.imgDeck('Forty', A.tinyPngs(40, 8)), 1150, 1130);
+  ok(deck.ok && deck.pile, 'the host adds a deck of 40 images');
+  for (let k = 0; k < 40; k++) await L.act(host, { t: 'deal', id: deck.pile, up: true, x: 700 + (k % 8) * 120, y: 700 + Math.floor(k / 8) * 160 });
+  ok(await L.until(async () => (await drawn(mover)) === 40, 30000), 'Bob pulls them: 40 faces drawn');
+  const pulled = await mover.evaluate(() => window.__rtc.recv.asset || 0);
+  ok(pulled > 0, `(${pulled} asset bytes received)`);
+  await mover.addInitScript(A.needLog);
+  await mover.reload();
+  await mover.waitForSelector('.item.pile .count', { timeout: 30000 });
+  ok(await L.until(async () => (await drawn(mover)) === 40, 30000), 'Bob reloads: 40 faces drawn again');
+  await h.sleep(2000); // a request, had he sent one, would be answered by now
+  const again = await mover.evaluate(() => ({ bytes: window.__rtc.recv.asset || 0, needs: window.__needs.length }));
+  ok(again.bytes === 0 && again.needs === 0, `B8: 0 asset bytes re-sent (${again.bytes} B, ${again.needs} image requests)`);
   await env.done();
 })().catch(h.crash);
