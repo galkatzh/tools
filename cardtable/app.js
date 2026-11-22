@@ -820,7 +820,7 @@ function connect() {
     if (n.peek && n.to === pid) showPeek({ d: String(n.peek.d), i: num(n.peek.i, -1) }); // the host's private answer to our peek
     if (Array.isArray(n.missing)) { // images we asked for that the host doesn't hold
       const gone = n.missing.filter((h) => pending.has(h));
-      if (gone.length) giveUp(gone, `${gone.length} card image${gone.length > 1 ? 's are' : ' is'} missing on the host — ask them to re-add the deck`);
+      if (gone.length) giveUp(gone, `${gone.length} card images are missing on the host — ask them to re-add the deck`);
     }
   }, true);
   rulesA.onMessage = fromHost((r) => { if (role !== 'host') guestRules = { code: String(r?.code || ''), name: String(r?.name || '') }; });
