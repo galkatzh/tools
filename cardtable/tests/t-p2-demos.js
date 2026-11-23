@@ -92,6 +92,7 @@ const CONFIRM = (title) => `Clear the table and set up ${title}? The current gam
   section('Draughts: Light moves, Dark can\'t touch Light\'s men');
   const m1 = at(2, 5);
   await dragBy(host, m1, 100, -100);
+  await L.until(async () => square((await items())[m1]).r !== 5, 10000);
   its = await items();
   ok(square(its[m1]).c === 3 && square(its[m1]).r === 4, `Alice drags her man c3 → d4: it moves one square diagonally (now ${JSON.stringify(square(its[m1]))})`);
   ok(await P.waitView(bob, 'v.items[a.id].x === a.x && v.items[a.id].y === a.y', { id: m1, x: its[m1].x, y: its[m1].y }), 'Bob\'s phone shows it there');

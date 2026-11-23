@@ -140,6 +140,33 @@ async function clickItem(p, id, touch) {
 /** The actions page p has sent so far (bytes on the `act` channel; p1-lib's RTC hook). */
 const sentActs = (p) => p.evaluate(() => window.__rtc.sent.act || 0);
 
+const range = (n) => Array.from({ length: n }, (_, k) => k);
+/** The bench box of spec §2k, for the browser budgets: on a 6000 × 4000
+ *  table, 1 board (a 40 × 25 square grid of cell 100, draw 'lines'), 600
+ *  tokens (12 rows of 50), 250 tiles (5 rows of 50, the first two face
+ *  down), 50 dice, 60 supplies (chips and hand-held pawns) and 39 bags (3
+ *  pieces each): 1,000 items, laid out over the board as a game would. */
+const BENCH = {
+  name: 'Bench', imgs: [], table: { shape: 'rect', w: 6000, h: 4000 },
+  backs: { tb: { face: { color: '#345678' } } },
+  types: {
+    map: { kind: 'board', name: 'Map', w: 4000, h: 2500, board: { grid: { type: 'square', cols: 40, rows: 25, cell: 100, x: 0, y: 0, draw: 'lines' } } },
+    tok: { kind: 'token', name: 'Token', faces: ['A', 'B', 'C'] },
+    tile: { kind: 'tile', name: 'Tile', back: 'tb', faces: ['T1', 'T2'] },
+    die: { kind: 'die', name: 'Die' },
+    chip: { kind: 'token', name: 'Chip', faces: [{ color: '#cc0000' }] },
+    pawn: { kind: 'token', name: 'Pawn', shape: 'pawn', hand: true, faces: [{ color: '#00aa00' }] },
+  },
+  setup: [
+    { piece: 'map', at: 'center' },
+    ...range(12).map((k) => ({ piece: 'tok', at: [1050, 800 + 75 * k], count: 50, spread: [75, 0], f: k % 3 })),
+    ...range(5).map((k) => ({ piece: 'tile', at: [1050, 1750 + 110 * k], count: 50, spread: [78, 0], ...(k < 2 ? { up: false } : {}) })),
+    { piece: 'die', at: [1050, 2350], count: 50, spread: [70, 0] },
+    ...range(60).map((k) => ({ supply: k % 2 ? 'chip' : 'pawn', at: [1050 + 62 * k, 2480] })),
+    ...range(39).map((k) => ({ bag: ['tok', 'tok', { t: 'tile', up: false }], name: `Bag ${k}`, at: [1050 + 95 * k, 2600] })),
+  ],
+};
+
 /** '#rrggbb' as a computed style colour reads ('rgb(r, g, b)'). */
 const rgb = (hex) => `rgb(${[1, 3, 5].map((k) => parseInt(hex.slice(k, k + 2), 16)).join(', ')})`;
 /** Whether element `sel` shows on page p: in the DOM, displayed, with a box. */
@@ -151,6 +178,6 @@ const inViewport = (p, sel) => p.evaluate((s) => [...document.querySelectorAll(s
 }), sel);
 
 module.exports = {
-  PHONE, join, waitView, viewOf, tf, wrap, fit, angDiff, labels, label, menu, openMenu, pick, feltPoint,
+  PHONE, BENCH, join, waitView, viewOf, tf, wrap, fit, angDiff, labels, label, menu, openMenu, pick, feltPoint,
   mouseDrag, touchDrag, dragOn, itemXY, clickItem, sentActs, rgb, shows, inViewport,
 };

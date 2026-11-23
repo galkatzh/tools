@@ -40,7 +40,7 @@ const DUO = {
 const EDGES = { bottom: 0, right: 90, top: 180, left: 270 }; // the view turn that puts each edge at the bottom (CSS rotate: clockwise)
 const QUAD = {
   name: 'Quad', imgs: [],
-  table: { shape: 'rect', w: 2400, h: 1200 },
+  table: { shape: 'rect', w: 2400, h: 1200, felt: '#1e3a5f' },
   seats: [{ id: 's', name: 'South', edge: 'bottom' }, { id: 'e', name: 'East', edge: 'right' }, { id: 'n', name: 'North', edge: 'top' }, { id: 'w', name: 'West', edge: 'left' }],
   types: { peg: { kind: 'token', name: 'Peg', stack: 'none', faces: [{ color: '#facc15' }] } },
   setup: [{ piece: 'peg', at: [80, 80] }, { piece: 'peg', at: [2260, 80] }, { piece: 'peg', at: [80, 1060] }, { piece: 'peg', at: [2260, 1060] }],
@@ -188,6 +188,11 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
   section('1: a rect table — the fit at each 90° seat view (Bob on a desktop, Carol on a phone)');
   ok((await act(host, { t: 'loadBox', box: QUAD, setup: true, clear: true })).ok, 'the host loads a 2400 × 1200 table with a seat on each edge');
   ok(await P.waitView(carol, "v.table.shape === 'rect' && v.table.w === 2400 && v.seats?.length === 4"), 'the phone has it');
+  for (const p of [host, carol]) {
+    const look = await p.evaluate(() => { const t = document.getElementById('table'), cs = getComputedStyle(t); return { rect: t.classList.contains('rect'), radius: cs.borderTopLeftRadius, bg: cs.backgroundColor, img: cs.backgroundImage, shadow: cs.boxShadow, ring: getComputedStyle(t, '::before').content }; });
+    ok(look.rect && look.radius === '24px' && look.bg === P.rgb('#1e3a5f') && look.img === 'none' && /inset/.test(look.shadow) && look.ring === 'none',
+      `${name(p)}: #table.rect — 24 px corners, a solid felt in the box's colour with an inset shadow, no printed ring (${JSON.stringify({ radius: look.radius, bg: look.bg, img: look.img, ring: look.ring })})`);
+  }
   for (const p of all()) await act(p, { t: 'seat', watch: true });
   ok(await P.waitView(host, 'Object.values(v.players).every((pl) => pl.seat === null)'), 'everyone stands up (setup)');
   for (const p of [bob, carol]) await p.click('#view-btn'); // (the drags above panned their views: 🧭 resets them)
@@ -317,7 +322,7 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
     const b = await bar(p);
     ok(done, `${name(p)}: the hand bar ${want ? 'shows' : 'hides'} ${why}`);
     ok(want ? Math.abs(b.wrapBottom - b.handBarTop) < 1 : Math.abs(b.wrapBottom - b.vh) < 1, `${name(p)}: the table area reaches ${want ? 'the hand bar' : 'the bottom of the screen'} (${b.wrapBottom.toFixed(0)} of ${b.vh})`);
-    const fitted = await L.until(async () => { const t = await P.tf(p), w = await P.wrap(p), tb = await P.viewOf(p, 'v.table'); return Math.abs(t.s - P.fit(tb, t.rot, w.W, w.H) * 1) / t.s < 0.002; }, 5000, 100);
+    const fitted = await L.until(async () => { const t = await P.tf(p), w = await P.wrap(p), tb = await P.viewOf(p, 'v.table'); return Math.abs(t.s - P.fit(tb, t.rot, w.W, w.H)) / t.s < 0.002; }, 5000, 100);
     ok(fitted, `${name(p)}: the table refits the area`);
   }
   for (const p of all()) await p.click('#view-btn');

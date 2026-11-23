@@ -235,7 +235,7 @@ top of `core.js` and README "How it works".
   hex, as `uid()` makes them: a JS object lists integer-like keys
   ("12345678") first, so key order is checked against sorted insertion
   (`inOrder`). `core-p2-bench.mjs` (serial): B9, a 20-dice roll on the
-  1,000-piece bench box of §2k.
+  1,000-piece bench box of §2k, then B5, B1, B2 and B7 on it (2B).
 - **`p2-lib.js`** (browser suites): `act(page, a)` (the page's own act),
   `loadBox(host, box, {setup, clear})` → the box's catalog id, `items(page)`
   and `at(items, x, y, pred?)` (test boxes give every item its own top-left,
@@ -388,6 +388,49 @@ it: no click). A failed check saves both screens as
 `shots/p2-pieces-<pass>-fail<k>-<name>.png` (a crash: `…-crash-<k>.png`);
 each pass ends with `shots/p2-pieces-<pass>-<name>.png`. `ONLY=desktop` or
 `ONLY=phone` runs one pass.
+
+**The 2B suites.** `t-p2-tables.js` (spec §2l items 1–7: a desktop host
+and guest and an iPhone 13 guest): a 2400 × 1200 table with a seat on each
+edge, each seat's view turned by its quarter turn and fitted (scale = min(W
+/ bw, H / bh), the table centred and filling the area's width or height,
+the player's label at its bottom middle), the pan stopping at half the
+table's on-screen width across and half its height down, the wheel zoom
+stopping at 4 · max(w, h) / 1300; named seats (the joiner's free seat, a
+watcher, the 👀 chip and notice, the seat menu's exact entries, `t.players()`
+and `{all: true}` from a script's button, Sit down under automatic
+seating); a seat-bound pawn moved by whoever sits its seat and panned by
+the one who left it (nothing sent: the RTC hook's `act` bytes); the hand
+bar with draughts, a deck, a held card, on all three screens, and the
+refit; a v2 save (`size: 1800`) planted and resumed; the size selector's
+"▭ 2400 × 1200", its confirm declined, then accepted (the corner pegs
+pulled in). `t-p2-demos.js` (a desktop host, an iPhone 13 guest):
+draughts and backgammon from the 🎲 dialog, played with real drags,
+double-clicks and taps (see its header); the standard backgammon start is
+read off the board's own points (each checker by the triangle under it),
+either home-board side accepted; screenshots `shots/demo-*.png` and
+`shots/tables-*.png` are for review, never asserted. `t-p1-bench.js`
+re-runs B1', B3, B4, B6 and B8 on §2k's bench box (`p2t-lib.js` `BENCH`,
+the B4 baseline an empty 6000 × 4000 rectangle), then B10 — three new
+guests joining on a desktop, and three on the iPhone 13 at CPU × 2 (each
+a fresh page: its snapshot render, `lastSnapRenderMs`, and whether that
+render drew the pieces or "?" placeholders: `placeholderWatch` records the
+most at once), and a snapshot asked for after a lost patch (`__rtc.drop`),
+when the boxes are already there — and B11 in the host's page (eight 64 × 64 boards, square
+and hex, every draw mode, 4,096 fills, 64 marks: the first `boardSVG` call
+and the cached second). `core-p2-bench.mjs` adds B5, B1, B2 and B7 on its
+own 1,000-piece table (a move patch of a token; 50 `t.find({kind: 'die'})`).
+A join or reload whose WebRTC links never form (the signalling stall
+t-p1-delta describes; here a page sometimes links to the other guests but
+not to a long-running host) is tried again with a fresh page or reload,
+three times at most, and logged with both sides' player counts; one linked
+to everyone that gets no table fails.
+**`p2t-lib.js`**: `join` (a player, once the host knows it; `o.rtc` adds
+the RTC hook, `page.pid`), `waitView`/`viewOf` (an expression over `v`,
+`me`, `a`), `tf` (#table's pan, turn and scale), `wrap`, `fit` (§2g's
+formula), `labels`/`label`/`openMenu`/`pick`/`menu` (the seat labels and
+their menu, by click or tap), `feltPoint`, `mouseDrag`/`touchDrag` (CDP
+touches)/`dragOn`, `itemXY`/`clickItem`, `sentActs`, `rgb`, `shows`,
+`inViewport`, `PHONE` and `BENCH`.
 
 **Changed for 2B** (mechanism only; no assertion removed or weakened):
 `t-fun-games.js` lists the two box games in the strip and the dialog (9
