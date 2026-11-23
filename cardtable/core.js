@@ -1796,7 +1796,9 @@ export function createTable(host, env = {}) {
   }
 
   /** Takes k (default 1) pieces off ×N stack `id`: a new stack at (x, y), or
-   *  onto stack `onto` — atomically: refused whole when that join would be. */
+   *  onto `onto` — another stack (join a), the stack's supply (join b: they
+   *  go back) or a bag (toBag: they go in) — atomically: refused whole when
+   *  that join or toBag would be, and no piece is ever left on the table. */
   function opSplit(actor, id, n, x, y, onto) {
     const it = own(host.items, id);
     if (!it) return gone('split', id);
@@ -1805,10 +1807,16 @@ export function createTable(host, env = {}) {
     if (!Number.isInteger(k) || k < 1 || k >= it.n) return no(actor, `🚫 Take 1 to ${it.n - 1} from that stack`);
     if (!may(actor, it)) return false;
     const to = onto !== undefined ? own(host.items, onto) : null, before = label(it);
+    const part = { ...it, n: k > 1 ? k : undefined }; // the k pieces, for the log
     if (onto !== undefined) {
       if (!to) return gone('split', onto);
-      if (!shown(actor, it, to)) return false;
-      if (!stackable(it, to, k)) return no(actor, "🚫 Those don't stack together");
+      if (to.k === 'b') { // the toBag checks (a bag takes hidden pieces: no hidden-item rule)
+        if (to.of.length + k > MAX_BAG) return no(actor, `🚫 That bag is full (${MAX_BAG.toLocaleString('en-US')} pieces)`);
+        if (to.hand && !flags(it).hand) return no(actor, '🚫 That bag only holds pieces that can be held in a hand');
+      } else {
+        if (!shown(actor, it, to)) return false;
+        if (to.k === 's' ? to.t !== it.t : !stackable(it, to, k)) return no(actor, "🚫 Those don't stack together");
+      }
       if (!mayHandle(actor, to)) return false;
     } else if (!cap(actor)) return false;
     touch(id);
@@ -1817,8 +1825,14 @@ export function createTable(host, env = {}) {
     if (to) {
       const into = label(to);
       touch(onto);
-      to.n = (to.n || 1) + k;
-      logEvent(actor, `moved ${k} from ${before} onto ${into}`);
+      if (to.k === 'b') {
+        for (let j = 0; j < k; j++) to.of.push({ t: it.t, f: it.f, ...(it.up === false && { up: false }) });
+        logEvent(actor, `put ${label(part)} into ${into}`);
+      } else if (to.k === 's') logEvent(actor, `returned ${label(part)} to ${into}`);
+      else {
+        to.n = (to.n || 1) + k;
+        logEvent(actor, `moved ${k} from ${before} onto ${into}`);
+      }
       mark(actor, onto);
       return true;
     }

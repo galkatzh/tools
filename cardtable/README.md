@@ -15,7 +15,8 @@ Humanity, Bridge, **Draughts**, **Backgammon**, turn order or a simple
 dealer, keeps the free table, or opens the 📜 script editor; the **🎲 Games**
 button offers the same picker any time.
 
-The table is **round** and everyone gets a **seat** on the rim (host-assigned
+The table is **round** (a game box can bring a rectangle: see *Pieces, dice
+and boards*) and everyone gets a **seat** on the rim (host-assigned
 into the largest empty arc, so two players sit opposite, a third between
 them, …). Seat labels show every player's name and hand count at their spot,
 and each player's view auto-rotates so their own seat is at the bottom —
@@ -29,7 +30,8 @@ tap a card to enlarge it (Esc or a click closes the enlarged card and the
 action buttons on a desktop). Cards you play or deal land
 facing you, so your tableau reads upright to you and upside-down to the
 player across, like a physical table. A circle makes all of this work:
-rotation never changes how the table fits the screen. The **host** can grow
+rotation never changes how the table fits the screen (a rectangle turns in
+quarter turns, and refits). The **host** can grow
 the table (small / medium / large — a shared, logged change that keeps items
 centered) when more players squeeze in.
 
@@ -49,7 +51,8 @@ that player's seat, cards dealt or drawn into hands fly to their owner's
 seat as card backs, and flips turn the card over (your own drag is never
 animated). When a game's rules say it's **your turn**, the tab title reads
 "⏳ Your turn", your seat label pulses, your hand bar gets an amber edge, a
-short "Your turn" chip pops up just above the hand bar and phones vibrate; a **win** rains emoji
+short "Your turn" chip pops up at the bottom right of the table (just above
+the hand bar, when there is one) and phones vibrate; a **win** rains emoji
 confetti on every screen and buzzes the winners' phones. On touch screens,
 **press and hold** a face-up card (or pile top) to read it full-screen; let
 go to close. Drop a hand card onto a pile to put it on top. The **⇅** button
@@ -73,12 +76,16 @@ points, lines and coordinates (a–h, 1–8) are drawn crisp at any zoom.
 Playing on the free table:
 
 - **Drag** a piece to move it. A **×N stack** gives you one piece per drag
-  (drop it on a matching stack to add it there); **Shift+drag** — on a touch
-  screen, **✥ Move all** in the piece's bar — moves the whole stack. A
-  **supply** (∞) hands out a new piece per drag; drop a piece back on its
-  supply to return it, on a **bag** to put it in, on another piece or a pile
-  of the same size to stack them, on the hand bar to hold it (if it can be
-  held).
+  (drop it on a matching stack, its supply or a bag to put it there);
+  **Shift+drag** — on a touch screen, **✥ Move all** in the piece's bar —
+  moves the whole stack. A **supply** (∞) hands out a new piece per drag
+  (Shift+drag, or **✥ Move** in its bar, moves the supply itself). Drop a
+  piece on a **matching stack** (same type, face and owner) to add it, back
+  on its supply to return it, on a **bag** to put it in, on a tile of the
+  same size (or a pile of them) to pile them, on the hand bar to hold it (if
+  it can be held). A full bag, pile or hand takes nothing: the piece just
+  lands there. ✥ stays armed 5 s (its bar button drains as the time runs
+  out).
 - **Double-click** turns a piece over (or to its next face), takes one out of
   a supply or a bag, and **rolls a die** — together with every die touching
   it (side by side means one throw: backgammon's two dice, a handful of
@@ -86,14 +93,19 @@ Playing on the free table:
 - **Click** a piece for its bar: Flip, 🎲 Roll, ⟲ ⟳, ✂ Take 1, ✋ Hand,
   🔒 Lock, 👤 Claim / Release (and the host's Give ▸), 🗑. Keys, with a
   piece selected: **R** / **Shift+R** rotate, **F** flips, **Space** rolls,
-  **Delete** removes, **Esc** deselects. On a touch screen, press and hold a
-  piece to read its face.
+  **Delete** removes, **Esc** deselects (a held key acts once). On a touch
+  screen, press and hold a piece to read its face. The bar always matches
+  the moment: when a seat changes hands, a seat-bound piece's bar changes
+  with it.
 - **Owners and locks.** A piece can belong to a player or to a seat (a
   coloured dot; draughts men belong to the Light and Dark seats, so they
   follow whoever sits there). A **locked** piece stays put; boards are
   locked from the start. Dragging something you may not move — locked, or
   someone else's — pans the view instead, so a board never gets in the way;
-  the bar only ever offers what you may do.
+  the bar only ever offers what you may do. A tap on a board while a piece is
+  selected only puts the piece's bar away (tap again to select the board).
+  Badges (×N, ∞, the owner's dot) grow on a table drawn small, so a phone can
+  read them.
 - **Hidden pieces** show only their back, to everyone: nobody's screen, not
   even its traffic, learns what a face-down tile or a bag holds. A box's
   pieces and its `meta` data are public, though — anyone at the table can
@@ -107,7 +119,9 @@ confirm. A game can also name its **seats** (Light and Dark): players take
 them in order, the rest **watch** (👀 top right). Tap a seat label for its
 menu — *Sit here* on a free seat, *Stand up (watch)* on your own; the host
 also seats players and moves them to the watchers. An offline player's seat
-waits for them. With ordinary seating, a watcher taps **Sit down**.
+waits for them. With ordinary seating, a watcher taps **Sit down**. A guest
+that loses the host for a minute (its link to a returning host never forms)
+reloads itself, as one that never found the host does.
 
 **The hand bar hides** on a table with nothing to hold (draughts,
 backgammon) while your hand is empty, so the board gets the whole screen;
@@ -149,7 +163,11 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   ignored, and a gap (a lost message) makes it ask for a fresh snapshot (at
   most one per 3 s, and again every 3 s until it arrives; shown as
   "re-syncing" in the status tooltip). A guest's states go out one at a
-  time, so a small patch never overtakes the big snapshot before it. A
+  time, so a small patch never overtakes the big snapshot before it; the
+  decks, game boxes and rules code take the same line, a newcomer's whole
+  catalog just ahead of its first snapshot (held, unread, until that
+  snapshot shows who hosts), so its first look at the table already draws
+  every face. A
   refused or vetoed action (or one whose target had just vanished) re-sends
   the items it named and the actor's hand, so an optimistic drag snaps
   back. A guest whose connection stops draining doesn't pile up a backlog
@@ -172,8 +190,9 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
 - **Signaling health**: public Nostr relays are best-effort, so the status
   dot shows the truth — green with a player count when peers are connected,
   `● …` while searching, red `● ✕` when zero relays are reachable. A watchdog
-  recovers from dead signaling (or a guest that can't find its host) by
-  auto-reloading with backoff (20s doubling to 2 min, persisted in
+  recovers from dead signaling (or a guest that can't find its host, or
+  has lost it for a minute — a link to a returning host that never forms
+  would otherwise freeze its screen) by auto-reloading with backoff (20s doubling to 2 min, persisted in
   sessionStorage) — a reload is the reset that provably clears wedged relay
   subscriptions, and it's safe here because the host resumes from its save
   and guests re-enter with identity and hand intact. Relay redundancy is

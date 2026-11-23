@@ -6,8 +6,8 @@
 // supplies is escaped (esc) or checked (safeColor); sizes, coordinates and
 // pips are cleanBox's validated numbers, written through num(); images come
 // only as the markup the app's `img(h)` makes from a verified asset (a blob
-// URL, or its loading look). Only contrastFor (a colour name) and tumble
-// touch the DOM, so Node can import it and draw boards (B11).
+// URL, or its loading look). Only luma (a colour name) and tumble touch the
+// DOM, so Node can import it and draw boards (B11).
 import { COLOR_RE, CARD_W, CARD_H, typeAt, backAt, sizeOf, flagsOf, num } from './core.js?v=1';
 import { cellCenter, hexCorners, gridExtent, parseAddr, formatAddr, labelsOf, toAxial } from './grid.js?v=1';
 
@@ -19,12 +19,12 @@ export const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt
 /** A colour that is safe in a style attribute (a string COLOR_RE accepts), else the fallback. */
 export const safeColor = (v, fallback = '#64748b') => (typeof v === 'string' && COLOR_RE.test(v) ? v : fallback);
 let colorCtx = null;
-const contrast = new Map(); // colour → its text colour (a 1,000-piece table asks for a handful of colours a thousand times)
-/** Light or dark text for a CSS background colour: #rgb, #rrggbb and
+const lumas = new Map(); // colour → its luma (a 1,000-piece table asks for a handful of colours a thousand times)
+/** A CSS colour's luma, 0 (black) to 255 (white): #rgb, #rrggbb and
  *  #rrggbbaa are read here; a colour name is normalized by a canvas (in a
- *  page; Node, which draws boards for B11, reads names as light). */
-export function contrastFor(color) {
-  if (contrast.has(color)) return contrast.get(color);
+ *  page; Node, which draws boards for B11, reads names as white). */
+export function luma(color) {
+  if (lumas.has(color)) return lumas.get(color);
   let hex = /^#([0-9a-f]{3,8})$/i.exec(color)?.[1];
   if (!hex && typeof document !== 'undefined') {
     colorCtx ||= document.createElement('canvas').getContext('2d');
@@ -34,10 +34,12 @@ export function contrastFor(color) {
   }
   if (hex && hex.length < 6) hex = [...hex.slice(0, 3)].map((c) => c + c).join('');
   const [r, g, b] = hex ? [0, 2, 4].map((k) => parseInt(hex.slice(k, k + 2), 16)) : [255, 255, 255];
-  const out = 0.299 * r + 0.587 * g + 0.114 * b < 140 ? '#f8fafc' : '#1e293b';
-  contrast.set(color, out);
+  const out = 0.299 * r + 0.587 * g + 0.114 * b;
+  lumas.set(color, out);
   return out;
 }
+/** Light or dark text for a CSS background colour. */
+export const contrastFor = (color) => (luma(color) < 140 ? '#f8fafc' : '#1e293b');
 
 /** The box a "<boxId>/<id>" ref belongs to (or undefined). */
 export const boxIdOf = (ref) => (typeof ref === 'string' && ref.includes('/') ? ref.slice(0, ref.indexOf('/')) : undefined);

@@ -961,12 +961,32 @@ function testNewActions() {
     ok(happened(ro) && items(O).a.n === 3 && items(O).b.n === 5 && !newIds(O, o0).length && ro.log[0] === 'moved 2 from A ×5 onto A ×3',
       `split {onto}: k move to the other stack, no new item; "moved {k} from {label} onto {label}": ${JSON.stringify(ro.log)}`);
     for (const [what, b] of [['of another face', P('tok', { n: 3, f: 1 })], ['of another owner', P('tok', { n: 3, owner: CAROL })], ['of another type', P('coin', { n: 3 })],
-      ['that would pass 999', P('tok', { n: 998 })], ['a supply of the type', S('tok')], ['face down', P('spy', { up: false, n: 2 })]]) {
+      ['that would pass 999', P('tok', { n: 998 })], ['a supply of another type', S('coin')], ['face down', P('spy', { up: false, n: 2 })]]) {
       const A = mk({ a: P('tok', { n: 5 }), b: { ...b, x: 900 } }), before = sig(A);
       const rr = run(A, BOB, { t: 'split', id: 'a', n: 2, onto: 'b' });
       ok(refusedBy(rr) && sig(A) === before, `split {onto} a stack ${what} is refused as a whole: the source keeps its 5, nothing is created — ${why(rr)}`);
     }
     ok(refusedBy(run(O, BOB, { t: 'split', id: 'a', n: 1, onto: 'nope' })) && items(O).a.n === 3, 'split {onto} a missing item changes nothing');
+    // (2B review) onto its supply (join b) or a bag (toBag): the k go back or in, in the same one action — no piece is left lying on the target
+    const R = mk({ a: P('chip', { n: 5 }), s: S('chip', { x: 900 }), g: BAG(['tok'], { x: 1000 }), h: P('spy', { up: false, n: 3, x: 600 }) }), r0 = Object.keys(items(R));
+    const rs = run(R, BOB, { t: 'split', id: 'a', n: 2, onto: 's' });
+    ok(happened(rs) && items(R).a.n === 3 && items(R).s && !newIds(R, r0).length && rs.log[0] === 'returned Chip ×2 to the Chip supply',
+      `split {onto} its supply: the k go back, nothing is created; "returned {k} to {supply}": ${JSON.stringify(rs.log)}`);
+    const rg = run(R, BOB, { t: 'split', id: 'a', n: 1, onto: 'g' });
+    ok(happened(rg) && items(R).a.n === 2 && items(R).g.of.length === 2 && isDeepStrictEqual(items(R).g.of[1], { t: ref('chip'), f: 0 }) && !newIds(R, r0).length && rg.log[0] === 'put Chip into the bag Sack',
+      `split {onto} a bag: the k go in, nothing is created; "put {k} into {bag}": ${JSON.stringify(rg.log)}`);
+    const rhb = run(R, BOB, { t: 'split', id: 'h', n: 1, onto: 'g' });
+    ok(happened(rhb) && items(R).h.n === 2 && isDeepStrictEqual(items(R).g.of.at(-1), { t: ref('spy'), f: 0, up: false }) && rhb.log[0] === 'put a hidden piece into the bag Sack',
+      `a hidden stack splits into a bag face down, logged without its type (as toBag): ${JSON.stringify(rhb.log)}`);
+    for (const [what, its, onto, k] of [
+      ['a full bag (1,000)', { a: P('tok', { n: 3 }), g: BAG(range(999).map(() => 'tok'), { x: 900 }) }, 'g', 2],
+      ['a bag made for hands, of a piece that is not', { a: P('tok', { n: 3 }), g: BAG(['tile'], { hand: true, x: 900 }) }, 'g', 1],
+      ['the supply, from a hidden stack (the hidden-item rule)', { a: P('spy', { up: false, n: 3 }), s: S('spy', { x: 900 }) }, 's', 1],
+      ['someone else\'s supply', { a: P('chip', { n: 3 }), s: S('chip', { x: 900, owner: CAROL }) }, 's', 1],
+      ['someone else\'s bag', { a: P('tok', { n: 3 }), g: BAG([], { x: 900, owner: CAROL }) }, 'g', 1]]) {
+      const A = mk(its), before = sig(A), rr = run(A, BOB, { t: 'split', id: 'a', n: k, onto });
+      ok(refusedBy(rr) && sig(A) === before, `split {onto} ${what} is refused as a whole — ${why(rr)}`);
+    }
   }
 
   section('(2) join: (a) two ×N stacks of one t, f, up and owner, ≤ 999; (b) back to a supply of its t');

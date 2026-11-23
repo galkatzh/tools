@@ -489,6 +489,13 @@ sync and rendering, and the Worker together with `handle`.
        pieces of a shuffled group must agree on what everyone sees of
        them (rotation, lock, count, owner): otherwise the shuffle would
        give them away.
+     - One piece dragged off a ×N stack goes, in the same single action,
+       wherever it is dropped: onto a matching stack, back into its
+       supply, into a bag — never left lying on top of it.
+     - A newcomer gets the boxes and decks before its first look at the
+       table, so it never sees a "?" waiting for them; and a guest that
+       has lost the host for a minute reloads itself, as one that never
+       found the host does, so a link that never forms can't freeze it.
 3. **Space and full-rules scripting, in a Worker.**
    - Grids, spaces, zones, links and snapping, with addresses in the log.
    - Rules in a Worker with a watchdog, and atomic hooks.

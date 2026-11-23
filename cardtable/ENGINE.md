@@ -246,7 +246,9 @@ flood control refused (those re-sends are themselves rate-limited). Exempt from 
 `rulesBtn` (the engine itself refuses a button not offered to the
 player), and the host-only `size` (= `table`), `setRules`, `loadBox` and
 `clear` actions. The piece actions (`roll`, `face`, `split`, `join`, `take`,
-`pull`, `toBag`, `lock`, `owner`, `seat`) are validated like the card ones;
+`pull`, `toBag`, `lock`, `owner`, `seat`) are validated like the card ones
+(`split {id, n, onto}` names its target in `onto`: another ×N stack, the
+stack's supply — the `n` go back — or a bag — they go in —, all at once);
 one the engine itself refuses after `validate` (an item owned by someone
 else, a locked one, a hidden one, a full table) tells the actor why and
 runs no `onAction`. `peek` IS validated:

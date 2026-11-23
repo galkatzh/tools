@@ -110,10 +110,14 @@ top of `core.js` and README "How it works".
   `lastApplyMs`, a received body folded into the view and the whole screen
   redrawn (items, seats, hand, log, buttons); `lastRenderMs`, `renderItems`
   alone, on any page; `lastSnapRenderMs` (B10), the last snapshot that drew
-  items: its fold, its DOM and the style and layout they cost (read at
-  once) — a guest's first snapshot draws the table, and the one that
-  registers it a moment later redraws nothing, so it doesn't count: after
-  a guest's (re)load this is its cold render of the whole table;
+  items: its fold, the catalog held for it (the host sends a new
+  connection its decks, boxes and rules in its lane just before its first
+  snapshot, and the guest reads them once that snapshot shows the sender
+  hosts), its DOM — every piece with its face, never a "?" waiting for its
+  box — and the style and layout they cost (read at once) — a guest's
+  first snapshot draws the table, and the one that registers it a moment
+  later redraws nothing, so it doesn't count: after a guest's (re)load
+  this is its cold render of the whole table;
   `lastTickMs`, the host's broadcast tick (signing and sending start; its
   own screen's redraw is not in it).
 - **The tick in Node.** `T.takeDirty()`, then `T.patchContent(d)` (or
@@ -276,7 +280,11 @@ top of `core.js` and README "How it works".
   reloads again, then Mallory is replaced by a fresh raw peer who keeps
   what she received and her seat (so `M` and `X` are `let`) — and each
   failed try logs what both sides saw (her peers and relay sockets, the
-  host's status line); linked but without a snapshot fails at once. `t-ui.js`'s
+  host's status line); linked but without a snapshot fails at once. (The
+  stuck side was the long-lived raw peer: a real guest in that state
+  recovers by itself — the app's watchdog reloads a guest that has had no
+  host for a minute, `t-p2-review.js` checks it — but Mallory runs no app
+  code, hence the retries.) `t-ui.js`'s
   "seat labels follow a new table size": at a 1600 × 1400 view (no size
   draws small labels there, which are redrawn anyway), every seat label
   stays centred on its seat, `seatR(w)` from the centre, as the host's size
@@ -303,26 +311,36 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
   once, the second time).
 - **The bar** (`#action-bar`, built from the public view): each button has
   `data-cmd` — pieces `flip`, `roll`, `rl`/`rr`, `split` (✂ Take 1), `all`
-  (✥ Move all: `.on` while armed, 5 s), `hand`, `zoom`, `lock` (🔒 Lock /
-  🔓 Unlock), `claim`, `release`, `give` (the host; opens `giveTo` buttons
-  with `data-to` = a pid or `seat:<id>`), `del`; supplies `take`,
-  `takeHand`; bags `pull`, `pullHand`; cards and piles as in Phase 1 (`flip`,
+  (✥ Move all: `.on` while armed, 5 s, a teal button whose bottom line
+  drains), `hand`, `zoom`, `lock` (🔒 Lock / 🔓 Unlock), `claim`,
+  `release`, `give` (the host; `.on` while open; its `giveTo` buttons, in a
+  `display: contents` span, have `data-to` = a pid or `seat:<id>`), `del`;
+  supplies `take`, `takeHand`, `all` (✥ Move: the touch way to move one);
+  bags `pull`, `pullHand`; cards and piles as in Phase 1 (`flip`,
   `zoom`/`peek`, `rl`, `rr`, `hand`, `draw`, `dealup`, `dealdn`, `shuffle`,
   `del`), plus the host's `lock` on a locked one. Only what this player may
   do appears: an item someone else owns offers no move, a locked one
   nothing that moves, turns or removes it, and a die no rotation; a bar with
-  nothing in it stays hidden. Keys (not in an input, nor on a button; a press on the table
-  lets go of a focused button) run the bar's own commands when it shows them: R → `rr`, Shift+R → `rl`, F →
+  nothing in it stays hidden; nor does a full hand (`hand`, `draw`,
+  `takeHand`, `pullHand` need room under MAX_HAND). The bar follows every
+  redraw (`syncBar`): a seat taken or left, a player joining, a hand
+  filling up redraws it. Keys (not in an input, nor on a button; a press on the table
+  lets go of a focused button; auto-repeats ignored) run the bar's own commands when it shows them: R → `rr`, Shift+R → `rl`, F →
   `flip`, Space → `roll`, Delete / Backspace → `del`; Esc deselects.
 - **Gestures.** A drag on a ×N stack splits one off (`split {n: 1}`, at the
-  drop or `onto` a matching stack); Shift, or ✥ armed, moves it all; a plain
-  drag on a supply sends `take {x, y}` (onto the hand bar: `{hand: true}`).
-  Drops of a moved piece: a matching ×N stack → `join`, its supply → `join`
-  (returned), a bag → `toBag`, a same-size pile piece → `stack`, a pile it
-  fits → `toPile`, the hand bar (a hand type) → `toHand`, else `move`.
+  drop, or `onto` a matching stack, its supply or a bag); Shift, or ✥ armed,
+  moves it all; a plain drag on a supply sends `take {x, y}` (onto the hand
+  bar: `{hand: true}`), Shift or ✥ moves it. A piece taken out and dropped
+  back on its own stack or supply sends nothing. Drops of a moved piece: a
+  matching ×N stack → `join`, its supply → `join` (returned), a bag →
+  `toBag`, a same-size pile piece → `stack`, a pile it fits → `toPile`, the
+  hand bar (a hand type) → `toHand`, else `move` — and a full bag, pile or
+  hand (MAX_BAG, MAX_PILE, MAX_HAND, from the public counts) gets a `move`.
   A drag that starts on what the player may not drag (locked — boards are —
   or someone else's) pans the view and sends nothing; a click still selects
-  it. Double-click: a die → `roll {ids}` of its handful (every die this
+  it (a board only when nothing else is selected: then the click just
+  deselects). The click a browser sends after a drag or a pan is no tap: it
+  opens no seat menu. Double-click: a die → `roll {ids}` of its handful (every die this
   player may handle within one die-width, transitively, ≤ 20; the clicked
   die first), a piece → `flip`, a supply → `take` next to it, a bag →
   `pull` (into the hand when it has `hand`), a card → `flip`, a pile →
@@ -343,12 +361,26 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
   for a non-empty hand). Labels let the pointer through; a click on one
   (not on an item under it, a board aside) opens `#seat-menu` (buttons:
   "Stand up (watch)", "Sit here", the host's "Seat ▸ {name}" and "Move to
-  watchers"). `#watchers` ("👀 Carol, Dan": online watchers) and, for a
-  watcher, `#watch-me` ("👀 You are watching — tap a free seat to sit"
-  with named seats; "👀 You are watching" and `#sit-btn` "Sit down" with
-  automatic seating), all in `#watch-box`, top right.
+  watchers"); a label's hit box is at least 32 px tall. `.seat.inky`: a
+  near-black seat colour's label gets a light outline. `#watchers` ("👀
+  Carol, Dan": online watchers) and, for a watcher, `#watch-me` ("👀 You
+  are watching — tap a free seat to sit" with named seats; "👀 You are
+  watching" and `#sit-btn` "Sit down", ≥ 32 px, with automatic seating),
+  all in `#watch-box`, top right
+  — moved just below a seat label that would lie under it there. A
+  watcher's view of a rectangle is squared to its nearest quarter turn. A
+  click on a bar button that redraws the bar (✥, Give ▸) is the bar's, even
+  over a label: the wrap's click handler reads the event's path.
 - **The hand bar.** `body.nohand` (then `#hand-bar` is `display: none`)
-  iff the view has arrived, `!view.handy` and the hand is empty.
+  iff the view has arrived, `!view.handy` and the hand is empty. `#turn-cue`
+  lives in `#table-wrap` (bottom right, just above the hand bar), so it
+  shows either way.
+- **The table frame.** `#table` has no border (the rail is an inset
+  shadow): its padding box, where items are placed, is the whole w × h, so
+  a probe element at `left: x; top: y` in `#table` sits at table point (x, y).
+- **Badges** (`.item > .count`, `.item > .odot`) are scaled up by an
+  adopted stylesheet rule (`scale`, 1 to 3) on a table drawn small, so a
+  ×N pill's text shows at about 8 px or more.
 - **The demos.** `GAMES` entries `draughts` and `backgammon` (`box`: their
   `BOXES` key): `#games-list [data-game="draughts"]` (and the strip's) asks
   "Clear the table and set up Draughts? The current game is discarded." on a
@@ -432,12 +464,38 @@ their menu, by click or tap), `feltPoint`, `mouseDrag`/`touchDrag` (CDP
 touches)/`dragOn`, `itemXY`/`clickItem`, `sentActs`, `rgb`, `shows`,
 `inViewport`, `PHONE` and `BENCH`.
 
+**`t-p2-review.js`**: the regressions of the 2B review, one section per
+issue (a desktop host, a desktop guest, an iPhone 13 watcher; see its
+header): a hand piece lands where the pointer let go and a centred board
+sits mid-felt; a joining guest never draws a "?" and draws each item once;
+a drop or a pan ending on a seat label opens no menu, nor does a click on
+a bar button over a label that the click redraws; a board tap with a piece
+selected only deselects; Give ▸'s buttons are spaced; ✥ looks armed and disarms after 5 s; one
+coin off a stack onto a bag or its supply goes in or back, a take or split
+dropped back on its source sends nothing, an overflowing bag is not
+offered the drop; a held Space rolls once; a seat change redraws (and
+empties) a selected seat-bound piece's bar, and Delete then sends nothing;
+on the phone, the near-black seat's halo, a seat label's 32 px hit box, the
+watchers box clear of the labels, badge sizes, the help dialog inside the
+screen, ✥ Move moving a supply by touch, Sit down's height, a watcher's
+squared view; the turn cue on a table without a hand bar; and the
+watchdog — the host closes its page, its guest reloads itself after about
+a minute (not before), and gets the table back when the host returns.
+
 **Changed for 2B** (mechanism only; no assertion removed or weakened):
 `t-fun-games.js` lists the two box games in the strip and the dialog (9
 entries); `t-p2-cli.js` expects the host's bar on a locked board to offer
 `lock,give`; `core-p2.test.mjs` (R) checks that the public bag carries its
 `box` (D88; `specPub` adds it); `t-p2-hidden.js` case 13 waits for the
 reloaded host's link as above, with a fresh Mallory as the last resort.
+In the 2B fix-up: `t-p2-pieces.js` expects ✥ Move (`all`) in a supply's
+bar, and its "a drag pans" check resets the view (🧭) before the tap that
+selects (on the phone, Bob's 40 px pan now takes the lone die, drawn where
+it really is, wholly off the screen); `core-p2.test.mjs`'s split section
+replaces "split {onto} a supply of the type is refused" by the new rule
+(onto its supply the pieces go back, onto a bag they go in, atomically; a
+supply of another type, a full bag, a hand bag and a hidden stack onto a
+supply are refused whole).
 
 ## Storage and images (Phase 1B)
 

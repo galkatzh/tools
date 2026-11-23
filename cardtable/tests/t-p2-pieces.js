@@ -387,9 +387,10 @@ async function pass(env, mode) {
     await barIs(alice, id, [...want, ...extra, ...HOST], what + tag);
   }
   ok(same(await barOf(bob, I.hdie), await barOf(bob, I.htok)), say('a hidden die and a hidden token of one back get the same bar (flags from the back)'));
-  await barIs(bob, I.S, ['take', 'del'], 'a coin supply');
-  await barIs(alice, I.S, ['take', 'lock', 'del'], 'a coin supply');
-  await barIs(bob, I.SP, ['take', 'takeHand', 'del'], 'a supply of hand tiles');
+  // (✥ Move on a supply: the 2B review's addition to §2g's list — touch has no Shift+drag to move one)
+  await barIs(bob, I.S, ['take', 'all', 'del'], 'a coin supply (+✥ Move)');
+  await barIs(alice, I.S, ['take', 'all', 'lock', 'del'], 'a coin supply (+✥ Move)');
+  await barIs(bob, I.SP, ['take', 'takeHand', 'all', 'del'], 'a supply of hand tiles (+✥ Move)');
   await barIs(bob, I.pouch, ['pull', 'del'], 'a bag of coins (no hand)');
   await barIs(alice, I.pouch, ['pull', 'lock', 'del'], 'a bag of coins (no hand)');
   await barIs(bob, I.tbag, ['pull', 'pullHand', 'del'], 'a bag of tiles (hand)');
@@ -852,11 +853,11 @@ async function pass(env, mode) {
     ok(!got.some((x) => !x.includes('notice')), say(`…and nothing is sent: no act bytes from Bob, none at the host, no log line by either (${JSON.stringify(got)})`));
     ok(!got.some((x) => x.includes('notice')), say('…and no notice appears on either screen'));
     ok(v1.items[id].x === v0.items[id].x && v1.items[id].y === v0.items[id].y, say('…it did not move'));
+    await btn(p, '#view-btn'); // 🧭: back to the seat view (on the phone, the pan can take an item by the edge off the screen)
     await tap(p, await spot(p, id));
     ok(await isSel(p, id), say(`a tap still selects ${what}`));
     const b = await bar(p);
     ok(!b.length === (await p.evaluate(() => document.getElementById('action-bar').classList.contains('hidden'))), say(`its bar is shown with what ${NAME.get(p)} may do (${b.join(' ') || 'nothing, so hidden'})`));
-    await btn(p, '#view-btn'); // 🧭: back to the seat view
     await deselect(p);
   }
   await pans(bob, I.board, 'the locked board');

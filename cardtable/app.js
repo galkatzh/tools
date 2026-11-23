@@ -21,7 +21,7 @@ import { joinRoom, selfId, getRelaySockets } from 'https://cdn.jsdelivr.net/npm/
 import {
   CARD_W, CARD_H, RANKS, RULES, playR, clampToTable, seatAt, seatAngles, sizeOf, flagsOf, typeAt, PID_RE, ASSET_RE, rand, clamp, own, num, peerText,
   cleanDeck, cleanDeckV1, cleanBox, isBuiltin, deckOverBudget, assetRefs, cleanName, standardDeck, cardName, pieceName, faceLabel, createTable,
-  MODULE_V as CORE_V, PROTO, PUBLIC_ACTIONS, HOST_ACTIONS, MAX_ROLL, MAX_N, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch, roundTable, FELT,
+  MODULE_V as CORE_V, PROTO, PUBLIC_ACTIONS, HOST_ACTIONS, MAX_ROLL, MAX_N, MAX_BAG, MAX_HAND, MAX_PILE, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch, roundTable, FELT,
 } from './core.js?v=1';
 import { MODULE_V as GRID_V } from './grid.js?v=1';
 import * as pieces from './pieces.js?v=1';
@@ -201,6 +201,7 @@ let T = null;
 let view = viewFromSnap({ seq: 0, boot: 0 });
 let peerPid = {};    // host only: Trystero peerId -> stable player id
 let hostPeer = null; // guest only: peerId currently acting as host
+const early = new Map(), EARLY_MAX = 16; // guest: peer → its catalog messages held until it shows it hosts (see fromHost)
 /** Counters and the last durations, for the tests and benchmarks (window.__ct). */
 const perf = { snaps: 0, patches: 0, gaps: 0, snapRequests: 0, lastApplyMs: 0, lastRenderMs: 0, lastSnapRenderMs: 0, drawn: 0, lastTickMs: 0, lastSaveSyncMs: 0 };
 
@@ -479,6 +480,7 @@ function broadcast() {
     const p = peerPid[peer], to = p && own(host.players, p) ? p : null, st = sync.get(peer);
     if (!st || st.to !== to || (st.needSnap && now - st.snapAt >= SNAP_MIN_MS)) {
       clearTimeout(st?.timer);
+      if (!st) sendCatalog(peer); // a newcomer: the catalog first, in its lane, so its first snapshot draws every face
       sendState(spliceBody({ to, tp: peer, ...(to && hand(to)) }, snapText()), peer);
       sync.set(peer, { seq, to, snapAt: now, needSnap: false, timer: 0, asks: 0 });
     } else if (!empty || (to && d.hands.has(to))) {
@@ -490,6 +492,15 @@ function broadcast() {
   // this screen, last: the peers' bodies are on their way first
   if (view.boot !== hostBoot) receive(JSON.parse(spliceBody({ to: pid, ...hand(pid) }, snapText())));
   else if (!empty || d.hands.has(pid)) receive(JSON.parse(spliceBody({ to: pid, base: view.seq, ...(d.hands.has(pid) && hand(pid)) }, patch)));
+}
+
+/** Host: sends peer the whole public catalog — the decks, the game boxes
+ *  (publicBox) and the rules code — through its lane, ahead of its first
+ *  snapshot. Everything sent later to everyone is a delta. */
+function sendCatalog(peer) {
+  sendDecks(decks, peer);
+  sendBoxes(Object.fromEntries(Object.keys(boxes).map((id) => [id, publicBox(id)])), peer);
+  if (T.state.rules) sendRules({ code: T.state.rules.code, name: T.state.rules.name }, peer);
 }
 
 /** Host: peer asked for a snapshot (a `snap` action, or an anonymous knock).
@@ -543,33 +554,39 @@ function demote() {
   $('size-sel').classList.add('hidden');
 }
 
-const LANE_MAX = 64; // state bodies a peer's lane may hold waiting (see connect())
-const lanes = new Map(); // host: peer → its lane {q: bodies waiting, busy: one in flight, over: dropping until it drains, idle: waiters}
-/** Host: queues a sealed state body for peer, in its lane (see connect()). */
-function laneSend(m, peer) {
-  const L = lanes.get(peer) || lanes.set(peer, { q: [], busy: false, over: false, idle: [] }).get(peer);
-  if (L.over) return;
-  if (L.q.length >= LANE_MAX) {
-    console.warn(`the state lane to ${peer} backed up (${LANE_MAX} bodies waiting): dropped them, and a fresh snapshot follows once it drains`);
+const LANE_MAX = 64; // bodies a peer's lane may hold waiting (see connect())
+const lanes = new Map(); // host: peer → its lane {q: [body, send] waiting, busy: one in flight, over: dropping until it drains, lost: it dropped a catalog body, idle: waiters}
+/** Host: queues sealed body m for peer, in its lane (see connect()), to go
+ *  out through `send` — a state's, or a catalog channel's (decks, boxes, rules). */
+function laneSend(m, peer, send = stateSend) {
+  const L = lanes.get(peer) || lanes.set(peer, { q: [], busy: false, over: false, lost: false, idle: [] }).get(peer);
+  if (!L.over && L.q.length >= LANE_MAX) {
+    console.warn(`the lane to ${peer} backed up (${LANE_MAX} bodies waiting): dropped them, and a fresh snapshot follows once it drains`);
+    L.lost = L.q.some(([, s]) => s !== stateSend);
     L.q.length = 0;
     L.over = true;
-    return;
   }
-  L.q.push(m);
+  if (L.over) { L.lost ||= send !== stateSend; return; }
+  L.q.push([m, send]);
   if (!L.busy) drainLane(peer, L);
 }
 /** Sends lane L's bodies one by one; once it is empty, wakes laneIdle()'s
- *  waiters, and a lane that overflowed asks for its peer's snapshot. */
+ *  waiters, and a lane that overflowed asks for its peer's snapshot — or,
+ *  when it dropped part of the catalog, starts that peer over: the next tick
+ *  sends it the whole catalog and a snapshot, as to a newcomer. */
 async function drainLane(peer, L) {
   L.busy = true;
   while (L.q.length) {
-    try { await stateSend(L.q.shift(), peer); } catch (err) { console.error('state send failed', err); } // the guest's gap recovery covers the loss
+    const [m, send] = L.q.shift();
+    try { await send(m, peer); } catch (err) { console.error('a send to', peer, 'failed', err); } // a state's loss: the guest's gap recovery covers it
   }
   L.busy = false;
   for (const wake of L.idle.splice(0)) wake();
   if (L.over && lanes.get(peer) === L) {
     L.over = false;
-    if (role === 'host') wantSnap(peer); // (rate-limited like any request)
+    if (role !== 'host') return;
+    if (L.lost) { clearTimeout(sync.get(peer)?.timer); sync.delete(peer); scheduleBroadcast(); } else wantSnap(peer); // (rate-limited like any request)
+    L.lost = false;
   }
 }
 /** Resolves once peer's lane has sent what it holds (at once when it is empty). */
@@ -652,12 +669,14 @@ function receive(d, peer) {
     if (pendingActs.length) flushPending();
   }
   if (view.table.shape !== TABLE.shape || view.table.w !== TABLE_W || view.table.h !== TABLE_H || view.table.felt !== TABLE.felt) setTable(view.table);
+  for (const read of (peer && early.get(peer)?.splice(0)) || []) read(); // the catalog it sent just before: every face draws at once
   renderAll(prev, players);
-  // B10: a snapshot's whole render — the fold, the DOM, and the style and
-  // layout it costs (read now, which the browser would do before the next
-  // frame anyway). Only a snapshot that drew items counts: a guest's first
-  // snapshot draws the table, the one that registers it a moment later
-  // (the same items) redraws nothing.
+  // B10: a snapshot's whole render — the fold, the catalog held for it, the
+  // DOM (every piece with its face: the catalog came first), and the style
+  // and layout it costs (read now, which the browser would do before the
+  // next frame anyway). Only a snapshot that drew items counts: a guest's
+  // first snapshot draws the table, the one that registers it a moment
+  // later (the same items) redraws nothing.
   if (d.kind === 'snap' && perf.drawn > drawn0) { void tableEl.offsetHeight; perf.lastSnapRenderMs = performance.now() - t0; }
   for (const f of Array.isArray(d.fx) ? d.fx : []) {
     if (Array.isArray(f?.roll)) for (const id of f.roll) { const el = itemEls.get(id); if (el) pieces.tumble(el); } // every screen, the roller's too
@@ -902,31 +921,44 @@ function connect() {
   // snapshot is still being chunked would arrive first, and the guest would
   // drop it as a gap, and every patch after it. Each send starts once the one
   // before it to that peer is done (Trystero resolves when every chunk is on
-  // the ordered channel). A lane that backs up (its peer stopped reading, or
-  // its link stalled) must not grow for as long as that lasts: past LANE_MAX
-  // waiting bodies they are all dropped, the lane takes nothing until it
-  // drains, and then that peer gets one fresh snapshot instead of a backlog.
+  // the ordered channel). The catalog (decks, boxes, rules) takes the same
+  // lane, so a newcomer gets it before its first snapshot (sendCatalog) and
+  // draws the table's faces at once. A lane that backs up (its peer stopped
+  // reading, or its link stalled) must not grow for as long as that lasts:
+  // past LANE_MAX waiting bodies they are all dropped, the lane takes nothing
+  // until it drains, and then that peer gets one fresh snapshot instead of a backlog.
   stateSend = (m, peer) => stateA.send(m, { target: peer });
   sendAsset = (data, peer, meta) => assetA.send(data, { target: peer, metadata: meta });
   // States and notes always go to one peer: its connection id (`tp`) is
   // signed into the body, so a copy relayed to anyone else is dropped.
   const bound = (send) => (data, target) => send({ ...data, tp: target }, target);
+  /** A catalog channel's sender: through the lane of `target`, or of every peer. */
+  const laned = (A) => (m, target) => { for (const peer of target ? [target] : Object.keys(room.getPeers())) laneSend(m, peer, (b, to) => A.send(b, { target: to })); };
   sendAct = (data, target) => actA.send(data, target ? { target } : {});
   sendState = signed('state', laneSend); // the tick splices `tp` in itself
-  sendDecks = signed('decks', (m, target) => decksA.send(m, target ? { target } : {}));
-  sendBoxes = signed('boxes', (m, target) => boxesA.send(m, target ? { target } : {}));
+  sendDecks = signed('decks', laned(decksA));
+  sendBoxes = signed('boxes', laned(boxesA));
   sendNote = bound(signed('note', (m, target) => noteA.send(m, { target })));
-  sendRules = signed('rules', (m, target) => rulesA.send(m, target ? { target } : {}));
+  sendRules = signed('rules', laned(rulesA));
   // A signature proves the host wrote a message, not who delivers it: any
   // peer could relay one (e.g. to pose as the host and harvest seat keys).
   // So states and notes must name THIS connection (`tp`, see bound()), and the
-  // other channels must come from the peer whose state we accepted.
+  // other channels must come from the peer whose state we accepted. The host
+  // sends a newcomer its catalog just BEFORE its first state, so what a peer
+  // we don't know as the host sends there is held (early), and read only
+  // once that peer's state makes it the host (receive): never otherwise.
   let inbox = Promise.resolve();
   const fromHost = (fn, isBound) => (m, { peerId }) => {
     inbox = inbox.then(async () => {
       const d = await unseal(m);
       if (d == null) return;
-      if (isBound ? d.tp !== selfId : peerId !== hostPeer) { console.warn('dropped a host message relayed by', peerId); return; }
+      if (isBound && d.tp !== selfId) { console.warn('dropped a host message relayed by', peerId); return; }
+      if (!isBound && peerId !== hostPeer) {
+        const held = early.get(peerId) || early.set(peerId, []).get(peerId);
+        if (held.length < EARLY_MAX) held.push(() => fn(d, peerId));
+        else console.warn('dropped a host message relayed by', peerId, '(too many held)');
+        return;
+      }
       fn(d, peerId);
     }).catch((err) => console.error('message from the host failed', err));
   };
@@ -1026,13 +1058,7 @@ function connect() {
     const { known, changed } = T.join(p, name, key);
     if (changed) commit(true);
     else if (newConn) scheduleBroadcast(); // a second tab of a seated player: its first snapshot
-    if (newConn) {
-      // Fresh connection: hand over the (possibly large) decks, the game boxes
-      // and the rules code targeted, so regular broadcasts stay light.
-      sendDecks(decks, peer);
-      sendBoxes(Object.fromEntries(Object.keys(boxes).map((id) => [id, publicBox(id)])), peer);
-      if (T.state.rules) sendRules({ code: T.state.rules.code, name: T.state.rules.name }, peer);
-    }
+    // (the catalog went out with this connection's first snapshot: sendCatalog)
     // Every action carries the sender's current name: a rename the host
     // never received (made while it was away, or in another room) syncs on
     // the next connection, through the logged (and rate-limited) rename path.
@@ -1052,6 +1078,8 @@ function connect() {
   };
   room.onPeerLeave = (peer) => {
     updateNet();
+    if (early.get(peer)?.length) console.warn(`dropped ${early.get(peer).length} host messages relayed by`, peer, '(it never showed it hosts)');
+    early.delete(peer);
     if (peer === hostPeer) { // the table is paused: say so (hint + host seat greyed), knock again when a host reappears
       hostPeer = null;
       registered = false;
@@ -1101,25 +1129,33 @@ function updateNet() {
 
 // --- signaling watchdog ----------------------------------------------------
 // Public Nostr relays are best-effort. If signaling dies (no open relay
-// sockets) or a guest can't find the host, recover by RELOADING the page with
+// sockets) or a guest can't reach the host, recover by RELOADING the page with
 // backoff. (Rejoining in place — room.leave() + joinRoom — proved unreliable:
 // tearing down a room over dead sockets can leave trystero half-subscribed
 // and undiscoverable. A reload is the reset that provably works: the host
 // resumes from its save, a guest re-enters with identity and hand intact.)
+// A guest without the host counts, whatever other peers it has: one that
+// never got the table, at once (then the backoff's 20 s); one that had it,
+// once the host has been gone HOST_GONE_MS — a link to a returning host
+// that never forms (WebRTC signalling that stalled on one side) would
+// otherwise freeze its screen for good, the "host left" hint up forever.
 // The backoff lives in sessionStorage precisely so it survives those reloads.
-const bootAt = Date.now();
+const bootAt = Date.now(), HOST_GONE_MS = 60000;
+let hostSeenAt = Date.now(); // guest: when the host was last reachable (or this page loaded)
 setInterval(() => {
   if (!room) return;
   updateNet(); // keep the relay indicator fresh even when nothing happens
-  const n = Object.keys(room.getPeers()).length;
-  const starving = n === 0 && (openRelays() === 0 || (role === 'guest' && view.seq === 0));
+  const n = Object.keys(room.getPeers()).length, now = Date.now();
+  if (role !== 'guest' || hostHere()) hostSeenAt = now;
+  const hostless = role === 'guest' && !hostHere() && (view.seq === 0 || now - hostSeenAt > HOST_GONE_MS);
+  const starving = (n === 0 && openRelays() === 0) || hostless;
   try {
     if (!starving) { sessionStorage.removeItem('ct-rejoin'); return; }
     const st = JSON.parse(sessionStorage.getItem('ct-rejoin') || '{}');
     const backoff = clamp(st.backoff || 20000, 20000, 120000);
-    if (Date.now() - (st.at || bootAt) < backoff) return;
-    sessionStorage.setItem('ct-rejoin', JSON.stringify({ backoff: Math.min(backoff * 2, 120000), at: Date.now() }));
-    console.warn(`reconnecting via reload: ${openRelays() === 0 ? 'no relays reachable' : 'no host found yet'}`);
+    if (now - (st.at || bootAt) < backoff) return;
+    sessionStorage.setItem('ct-rejoin', JSON.stringify({ backoff: Math.min(backoff * 2, 120000), at: now }));
+    console.warn(`reconnecting via reload: ${openRelays() === 0 ? 'no relays reachable' : view.seq ? `the host has been unreachable for ${Math.round((now - hostSeenAt) / 1000)} s` : 'no host found yet'}`);
     toast('Connection is struggling — reconnecting…');
     setTimeout(() => location.reload(), 600); // let the toast paint first
   } catch (err) { console.error('watchdog failed', err); }
@@ -1273,7 +1309,9 @@ const mayTouch = (it) => !it.owner || ownerOf(it) === pid;
 /** Whether this player may lock or unlock `it`: the host; or anyone who may
  *  handle a piece, supply or bag of a box whose pieces anyone may lock (a
  *  bag's box: the one whose setup made it, public by D88). */
-const mayLock = (it) => role === 'host' || (mayTouch(it) && 'gsb'.includes(it.k) && boxes[it.k === 'b' ? it.box : pieces.boxOf(it)]?.lockable === 'anyone');
+const mayLock = (it) => role === 'host' || (mayTouch(it) && 'gsb'.includes(it.k) && own(boxes, it.k === 'b' ? it.box : pieces.boxOf(it))?.lockable === 'anyone');
+/** Whether this player's hand has room for `n` more (core's MAX_HAND). */
+const handRoom = (n = 1) => view.hand.length + n <= MAX_HAND;
 /** Whether piece `it` turns over (flip): a hidden one shows its face; a shown one has a back or several faces, and is no die. */
 function flips(it) {
   if ('b' in it) return !!it.b;
@@ -1469,9 +1507,6 @@ function renderItems(prev, prevPlayers = new Map()) {
       }
     }
   }
-  if (sel && !view.items[sel]) select(null);
-  else if (sel && (!prev || prev.has(sel))) renderBar(); // (its buttons follow what changed: a lock, a count)
-  else if (sel) placeBar();
   perf.lastRenderMs = performance.now() - t0;
 }
 
@@ -1492,6 +1527,12 @@ function kind(el, cls, w, h) {
 // labels let every pointer event through (the cards under them stay
 // draggable); a tap on one opens the seat menu (seatLabelAt, openSeatMenu).
 let seatSig = '', seatEls = []; // what the labels show; [{p (a player) | seat (a free named seat's SeatDef), el, hw, hh}]
+/** Gives seat label `el` its border colour `c` — and a light halo when `c`
+ *  is near black (Dark's), which would vanish on the label's dark ground. */
+function inkBorder(el, c) {
+  el.style.borderColor = c;
+  el.classList.toggle('inky', pieces.luma(c) < 60);
+}
 /** Whose move the rules wait on: public.turn is one player id or a list of them. */
 const turnOf = () => [].concat((view.rules?.enabled && view.rules.public?.turn) || []);
 /** Draws the seat labels when what they say changed, and places them
@@ -1517,7 +1558,7 @@ function renderPlayers(viewMoved) {
       const el = document.createElement('div');
       const waited = turn.includes(p), named = pl.seatId && view.seats?.find((st) => st.id === pl.seatId);
       el.className = `seat${pl.online && p !== hostGone ? '' : ' offline'}${p === pid ? ' me' : ''}${waited ? ' turn' : ''}${winners.includes(p) ? ' winner' : ''}`;
-      el.style.borderColor = safeColor(named?.color || pl.color); // a named seat's colour; the log keeps the player's
+      inkBorder(el, safeColor(named?.color || pl.color)); // a named seat's colour; the log keeps the player's
       // (a hand count only where hands matter: a table with hand items, or a hand that holds some)
       const cards = view.handy || pl.handCount ? ` 🂠${pl.handCount}` : '';
       el.textContent = `${winners.includes(p) ? '🏆 ' : ''}${waited ? '⏳ ' : ''}${named ? `${named.name} — ` : ''}${pl.name || 'Player'}${cards}${badges[p] ? ` ${badges[p]}` : ''}`;
@@ -1527,7 +1568,7 @@ function renderPlayers(viewMoved) {
       if (seatHolder(st.id)) continue;
       const el = document.createElement('div');
       el.className = 'seat ghost';
-      el.style.borderColor = safeColor(st.color, '#94a3b8');
+      inkBorder(el, safeColor(st.color, '#94a3b8'));
       el.textContent = `${st.name} — empty`;
       seatEls.push({ seat: st, el });
     }
@@ -1546,14 +1587,16 @@ function placeSeats() {
   const W = wrapW, H = wrapH;
   let rowBottom = 12, noticeTop = 10; // #rules-btns' and #notices' default spots (CSS)
   const angles = view.seats && seatEls.some((s) => s.seat) && seatAngles(TABLE, view.seats);
+  const corner = []; // the labels the watchers' box (top right, watchW × watchH) could cover: [top, bottom]
   for (const { p, seat, el, hw, hh } of seatEls) {
     // (the seat's point is read here, not kept with the label: a new table
     // size moves it, and layout() places the labels again then)
     const at = p ? seatXY(p) : seatAt(TABLE, angles.get(seat.id), seat), [sx, sy] = tableToScreen(at.x, at.y);
     // Keep the whole label on screen (side seats sit on the rim, which a
     // phone's fit zoom puts right at the screen edge).
-    const y = clamp(sy, hh, H - hh);
-    el.style.transform = `translate(${clamp(sx, hw, W - hw)}px, ${y}px) translate(-50%, -50%)`;
+    const x = clamp(sx, hw, W - hw), y = clamp(sy, hh, H - hh);
+    el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
+    if (x + hw > W - 8 - watchW && y < H / 2) corner.push([y - hh, y + hh]);
     // Your own label in the lower half: lift the rules button row just above
     // it, so the row never hides your name, ⏳, chips or score.
     if (p === pid && y > H / 2) rowBottom = Math.max(rowBottom, H - (y - hh) + 6);
@@ -1563,16 +1606,20 @@ function placeSeats() {
   // (#table-wrap and #notices both start at #main's top: the offsets agree)
   const strip = $('game-strip'); // the "What are we playing?" strip pushes the notices down too
   if (!strip.classList.contains('hidden')) noticeTop = Math.max(noticeTop, strip.offsetTop + strip.offsetHeight + 4);
+  // The watchers' box stays in its corner unless a label is there: then it goes below that label.
+  let watchTop = 8;
+  for (const [t, b] of corner.sort((a, c) => a[0] - c[0])) if (t < watchTop + watchH && b > watchTop) watchTop = b + 4;
   // A short, wide table area (a phone in landscape) leaves wide empty
   // margins beside the round felt: the notices move into the left one and
   // the button row into the right one, so neither covers the cards (CSS .gutters).
   const gutter = (W - TABLE_W * scale) / 2, gutters = H < 500 && gutter >= 180;
-  const spots = `${rowBottom}|${noticeTop}|${gutters}|${gutter | 0}`;
+  const spots = `${rowBottom}|${noticeTop}|${watchTop}|${gutters}|${gutter | 0}`;
   if (spots === seatSpots) return;
   seatSpots = spots;
   // Moved by `translate` from their CSS spots, for the same reason.
   $('rules-btns').style.translate = `0 ${12 - rowBottom}px`;
   $('notices').style.translate = `0 ${noticeTop - 10}px`;
+  $('watch-box').style.translate = `0 ${watchTop - 8}px`;
   const main = $('main');
   main.classList.toggle('gutters', gutters);
   main.style.setProperty('--gutter', `${gutter | 0}px`);
@@ -1581,8 +1628,13 @@ function placeSeats() {
 // --- the seat menu (spec §2g) and the watchers -----------------------------------
 const seatMenuEl = $('seat-menu');
 let seatMenuActs = []; // the open menu's actions, by button
-/** The seat label under client point (x, y), or undefined. */
-const seatLabelAt = (x, y) => seatEls.find(({ el }) => { const r = el.getBoundingClientRect(); return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom; });
+/** The seat label under client point (x, y), or undefined: a label (17 px
+ *  tall on a phone) counts as at least TAP_PX tall, a finger's size. */
+const TAP_PX = 32;
+const seatLabelAt = (x, y) => seatEls.find(({ el }) => {
+  const r = el.getBoundingClientRect(), pad = Math.max(0, (TAP_PX - r.height) / 2);
+  return x >= r.left && x <= r.right && y >= r.top - pad && y <= r.bottom + pad;
+});
 /** What the seat menu offers on label `s`, as [text, action] pairs: your own
  *  named seat → stand up; a free named seat → sit there (the host: or seat
  *  anyone there); another player's label → the host moves them to the
@@ -1618,9 +1670,13 @@ seatMenuEl.addEventListener('click', (e) => {
   closeSeatMenu();
 });
 // A tap on a seat label opens its menu (the labels let the pointer through:
-// the table's own handlers skip such a tap, see pointerup); any other click closes it.
+// the table's own handlers skip such a tap, see pointerup); any other click
+// closes it. The click a browser sends after a drag (to where it ended: a
+// piece dropped on a label, a pan) is no tap; nor is one on a control over
+// the table — read off the event's path, which keeps a bar button that the
+// click just redrew away (Give ▸ over a label must not open its menu).
 wrapEl.addEventListener('click', (e) => {
-  if (e.target.closest('#seat-menu, #action-bar, #rules-btns, #game-strip, #watch-box')) return;
+  if (e.composedPath().some((n) => n.matches?.('#seat-menu, #action-bar, #rules-btns, #game-strip, #watch-box')) || e.timeStamp - dragEndAt < 300) return;
   const s = seatTap(e);
   if (s) openSeatMenu(s);
   else closeSeatMenu();
@@ -1629,7 +1685,7 @@ wrapEl.addEventListener('click', (e) => {
 /** The watchers chip ("👀 Carol, Dan": the online players without a seat),
  *  and for a watcher how to sit down again: tap a free named seat, or with
  *  automatic seating the Sit down button. */
-let watchSig = '';
+let watchSig = '', watchW = 0, watchH = 0; // what the watchers' box shows; its size
 function renderWatchers() {
   const watching = Object.entries(view.players).filter(([, pl]) => pl.seat == null && pl.online), me = view.players[pid];
   const sig = `${watching.map(([, pl]) => pl.name).join()}|${me?.seat == null}|${!!me}|${!!view.seats}`;
@@ -1641,6 +1697,8 @@ function renderWatchers() {
   $('watch-me').classList.toggle('hidden', !iWatch);
   $('watch-me-text').textContent = view.seats ? '👀 You are watching — tap a free seat to sit' : '👀 You are watching';
   $('sit-btn').classList.toggle('hidden', !!view.seats);
+  const box = $('watch-box');
+  [watchW, watchH] = [box.offsetWidth, box.offsetHeight]; // (placeSeats keeps the labels clear of it)
 }
 $('sit-btn').addEventListener('click', () => act({ t: 'seat', sit: true }));
 
@@ -1812,8 +1870,8 @@ function renderAll(prev = new Map(), prevPlayers) {
   applySeatView();
   renderItems(prev, prevPlayers);
   renderGames(); // before the seats: the strip's place moves the notices
+  renderWatchers(); // (its size, too: placeSeats moves it off the labels)
   renderPlayers();
-  renderWatchers();
   // The hand bar hides on a table with nothing to hold and an empty hand
   // (draughts); the patch that brings a hand item back shows it. Either way
   // the table refits (layout's ResizeObserver on #table-wrap).
@@ -1823,6 +1881,7 @@ function renderAll(prev = new Map(), prevPlayers) {
   renderRulesBtns();
   renderFacedown();
   renderCues();
+  syncBar(prev);
   updateNet();
 }
 
@@ -1846,6 +1905,15 @@ function rotv(x, y, a) {
   return [x * c - y * s, x * s + y * c];
 }
 
+// Badges (a stack's ×N, a supply's ∞, an owner's dot) are drawn in table
+// units, so on a table drawn small (a phone's fit) they'd be a few pixels:
+// they grow back toward a readable size, by at most BADGE_MAX×, through one
+// stylesheet rule — only the badges restyle, and only when the scale changes.
+const badgeSheet = new CSSStyleSheet(), BADGE_MAX = 3;
+badgeSheet.replaceSync('.item > .count, .item > .odot {}');
+document.adoptedStyleSheets = [...document.adoptedStyleSheets, badgeSheet];
+let badgeZ = '';
+
 function layout() {
   const w = (wrapW = wrapEl.clientWidth), h = (wrapH = wrapEl.clientHeight);
   // The fit: a round table by its diameter (so it never refits as the view
@@ -1853,6 +1921,8 @@ function layout() {
   const a = (viewAngle * Math.PI) / 180, c = Math.abs(Math.cos(a)), sn = Math.abs(Math.sin(a)), rect = TABLE.shape === 'rect';
   const bw = rect ? TABLE_W * c + TABLE_H * sn : TABLE_W, bh = rect ? TABLE_W * sn + TABLE_H * c : TABLE_H;
   scale = Math.min(w / bw, h / bh) * zoomZ; // fit × user zoom
+  const bz = clamp(0.67 / scale, 1, BADGE_MAX).toFixed(2); // (a 12-unit badge text shows ≥ 8 px while it can)
+  if (bz !== badgeZ) badgeSheet.cssRules[0].style.scale = badgeZ = bz;
   // keep at least the table's center reachable
   panX = clamp(panX, -(bw * scale) / 2, (bw * scale) / 2);
   panY = clamp(panY, -(bh * scale) / 2, (bh * scale) / 2);
@@ -1867,6 +1937,9 @@ function layout() {
 }
 new ResizeObserver(layout).observe(wrapEl);
 
+/** Pointer event (or {clientX, clientY}) `e` → table coords: the item
+ *  frame, #table's padding box, which is its whole w × h (style.css: the
+ *  rail is a shadow, not a border). */
 function toTable(e) {
   const r = wrapEl.getBoundingClientRect();
   const [ux, uy] = rotv(e.clientX - r.left - r.width / 2 - panX, e.clientY - r.top - r.height / 2 - panY, -viewAngle);
@@ -1905,10 +1978,10 @@ const uprightRot = () => ((-viewAngle % 360) + 360) % 360;
  *  multiple of 90° that puts the edge nearest the seat at the bottom. */
 function applySeatView() {
   if (manualView) return;
-  const s = view.players[pid]?.seat;
-  if (s == null) return;
-  let a = s; // the angle that goes to the bottom (90°)
-  if (TABLE.shape === 'rect') {
+  const s = view.players[pid]?.seat, rect = TABLE.shape === 'rect';
+  if (s == null && !rect) return; // a watcher keeps the view it has; on a rectangle, squared to its nearest edge
+  let a = s ?? 90 - Math.round(viewAngle / 90) * 90; // the angle that goes to the bottom (90°)
+  if (rect && s != null) {
     const { x, y } = seatXY(pid), gaps = [[0, TABLE_W - x], [90, TABLE_H - y], [180, x], [270, y]]; // right, bottom, left, top
     a = gaps.reduce((m, g) => (g[1] < m[1] ? g : m))[0];
   }
@@ -1917,41 +1990,58 @@ function applySeatView() {
 }
 
 // --- selection & action bar ----------------------------------------------
-let moveAll = null; // {id, until}: ✥ Move all armed — the next drag of that ×N stack moves all of it (5 s)
+const ARM_MS = 5000; // how long ✥ Move stays armed
+let moveAll = null; // {id, at}: ✥ Move armed at `at` — the next drag of that ×N stack or supply moves all of it (until ARM_MS has passed)
 let giveOpen = false; // the host's Give ▸ list is open in the bar
+let barHTML = ''; // what the bar shows (barFor's markup)
 function select(id) {
   sel = id;
   giveOpen = false;
   for (const [i, el] of itemEls) el.classList.toggle('selected', i === sel);
   renderBar();
 }
-/** Builds the selected item's action bar (hidden when it offers nothing) and places it. */
+/** Builds the selected item's action bar (hidden when it offers nothing) and
+ *  places it. An armed ✥ Move shows how much of its time is left (style.css). */
 function renderBar() {
   const it = sel && view.items[sel];
-  barEl.innerHTML = it ? barFor(sel, it) : '';
-  barEl.classList.toggle('hidden', !barEl.innerHTML);
+  barEl.innerHTML = barHTML = it ? barFor(sel, it) : '';
+  barEl.classList.toggle('hidden', !barHTML);
+  barEl.querySelector('.on[data-cmd="all"]')?.style.setProperty('animation-delay', `${moveAll.at - Date.now()}ms`);
   if (it) placeBar();
+}
+/** Keeps the open bar true to the view after a redraw (`prev`: the items
+ *  it redrew, null: all): redrawn when what it offers changed — its item,
+ *  or who may do what with it (a seat taken or left turns who owns a
+ *  seat-bound piece, a player joins the Give ▸ list) — else moved along
+ *  with its item. A bar that offers what the host would now refuse would
+ *  send it, from a button or a key. */
+function syncBar(prev) {
+  const it = sel && view.items[sel];
+  if (sel && !it) select(null);
+  else if (it && barFor(sel, it) !== barHTML) renderBar();
+  else if (it && (!prev || prev.has(sel))) placeBar();
 }
 /** The buttons of public item `it`'s bar (spec §2g), built from the public
  *  view alone (a hidden piece's flags are its back's: flagsOf), and only
  *  with what this player may do. */
 function barFor(id, it) {
   const b = (cmd, text, cls = '') => `<button data-cmd="${cmd}"${cls ? ` class="${cls}"` : ''}>${text}</button>`;
-  const may = mayTouch(it), free = may && !it.lock, F = flagsOf(it, boxes);
+  const may = mayTouch(it), free = may && !it.lock, F = flagsOf(it, boxes), room = handRoom();
   const lock = mayLock(it) ? b('lock', it.lock ? '🔓 Unlock' : '🔒 Lock') : '', del = free ? b('del', '🗑') : '';
   const unlock = it.lock ? lock : ''; // cards and piles: only the host locks them, rarely (a script does): unlocking is offered, locking isn't
+  const all = (text) => b('all', text, moveAll?.id === id ? 'on' : ''); // ✥: Shift+drag for touch
   if (it.k === 'c') {
     return (free ? b('flip', 'Flip') : '') + (it.up ? b('zoom', '🔍') : may ? b('peek', 'Peek') : '')
-      + (free ? b('rl', '⟲90') + b('rr', '⟳90') + b('hand', 'Hand') : '') + unlock + del;
+      + (free ? b('rl', '⟲90') + b('rr', '⟳90') + (room ? b('hand', 'Hand') : '') : '') + unlock + del;
   }
   if (it.k === 'p') { // a pile of cards, or of pieces (a pile of pieces turns over when they have a back, and is drawn when they go in a hand)
     const top = it.top || {}, cards = 'd' in top;
     const turns = cards || 'b' in top || !!typeAt(boxes, top.t)?.back;
-    return (may && F.hand ? b('draw', 'Draw') : '') + (may ? b('peek', 'Peek') + b('dealup', 'Deal↑') + b('dealdn', 'Deal↓') + b('shuffle', 'Shuffle') : '')
+    return (may && F.hand && room ? b('draw', 'Draw') : '') + (may ? b('peek', 'Peek') + b('dealup', 'Deal↑') + b('dealdn', 'Deal↓') + b('shuffle', 'Shuffle') : '')
       + (free && turns ? b('flip', 'Flip') : '') + (free ? b('rr', cards ? '⟳90' : '⟳') : '') + unlock + del;
   }
-  if (it.k === 'b') return (may && it.n ? b('pull', 'Draw') + (it.hand ? b('pullHand', '✋ Draw to hand') : '') : '') + lock + del;
-  if (it.k === 's') return (may ? b('take', 'Take 1') + (F.hand ? b('takeHand', '✋') : '') : '') + lock + del;
+  if (it.k === 'b') return (may && it.n ? b('pull', 'Draw') + (it.hand && room ? b('pullHand', '✋ Draw to hand') : '') : '') + lock + del;
+  if (it.k === 's') return (may ? b('take', 'Take 1') + (F.hand && room ? b('takeHand', '✋') : '') : '') + (free ? all('✥ Move') : '') + lock + del;
   const die = isDie(it), owner = ownerOf(it), host = role === 'host';
   const players = Object.entries(view.players).filter(([p]) => p !== it.owner);
   const give = giveOpen ? `<span class="give">${players.map(([p, pl]) => `<button data-cmd="giveTo" data-to="${esc(p)}">${esc(pl.name || 'Player')}</button>`).join('')}${
@@ -1959,8 +2049,8 @@ function barFor(id, it) {
   return (free && flips(it) ? b('flip', 'Flip') : '')
     + (die && may ? b('roll', '🎲 Roll') : '')
     + (free && !die ? b('rl', '⟲') + b('rr', '⟳') : '')
-    + (free && it.n >= 2 ? b('split', '✂ Take 1') + b('all', '✥ Move all', moveAll?.id === id ? 'on' : '') : '')
-    + (free && F.hand ? b('hand', '✋ Hand') : '')
+    + (free && it.n >= 2 ? b('split', '✂ Take 1') + all('✥ Move all') : '')
+    + (free && F.hand && room ? b('hand', '✋ Hand') : '')
     + (pieces.zoomable(it, boxes) ? b('zoom', '🔍') : '')
     + lock
     + (!it.owner && !it.lock && !isBoard(it) ? b('claim', '👤 Claim') : it.owner && (owner === pid || host) ? b('release', '👤 Release') : '')
@@ -2057,10 +2147,9 @@ const CMDS = {
   pull: (id, it) => act({ t: 'pull', id, ...dealSpot(it) }),
   pullHand: (id) => act({ t: 'pull', id, hand: true }),
   split: (id, it) => act({ t: 'split', id, n: 1, ...dealSpot(it) }),
-  all: (id) => { // arms (or disarms) a whole-stack drag for 5 s: touch has no Shift key
-    moveAll = moveAll?.id === id ? null : { id, until: Date.now() + 5000 };
-    const armed = moveAll;
-    if (armed) setTimeout(() => { if (moveAll === armed) { moveAll = null; renderBar(); } }, 5000);
+  all: (id) => { // arms (or disarms) a whole-stack or supply drag for ARM_MS: touch has no Shift key
+    const armed = (moveAll = moveAll?.id === id ? null : { id, at: Date.now() });
+    if (armed) setTimeout(() => { if (moveAll === armed) { moveAll = null; renderBar(); } }, ARM_MS);
     renderBar();
   },
   lock: (id, it) => act({ t: 'lock', id, on: !it.lock }),
@@ -2126,7 +2215,8 @@ document.addEventListener('keydown', (e) => {
     else select(null);
     return;
   }
-  if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest?.('input, textarea, select, button')) return;
+  // (a held key fires once: an auto-repeat would roll, flip or delete again and again, for everyone)
+  if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.target.closest?.('input, textarea, select, button')) return;
   const k = e.key.toLowerCase(), cmd = k === 'r' ? (e.shiftKey ? 'rl' : 'rr') : { f: 'flip', ' ': 'roll', delete: 'del', backspace: 'del' }[k];
   const it = sel && view.items[sel];
   if (!cmd || !it || !barEl.querySelector(`[data-cmd="${cmd}"]`)) return;
@@ -2144,25 +2234,27 @@ let feltDrag = null; // dragging empty felt = panning MY view
 let pinch = null;    // two-finger gesture: zoom + rotate + pan in one
 let holdZoom = false; // a long-press zoom is showing: it closes when the finger lifts
 const tPtrs = new Map(); // pointers currently down on the table
+let dragEndAt = -1e9; // when the last drag, pan or pinch ended (event time): the click that follows it is no tap
 
+/** Puts down drag `d`'s element: a copy taken out of a stack or a supply goes; a moved item loses its drag look. */
+const dropEl = (d) => (d.ghost ? d.el.remove() : d.el.classList.remove('dragging'));
 /** Ends an in-flight item drag cleanly (used when a pinch takes over): a
  *  moved item stays where it is; a piece being taken out goes back. */
 function cancelItemDrag() {
   if (!drag) return;
-  if (drag.ghost) drag.el.remove();
-  else drag.el.classList.remove('dragging');
+  dropEl(drag);
   if (drag.moved && drag.mode === 'move' && view.items[drag.id]) act({ t: 'move', id: drag.id, x: drag.x, y: drag.y });
   drag = null;
 }
 
 /** What a drag that starts on public item `it` does (spec §2g): 'take' a
  *  new piece out of a supply, 'split' one piece off a ×N stack, or 'move'
- *  the item — Shift, or ✥ Move all armed, moves a whole stack or a supply.
+ *  the item — Shift, or ✥ Move armed, moves a whole stack or a supply.
  *  null: it pans the view, as empty felt does — the item is locked (a board,
  *  by default) or someone else's, and the host would refuse the action. */
 function dragMode(id, it, e) {
   if (!mayTouch(it)) return null;
-  const all = e.shiftKey || (moveAll?.id === id && Date.now() < moveAll.until);
+  const all = e.shiftKey || moveAll?.id === id;
   if (it.k === 's' && !all) return 'take'; // (a locked supply still hands pieces out)
   if (it.lock) return null;
   return it.k === 'g' && it.n >= 2 && !all ? 'split' : 'move';
@@ -2178,23 +2270,33 @@ function fits(m, b) {
   if (card(m) || card(b)) return card(m) && card(b);
   return fm.stack === 'pile' && fb.stack === 'pile' && fm.w === fb.w && fm.h === fb.h && !fm.placeholder;
 }
+/** Whether piece `it` goes back into public supply `s` (join b): a shown piece of its type. */
+const returns = (it, s) => s.k === 's' && 't' in it && s.t === it.t;
+/** Whether public bag `bag` takes `n` of piece `it` (core's toBag): room for
+ *  them (MAX_BAG), and a bag made for hands takes only pieces that go in one. */
+const bagTakes = (bag, it, n) => bag.k === 'b' && (bag.n || 0) + n <= MAX_BAG && (!bag.hand || flagsOf(it, boxes).hand);
 /** The action a drop of drag `d` (of public item `it`) sends (spec §2g): onto
  *  the hand bar, onto public item `tgt` (id tgtId), or else a move to the drop
- *  spot — and never one the host would refuse. */
+ *  spot — and never one the host would refuse (an owner, a lock, a cap: a
+ *  full bag, pile or hand takes nothing, the piece just lands there). One
+ *  piece taken off a ×N stack goes onto what it lands on in one `split`
+ *  {onto}: a matching stack, its supply, a bag. */
 function dropAction(d, it, tgtId, tgt, onHand) {
-  const { id, x, y, mode } = d, held = onHand && flagsOf(it, boxes).hand, may = !!tgt && mayTouch(tgt);
+  const { id, x, y, mode } = d, held = onHand && flagsOf(it, boxes).hand && handRoom(), may = !!tgt && mayTouch(tgt);
   if (mode === 'take') return held ? { t: 'take', id, hand: true } : { t: 'take', id, x, y };
-  if (mode === 'split') return held ? { t: 'toHand', id } : may && counts(it, tgt, 1) ? { t: 'split', id, n: 1, onto: tgtId } : { t: 'split', id, n: 1, x, y };
+  if (mode === 'split') {
+    if (held) return { t: 'toHand', id };
+    return may && (counts(it, tgt, 1) || returns(it, tgt) || bagTakes(tgt, it, 1)) ? { t: 'split', id, n: 1, onto: tgtId } : { t: 'split', id, n: 1, x, y };
+  }
   if (held && (it.k === 'c' || it.k === 'g')) return { t: 'toHand', id };
   if (may && it.k === 'g') {
-    if (counts(it, tgt, it.n || 1)) return { t: 'join', id, onto: tgtId };
-    if (tgt.k === 's' && 't' in it && tgt.t === it.t) return { t: 'join', id, onto: tgtId }; // back to its supply
-    if (tgt.k === 'b' && (!tgt.hand || flagsOf(it, boxes).hand)) return { t: 'toBag', id, bag: tgtId };
+    if (counts(it, tgt, it.n || 1) || returns(it, tgt)) return { t: 'join', id, onto: tgtId };
+    if (bagTakes(tgt, it, it.n || 1)) return { t: 'toBag', id, bag: tgtId };
   }
-  if (may && (it.k === 'c' || (it.k === 'g' && !(it.n >= 2))) && (tgt.k === 'c' || tgt.k === 'g' || tgt.k === 'p') && fits(it, tgt)) {
+  if (may && (it.k === 'c' || (it.k === 'g' && !(it.n >= 2))) && 'cgp'.includes(tgt.k) && fits(it, tgt) && !(tgt.n >= MAX_PILE)) {
     return tgt.k === 'p' ? { t: 'toPile', id, pile: tgtId } : { t: 'stack', id, onto: tgtId };
   }
-  if (may && it.k === 'p' && tgt.k === 'p' && fits(it, tgt)) return { t: 'merge', id, pile: tgtId };
+  if (may && it.k === 'p' && tgt.k === 'p' && fits(it, tgt) && it.n + tgt.n <= MAX_PILE) return { t: 'merge', id, pile: tgtId };
   return { t: 'move', id, x, y };
 }
 
@@ -2239,19 +2341,17 @@ tableEl.addEventListener('pointerdown', (e) => {
   if (tPtrs.size > 2 || pinch) return;
   const el = e.target.closest('.item'), id = el?.dataset.id, it = id && view.items[id];
   const mode = it && dragMode(id, it, e);
-  // Felt, and items this player may not drag (spec §2g: locked, or someone
-  // else's), pan the view; a tap on such an item still selects it.
-  let g = feltDrag = mode ? null : { sx: e.clientX, sy: e.clientY, px: panX, py: panY, moved: false, tap: it ? id : null };
-  if (mode) {
-    e.preventDefault();
-    const p = toTable(e);
-    // The live position lives on the drag record (x, y), never in view.items:
-    // incoming states replace those objects mid-drag (a guest would drop at a
-    // stale spot), and the host must not touch state outside apply() (a vetoed
-    // drop has to snap back). A take or a split drags a copy of one piece
-    // (made once the drag starts: a tap leaves nothing behind).
-    g = drag = { id, el, mode, ghost: false, dx: p.x - it.x, dy: p.y - it.y, sx: p.x, sy: p.y, x: it.x, y: it.y, ox: it.x, oy: it.y, moved: false, last: 0 };
-  }
+  if (mode) e.preventDefault();
+  const p = mode && toTable(e);
+  // An item drag, or a pan: felt, and items this player may not drag (spec
+  // §2g: locked, or someone else's), pan the view; a tap on such an item
+  // still selects it. An item drag's live position lives on its record (x,
+  // y), never in view.items: incoming states replace those objects mid-drag
+  // (a guest would drop at a stale spot), and the host must not touch state
+  // outside apply() (a vetoed drop has to snap back). A take or a split
+  // drags a copy of one piece (made once the drag starts: a tap leaves nothing behind).
+  const g = mode ? (drag = { id, el, mode, ghost: false, dx: p.x - it.x, dy: p.y - it.y, sx: p.x, sy: p.y, x: it.x, y: it.y, ox: it.x, oy: it.y, moved: false, last: 0 })
+    : (feltDrag = { sx: e.clientX, sy: e.clientY, px: panX, py: panY, moved: false, tap: it ? id : null });
   // Touch long-press (≈450 ms without moving) zooms a face-up card, a pile's
   // top or a piece's face until the finger lifts (UX-I5); a drag, a pinch or
   // an early lift cancels it. Release-to-close also swallows the tap the
@@ -2291,7 +2391,7 @@ window.addEventListener('pointermove', (e) => {
   }
   if (!drag) return;
   const p = toTable(e);
-  if (!view.items[drag.id]) { if (drag.ghost) drag.el.remove(); drag = null; return; }
+  if (!view.items[drag.id]) { dropEl(drag); drag = null; return; }
   if (!drag.moved) {
     if (Math.hypot(p.x - drag.sx, p.y - drag.sy) < 5 / scale) return;
     drag.moved = true;
@@ -2340,6 +2440,7 @@ window.addEventListener('pointercancel', (e) => {
 
 window.addEventListener('pointerup', (e) => {
   tPtrs.delete(e.pointerId);
+  if (pinch || drag?.moved || feltDrag?.moved || handDrag?.moved) dragEndAt = e.timeStamp;
   if (endHoldZoom()) return;
   if (pinch) {
     if (tPtrs.size < 2) pinch = null; // gesture ends; a leftover finger is inert
@@ -2354,8 +2455,10 @@ window.addEventListener('pointerup', (e) => {
   if (feltDrag) {
     const { moved, tap } = feltDrag;
     feltDrag = null;
-    // a plain click on empty felt deselects; on an item that can't be dragged, (de)selects it
-    if (!moved && !seatTap(e)) select(tap && sel !== tap ? tap : null);
+    // A plain click on empty felt deselects; on an item that can't be
+    // dragged, (de)selects it — a board only when nothing else is selected:
+    // a tap beside a selected piece mostly lands on the board, and only puts its bar away.
+    if (!moved && !seatTap(e)) select(tap && sel !== tap && !(sel && isBoard(view.items[tap] || {})) ? tap : null);
     return;
   }
   if (!drag) return;
@@ -2363,17 +2466,16 @@ window.addEventListener('pointerup', (e) => {
   drag = null;
   const it = view.items[d.id];
   if (!it || !d.moved) {
-    if (d.ghost) d.el.remove();
-    else d.el.classList.remove('dragging');
+    dropEl(d);
     if (it && !seatTap(e)) select(sel === d.id ? null : d.id);
     return;
   }
   // The drop target: hit-test BEFORE the dragged element takes the pointer
   // back (.dragging lets it through), so elementFromPoint sees underneath it.
-  const under = document.elementFromPoint(e.clientX, e.clientY);
-  if (d.ghost) d.el.remove();
-  else d.el.classList.remove('dragging');
-  const tgtId = under?.closest('.item')?.dataset.id, a = dropAction(d, it, tgtId !== d.id && tgtId, tgtId && view.items[tgtId], !!under?.closest('#hand-bar'));
+  const under = document.elementFromPoint(e.clientX, e.clientY), tgtId = under?.closest('.item')?.dataset.id;
+  dropEl(d);
+  if (tgtId === d.id) return; // a piece taken out of its stack or supply and put back on it: nothing happened
+  const a = dropAction(d, it, tgtId, tgtId && view.items[tgtId], !!under?.closest('#hand-bar'));
   if (a.t === 'move') {
     // The hold heals itself: with no confirming state (a script moved the
     // card elsewhere, a veto left it mid-drag, coalescing merged the state
@@ -2393,9 +2495,9 @@ function dblAction(id, it) {
   if (!mayTouch(it) || isBoard(it)) return null;
   switch (it.k) {
     case 'c': return it.lock ? null : { t: 'flip', id };
-    case 'p': return flagsOf(it, boxes).hand ? { t: 'draw', id } : null;
+    case 'p': return flagsOf(it, boxes).hand && handRoom() ? { t: 'draw', id } : null;
     case 's': return { t: 'take', id, ...dealSpot(it) };
-    case 'b': return !it.n ? null : it.hand ? { t: 'pull', id, hand: true } : { t: 'pull', id, ...dealSpot(it) };
+    case 'b': return !it.n ? null : it.hand && handRoom() ? { t: 'pull', id, hand: true } : { t: 'pull', id, ...dealSpot(it) };
     default: return isDie(it) ? { t: 'roll', ids: handful(id) } : !it.lock && flips(it) ? { t: 'flip', id } : null;
   }
 }
@@ -2459,7 +2561,7 @@ function dropGhost(e) {
   if (under?.closest('#hand-bar')) return; // dropped back into the hand
   const overItem = under?.closest('.item'), loose = 't' in card ? { k: 'g', t: card.t, f: card.f } : { k: 'c' };
   const tgt = overItem && view.items[overItem.dataset.id]; // (view items carry no id: it is the key)
-  if (tgt?.k === 'p' && mayTouch(tgt) && fits(loose, tgt)) { act({ t: 'handPile', idx, ...handRef(card), pile: overItem.dataset.id }); return; }
+  if (tgt?.k === 'p' && mayTouch(tgt) && fits(loose, tgt) && tgt.n < MAX_PILE) { act({ t: 'handPile', idx, ...handRef(card), pile: overItem.dataset.id }); return; }
   if (!under?.closest('#table')) return;
   const p = toTable(e), { w, h } = sizeOf(loose, boxes);
   // rot: cards land upright from the player's (possibly rotated) point of view
