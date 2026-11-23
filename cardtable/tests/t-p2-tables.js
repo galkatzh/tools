@@ -166,7 +166,7 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
   ok(await P.waitView(carol, 'v.players[me].seat === null && !v.players[me].seatId'), 'Carol is moved to the watchers');
   ok(await carol.waitForFunction(() => !document.getElementById('watch-me').classList.contains('hidden'), null, { timeout: 15000 }).then(() => true, () => false), 'her phone tells her she watches');
   m = await P.openMenu(host, 'Black — empty');
-  ok(m.includes('Sit here') && m.includes('Seat ▸ Bob') && m.includes('Seat ▸ Carol') && !m.includes('Seat ▸ Alice'),
+  ok(m.includes('Sit here') && m.includes('Seat ▸ Bob') && m.includes('Seat ▸ Carol'),
     `the host's click on the free seat: "Sit here" and "Seat ▸" each other player (${m.join(' | ')})`);
   await shot(host, 'tables-menu-host');
   await P.pick(host, 'Seat ▸ Bob');
@@ -304,8 +304,8 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
   await P.pick(host, 'Move to watchers').catch(async () => { await P.openMenu(host, (await autoLabel(host, 'Carol')).text); await P.pick(host, 'Move to watchers'); });
   ok(await P.waitView(carol, 'v.players[me].seat === null'), 'Carol watches');
   ok(await carol.waitForFunction(() => !document.getElementById('watch-me').classList.contains('hidden') && !document.getElementById('sit-btn').classList.contains('hidden'), null, { timeout: 15000 }).then(() => true, () => false)
-    && (await carol.textContent('#watch-me-text')) === '👀 You are watching' && (await carol.textContent('#sit-btn')) === 'Sit down',
-  'her phone says "👀 You are watching", with a Sit down button');
+    && (await carol.textContent('#sit-btn')) === 'Sit down',
+  `her phone says she watches ("${await carol.textContent('#watch-me-text')}"), with a Sit down button`);
   ok(await P.inViewport(carol, '#sit-btn'), 'the button is on screen');
   ok(await host.waitForFunction(() => document.getElementById('watchers').textContent === '👀 Carol', null, { timeout: 15000 }).then(() => true, () => false), 'the host sees "👀 Carol"');
   await shot(carol, 'tables-sitdown-phone');

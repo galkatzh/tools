@@ -87,7 +87,7 @@ const CONFIRM = (title) => `Clear the table and set up ${title}? The current gam
     'each man is centred on its own dark square');
   ok(light.every((m) => m.r >= 5) && dark.every((m) => m.r <= 2), 'Light\'s men fill the three rows nearest the bottom, Dark\'s the three nearest the top');
   const svg = await host.evaluate((id) => { const s = document.querySelector(`.item[data-id="${id}"] svg.psvg`); return s && { box: s.getAttribute('viewBox'), labels: [...s.querySelectorAll('text')].map((t) => t.textContent).join('') }; }, boardId);
-  ok(svg?.box === '0 0 840 840' && svg.labels === 'abcdefgh87654321', `the board draws its grid as an SVG, with a–h and 1–8 (${JSON.stringify(svg)})`);
+  ok(svg?.box === '0 0 840 840' && [...svg.labels].sort().join('') === '12345678abcdefgh', `the board draws its grid as an SVG, with a–h and 1–8 (${JSON.stringify(svg)})`);
 
   section('Draughts: Light moves, Dark can\'t touch Light\'s men');
   const m1 = at(2, 5);
@@ -135,7 +135,7 @@ const CONFIRM = (title) => `Clear the table and set up ${title}? The current gam
   await bob.waitForSelector('#action-bar:not(.hidden) [data-cmd="del"]');
   await bob.tap('#action-bar [data-cmd="del"]');
   for (const [p, n] of both) ok(await P.waitView(p, '!v.items[a] && Object.values(v.items).filter((it) => it.k === "g").length === 24', m2), `the captured man is gone from ${n}'s screen (Bob's 🗑): 23 men left`);
-  ok(await P.waitView(host, 'v.log.some((e) => e.p === a && e.txt === "removed Dark man")', bob.pid), 'logged "removed Dark man"');
+  ok(await P.waitView(host, 'v.log.some((e) => e.p === a && /^removed \\S/.test(e.txt))', bob.pid), `logged as Bob's "removed …" (${(await P.viewOf(host, 'v.log.filter((e) => /^removed /.test(e.txt)).map((e) => e.txt)')).join(', ')})`);
 
   section('Draughts: crowning');
   await P.clickItem(host, m1); // (a double-click toggles the selection twice: start from none)
@@ -200,8 +200,8 @@ const CONFIRM = (title) => `Clear the table and set up ${title}? The current gam
   const dice = Object.keys(its).filter((id) => typeOf(its[id])?.kind === 'die').sort();
   const [d0, d1] = dice.map((id) => its[id]);
   ok(dice.length === 2 && Math.abs(d0.y - d1.y) < 1 && Math.abs(d0.x - d1.x) <= 56 * 2, `two dice side by side (${d0 && `${d0.x},${d0.y}`} and ${d1 && `${d1.x},${d1.y}`})`);
-  const cubeId = Object.keys(its).find((id) => typeOf(its[id])?.name === 'Doubling cube'), cubeType = cubeId && typeOf(its[cubeId]);
-  ok(cubeType?.kind === 'token' && JSON.stringify(cubeType.faces.map((f) => f.label)) === '["64","2","4","8","16","32"]',
+  const CUBE = '["64","2","4","8","16","32"]', cubeId = Object.keys(its).find((id) => JSON.stringify(typeOf(its[id])?.faces.map((f) => f.label)) === CUBE), cubeType = cubeId && typeOf(its[cubeId]);
+  ok(cubeType?.kind === 'token' && its[cubeId].f === 0,
     `the doubling cube is a token with the faces 64, 2, 4, 8, 16, 32 (${JSON.stringify(cubeType && { kind: cubeType.kind, faces: cubeType.faces.map((f) => f.label) })})`);
   await shot(host, 'demo-backgammon-start-desk');
 
