@@ -409,7 +409,7 @@ double-clicks and taps (see its header); the standard backgammon start is
 read off the board's own points (each checker by the triangle under it),
 either home-board side accepted; screenshots `shots/demo-*.png` and
 `shots/tables-*.png` are for review, never asserted. `t-p1-bench.js`
-re-runs B1', B3, B4, B6 and B8 on §2k's bench box (`p2t-lib.js` `BENCH`,
+re-runs B1', B3, B4, B6 and B8 on §2k's bench box (first, then the cards) (`p2t-lib.js` `BENCH`,
 the B4 baseline an empty 6000 × 4000 rectangle), then B10 — three new
 guests joining on a desktop, and three on the iPhone 13 at CPU × 2 (each
 a fresh page: its snapshot render, `lastSnapRenderMs`, and whether that

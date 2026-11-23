@@ -14,7 +14,9 @@
 // Phase 2 (§2k) re-runs B1', B3, B4, B6 and B8 on the bench box (P.BENCH: 1
 // board, 600 tokens, 250 tiles, 50 dice, 60 supplies, 39 bags), loaded with
 // __ct.act({t: 'loadBox', box, setup: true, clear: true}) — its Node budgets
-// B1, B2, B5 and B7 are core-p2-bench.mjs's — and adds:
+// B1, B2, B5 and B7 are core-p2-bench.mjs's — and adds the two below. It runs
+// first, the cards after it: B10's new guests link to the host reliably early
+// in a session, less so late in a long one (see joinRender).
 //   B10  a guest renders a 1,000-piece snapshot (__ct.perf.lastSnapRenderMs): ≤ 400 ms
 //        on a desktop, ≤ 1,500 ms on the iPhone 13 at CPU × 2: a new guest joining (and
 //        drawing the pieces, never "?" placeholders), and a snapshot asked for after a
@@ -189,39 +191,10 @@ function placeholderWatch() {
     ok(again.bytes === 0 && again.needs === 0, `B8: 0 asset bytes re-sent (${again.bytes} B, ${again.needs} image requests)`);
   }
 
-  section('an empty large table (the B4 baseline)');
-  await L.act(host, { t: 'size', size: 2400 });
-  for (const id of Object.keys((await L.view(host)).items)) await L.act(host, { t: 'del', id });
-  ok(await L.until(async () => { const v = await L.view(phone); return v.table.w === 2400 && !Object.keys(v.items).length; }, 15000), // (Phase 2: the size is table.w)
-    'the phone shows an empty table, 2400 units across');
-  const base = await panOn('empty table');
-
-  section('the 1,000-card table');
-  await L.act(host, { t: 'setRules', code: BUILD, enabled: true });
-  const built = await L.until(() => phone.evaluate(() => Object.values(window.__ct.view().items).filter((it) => it.k === 'c').length >= 1000
-    && document.querySelectorAll('.item').length >= 1000), 90000, 500);
-  const counts = await phone.evaluate(() => ({ cards: Object.values(window.__ct.view().items).filter((it) => it.k === 'c').length, dom: document.querySelectorAll('.item').length }));
-  ok(built, `the guests hold 1,000 cards (${counts.cards} cards, ${counts.dom} elements on the phone)`);
-  await h.sleep(2000);
-
-  section("B1' and B3: 50 moves by one guest, as the other guest receives them");
-  const cards = await mover.evaluate(() => { const v = window.__ct.view(); return Object.keys(v.items).filter((id) => v.items[id].k === 'c').sort(); });
-  await movesB1B3(cards, 1150, 1130, 320, 320);
-
-  section('B4: panning the 1,000-card table on the phone');
-  await panB4(base, '1,000 cards');
-
-  section('B6: the host saves the 1,000-card table');
-  await savesB6(cards, 900, 1500);
-
-  section('B8: a guest with a 40-image deck rejoins on a warm cache');
-  const deck = await A.addDeck(host, A.imgDeck('Forty', A.tinyPngs(40, 8)), 1150, 1130);
-  ok(deck.ok && deck.pile, 'the host adds a deck of 40 images');
-  await rejoinB8(deck, 700, 700, true);
-
-  // --- Phase 2 (spec §2k): the same budgets on 1,000 pieces, then B10 and B11 ---
+  // --- Phase 2 (spec §2k) first: new WebRTC links to a host form reliably early in
+  // a session (late in a long one they sometimes don't, see joinRender), and B10's joins need them ---
   section('§2k: an empty 6000 × 4000 table (the B4 baseline for the pieces)');
-  ok((await L.act(host, { t: 'setRules', enabled: false })).ok && (await L.act(host, { t: 'loadBox', box: P.BENCH, setup: false, clear: true })).ok,
+  ok((await L.act(host, { t: 'loadBox', box: P.BENCH, setup: false, clear: true })).ok,
     'the host clears the table and takes the bench box\'s table (loadBox without its setup)');
   ok(await L.until(async () => { const v = await L.view(phone); return v.table.shape === 'rect' && v.table.w === 6000 && v.table.h === 4000 && !Object.keys(v.items).length; }, 15000),
     'the phone shows an empty 6000 × 4000 rectangle');
@@ -325,10 +298,43 @@ function placeholderWatch() {
     ok(runs.every((r) => r.ms > 0 && r.ms <= max && !r.ph && r.dom >= 1000), `B10, ${what}: a 1,000-piece snapshot drawn with its faces in ≤ ${max} ms: ${runs.map((r) => r.ms.toFixed(1)).join(', ')} ms`);
   }
 
-  section('§2k B8: a guest with the 40-image deck rejoins the 1,000-piece table on a warm cache');
-  const deck2 = await A.addDeck(host, A.imgDeck('Forty', A.tinyPngs(40, 8)), 150, 150);
-  ok(deck2.ok && deck2.pile, 'the host adds the same 40 images again, beside the bench');
-  await rejoinB8(deck2, 5000, 100, false, ', and the 1,000 pieces');
+  section('§2k B8: a guest with a 40-image deck rejoins the 1,000-piece table on a warm cache');
+  const deck0 = await A.addDeck(host, A.imgDeck('Forty', A.tinyPngs(40, 8)), 150, 150);
+  ok(deck0.ok && deck0.pile, 'the host adds a deck of 40 images beside the bench');
+  await rejoinB8(deck0, 5000, 100, true, ', and the 1,000 pieces');
+
+  // --- Phase 1 (spec §1k): the 1,000-card table ---
+
+
+  section('an empty large table (the B4 baseline)');
+  await L.act(host, { t: 'clear' });
+  await L.act(host, { t: 'size', size: 2400 });
+  ok(await L.until(async () => { const v = await L.view(phone); return v.table.w === 2400 && !Object.keys(v.items).length; }, 15000), // (Phase 2: the size is table.w)
+    'the phone shows an empty table, 2400 units across');
+  const base = await panOn('empty table');
+
+  section('the 1,000-card table');
+  await L.act(host, { t: 'setRules', code: BUILD, enabled: true });
+  const built = await L.until(() => phone.evaluate(() => Object.values(window.__ct.view().items).filter((it) => it.k === 'c').length >= 1000
+    && document.querySelectorAll('.item').length >= 1000), 90000, 500);
+  const counts = await phone.evaluate(() => ({ cards: Object.values(window.__ct.view().items).filter((it) => it.k === 'c').length, dom: document.querySelectorAll('.item').length }));
+  ok(built, `the guests hold 1,000 cards (${counts.cards} cards, ${counts.dom} elements on the phone)`);
+  await h.sleep(2000);
+
+  section("B1' and B3: 50 moves by one guest, as the other guest receives them");
+  const cards = await mover.evaluate(() => { const v = window.__ct.view(); return Object.keys(v.items).filter((id) => v.items[id].k === 'c').sort(); });
+  await movesB1B3(cards, 1150, 1130, 320, 320);
+
+  section('B4: panning the 1,000-card table on the phone');
+  await panB4(base, '1,000 cards');
+
+  section('B6: the host saves the 1,000-card table');
+  await savesB6(cards, 900, 1500);
+
+  section('B8: a guest with a 40-image deck rejoins on a warm cache');
+  const deck = await A.addDeck(host, A.imgDeck('Forty', A.tinyPngs(40, 8)), 1150, 1130);
+  ok(deck.ok && deck.pile, 'the host adds the deck of 40 images again (Bob pulled them on the piece table)');
+  await rejoinB8(deck, 700, 700, false);
 
   section('§2k B11: boardSVG of a 64 × 64 grid ≤ 30 ms, cached afterwards (in the page)');
   const b11 = await host.evaluate(async (v) => {
