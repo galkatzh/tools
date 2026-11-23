@@ -940,14 +940,19 @@ function connect() {
   /** The page's RTCPeerConnection, for Trystero (D95). Each page keeps a
    *  pool of 20 offers made in advance; Trystero 0.25.3 hands out one older
    *  than 57 s by an ICE restart that first rolls the unanswered offer back.
-   *  In Chromium that rollback drops the data channel's m-line, so the
-   *  restart's offer is empty and the peer that answers it never links: a
-   *  guest joining or reloading into a room whose host has been open for
-   *  over a minute (or a host reloading beside a guest that has), whenever
-   *  the older page's id sorts first and so makes the offer. Here the
-   *  rollback of an offer never answered (no remote description yet) does
-   *  nothing, as in Trystero 0.26: the restart re-offers the same
-   *  connection, whole. (tests/h.js gives the raw test peers the same class.) */
+   *  In Chromium and WebKit (Safari, every iOS browser) that rollback drops
+   *  the data channel's m-line (Firefox keeps it), so the restart's offer is
+   *  empty and the peer that answers it never links: a guest joining or
+   *  reloading into a room whose host has been open for over a minute (or a
+   *  host reloading beside a guest that has), whenever the older page's id
+   *  sorts first and so makes the offer. Here a rollback of an offer never
+   *  answered (no remote description yet) does nothing: the restart
+   *  re-offers the same connection, whole. Trystero 0.26 skips that
+   *  restart's rollback itself; this class skips every such rollback, so a
+   *  remote offer that collides with ours (glare: Trystero rolls back, then
+   *  takes it) is left to setRemoteDescription, which rolls ours back
+   *  implicitly. (tests/h.js hands the raw test peers this very class, cut
+   *  from this file's text.) */
   class WholeOffers extends RTCPeerConnection {
     setLocalDescription(d) {
       return d?.type === 'rollback' && !this.remoteDescription ? Promise.resolve() : super.setLocalDescription(d);
@@ -957,6 +962,8 @@ function connect() {
   // redundancy 10 (default 5): more relays per room = better odds that two
   // peers share a live one when parts of the public infrastructure are down.
   const relays = window.CARDTABLE_RELAYS;
+  joinAt = Date.now();
+  hostSeenAt ||= joinAt;
   room = joinRoom({ appId: 'gk-cardtable', password, rtcPolyfill: WholeOffers, relayConfig: relays ? { urls: relays } : { redundancy: 10 } }, roomId);
   const actA = room.makeAction('act');
   const stateA = room.makeAction('state');
@@ -1130,7 +1137,11 @@ function openRelays() {
   } catch (err) { console.error('relay status unavailable', err); return 0; }
 }
 
-const bootAt = Date.now(), RELAY_GRACE_MS = 10000;
+// The grace periods below count from when this page joined the room
+// (connect), not from when it loaded: a first-time player may spend a while
+// in the name dialog before it.
+let joinAt = 0;
+const RELAY_GRACE_MS = 10000;
 let relaysSeen = false; // a relay has been open on this page
 function updateNet() {
   const n = room ? Object.keys(room.getPeers()).length : 0;
@@ -1144,11 +1155,12 @@ function updateNet() {
     hintEl.classList.toggle('hidden', view.seq > 0 && !!hostPeer);
     // Our own side first: with no peers and no relays, it's OUR connection
     // that is down, never the host — once the relays were up on this page
-    // (lost), or had RELAY_GRACE_MS to come up (never reached). Until then a
-    // page with no table is still connecting, and one the watchdog reloaded
-    // for an absent host shows its kept table, paused.
-    const ours = n === 0 && r === 0 && (relaysSeen || Date.now() - bootAt > RELAY_GRACE_MS);
-    hintEl.textContent = ours ? (relaysSeen ? 'Connection lost — reconnecting…' : "Can't reach the signalling relays — reconnecting…")
+    // (lost), or had RELAY_GRACE_MS since joining to come up (never
+    // reached). Until then (and before it joins) a page with no table is
+    // still connecting, and one the watchdog reloaded for an absent host
+    // shows its kept table, paused.
+    const ours = !!room && n === 0 && r === 0 && (relaysSeen || Date.now() - joinAt > RELAY_GRACE_MS);
+    hintEl.textContent = ours ? (relaysSeen ? 'Connection lost — reconnecting…' : "Can't reach the signaling relays — reconnecting…")
       : view.seq ? 'The host left — the table is paused until they return'
         : relaysSeen ? 'Waiting for the host…\n(the table lives in the host\'s open tab)' : 'Connecting…';
   }
@@ -1175,15 +1187,17 @@ function updateNet() {
 // merely when nothing starves yet: a guest that kept its table would
 // otherwise restart it at 20 s on every page, and reload every minute. It is
 // the room's, and only the page its reload opened trusts it (written up to
-// REJOIN_FRESH_MS before this page booted), as only that page takes the
-// kept table's "host last seen": a later visit to the room in this tab (the
-// tab went elsewhere, or was restored; a reload that landed on the
-// browser's offline page) starts afresh, with its 20 s of grace.
-const HOST_GONE_MS = 60000, REJOIN_FRESH_MS = 15000; // (a reload and the boot after it take a few seconds; a later visit, a minute or more)
+// REJOIN_FRESH_MS before this page's navigation began), as only that page
+// takes the kept table's "host last seen": a later visit to the room in
+// this tab (the tab went elsewhere, or was restored; a reload that landed
+// on the browser's offline page) starts afresh, with its 20 s of grace.
+const HOST_GONE_MS = 60000, REJOIN_FRESH_MS = 5000; // (the record, then the toast's 600 ms and the unload; a later visit, much more)
 const rejoinKey = () => `ct-rejoin-${roomId}`;
-/** Whether a record written at `at` came from the reload that opened this page. */
-const fromMyReload = (at) => Number.isFinite(at) && bootAt - at < REJOIN_FRESH_MS;
-let hostSeenAt = bootAt; // guest: when the host was last reachable (or this page loaded; resumePaused: the last page's)
+/** Whether a record written at `at` came from the reload that opened this
+ *  page: this navigation began just after it (performance.timeOrigin, set
+ *  when the reload starts, however long the page then takes to load). */
+const fromMyReload = (at) => Number.isFinite(at) && performance.timeOrigin - at < REJOIN_FRESH_MS;
+let hostSeenAt = 0; // guest: when the host was last reachable (or this page joined, connect(); resumePaused: the last page's)
 setInterval(() => {
   if (!room) return;
   updateNet(); // keep the relay indicator fresh even when nothing happens
@@ -1198,7 +1212,7 @@ setInterval(() => {
     }
     const kept = JSON.parse(sessionStorage.getItem(rejoinKey()) || '{}'), st = fromMyReload(kept.at) ? kept : {};
     const backoff = clamp(st.backoff || 20000, 20000, 120000);
-    if (now - (st.at || bootAt) < backoff) return;
+    if (now - (st.at || joinAt) < backoff) return;
     sessionStorage.setItem(rejoinKey(), JSON.stringify({ backoff: Math.min(backoff * 2, 120000), at: now }));
     // Each cause says what it is: our relays (checked first: then the host
     // may well be there), a host never found, or one gone a while (and how long).
@@ -1232,7 +1246,7 @@ function resumePaused() {
     if (kept === null) return;
     sessionStorage.removeItem(pausedKey());
     const { view: v, decks: d, boxes: b, seenAt, at } = JSON.parse(kept);
-    if (fromMyReload(at) && Number.isFinite(seenAt) && seenAt <= bootAt) hostSeenAt = seenAt; // the host's absence goes on counting
+    if (fromMyReload(at) && Number.isFinite(seenAt) && seenAt <= Date.now()) hostSeenAt = seenAt; // the host's absence goes on counting
     view = viewFromSnap(v);
     setTable(view.table);
     takeDecks(d);
@@ -1272,6 +1286,7 @@ function resumePaused() {
 const SAVE_DEFER_MS = 250;
 let persistT = 0, lastSave = 0, saving = false, again = false, persistWarned = false;
 let savedSeq = -1; // host: the seq of the last save that committed
+let savingSeq = -1; // host: the seq the save in flight holds, at least (it may take a later state: store.js saveTable); -1 with none
 let cloneFixed = false; // host: since the last good save, the rules' state was cut down to JSON (_unsaveable) once
 let noSave = ''; // host: why this tab never writes its room's save ('' = it does)
 const savedCatalog = new Set(); // host: the deck and box ids this room's catalog holds
@@ -1284,6 +1299,7 @@ async function doSave(leaving) {
   if (role !== 'host' || noSave) return; // a demoted host's pending timer must not clobber the winner's save
   if (saving && !leaving) { again = true; return; }
   saving = true;
+  savingSeq = T.state.seq;
   lastSave = Date.now();
   try {
     const { state, catalog, pruned, syncMs } = await store.saveTable(roomId, snap);
@@ -1304,6 +1320,7 @@ async function doSave(leaving) {
     }
   } finally {
     saving = false;
+    savingSeq = -1;
     if (again) { again = false; doSave(); }
   }
 }
@@ -1322,25 +1339,28 @@ function persist() {
   if (role !== 'host' || noSave || persistT) return;
   persistT = setTimeout(() => { persistT = 0; doSave(); }, Math.max(lastSave ? SAVE_DEFER_MS : 0, 1000 - (Date.now() - lastSave)));
 }
-/** Host, leaving or maybe leaving: the table's last moment is saved now, if
- *  it isn't yet (not SAVE_DEFER_MS later), and marked pending until that
- *  save commits (see above). */
-function flushSave() {
+/** Host, `leaving` (pagehide) or maybe leaving (the tab hidden): the
+ *  table's last moment is marked pending until a save of it commits (see
+ *  above), and saved now if it isn't yet (not SAVE_DEFER_MS later) — unless
+ *  the save in flight holds it already. Only a page that is leaving starts
+ *  its save beside the one in flight (it may not live to see that one end);
+ *  a hidden page lives on, and its save waits its turn (`again`). */
+function flushSave(leaving) {
   if (role !== 'host' || noSave || T.state.seq === savedSeq) return;
   try { localStorage.setItem(pendingKey(), String(T.state.seq)); } catch (err) { console.error('could not mark the save as pending', err); }
   clearTimeout(persistT);
   persistT = 0;
-  doSave(true);
+  if (T.state.seq !== savingSeq) doSave(leaving);
 }
 // Leaving: the save first, then the room is left — which marks the guests
 // offline, a change not worth a save. A tab hidden may never come back
 // either: a phone that switches apps or locks often hides it with no
 // pagehide, then suspends its timers and may discard it.
 window.addEventListener('pagehide', () => {
-  flushSave();
+  flushSave(true);
   try { room?.leave(); } catch (err) { console.error('leaving the room failed', err); }
 });
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(false); });
 /** Host, at boot: a save this tab left pending (flushSave) that never
  *  committed is said, once — unless the boot says worse (a save lost). */
 function checkPending(save) {
@@ -1689,7 +1709,12 @@ let seatSpots = ''; // where placeSeats last put the button row and the notices
  *  pan, zoom and pinch frame, so it moves things by transform only: a
  *  layout per frame would also make the browser hit-test the whole table
  *  for hover, which is slow with 1,000 cards (B4). */
-const HINT_BAND = 60; // half the height of the hint's plate, about (3 lines on a phone)
+// The hint's plate (CSS #table-hint): HINT_FELT of the felt's width on the
+// screen at most, and no wider than the gap between the labels within
+// HINT_BAND of the middle (half the tallest plate: 6 lines, 146 px, on a
+// phone held upright), HINT_GAP clear of them; HINT_MIN_W at least (and
+// always its longest word: min-width: min-content).
+const HINT_FELT = 0.6, HINT_BAND = 75, HINT_GAP = 8, HINT_MIN_W = 140;
 function placeSeats() {
   const W = wrapW, H = wrapH;
   let rowBottom = 12, noticeTop = 10; // #rules-btns' and #notices' default spots (CSS)
@@ -1710,11 +1735,11 @@ function placeSeats() {
     if (p === pid && y > H / 2) rowBottom = Math.max(rowBottom, H - (y - hh) + 6);
     // Labels across the top: the banner and toasts start just below them.
     if (y < H / 4) noticeTop = Math.max(noticeTop, y + hh + 4);
-    if (Math.abs(y - H / 2) < hh + HINT_BAND) side = Math.min(side, Math.abs(x - W / 2) - hw - 8);
+    if (Math.abs(y - H / 2) < hh + HINT_BAND) side = Math.min(side, Math.abs(x - W / 2) - hw - HINT_GAP);
   }
   // The table's hint, centred on the table area, on a plate that wraps in
   // the middle of the felt and between the labels beside it.
-  const hintW = `${Math.round(Math.max(140, Math.min(0.6 * feltW, 2 * side)))}px`;
+  const hintW = `${Math.round(Math.max(HINT_MIN_W, Math.min(HINT_FELT * feltW, 2 * side)))}px`;
   if (hintW !== hintEl.style.getPropertyValue('--hint-w')) hintEl.style.setProperty('--hint-w', hintW);
   // (#table-wrap and #notices both start at #main's top: the offsets agree)
   const strip = $('game-strip'); // the "What are we playing?" strip pushes the notices down too
@@ -1723,9 +1748,10 @@ function placeSeats() {
   let watchTop = 8;
   for (const [t, b] of corner.sort((a, c) => a[0] - c[0])) if (t < watchTop + watchH && b > watchTop) watchTop = b + 4;
   // A short, wide table area (a phone in landscape) leaves wide empty
-  // margins beside the round felt: the notices move into the left one and
-  // the button row into the right one, so neither covers the cards (CSS .gutters).
-  const gutter = (W - TABLE_W * scale) / 2, gutters = H < 500 && gutter >= 180;
+  // margins beside the felt (as wide as this view shows it: feltW, layout):
+  // the notices move into the left one and the button row into the right
+  // one, so neither covers the cards (CSS .gutters).
+  const gutter = (W - feltW) / 2, gutters = H < 500 && gutter >= 180;
   const spots = `${rowBottom}|${noticeTop}|${watchTop}|${gutters}|${gutter | 0}`;
   if (spots === seatSpots) return;
   seatSpots = spots;
@@ -1823,14 +1849,14 @@ function renderWatchers() {
   [watchW, watchH] = [box.offsetWidth, box.offsetHeight]; // (placeSeats keeps the labels clear of it)
 }
 $('sit-btn').addEventListener('click', () => act({ t: 'seat', sit: true }));
-/** Renders the watchers' box again (its texts, its size), and puts the seat labels clear of it. */
-const rewatch = () => { renderWatchers(); placeSeats(); };
-/** Opens (for WATCH_OPEN_MS) or closes a short screen's watchers' box. */
+/** Opens (for WATCH_OPEN_MS) or closes a short screen's watchers' box: its
+ *  texts and size drawn again, and the seat labels put clear of it. */
 function openWatch(open) {
   clearTimeout(watchT);
   watchOpen = open;
   if (open) watchT = setTimeout(() => openWatch(false), WATCH_OPEN_MS);
-  rewatch();
+  renderWatchers();
+  placeSeats();
 }
 shortScreen.addEventListener('change', () => openWatch(false));
 $('watch-box').addEventListener('click', (e) => {
@@ -2060,9 +2086,12 @@ function rotv(x, y, a) {
 //      turn back too (D91).
 // On a 1,000-stack table the badges are a thousand: a restyle of them all
 // takes 20 to 40 ms on the B4 phone. So while two fingers move the view (a
-// pinch, a twist) they keep their size and turn, moving with the table as
-// its pieces do, and settle (upright, readable) once the fingers lift (D96).
-const viewSheet = new CSSStyleSheet(), BADGE_MAX = 3;
+// pinch, a twist) the badges keep their turn, moving with the table as its
+// pieces do, and their growth follows in steps (BZ_STEP: a handful of
+// restyles across a whole pinch, none on a twist alone, yet no badge grows
+// to cover the pieces being zoomed in on); they settle (upright, exact)
+// once the fingers lift (D96).
+const viewSheet = new CSSStyleSheet(), BADGE_MAX = 3, BZ_STEP = 1.25;
 viewSheet.replaceSync('#table .item > .count, #table .item > .odot, #table .item > .lockb, #table .pile > .pname, #table .item.selected, #table .blabels text {} '
   + '#table .psvg text {} #table .item > .count, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb {}');
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, viewSheet];
@@ -2077,9 +2106,9 @@ function layout() {
   scale = Math.min(w / bw, h / bh) * zoomZ; // fit × user zoom
   const bz = clamp(0.67 / scale, 1, BADGE_MAX).toFixed(2); // (a 12-unit badge text shows ≥ 8 px while it can)
   if (viewAngle !== textAngle) viewSheet.cssRules[1].style.setProperty('--view', `${(textAngle = viewAngle)}deg`);
-  if (!pinch && bz !== badgeZ) viewSheet.cssRules[0].style.setProperty('--bz', (badgeZ = bz));
+  if (bz !== badgeZ && (!pinch || Math.max(bz / badgeZ, badgeZ / bz) > BZ_STEP)) viewSheet.cssRules[0].style.setProperty('--bz', (badgeZ = bz));
   if (!pinch && viewAngle !== badgeAngle) viewSheet.cssRules[2].style.setProperty('--view', `${(badgeAngle = viewAngle)}deg`);
-  feltW = bw * scale; // (the hint's plate fits its middle: placeSeats)
+  feltW = bw * scale; // (placeSeats: the hint's plate fits its middle, the notices the margins beside it)
   // keep at least the table's center reachable
   panX = clamp(panX, -(bw * scale) / 2, (bw * scale) / 2);
   panY = clamp(panY, -(bh * scale) / 2, (bh * scale) / 2);
@@ -2503,7 +2532,7 @@ function startPinch() {
   };
 }
 
-/** The two-finger gesture ends: the badges, which kept still meanwhile, settle (layout). */
+/** The two-finger gesture ends: the badges, which kept their turn (and grew in steps) meanwhile, settle (layout). */
 function endPinch() {
   pinch = null;
   layout();

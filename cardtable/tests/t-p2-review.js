@@ -36,7 +36,11 @@
 //              keeps no paused table; a guest whose relay never opens is told
 //              so (hint, notices, console), never that the host is missing,
 //              and an old backoff in his tab (another visit's) leaves him his
-//              20 s of grace
+//              20 s of grace, while his own reload's backoff holds however
+//              long the page it opened takes to load; the watchdog's clocks
+//              start when a page joins the room: a first-time guest and a
+//              first-time host who linger on the name dialog, then wait on a
+//              slow relay, are neither blamed nor reloaded
 // Screenshots go to shots/review-*.png for review (not asserted).
 const net = require('net');
 const h = require('./h');
@@ -112,9 +116,10 @@ function noticeWatch() {
 
 (async () => {
   const env = await h.start();
-  /** Player `name` on its own page (`ctx`: a device), with the RTC hook and the watches, once it shows the table. */
-  async function player(name, url, ctx) {
-    const p = await env.page(name, { ctx });
+  /** Player `name` on its own page (`ctx`: a device; `watchdog`: the page
+   *  may reload itself, h.js), with the RTC hook and the watches, once it shows the table. */
+  async function player(name, url, ctx, watchdog) {
+    const p = await env.page(name, { ctx, watchdog });
     for (const f of [L.rtcHook, noticeWatch, hintWatch, placeholderWatch]) await p.addInitScript(f);
     await p.goto(url);
     await h.joinAs(p, name);
@@ -123,7 +128,7 @@ function noticeWatch() {
     return p;
   }
   const host = await player('Alice', env.url);
-  const bob = await player('Bob', host.url());
+  const bob = await player('Bob', host.url(), undefined, true); // (the watchdog section closes the host)
   const act = (a) => L.act(host, a);
   const notes = (p) => p.evaluate(() => window.__notes || []);
   /** The client point of table point (x, y) on page p (a probe in #table: the view's turn, zoom and pan apply). */
@@ -169,7 +174,7 @@ function noticeWatch() {
   ok(!!at && Math.abs(at.x - probe.x) < 1 && Math.abs(at.y - probe.y) < 1, `and it is drawn there: a probe at (600, 470) in #table sits at its centre (${probe.x.toFixed(1)},${probe.y.toFixed(1)} vs ${at && `${at.x.toFixed(1)},${at.y.toFixed(1)}`})`);
 
   section('catalog: a guest joining draws every piece with its face, once — the boxes come before the first snapshot');
-  const total = Object.keys(await items()).length, carol = await player('Carol', host.url(), P.PHONE);
+  const total = Object.keys(await items()).length, carol = await player('Carol', host.url(), P.PHONE, true);
   ok(await carol.waitForFunction((n) => document.querySelectorAll('.item').length >= n && window.__ct.perf.lastSnapRenderMs > 0, total, { timeout: 45000 }).then(() => true, () => false), `Carol's phone draws the table (${total} items)`);
   await h.sleep(1500); // (her registration snapshot follows: it redraws nothing)
   const cj = await carol.evaluate(() => ({ ph: window.__ph, drawn: window.__ct.perf.drawn, dom: document.querySelectorAll('.item').length, ms: window.__ct.perf.lastSnapRenderMs }));
@@ -500,9 +505,11 @@ function noticeWatch() {
   // every connection): this section's minutes are his, checked at its end.
   // His tab holds an old backoff of the watchdog's for this room, from a
   // visit a minute ago: it is not his page's, so he gets his 20 s of grace.
+  // From his second page on, Trystero takes 16 s to arrive (a phone on a
+  // struggling network): his reload's backoff is still his page's.
   const deadRelay = net.createServer((c) => c.destroy()), room = hostUrl.match(/#room~([0-9a-f]+)/)[1];
   await new Promise((r) => deadRelay.listen(0, '127.0.0.1', r));
-  const dan = await env.page('Dan', { relay: `ws://127.0.0.1:${deadRelay.address().port}` }), danSaid = [];
+  const dan = await env.page('Dan', { relay: `ws://127.0.0.1:${deadRelay.address().port}`, watchdog: true }), danSaid = [];
   await dan.addInitScript(sayLog);
   await dan.addInitScript((r) => {
     try {
@@ -512,6 +519,8 @@ function noticeWatch() {
       }
     } catch (err) { console.error('could not plant the old backoff', err); }
   }, room);
+  let danLoads = 0;
+  await dan.route(/\/trystero@0\.25\.3\/nostr\/\+esm$/, (route) => (danLoads++ ? h.sleep(16000) : Promise.resolve()).then(() => route.fallback()));
   dan.on('console', (m) => { if (/^(HINT|TOAST) |^reconnecting via reload/.test(m.text())) danSaid.push({ at: Date.now(), t: m.text() }); });
   const danT0 = Date.now();
   await dan.goto(hostUrl);
@@ -581,13 +590,46 @@ function noticeWatch() {
   const danWhy = danSaid.filter((x) => x.t.startsWith('reconnecting')), danHints = danSays('HINT'), danToasts = danSays('TOAST');
   ok(danWhy.length >= 2 && danWhy.every((x) => x.t === 'reconnecting via reload: no relays reachable'), `Dan's page reloads itself, each time for its relays (${JSON.stringify(danWhy.map((x) => x.t))})`);
   ok(danWhy[0]?.at - danT0 >= 19000, `the first time ${((danWhy[0]?.at - danT0) / 1000).toFixed(1)} s after it opened: the old backoff his tab held for this room was not his page's (it would have reloaded at its first tick)`);
+  let danKept = null;
+  await L.until(async () => (danKept = await dan.evaluate((r) => JSON.parse(sessionStorage.getItem(`ct-rejoin-${r}`)), room).catch(() => null)), 20000, 500);
+  ok(danLoads >= 3 && danKept?.backoff >= 80000, `his pages after the first each took 16 s to load, yet each kept the backoff its reload left: it doubles (now ${JSON.stringify(danKept)}; reloads ${danWhy.map((x) => `${((x.at - danT0) / 1000).toFixed(0)} s`).join(', ')} after he opened)`);
   ok(danToasts.includes('Connection is struggling — reconnecting…') && !danToasts.some((t) => /host/i.test(t)), `its notices say the connection struggles (${JSON.stringify(danToasts)})`);
-  ok(danHints.includes("Can't reach the signalling relays — reconnecting…") && !danHints.some((t) => /host/i.test(t)), `its hint says the relays can't be reached, and never names the host (${JSON.stringify(danHints)})`);
+  ok(danHints.includes("Can't reach the signaling relays — reconnecting…") && !danHints.some((t) => /host/i.test(t)), `its hint says the relays can't be reached, and never names the host (${JSON.stringify(danHints)})`);
   await dan.context().close();
   deadRelay.close();
 
+  // Meanwhile (checked below), two first-time players linger on the name
+  // dialog — Ivy 12 s at Alice's invite, Jay 25 s at a room of his own —
+  // then join through a relay that takes 6 s to answer.
+  const relayPort = +env.relayUrl.split(':').pop();
+  const slow = net.createServer((c) => {
+    c.on('error', (err) => console.error('slow relay (client side)', err.message));
+    setTimeout(() => {
+      const u = net.connect(relayPort, '127.0.0.1'), end = () => { c.destroy(); u.destroy(); };
+      for (const x of [c, u]) { x.on('error', end); x.on('close', end); }
+      c.pipe(u);
+      u.pipe(c);
+    }, 6000);
+  });
+  await new Promise((r) => slow.listen(0, '127.0.0.1', r));
+  /** A first-time player on the slow relay who spends `ms` on the name
+   *  dialog, then joins `url` as `name`: {p, joined, said (the hints,
+   *  toasts and watchdog reloads its pages logged, with when)}. */
+  async function lingers(name, url, ms) {
+    const p = await env.page(name, { relay: `ws://127.0.0.1:${slow.address().port}` }), said = [];
+    await p.addInitScript(sayLog);
+    p.on('console', (m) => { if (/^(HINT|TOAST) |^reconnecting via reload/.test(m.text())) said.push({ at: Date.now(), t: m.text() }); });
+    await p.goto(url);
+    await p.waitForSelector('#name-dialog[open]');
+    await h.sleep(ms);
+    const joined = Date.now();
+    await h.joinAs(p, name);
+    return { p, joined, said };
+  }
+  const lingering = Promise.all([lingers('Ivy', hostUrl, 12000), lingers('Jay', env.url, 25000)]);
+
   section('watchdog: a host alone whose relays drop reloads itself — and keeps no paused table (that is a guest\'s)');
-  const relayPort = +env.relayUrl.split(':').pop(), socks = new Set();
+  const socks = new Set();
   const proxy = net.createServer((c) => { // (a relay of the host's own, through which the test cuts it)
     const u = net.connect(relayPort, '127.0.0.1'), end = () => { c.destroy(); u.destroy(); };
     for (const x of [c, u]) { socks.add(x); x.on('error', end); x.on('close', end); }
@@ -595,7 +637,7 @@ function noticeWatch() {
     u.pipe(c);
   });
   await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
-  const hana = await env.page('Hana', { relay: `ws://127.0.0.1:${proxy.address().port}` });
+  const hana = await env.page('Hana', { relay: `ws://127.0.0.1:${proxy.address().port}`, watchdog: true });
   await hana.goto(env.url);
   await h.joinAs(hana, 'Hana');
   await hana.waitForFunction(() => window.__ct?.view().seq > 0 && document.querySelectorAll('.item').length > 0, null, { timeout: 30000 });
@@ -606,6 +648,19 @@ function noticeWatch() {
   await hana.waitForFunction(() => window.__ct?.view().seq > 0, null, { timeout: 30000 });
   const kept = await hana.evaluate(() => Object.keys(sessionStorage).filter((k) => k.startsWith('ct-paused-')));
   ok(!kept.length, `the host's own reload kept no paused table in sessionStorage (${JSON.stringify(kept)})`);
+
+  section('watchdog: its clocks start when a page joins the room — a first-time player who lingers on the name dialog, then waits on a slow relay, is neither blamed nor reloaded');
+  const [ivy, jay] = await lingering;
+  ok(await ivy.p.waitForFunction(() => window.__ct?.view().seq > 0 && document.getElementById('table-hint').classList.contains('hidden'), null, { timeout: 30000 }).then(() => true, () => false),
+    'Ivy, 12 s on the name dialog, then 6 s waiting for her relay, gets the table');
+  ok(await jay.p.waitForFunction(() => window.__ct?.view().seq > 0 && document.querySelectorAll('.item').length > 0, null, { timeout: 30000 }).then(() => true, () => false),
+    'Jay, 25 s on the name dialog, hosts his new table');
+  await h.sleep(Math.max(0, jay.joined + 22000 - Date.now())); // (the watchdog's 20 s from his joining, and a tick)
+  const saidSince = ({ said, joined }) => said.map((x) => `${((x.at - joined) / 1000).toFixed(1)} s: ${x.t}`);
+  ok(!ivy.said.some((x) => /relays|Connection|reconnecting/.test(x.t)), `from Ivy's joining on, nothing blamed her connection, nor reloaded her page (${JSON.stringify(saidSince(ivy))})`);
+  ok(!jay.said.some((x) => /struggling|reconnecting/.test(x.t)), `in the 22 s after Jay's joining, nothing blamed his connection, nor reloaded his page (${JSON.stringify(saidSince(jay))})`);
+  for (const x of [ivy, jay]) await x.p.context().close();
+  slow.close();
 
   await env.done();
 })().catch(h.crash);

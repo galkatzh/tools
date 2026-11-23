@@ -22,7 +22,8 @@
 //   (5) pending  a ct-pending-<room> marker ahead of the save warns at boot (not one
 //                the save caught up with); a reload right after a move keeps the move
 //                or says it was lost; a tab hidden right after a move (a phone
-//                switching apps) saves it at once, marked pending until it commits
+//                switching apps) saves it at once, marked pending until it commits;
+//                one hidden while a save is in flight lives on: one write at a time
 //   (6) newer    a save of state v STATE_V + 1: the pinned toast, the tab hosts, and
 //                the record (and its catalog) are byte for byte the same after play
 //   (7) skew     a core.js, store.js or templates.js of another MODULE_V: the banner,
@@ -104,6 +105,25 @@ async function newPage(env, name, ...inits) {
   const p = await env.page(name);
   for (const f of [toastLog, ...inits]) await p.addInitScript(...[].concat(f));
   return p;
+}
+/** Init script: IndexedDB's readwrite transactions on `saves`, counted
+ *  (window.__saves: {n, open, max: the most open at once}); `arm`, a
+ *  function the test sets, runs a microtask after the next one opens, while
+ *  it is still open. */
+function saveWatch() {
+  const w = (window.__saves = { n: 0, open: 0, max: 0, arm: null });
+  const tx = IDBDatabase.prototype.transaction;
+  IDBDatabase.prototype.transaction = function (names, mode, ...rest) {
+    const t = tx.call(this, names, mode, ...rest);
+    if (mode === 'readwrite' && [].concat(names).includes('saves')) {
+      w.n++;
+      w.max = Math.max(w.max, ++w.open);
+      let open = true;
+      for (const e of ['complete', 'abort']) t.addEventListener(e, () => { if (open) { open = false; w.open--; } });
+      if (w.arm) { queueMicrotask(w.arm); w.arm = null; }
+    }
+    return t;
+  };
 }
 /** Opens the app at `url` on page p as player `name`, seated and showing the table. */
 async function open(p, url, name) {
@@ -424,7 +444,7 @@ const okWait = async (promise, msg) => ok(await promise.then((x) => x !== false,
 
   // ---------------------------------------------------------------------------------
   section('(5) the pending-save marker');
-  const hal = await open(await newPage(env, 'Hal'), env.url, 'Hal');
+  const hal = await open(await newPage(env, 'Hal', saveWatch), env.url, 'Hal');
   const halRoom = await roomOf(hal), halInvite = hal.url(), halStd = await pileNamed(hal, 'Standard');
   const PENDING = /^The last moment of play before the reload wasn't saved \(the browser closed first\)$/;
   const marker = () => hal.evaluate((r) => localStorage.getItem(`ct-pending-${r}`), halRoom);
@@ -472,6 +492,33 @@ const okWait = async (promise, msg) => ok(await promise.then((x) => x !== false,
   ok(hid.mark !== null && L.same(hid.at, [540, 620]),
     `the host's tab is hidden right after a move: the move is marked pending (${hid.mark}) and in the save 200 ms later (${JSON.stringify(hid.at || hid.err)})`);
   ok(await L.until(async () => (await marker()) === null, 5000), 'and the marker goes once that save commits');
+  // A tab hidden while a save is in flight lives on (a host who switched
+  // tabs): one write at a time still. The save in flight holds the moment:
+  // no other starts (closing a tab hides it, then fires pagehide); a move
+  // after it: its save waits its turn.
+  await L.act(hal, { t: 'move', id: halStd, x: 500, y: 600 });
+  ok(await settled(hal), '(the save has caught up)');
+  const ov = await hal.evaluate(([r, id]) => new Promise((done) => {
+    const w = window.__saves, hide = () => {
+      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+      delete document.visibilityState;
+    };
+    w.max = w.open;
+    w.arm = () => { hide(); window.__ct.act({ t: 'move', id, x: 500, y: 660 }); hide(); };
+    window.__ct.act({ t: 'move', id, x: 500, y: 640 }); // (its save, once open, arms the rest)
+    setTimeout(() => {
+      const q = indexedDB.open('cardtable');
+      q.onerror = () => done({ max: w.max, err: String(q.error) });
+      q.onsuccess = () => {
+        const g = q.result.transaction('saves').objectStore('saves').get(r);
+        g.onsuccess = () => { const it = g.result?.state?.items?.[id]; q.result.close(); done({ max: w.max, at: it && [it.x, it.y] }); };
+      };
+    }, 2500);
+  }), [halRoom, halStd]);
+  ok(ov.max === 1 && L.same(ov.at, [500, 660]),
+    `the tab hidden while a save is in flight, then a move, hidden again: one save open at a time (at most ${ov.max}), and the last move is saved (${JSON.stringify(ov.at || ov.err)})`);
+  ok(await L.until(async () => (await marker()) === null, 5000), 'and the marker goes once it commits');
 
   // ---------------------------------------------------------------------------------
   section('(6) a save from a newer Card Table');

@@ -140,7 +140,11 @@ async function start(opts = {}) {
   const env = {
     browser, relayUrl, base,
     url: `${base}/cardtable/`,
-    /** New isolated browser context (own localStorage = own player) + page. */
+    /** New isolated browser context (own localStorage = own player) + page.
+     *  The app's watchdog reloading the page ("reconnecting via reload: …")
+     *  is a failure: a link that never formed, which a second page then
+     *  hid. Only a page that a test means to lose its host or its relays
+     *  passes `o.watchdog`. */
     async page(label, o = {}) {
       // Reduced motion by default: animations must never make a check flaky
       // (the app honours prefers-reduced-motion); pass ctx: { reducedMotion: 'no-preference' } to see them.
@@ -152,7 +156,8 @@ async function start(opts = {}) {
       await ctx.addInitScript((r) => { window.CARDTABLE_RELAYS = [r]; window.CARDTABLE_TEST = true; }, o.relay || relayUrl);
       const page = await ctx.newPage();
       page.on('console', (m) => {
-        if (m.type() === 'error' && !opts.quietConsole) console.log(`[${label} console.error]`, m.text().slice(0, 200));
+        if (!o.watchdog && /^reconnecting via reload/.test(m.text())) { failures++; console.error(`[${label} WATCHDOG RELOAD]`, m.text()); }
+        else if (m.type() === 'error' && !opts.quietConsole) console.log(`[${label} console.error]`, m.text().slice(0, 200));
       });
       page.on('pageerror', (e) => { failures++; console.error(`[${label} PAGEERROR]`, e.message); });
       return page;
@@ -167,23 +172,24 @@ async function start(opts = {}) {
 }
 
 // --- common page helpers ----------------------------------------------------
-/** Init script: window.RawRTC, the RTCPeerConnection a raw test peer hands
- *  Trystero (`joinRoom({..., rtcPolyfill: window.RawRTC})`): the app's own
- *  (WholeOffers in app.js connect(), D95). Without it, a raw peer open for
- *  over a minute makes empty offers, and a page that answers one never links. */
+/** Init script (its source): window.RawRTC, the RTCPeerConnection a raw test
+ *  peer hands Trystero (`joinRoom({..., rtcPolyfill: window.RawRTC})`): the
+ *  app's own class, WholeOffers in app.js connect() (D95), cut from app.js's
+ *  text so that the two never differ. Without it, a raw peer open for over
+ *  a minute makes empty offers, and a page that answers one never links. */
 function rawRtc() {
-  window.RawRTC = class extends RTCPeerConnection {
-    setLocalDescription(d) {
-      return d?.type === 'rollback' && !this.remoteDescription ? Promise.resolve() : super.setLocalDescription(d);
-    }
-  };
+  const src = fs.readFileSync(path.join(APP_ROOT, 'cardtable/app.js'), 'utf8');
+  const cls = /^( *)(class WholeOffers extends RTCPeerConnection \{\n[\s\S]*?\n\1\})$/m.exec(src)?.[2];
+  if (!cls) throw new Error('h.js: no `class WholeOffers extends RTCPeerConnection { … }` in app.js — the raw peers need the app\'s class');
+  return `window.RawRTC = ${cls};`;
 }
 /** A raw test peer's page (`label`: no app code): a same-origin page that
  *  doesn't run the app, with window.RawRTC (rawRtc). */
 async function rawPage(env, label) {
   const page = await env.page(label);
-  await page.addInitScript(rawRtc);
+  await page.addInitScript({ content: rawRtc() });
   await page.goto(plain(env));
+  if (!(await page.evaluate(() => typeof window.RawRTC === 'function'))) throw new Error(`${label}: window.RawRTC is missing — the raw peer would make empty offers`);
   return page;
 }
 const joinAs = async (page, name) => {

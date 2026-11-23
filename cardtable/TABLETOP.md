@@ -520,8 +520,9 @@ sync and rendering, and the Worker together with `handle`.
        face the screen too, and a pile's name sits under its pile on every
        screen. While two fingers turn or zoom the view, the badges move with
        the table and settle once the fingers lift: on a table of a thousand
-       stacks, turning them all with every frame would stutter. The pieces'
-       own faces stay as they lie.
+       stacks, turning them all with every frame would stutter. Their size
+       follows a zoom in a few steps meanwhile, so they never swell over
+       the pieces being zoomed in on. The pieces' own faces stay as they lie.
      - A plain round piece (a checker, a man: no picture, label, text or
        pips, and as wide as it is high) looks the same at any angle, so its
        bar offers no turn buttons.
@@ -529,14 +530,21 @@ sync and rendering, and the Worker together with `handle`.
        80 s, then every 2 minutes), not every minute: the wait counts on
        across its reloads, and the notice says how long the host has been
        gone. A page whose own connection is down says so, never that the
-       host is away.
+       host is away. Its patience counts from when the player joins, not
+       from when the page opened: a newcomer who takes a while to type a
+       name is neither told the connection failed nor sent round again.
      - A page open for over a minute still links at once: the WebRTC
        library's ready-made connections, re-offered after a minute, went
-       out empty, so half the guests joining or reloading into a room
-       never linked. The app now hands the library a connection that keeps
-       them whole, until the library itself is updated.
+       out empty in Chrome and Safari (every iPhone browser included), so
+       half the guests joining or reloading into a room never linked. The
+       app now hands the library a connection that keeps them whole, until
+       the library itself is updated.
      - A host whose tab is hidden (a phone switching apps) saves at once,
        as one that closes does: a phone may never wake that tab again.
+       Still one save at a time: a hidden tab lives on.
+     - On a phone turned sideways the notices and the watchers' box keep to
+       the margins beside the table as you see it, a long table seen from
+       its side included.
 3. **Space and full-rules scripting, in a Worker.**
    - Grids, spaces, zones, links and snapping, with addresses in the log.
    - Rules in a Worker with a watchdog, and atomic hooks.

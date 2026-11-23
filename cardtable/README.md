@@ -211,11 +211,13 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   has lost it for a minute — a link to a returning host that never forms
   would otherwise freeze its screen) by auto-reloading with backoff (20s doubling to 2 min, persisted in
   this tab's sessionStorage for the room, read only by the page that reload
-  opens, and kept until the guest is back with its host), with a notice that
+  opens, however long it takes to load, and kept until the guest is back
+  with its host; its 20s, like the hint's grace for the relays, count from
+  when the page joins the room, not from a first visit's name dialog), with a notice that
   names the cause — our own relays first (with no peers and no relay, it
   never blames the host), then no host yet, or how long the host has been
   away; the table's hint says the same ("Connecting…", "Can't reach the
-  signalling relays", "Connection lost", "Waiting for the host…", "The host
+  signaling relays", "Connection lost", "Waiting for the host…", "The host
   left") — a reload is the reset that provably clears wedged relay
   subscriptions, and it's safe here because the host resumes from its save
   and guests re-enter with identity and hand intact. A guest that had the
@@ -226,11 +228,15 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   raised to 10 (default 5) so two peers are more likely to share a live one.
   Trystero 0.25.3 keeps 20 ready-made WebRTC offers per page and re-offers
   one older than a minute by an ICE restart that first rolls it back, which
-  in Chromium empties it (no data channel, no ICE credentials): whoever
-  answered never linked — half the guests joining or reloading into a room
-  open for a minute. `connect()` hands Trystero a peer connection whose
-  rollback of an offer never answered does nothing (`WholeOffers`, as
-  Trystero 0.26 does), so the restart re-offers it whole.
+  in Chromium and WebKit (Safari, every iOS browser) empties it (no data
+  channel, no ICE credentials; Firefox keeps it): whoever answered never
+  linked — half the guests joining or reloading into a room open for a
+  minute. `connect()` hands Trystero a peer connection whose rollback of an
+  offer never answered does nothing (`WholeOffers`), so the restart
+  re-offers it whole. Trystero 0.26 skips that restart's rollback itself;
+  `WholeOffers` skips every rollback of an unanswered offer, so an offer
+  that collides with ours is left to `setRemoteDescription`, which rolls
+  ours back implicitly.
 - **Log**: the host authors log entries while adjudicating actions (it's the
   only peer that can name cards trustworthily), keeps the last 200 actions,
   the last 50 peeks and the last 100 chat lines and renames in state
@@ -270,7 +276,8 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   something that isn't JSON in `t.data` (a function) loses its rules, not
   the save. A tab that closes,
   or is hidden (a phone switching apps may never wake it again), saves at
-  once. A write started as the tab goes away may never land, so the tab
+  once (a hidden tab lives on, so its save still waits for one in flight;
+  only a closing tab starts its own beside it). A write started as the tab goes away may never land, so the tab
   also leaves a
   `ct-pending-<room>` note in localStorage, and if the save behind it never
   committed the next start says "the last moment of play before the reload

@@ -22,7 +22,15 @@
 //      board turned 30° shows its coordinates upright on every screen, each
 //      by its own file or rank (the files just under the grid), its zone's
 //      and space's labels never upside down and inside the board; the
-//      badges (×N, ∞, a deck's count and name, a bag) read upright
+//      badges (×N, ∞, a deck's count and name, a bag) read upright; on the
+//      phone a selected deck's ring grows as a piece's does, and the badges
+//      follow a pinch-zoom in steps, exact once the fingers lift (D96)
+//   hint  every text of the paused hint stays on its plate (an iPhone held
+//      upright too), whose plate covers no seat label beside the middle
+//      (desktop, a phone in landscape)
+//   gutters  a tall rectangle seen from a side seat on a phone in landscape:
+//      the notices, a toast and the opened watchers' box stay in the margins
+//      beside the felt as this view shows it
 // Screenshots go to shots/tables-*.png for review (not asserted).
 const path = require('path');
 const h = require('./h');
@@ -76,6 +84,16 @@ const ROUND4 = {
   },
   setup: [{ piece: 'board', at: 'center' }, { piece: 'peg', at: [400, 400] }],
 };
+/** A rectangle taller than wide, a seat on its left and right edges: seen from West (a quarter turn), its long side runs across the screen, and the margins beside the felt are far narrower than its width would leave. Its tiles go in a hand: the hand bar shows. */
+const TALL = {
+  name: 'Tall', imgs: [], table: { shape: 'rect', w: 1100, h: 1800 },
+  seats: [{ id: 'w', name: 'West', color: '#e11d48', edge: 'left' }, { id: 'e', name: 'East', color: '#2563eb', edge: 'right' }],
+  types: { tile: { kind: 'tile', name: 'Tile', w: 100, faces: [{ color: '#fef3c7', label: 'T' }] } },
+  setup: [[150, 300], [950, 300], [150, 1500], [950, 1500], [550, 900]].map((at) => ({ piece: 'tile', at })),
+};
+/** The texts updateNet's hint can show (app.js). */
+const HINTS = ['Connecting…', "Can't reach the signaling relays — reconnecting…", 'Connection lost — reconnecting…',
+  "Waiting for the host…\n(the table lives in the host's open tab)", 'The host left — the table is paused until they return'];
 /** Automatic seating: a box with no seats (and no table: the table stays). */
 const PLAIN = { name: 'Plain', imgs: [], types: { peg: QUAD.types.peg }, setup: [{ piece: 'peg', at: 'center' }] };
 const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who plays?' }],
@@ -409,8 +427,47 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
   ok(files.length === 8 && files.every((y) => y === 590), `the files a–h lie in the 20-unit strip just under the grid (y 590: the grid ends at 580), not halfway down the 120 units below it (${files.join(', ')})`);
   await shot(bob, 'tables-turned-board-desk');
   await shot(carol, 'tables-turned-board-phone');
+  // On the phone's fit the selection rings grow with the badges (D97): a selected deck's as a piece's.
+  const deck = await P.viewOf(carol, "Object.keys(v.items).find((id) => v.items[id].k === 'p')");
+  await P.clickItem(carol, deck, true);
+  const ring = await carol.waitForFunction((id) => {
+    const el = document.querySelector(`.item[data-id="${id}"]`);
+    if (!el?.classList.contains('selected')) return false;
+    const bz = +getComputedStyle(el).getPropertyValue('--bz'), w = parseFloat(getComputedStyle(el.querySelector('.cardbox')).outlineWidth);
+    return { bz, w, px: w * /scale\(([-\d.e]+)\)/.exec(document.getElementById('table').style.transform)[1] };
+  }, deck, { timeout: 8000 }).then((x) => x.jsonValue(), () => null);
+  ok(ring?.bz > 1 && Math.abs(ring.w - 3 * ring.bz) < 0.05 && ring.px >= 1.5,
+    `Carol taps the deck: its ring grows with the badges, as a piece's does (${ring?.w} table px at --bz ${ring?.bz}: ${ring?.px.toFixed(2)} px on her screen)`);
+  const free = await P.feltPoint(carol, { band: [0.3, 0.7] });
+  await carol.touchscreen.tap(free.x, free.y);
+  // A pinch-zoom on the phone, from the fit to 3× it: the badges follow in
+  // steps (D96: within BZ_STEP, 25%, of the growth the zoom calls for, never
+  // the fit's ×3 over the pieces zoomed in on), and are exact once the fingers lift.
+  const pz = await carol.evaluate(async () => {
+    const table = document.getElementById('table'), r = document.getElementById('table-wrap').getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const ev = (type, id, x) => new PointerEvent(type, { pointerId: id, pointerType: 'touch', isPrimary: id === 7, button: 0, buttons: type === 'pointerup' ? 0 : 1, clientX: cx + (id === 7 ? x : -x), clientY: cy, bubbles: true, cancelable: true });
+    const state = () => {
+      const s = +/scale\(([-\d.e]+)\)/.exec(table.style.transform)[1];
+      return { s, bz: +getComputedStyle(document.querySelector('#table .item > .count')).getPropertyValue('--bz'), want: Math.min(3, Math.max(1, 0.67 / s)) };
+    };
+    const fit = state(), mid = [];
+    for (const id of [7, 8]) table.dispatchEvent(ev('pointerdown', id, 30));
+    for (let k = 1; k <= 12; k++) {
+      for (const id of [7, 8]) window.dispatchEvent(ev('pointermove', id, 30 + 5 * k));
+      await new Promise((res) => requestAnimationFrame(res));
+      mid.push(state());
+    }
+    for (const id of [7, 8]) window.dispatchEvent(ev('pointerup', id, 90));
+    await new Promise((res) => requestAnimationFrame(res));
+    return { fit, mid, end: state() };
+  });
+  const worst = Math.max(...pz.mid.map((m) => Math.max(m.bz / m.want, m.want / m.bz)));
+  ok(pz.fit.bz === 3 && pz.mid.at(-1).s > 2.5 * pz.fit.s && worst <= 1.26,
+    `Carol pinches from the fit (badges ×${pz.fit.bz}) to ${(pz.mid.at(-1).s / pz.fit.s).toFixed(1)}× it: meanwhile the badges' growth stays within 25% of what the zoom calls for (worst ${worst.toFixed(2)}×; ${pz.mid.map((m) => m.bz).join(' ')})`);
+  ok(Math.abs(pz.end.bz - pz.end.want) < 0.006, `once the fingers lift it is exact (--bz ${pz.end.bz}, ${pz.end.want.toFixed(3)} wanted)`);
+  await carol.tap('#view-btn');
 
-  section('a 10 × 10 board\'s two-digit ranks stay in their margin on a phone; the paused hint\'s plate, on a round table with a seat at each quarter, fits between the labels beside the middle (desktop; a phone in landscape)');
+  section('a 10 × 10 board\'s two-digit ranks stay in their margin on a phone; the paused hint, on a round table with a seat at each quarter, stays on its plate (an iPhone held upright too), which fits between the labels beside the middle (desktop; a phone in landscape)');
   ok((await act(host, { t: 'loadBox', box: ROUND4, setup: true, clear: true })).ok, 'the host loads a round table with four named seats and a 10 × 10 board');
   for (const p of [bob, carol]) {
     ok(await P.waitView(p, 'Object.values(v.items).some((it) => it.z < 0)'), `${name(p)} has the board`);
@@ -418,23 +475,60 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
     const board = await P.viewOf(p, 'Object.keys(v.items).find((id) => v.items[id].z < 0)');
     await P.upright(p, board, (await P.tf(p)).rot, `${name(p)} (${p === carol ? 'iPhone' : 'desktop'})`);
   }
+  /** Page p's hint showing each of HINTS in turn (as a guest's table shows it — the layout alone, measured in one go;
+   *  `floor`: at the narrowest placeSeats gives it, --hint-w 140 px): for each, how far its text reaches past its
+   *  plate (px; ≤ 0: on it), the seat labels the plate covers, the plate, and whether it lies inside the table area. */
+  const hintFit = (p, floor) => p.evaluate(([texts, floor]) => {
+    const el = document.getElementById('table-hint'), was = [el.className, el.textContent, el.style.getPropertyValue('--hint-w')], w = document.getElementById('table-wrap').getBoundingClientRect();
+    el.classList.remove('hidden');
+    if (floor) el.style.setProperty('--hint-w', '140px');
+    const fits = texts.map((t) => {
+      el.textContent = t;
+      const q = el.getBoundingClientRect(), r = document.createRange();
+      r.selectNodeContents(el);
+      const over = Math.max(...[...r.getClientRects()].map((b) => Math.max(q.left - b.left, b.right - q.right, q.top - b.top, b.bottom - q.bottom)));
+      const hit = [...document.querySelectorAll('.seat')].filter((s) => { const b = s.getBoundingClientRect(); return b.left < q.right && q.left < b.right && b.top < q.bottom && q.top < b.bottom; }).map((s) => s.textContent);
+      return { t: t.slice(0, 16), over: Math.round(over), hit, plate: [q.left, q.top, q.width, q.height].map(Math.round), inside: q.left >= w.left && q.right <= w.right && q.top >= w.top && q.bottom <= w.bottom };
+    });
+    [el.className, el.textContent] = was;
+    el.style.setProperty('--hint-w', was[2]);
+    return { seats: document.querySelectorAll('.seat').length, fits };
+  }, [HINTS, floor]);
+  for (const floor of [false, true]) {
+    const upright = await hintFit(carol, floor);
+    ok(upright.fits.every((f) => f.over <= 0 && f.inside), `Carol (iPhone, held upright${floor ? ', the plate at its narrowest: 140 px' : ''}): every text of the hint stays on its plate, inside the table area (${JSON.stringify(upright.fits)})`);
+  }
   await carol.setViewportSize({ width: 844, height: 390 });
   for (const p of [bob, carol]) {
     ok(await P.waitView(p, "v.table.shape === 'round' && v.seats?.length === 4"), `${name(p)} has it`);
     await h.sleep(800);
-    // (shown as a guest's paused table shows it — the layout alone, measured in one go)
-    const r = await p.evaluate(() => {
-      const el = document.getElementById('table-hint'), was = [el.className, el.textContent];
-      el.classList.remove('hidden');
-      el.textContent = 'The host left — the table is paused until they return';
-      const q = el.getBoundingClientRect(), w = document.getElementById('table-wrap').getBoundingClientRect();
-      const seats = [...document.querySelectorAll('.seat')].map((s) => ({ t: s.textContent, r: s.getBoundingClientRect() }));
-      const hit = seats.filter(({ r }) => r.left < q.right && q.left < r.right && r.top < q.bottom && q.top < r.bottom).map((s) => s.t);
-      [el.className, el.textContent] = was;
-      return { seats: seats.length, hit, plate: [q.left, q.top, q.width, q.height].map(Math.round), inside: q.left >= w.left && q.right <= w.right && q.top >= w.top && q.bottom <= w.bottom };
-    });
-    ok(r.seats >= 4 && !r.hit.length && r.inside, `${name(p)}: the hint's plate (${r.plate.join(', ')}) covers none of the ${r.seats} seat labels (${JSON.stringify(r.hit)}), inside the table area`);
+    const r = await hintFit(p);
+    ok(r.seats >= 4 && r.fits.every((f) => f.over <= 0 && !f.hit.length && f.inside),
+      `${name(p)}: every text of the hint stays on its plate, which covers none of the ${r.seats} seat labels, inside the table area (${JSON.stringify(r.fits)})`);
   }
+  await carol.setViewportSize(P.PHONE.viewport);
+
+  section('gutters: a tall rectangle seen from a side seat on a phone in landscape — the notices, a toast and the opened watchers\' box stay in the margins beside the felt');
+  ok((await act(host, { t: 'loadBox', box: TALL, setup: true, clear: true })).ok, 'the host loads a 1100 × 1800 table with seats West and East');
+  for (const p of [bob, carol]) await act(host, { t: 'seat', watch: true, p: p.pid }); // (whoever sat: the seats are dealt below)
+  ok((await act(host, { t: 'seat', id: 'e' })).ok && (await act(host, { t: 'seat', id: 'w', p: carol.pid })).ok, '(the host sits East, and seats Carol West)');
+  ok(await P.waitView(carol, "v.players[me].seatId === 'w' && Object.values(v.players).some((pl) => pl.seat == null && pl.online)"), 'Carol sits West; Bob watches');
+  await carol.setViewportSize({ width: 844, height: 390 });
+  ok(await L.until(async () => P.angDiff((await P.tf(carol)).rot, EDGES.left) < 0.01, 10000, 100), `Carol's phone, turned sideways, shows West at the bottom (the view turned ${EDGES.left}°): the table's long side runs across`);
+  await h.sleep(800);
+  const geo = () => carol.evaluate(() => {
+    const box = (id) => { const el = document.getElementById(id), r = el.getBoundingClientRect(); return el.classList.contains('hidden') ? null : { l: Math.round(r.left), r: Math.round(r.right) }; };
+    return { gutters: document.getElementById('main').classList.contains('gutters'), felt: box('table'), notices: box('notices'), toast: box('toast'), watch: box('watch-box') };
+  });
+  await act(carol, { t: 'seat', id: 'e' }); // (refused: "That seat is taken", a toast)
+  ok(await carol.waitForFunction(() => !document.getElementById('toast').classList.contains('hidden'), null, { timeout: 8000 }).then(() => true, () => false), '(Carol asks for the taken seat: a toast says no)');
+  const g1 = await geo();
+  ok(g1.gutters && g1.notices.r <= g1.felt.l && g1.toast?.r <= g1.felt.l, `the notices (${JSON.stringify(g1.notices)}) and the toast (${JSON.stringify(g1.toast)}) stay in the left margin, clear of the felt (${JSON.stringify(g1.felt)})`);
+  await carol.tap('#watchers');
+  ok(await carol.waitForFunction(() => document.getElementById('watchers').textContent === '👀 Bob', null, { timeout: 5000 }).then(() => true, () => false), '(a tap opens the watchers\' box: "👀 Bob")');
+  const g2 = await geo();
+  ok(g2.watch.l >= g2.felt.r, `opened, the watchers' box (${JSON.stringify(g2.watch)}) stays in the right margin, clear of the felt (${JSON.stringify(g2.felt)})`);
+  await shot(carol, 'tables-tall-landscape');
   await carol.setViewportSize(P.PHONE.viewport);
 
   section('5: an old v2 save (size 1800) resumes as a round table');

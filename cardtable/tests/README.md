@@ -148,20 +148,36 @@ top of `core.js` and README "How it works".
   `same`/`diff`, `prng`, `pct`, `until`.
 - **Raw peers.** Every raw Trystero peer (Mallory, Eve, the spies) opens
   its page with `h.rawPage(env, label)` (a same-origin page with no app on
-  it, plus the `rawRtc` init script) and joins with `rtcPolyfill:
-  window.RawRTC`, the app's own `WholeOffers` (D95): without it a raw peer
-  open for over a minute makes empty offers, and the page that answers one
-  never links.
+  it, plus an init script that sets `window.RawRTC` to app.js's own
+  `WholeOffers` class, cut from app.js's text: `rawRtc` throws if it can't
+  find `class WholeOffers extends RTCPeerConnection { … }`, and `rawPage`
+  if the page has no `window.RawRTC`) and joins with `rtcPolyfill:
+  window.RawRTC` (D95): without it a raw peer open for over a minute makes
+  empty offers, and the page that answers one never links.
 - **Links fail loudly.** A page's WebRTC links form in under a second, or
   never (D95, before the fix); no suite retries a link any more (they used
-  to, as "the harness's signalling stall", which hid that bug). A join or
-  reload whose links don't form within 15 s fails at once, saying what both
-  sides see (their "● n" and relay status). `t-p2-link.js` is the
-  regression: a guest reloaded beside a host open for over a minute (until
-  the host has made the offer twice) gets the table within 5 s each time,
-  a host reloaded beside a guest open for over a minute reaches her within
-  8 s, and an init script on each page sees no offer without an `m=` line
-  (on the app before D95 it fails all three).
+  to, as "the harness's signalling stall", which hid that bug). The app's
+  own watchdog would retry one, though: a guest with no table reloads after
+  20 s, and the join helpers (`h.hostAndGuest`, p1-lib's `player`, p2t-lib's
+  `join`) wait up to 30 s, so a second page's link could hide a first that
+  never formed. So `env.page` counts a watchdog reload (a page's console
+  saying "reconnecting via reload: …") as a failure of the suite, printed
+  with the page's label as `[label WATCHDOG RELOAD]`; only a page that a
+  test means to lose its host or relays opts in, with `env.page(label,
+  {watchdog: true})` (t-p2-review's Bob, Carol, Dan and Hana). t-p1-bench,
+  t-p1-delta and t-p2-hidden (case 13) also fail a join or reload whose
+  links don't form within 15 s at once, saying what both sides see (their
+  "● n" and relay status). `t-p2-link.js` is the regression. Of two pages
+  the one whose Trystero id sorts first makes the offer, and the id is the
+  page's first 20 `Math.random()` calls: its `idFirst` init script makes
+  the first one pick the id's first character (`sessionStorage`
+  `t-id-first`, 'M' by default; it throws if the id didn't take it), so
+  every run covers both sides. A guest reloaded beside a host open for
+  over a minute, as 'z…' (the host offers) and '0…' (the guest does), twice
+  each, gets the table within 5 s each time; a host reloaded beside a guest
+  open for over a minute, as 'z…' (the guest offers) twice and '0…' once,
+  reaches her within 8 s; and an init script on each page sees no offer
+  without an `m=` line (on the app before D95 it fails all three).
 - **Raw peers and images.** final-lib's Mallory also joins the `asset`
   channel: `M.send.asset(bytes, target, {h, mime})` sends an image, and
   `M.got.asset` records `{m, peerId, metadata}`. (Phase 2: she joins the
@@ -326,9 +342,12 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
   rule 0 sets `--bz`, the badges' growth (`scale` of `.count`, `.odot`,
   `.lockb`; a `.pname` at most 2×; the rings' widths: it matches a selected
   item too; a coordinate's, capped by its board's `--lmax`), rule 1 a
-  board text's `--view`, rule 2 the badges' `--view`; rules 0 and 2 are
-  left as they are while two fingers move the view (D96). A selected piece
-  shows a ring: `outline` on a rect's `.pface`, a `box-shadow` ring set off
+  board text's `--view`, rule 2 the badges' `--view`. While two fingers
+  move the view, rule 2 is left as it is and rule 0 follows in steps
+  (written only once the growth the view calls for differs by more than
+  25%, `BZ_STEP`); both are exact once the fingers lift (D96). A selected
+  piece or card pile shows a ring: `outline` on a card pile's `.cardbox`
+  and a rect's `.pface`, a `box-shadow` ring set off
   by a dark edge on a round or disc one, and `filter: drop-shadow(…)` on the
   `.item` itself for a hex, meeple or pawn (whose `clip-path` cuts an
   outline off), all in multiples of `--bz` px. A roll puts `.tumble` on every rolled die's element for
@@ -342,7 +361,7 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
   grid bottom + min(margins) / 2), its spaces' and zones' labels
   `text.slabel`. On the table each coordinate turns about its own centre
   (`transform-box: fill-box`) by −(`--view` + `--rot`): the view's angle,
-  set by the view sheet's third rule, and the board item's `rot`, inline on
+  set by the view sheet's rule 1 (its second), and the board item's `rot`, inline on
   its element; each `.slabel` by that angle rounded to the nearest half turn
   (CSS `round()`), so it is never upside down (D91). The coordinates also
   grow: `scale: min(var(--bz), var(--lmax))`, where `g.blabels` carries
@@ -438,17 +457,16 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
 - **The table frame.** `#table` has no border (the rail is an inset
   shadow): its padding box, where items are placed, is the whole w × h, so
   a probe element at `left: x; top: y` in `#table` sits at table point (x, y).
-- **Badges** (`.item > .count`, `.item > .odot`) are scaled up by an
-  adopted stylesheet rule (`scale`, 1 to 3; app.js's view sheet) on a table
-  drawn small, so a ×N pill's text shows at about 8 px or more; the same
-  sheet's second rule scales a board's coordinates (`#table .blabels text`)
-  by the same factor, up to 1.6, and its third sets `--view` for the boards'
-  texts, the badges with a number or a name and the bags (D91).
+- **Badges** (`.item > .count`, `.item > .odot`) are scaled up on a table
+  drawn small (`scale` by `--bz`, 1 to 3), so a ×N pill's text shows at
+  about 8 px or more: the view sheet's rule 0, which also grows the rings
+  and a board's coordinates; see its three rules above (D91, D96, D97).
   `#table-hint` lies in `#table-wrap`, outside `#table`: screen space, a
   fixed 24 px (18 px on a phone), above the seat labels, whatever the view.
 - **Watchers on a short screen** (`max-height: 500px`, a phone in
   landscape): `#watchers` reads "👀 N" and `#watch-me-text` "👀 Watching"
-  until a tap on the box opens them (the whole texts), another closes them.
+  until a tap on the box opens them (the whole texts); another, a tap on
+  the table or 6 s (`WATCH_OPEN_MS`) close them.
 - **The demos.** `GAMES` entries `draughts` and `backgammon` (`box`: their
   `BOXES` key): `#games-list [data-game="draughts"]` (and the strip's) asks
   "Clear the table and set up Draughts? The current game is discarded." on a
@@ -581,11 +599,11 @@ host closes its page, its guest reloads itself after about a minute (not
 before) with the notice "The host has been away for a minute —
 reconnecting…", the new page shows the kept table again, paused (no
 snapshot yet, no "?"; the hint never says "Connection lost", read by
-`hintWatch`), keeps `ct-rejoin` (40 s) through its ticks, reloads again
+`hintWatch`), keeps `ct-rejoin-<room>` (40 s) through its ticks, reloads again
 40–52 s later saying "for 2 minutes" (the console: unreachable for 95 s or
 more), where a wheel zoom leaves the hint at 24 px and inside the table
 area; it goes live with the host's snapshot when the host returns, and
-`ct-rejoin` goes. Last, a host alone (Hana, whose relay is a TCP proxy the
+`ct-rejoin-<room>` goes. Last, a host alone (Hana, whose relay is a TCP proxy the
 test cuts) reloads itself and keeps no `ct-paused-*` entry.
 
 **Changed for 2B** (mechanism only; no assertion removed or weakened):
@@ -648,7 +666,7 @@ Deck → Add deck (which closes after an await) to its dialog-focus cases;
 Dan, on a relay that drops every connection, with an old backoff of this
 room's planted in his tab: his page reloads for its relays only (never
 blaming the host), the first time after its own 20 s, and his hint says
-"Can't reach the signalling relays"; and in landscape the watcher's box
+"Can't reach the signaling relays"; and in landscape the watcher's box
 opens in the right margin, says every seat is taken, and closes on a tap
 on the table or after 6 s. `t-p2-tables.js` expects "every seat is taken"
 while both named seats are held, and "tap a free seat" once one is free;
@@ -659,6 +677,25 @@ expects ⟲ ⟳ on a plain oval (round, 120 × 50). `t-p1-store.js` hides the
 host's tab right after a move: marked pending, in the save 200 ms later
 (D99). `t-p2-demos.js` expects the draughts coordinates at 1.25× on the
 phone (D97).
+After its third review: `env.page` fails a suite on a watchdog reload
+(above); `t-p2-link.js` chooses the pages' ids rather than drawing them
+(about one run in six covered only one side before); the raw peers' class
+is app.js's own text. `t-p2-review.js` slows Dan's Trystero by 16 s from
+his second page on: his backoff still doubles (80 s or more), since the
+page a reload opened is told by `performance.timeOrigin`, not by when it
+booted (D100); and two first-time players linger on the name dialog, then
+join through a relay that takes 6 s to answer: Ivy (12 s, a guest) is
+never told her relays can't be reached, Jay (25 s, a new host) is not
+reloaded, nor told his connection struggles (the clocks start at the join,
+D100). `t-p2-tables.js` checks every text the hint can show on its plate,
+the iPhone held upright included, and at the plate's 140 px floor; on the
+phone a selected deck's ring is 3 × `--bz` table px (D97), and a pinch
+from the fit to 3× keeps the badges' growth within 25% of the zoom's while
+the fingers move, exact after (D96); a 1100 × 1800 table seen from its
+West seat on a phone in landscape keeps the notices, a toast and the
+opened watchers' box in the margins beside the felt as the view shows it.
+`t-p1-store.js` hides the host's tab while a save is in flight, moves,
+and hides it again: one save open at a time, and the last move saved (D99).
 
 ## Storage and images (Phase 1B)
 
