@@ -137,6 +137,38 @@ async function clickItem(p, id, touch) {
   if (touch) await p.touchscreen.tap(c.x, c.y);
   else await p.mouse.click(c.x, c.y);
 }
+/** Board item `id`'s printed texts on page p, as the screen shows them (D91):
+ *  `texts`, one {t (the text), a (its on-screen angle in degrees, 0 when it
+ *  reads upright: getScreenCTM composes every transform on the way, the
+ *  view's and the board's included), off (px from its box's centre to its
+ *  anchor — its own x, y placed by the board's SVG), near (px to the
+ *  nearest other text's anchor), fs (its font size on screen, px)} each;
+ *  and `bare`, the angle the first text shows while its own turn is taken
+ *  off for a moment: the view's turn plus the board's, which D91 undoes. */
+const boardTexts = (p, id) => p.evaluate((id) => {
+  const svg = document.querySelector(`.item[data-id="${id}"] svg.psvg`), M = svg.getScreenCTM(), els = [...svg.querySelectorAll('text')];
+  const angle = (el) => { const m = el.getScreenCTM(); return Math.round((Math.atan2(m.b, m.a) * 1800) / Math.PI) / 10; };
+  const anchors = els.map((el) => new DOMPoint(+el.getAttribute('x'), +el.getAttribute('y')).matrixTransform(M));
+  const texts = els.map((el, k) => {
+    const r = el.getBoundingClientRect(), d = (q) => Math.hypot(r.left + r.width / 2 - q.x, r.top + r.height / 2 - q.y);
+    return { t: el.textContent, a: angle(el), off: d(anchors[k]), near: Math.min(...anchors.filter((_, j) => j !== k).map(d)), fs: parseFloat(getComputedStyle(el).fontSize) * Math.hypot(M.a, M.b) };
+  });
+  const el = els[0], turn = el.style.transform;
+  el.style.transform = 'none';
+  const bare = angle(el);
+  el.style.transform = turn;
+  return { texts, bare };
+}, id);
+/** Checks (h.ok) that every printed text of board `id` on page p (`who`, for
+ *  the messages) reads upright and sits by its own anchor (D91), and that
+ *  without its turn it would read at `bare` degrees (the view's turn plus
+ *  the board's): the reading is live, and the view really turns it. */
+async function upright(p, id, bare, who) {
+  const b = await boardTexts(p, id), crooked = b.texts.filter((x) => Math.abs(x.a) > 0.5), astray = b.texts.filter((x) => !(x.off <= 0.5 * x.fs && x.off < x.near));
+  h.ok(b.texts.length > 0 && !crooked.length, `${who}: all ${b.texts.length} of the board's texts read upright (${crooked.map((x) => `${x.t} at ${x.a}°`).join(', ') || 'every one at 0°'})`);
+  h.ok(!astray.length, `${who}: each sits by its own file, rank or space: its centre within half its font size of its anchor, nearer its own than any other (${astray.map((x) => `${x.t}: ${x.off.toFixed(1)} px off, ${x.near.toFixed(1)} px to another`).join(', ') || 'all'})`);
+  h.ok(angDiff(b.bare, bare) < 0.5, `${who}: without its own turn a text would read at ${b.bare}° (the view's turn and the board's: ${bare}°)`);
+}
 /** The actions page p has sent so far (bytes on the `act` channel; p1-lib's RTC hook). */
 const sentActs = (p) => p.evaluate(() => window.__rtc.sent.act || 0);
 
@@ -179,5 +211,5 @@ const inViewport = (p, sel) => p.evaluate((s) => [...document.querySelectorAll(s
 
 module.exports = {
   PHONE, BENCH, join, waitView, viewOf, tf, wrap, fit, angDiff, labels, label, menu, openMenu, pick, feltPoint,
-  mouseDrag, touchDrag, dragOn, itemXY, clickItem, sentActs, rgb, shows, inViewport,
+  mouseDrag, touchDrag, dragOn, itemXY, clickItem, sentActs, rgb, shows, inViewport, boardTexts, upright,
 };

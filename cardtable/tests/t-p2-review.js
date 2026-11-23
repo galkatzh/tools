@@ -313,11 +313,14 @@ function noticeWatch() {
   const halo = await carol.evaluate(() => [...document.querySelectorAll('.seat')].map((s) => { const cs = getComputedStyle(s); return { t: s.textContent, o: cs.outlineStyle, w: parseFloat(cs.outlineWidth) }; }));
   const nh = halo.find((x) => x.t.startsWith('North')), sh = halo.find((x) => x.t.startsWith('South'));
   ok(nh?.o !== 'none' && nh?.w >= 1 && sh?.o === 'none', `North's label (#1c1917) has a light outline, South's doesn't (${JSON.stringify([nh, sh])})`);
+  await P.clickItem(carol, ids.north, true); // (the owner dot shows on the selected piece: D90)
+  ok(await carol.waitForFunction((id) => document.querySelector(`.item[data-id="${id}"]`).classList.contains('selected'), ids.north, { timeout: 8000 }).then(() => true, () => false), 'Carol taps North\'s pawn: selected');
   const badge = await carol.evaluate(([five, pawn]) => {
     const c = document.querySelector(`.item[data-id="${five}"] .count`).getBoundingClientRect(), d = document.querySelector(`.item[data-id="${pawn}"] .odot`).getBoundingClientRect();
     return { countH: c.height, dot: d.width };
   }, [ids.five, ids.north]);
   ok(badge.countH >= 10 && badge.dot >= 8, `on the phone's fit, the ×3 pill is ${badge.countH.toFixed(1)} px tall and the owner dot ${badge.dot.toFixed(1)} px wide (readable)`);
+  await felt(carol, true);
   await carol.tap('#help-btn');
   await carol.waitForSelector('#help-dialog[open]');
   const hd = await carol.evaluate(() => { const r = document.getElementById('help-dialog').getBoundingClientRect(); return { l: r.left, r: r.right, vw: innerWidth }; });

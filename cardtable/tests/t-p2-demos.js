@@ -6,7 +6,8 @@
 //   seats; Light moves a light man; Dark's drag on a light man pans and
 //   sends nothing; a jump, and the captured man removed by its owner (the
 //   capturer is never offered 🗑 on it); crowning by double-click (and by
-//   the phone's Flip) shows ♛ on both screens.
+//   the phone's Flip) shows ♛ on both screens. The board's coordinates
+//   read upright on both screens, Dark's turned 180° (D91).
 //   Backgammon: picked from 🎲; 15 + 15 checkers in the standard start,
 //   seat-bound; a double-click on one of the two adjacent dice rolls both
 //   (one roll, one "rolled a · b" line, the tumble and the faces on both
@@ -88,6 +89,11 @@ const CONFIRM = (title) => `Clear the table and set up ${title}? The current gam
   ok(light.every((m) => m.r >= 5) && dark.every((m) => m.r <= 2), 'Light\'s men fill the three rows nearest the bottom, Dark\'s the three nearest the top');
   const svg = await host.evaluate((id) => { const s = document.querySelector(`.item[data-id="${id}"] svg.psvg`); return s && { box: s.getAttribute('viewBox'), labels: [...s.querySelectorAll('text')].map((t) => t.textContent).join('') }; }, boardId);
   ok(svg?.box === '0 0 840 840' && [...svg.labels].sort().join('') === '12345678abcdefgh', `the board draws its grid as an SVG, with a–h and 1–8 (${JSON.stringify(svg)})`);
+
+  section('Draughts: the coordinates read upright from both seats (D91)');
+  ok(await L.until(async () => P.angDiff((await P.tf(bob)).rot, 180) < 0.01, 10000, 100), 'Bob sits Dark, at the top: his phone\'s view is turned 180°');
+  await P.upright(host, boardId, 0, 'Alice (Light, desktop)');
+  await P.upright(bob, boardId, 180, 'Bob (Dark, iPhone)');
 
   section('Draughts: Light moves, Dark can\'t touch Light\'s men');
   const m1 = at(2, 5);

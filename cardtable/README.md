@@ -71,7 +71,9 @@ Backgammon ship built in, art-free: pick them from 🎲 (on a table in use the
 host is asked first — the table is cleared, and the rules switched off:
 these are played by hand). Pieces look like pieces — discs with a rim,
 tiles, dice with pips, meeples, pawns, hexes — and a board's squares,
-points, lines and coordinates (a–h, 1–8) are drawn crisp at any zoom.
+points, lines and coordinates (a–h, 1–8) are drawn crisp at any zoom. The
+coordinates read upright for every player, as on a chess app's flipped
+board: each stays by its file or rank, turned to face your screen.
 
 Playing on the free table:
 
@@ -98,14 +100,16 @@ Playing on the free table:
   the moment: when a seat changes hands, a seat-bound piece's bar changes
   with it.
 - **Owners and locks.** A piece can belong to a player or to a seat (a
-  coloured dot; draughts men belong to the Light and Dark seats, so they
-  follow whoever sits there). A **locked** piece stays put; boards are
-  locked from the start. Dragging something you may not move — locked, or
-  someone else's — pans the view instead, so a board never gets in the way;
-  the bar only ever offers what you may do. A tap on a board while a piece is
-  selected only puts the piece's bar away (tap again to select the board).
-  Badges (×N, ∞, the owner's dot) grow on a table drawn small, so a phone can
-  read them; so does the table's notice ("The host left — …").
+  coloured dot, shown on the selected piece or under the mouse, so a board
+  full of men isn't covered in dots; draughts men belong to the Light and
+  Dark seats, so they follow whoever sits there). A **locked** piece stays
+  put; boards are locked from the start. Dragging something you may not
+  move — locked, or someone else's — pans the view instead, so a board
+  never gets in the way; the bar only ever offers what you may do. A tap
+  on a board while a piece is selected only puts the piece's bar away (tap
+  again to select the board). Badges (×N, ∞, the owner's dot) grow on a
+  table drawn small, so a phone can read them; so does the table's notice
+  ("The host left — …").
 - **Hidden pieces** show only their back, to everyone: nobody's screen, not
   even its traffic, learns what a face-down tile or a bag holds. A box's
   pieces and its `meta` data are public, though — anyone at the table can

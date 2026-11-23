@@ -506,6 +506,15 @@ sync and rendering, and the Worker together with `handle`.
      - Badges (a stack's ×N, a supply's ∞, an owner's dot) grow, up to
        three times, on a table drawn small, such as a phone's, so they stay
        readable.
+     - An owner's dot shows on demand — on the piece you select, or under
+       a mouse — not on every piece: a game whose men all belong to a seat
+       would otherwise be covered in dots. A tap on any piece still shows
+       whose it is, and its bar what you may do with it.
+     - A board's coordinates and printed labels read upright for every
+       player, as on a chess app's flipped board: each stays by its own
+       file, rank or space but turns to face the screen, so the player
+       across the board never reads them upside down. The pieces' own
+       faces stay as they lie.
 3. **Space and full-rules scripting, in a Worker.**
    - Grids, spaces, zones, links and snapping, with addresses in the log.
    - Rules in a Worker with a watchdog, and atomic hooks.

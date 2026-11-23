@@ -1533,6 +1533,7 @@ function renderItems(prev, prevPlayers = new Map()) {
     if (landing?.id === id && (at(landing.x, landing.y) || at(landing.ox, landing.oy))) landing = null;
     if (drag?.id !== id && landing?.id !== id) { el.style.left = `${it.x}px`; el.style.top = `${it.y}px`; }
     el.style.transform = `rotate(${it.rot}deg)`;
+    if (el.classList.contains('board')) el.style.setProperty('--rot', `${num(it.rot)}deg`); // its printed text turns back (style.css, D91)
     el.style.zIndex = it.z;
     el.classList.toggle('selected', sel === id);
   }
@@ -1944,15 +1945,21 @@ function rotv(x, y, a) {
   return [x * c - y * s, x * s + y * c];
 }
 
-// Badges (a stack's ×N, a supply's ∞, an owner's dot) are drawn in table
-// units, so on a table drawn small (a phone's fit) they'd be a few pixels:
-// they grow back toward a readable size, by at most BADGE_MAX×, through one
-// stylesheet rule — only the badges restyle, and only when the scale changes.
-// The table's hint ("The host left — …") grows the same way, by its font size.
-const badgeSheet = new CSSStyleSheet(), BADGE_MAX = 3;
-badgeSheet.replaceSync('.item > .count, .item > .odot {} #table-hint {}');
-document.adoptedStyleSheets = [...document.adoptedStyleSheets, badgeSheet];
-let badgeZ = '';
+// The view sheet: what follows the view, written as rules of one adopted
+// stylesheet, so that only what they match restyles, and only when the view
+// changed. Badges (a stack's ×N, a supply's ∞, an owner's dot) are drawn in
+// table units, so on a table drawn small (a phone's fit) they'd be a few
+// pixels: they grow back toward a readable size, by at most BADGE_MAX× (rule
+// 0). The table's hint ("The host left — …") grows the same way, by its font
+// size (1). A board's printed text turns back against the view (2: --view,
+// style.css D91) — a rule, not a property on #table: an inherited property
+// there would restyle all 3,700 elements of the 1,000-piece bench table (9 ms
+// a turn on a desktop, 16 ms on the B4 phone, with a labelled board of 51
+// texts); the rule restyles those texts alone (2 and 4 ms, their redraw too).
+const viewSheet = new CSSStyleSheet(), BADGE_MAX = 3;
+viewSheet.replaceSync('.item > .count, .item > .odot {} #table-hint {} #table .psvg text {}');
+document.adoptedStyleSheets = [...document.adoptedStyleSheets, viewSheet];
+let badgeZ = '', textAngle = 0;
 
 function layout() {
   const w = (wrapW = wrapEl.clientWidth), h = (wrapH = wrapEl.clientHeight);
@@ -1963,9 +1970,10 @@ function layout() {
   scale = Math.min(w / bw, h / bh) * zoomZ; // fit × user zoom
   const bz = clamp(0.67 / scale, 1, BADGE_MAX).toFixed(2); // (a 12-unit badge text shows ≥ 8 px while it can)
   if (bz !== badgeZ) {
-    badgeSheet.cssRules[0].style.scale = badgeZ = bz;
-    badgeSheet.cssRules[1].style.fontSize = `${34 * bz}px`;
+    viewSheet.cssRules[0].style.scale = badgeZ = bz;
+    viewSheet.cssRules[1].style.fontSize = `${34 * bz}px`;
   }
+  if (viewAngle !== textAngle) viewSheet.cssRules[2].style.setProperty('--view', `${(textAngle = viewAngle)}deg`);
   // keep at least the table's center reachable
   panX = clamp(panX, -(bw * scale) / 2, (bw * scale) / 2);
   panY = clamp(panY, -(bh * scale) / 2, (bh * scale) / 2);

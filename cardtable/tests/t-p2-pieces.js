@@ -5,7 +5,8 @@
 // bar stands in for double-clicks). Items 1–11 of §2l, the rest of §2g's
 // gesture table, the keys, and the action bar for every kind and permission.
 // Each check is read on BOTH screens: __ct.view(), the DOM (classes, badges,
-// the bar's buttons) and the log. Gestures are real (mouse, keyboard, CDP
+// the bar's buttons; the owner dot only where its item is selected or under
+// the desktop mouse, D90) and the log. Gestures are real (mouse, keyboard, CDP
 // touch); __ct.act only sets up state, and sends the refused actions a screen
 // never offers (to see the refusal itself).
 // A failed check saves both screens in shots/ (p2-pieces-<pass>-fail<k>-*.png).
@@ -283,6 +284,8 @@ async function pass(env, mode) {
     };
   }, id);
   const domBoth = (id) => Promise.all(P.map((p) => dom(p, id)));
+  /** The items whose owner dot shows on page p, sorted (D90: the selected one, or the one under a hovering mouse). */
+  const dotsShown = (p) => p.evaluate(() => [...document.querySelectorAll('.item > .odot')].filter((d) => getComputedStyle(d).display !== 'none' && d.getClientRects().length).map((d) => d.parentElement.dataset.id).sort());
   /** rgb() of a #rrggbb colour, as getComputedStyle reports it. */
   const rgb = (c) => `rgb(${[1, 3, 5].map((k) => parseInt(c.slice(k, k + 2), 16)).join(', ')})`;
   /** Ids in page p's view that are not in `before` and pass pred (run in Node on the item). */
@@ -627,6 +630,24 @@ async function pass(env, mode) {
   await logOk(m, 'Bob', /^claimed Coin$/, 'claim');
   const colB = (await V(alice)).players[pidB].color, colA = (await V(alice)).players[pidA].color;
   ok((await domBoth(X)).every((d) => d.odot === rgb(colB)), say(`both draw its owner dot in Bob's colour (${colB})`));
+  // D90: the dot shows on demand — where the coin is selected, under a hovering mouse — never on a phone's
+  // stale :hover (a tap leaves one behind); a tap on someone else's piece selects it, and shows it there too
+  if (!phone) for (const p of P) await p.mouse.move(...(await scr(p, EMPTY[0]))); // (no mouse over a piece)
+  let dots = await Promise.all(P.map(dotsShown));
+  ok(same(dots, [[], [X]]), say(`D90: the dot shows on Bob's screen, where the coin is selected, and on no unselected piece of either (${JSON.stringify(dots)})`));
+  await deselect(bob);
+  dots = await Promise.all(P.map(dotsShown));
+  ok(same(dots, [[], []]), say(`deselected, it shows on neither screen (${JSON.stringify(dots)})`));
+  if (!phone) {
+    await alice.mouse.move(...(await spot(alice, X)));
+    ok(same(await dotsShown(alice), [X]), say('a mouse over the coin shows its dot on Alice\'s screen'));
+    await alice.mouse.move(...(await scr(alice, EMPTY[0])));
+    ok(same(await dotsShown(alice), []), say('and the dot goes with the mouse'));
+  }
+  await select(alice, X);
+  ok(same(await dotsShown(alice), [X]), say(`Alice ${phone ? 'taps' : 'clicks'} Bob's coin: selected, its dot shows`));
+  await deselect(alice);
+  ok(same(await dotsShown(alice), []), say('deselected, it goes'));
   await barIs(bob, X, ['flip', 'rl', 'rr', 'release', 'del'], 'his own coin');
   await barIs(alice, X, ['lock', 'release', 'give'], "Bob's coin");
   const x1 = (await V(alice)).items[X], ta = await alice.evaluate(() => window.__toasts.length);
@@ -660,6 +681,8 @@ async function pass(env, mode) {
   await press(alice, I.D, 'claim');
   ok(await both((v, a) => v.items[a.id]?.owner === a.p, { id: I.D, p: pidA }), say('Alice claims the ×2 coin stack of face 1'));
   ok((await domBoth(I.D)).every((d) => d.odot === rgb(colA)), say(`its dot is Alice's colour on both screens (${colA})`));
+  dots = await Promise.all(P.map(dotsShown));
+  ok(same(dots, [[I.D], []]), say(`…shown on Alice's screen alone, where the stack is selected (${JSON.stringify(dots)})`));
   await barIs(bob, I.D, [], "Alice's stack (nothing for Bob)");
   const tb0 = await bob.evaluate(() => window.__toasts.length);
   await bob.evaluate((a) => window.__ct.act(a), { t: 'del', id: I.D }); // the screen never offers it: the refusal itself
