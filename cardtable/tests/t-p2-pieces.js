@@ -189,10 +189,15 @@ async function pass(env, mode) {
    *  gestures: two touch sources can lose a tap), a click on desktop. */
   async function btn(p, s) {
     if (!phone) return p.click(s, { timeout: 8000 });
-    const el = p.locator(s);
-    await el.waitFor({ state: 'visible', timeout: 8000 });
-    const r = await el.boundingBox();
-    await tap(p, [r.x + r.width / 2, r.y + r.height / 2]);
+    // where the button is, once it holds still and nothing covers it (a patch may redraw the bar meanwhile)
+    const at = () => p.evaluate((s) => {
+      const el = document.querySelector(s), r = el?.getBoundingClientRect(), c = r && [r.left + r.width / 2, r.top + r.height / 2];
+      return r?.width && el.contains(document.elementFromPoint(...c)) ? c.map(Math.round).join() : '';
+    }, s);
+    let q = '';
+    for (const end = Date.now() + 8000; Date.now() < end; await h.sleep(60)) { const q1 = await at(); if (q1 && q1 === q) break; q = q1; }
+    if (!q) throw new Error(`no button ${s} to tap on ${NAME.get(p)}'s screen`);
+    await tap(p, q.split(',').map(Number));
   }
   /** Drags item `id` onto item `onto`, or to table point `to` (an array), nothing selected first (no bar in the
    *  way). Returns the drag in table units: a piece keeps where it was grabbed, so what moves (or the copy taken
@@ -305,6 +310,8 @@ async function pass(env, mode) {
     return out;
   }
   const toastsSince = (p, k) => p.evaluate((k) => window.__toasts.slice(k).map((t) => t.msg), k);
+  /** Item `id` as the host has it once the table is quiet (a guest's live moves arrive one by one: read mid-way, a spot is stale). */
+  const settled = async (id) => { await quiet(); return (await V(alice)).items[id]; };
   /** Waits until the host's view has held still for 800 ms (whatever was in flight has landed). */
   async function quiet() {
     let seq = -1, at = Date.now();
@@ -402,7 +409,7 @@ async function pass(env, mode) {
 
   m = await marks();
   let before = await ids(alice);
-  let it0 = (await V(alice)).items[I.A];
+  let it0 = await settled(I.A);
   let by = await dragItem(alice, I.A, FREE.a); // a plain drag from ×5: takes one
   ok(await both((v, a) => v.items[a.A]?.n === 4 && Object.keys(v.items).length === a.n, { A: I.A, n: before.length + 1 }), say(`${phone ? 'a touch' : 'a'} drag from the ×5 stack takes one: ×4 stays, on both screens`));
   const [X] = await fresh(alice, before);
@@ -417,7 +424,7 @@ async function pass(env, mode) {
   await logOk(m, 'Bob', /^moved 1 from Coin ×4 onto Coin ×[45]$/, 'split onto');
 
   m = await marks();
-  const a0 = (await V(alice)).items[I.A];
+  const a0 = await settled(I.A);
   if (!phone) {
     by = await dragItem(alice, I.A, FREE.b, { shift: true }); // Shift: the whole stack moves
     ok(await lies(I.A, moved(a0, by), `it.n === 3 && Object.keys(v.items).length === ${before.length + 1}`), say('Shift+drag moves the whole ×3 stack, on both screens'));
@@ -445,7 +452,7 @@ async function pass(env, mode) {
   await dragItem(bob, X, I.D); // a face-0 coin onto a face-1 stack: not the same face, so no join — a move
   ok(await both((v, a) => v.items[a.D]?.n === 2 && !!v.items[a.X], { D: I.D, X }), say('a coin of another face dropped on the ×2 stack does not join it (it is moved)'));
   await logOk(m, 'Bob', /^moved Coin$/, 'drop on another face');
-  it0 = (await V(alice)).items[X];
+  it0 = await settled(X);
   by = await dragItem(bob, X, FREE.a);
   ok(await lies(X, moved(it0, by)), say('(and dragged back to free felt)'));
 
@@ -563,9 +570,9 @@ async function pass(env, mode) {
   // a drag moves a die: it is not rolled
   await recTumbles();
   m = await marks();
-  it0 = (await V(alice)).items[I.L];
+  it0 = await settled(I.L);
   const fL = it0.f;
-  by = await dragItem(bob, I.L, FREE.b);
+  by = await dragItem(bob, I.L, FREE.c);
   ok(await lies(I.L, moved(it0, by), `it.f === ${fL}`), say('Bob drags the lone die: it moves, its face unchanged, on both screens'));
   await logOk(m, 'Bob', /^moved Die$/, 'move a die');
   ok((await tumbles()).every((l) => !l.length) && (await Promise.all(P.map((p, k) => since(p, m[k])))).every((ls) => !ls.some(([, t]) => /^rolled /.test(t))), say('no roll, no tumble'));
@@ -583,7 +590,7 @@ async function pass(env, mode) {
   ok((await alice.evaluate(() => document.querySelector('#action-bar [data-cmd="lock"]')?.textContent)).includes('🔓'), say('her bar now offers 🔓 Unlock'));
   await barIs(alice, I.B, ['lock', 'give'], 'the locked stack');
   await barIs(bob, I.B, [], 'the locked stack (nothing moves, turns or removes it, no lock for a guest)');
-  const b0 = (await V(alice)).items[I.B];
+  const b0 = await settled(I.B);
   const t0 = await bob.evaluate(() => window.__toasts.length);
   await bob.evaluate((a) => window.__ct.act(a), { t: 'move', id: I.B, x: 900, y: 650 }); // the screen never sends it: the refusal itself
   ok(await bob.waitForFunction((k) => window.__toasts.slice(k).some((t) => t.msg.includes('🔒 That is locked in place')), t0, { timeout: 15000 }).then(() => true, no('lock refusal')), say('a guest\'s move of the locked stack is refused: "🔒 That is locked in place" on his screen'));
@@ -664,7 +671,7 @@ async function pass(env, mode) {
   section(say('7. supplies: take by drag and by ' + (phone ? 'the bar' : 'double-click') + ', return by drop' + (phone ? '' : ', Shift+drag moves it')));
   m = await marks();
   before = await ids(alice);
-  it0 = (await V(alice)).items[I.S];
+  it0 = await settled(I.S);
   by = await dragItem(bob, I.S, FREE.c); // a plain drag on a supply spawns a piece
   ok(await both((v, a) => Object.keys(v.items).length === a.n && v.items[a.S]?.k === 's' && v.items[a.S].x === 60 && v.items[a.S].y === 360, { n: before.length + 1, S: I.S }), say('Bob drags from the coin supply: a new coin, the supply stays where it was'));
   const [Tk] = await fresh(alice, before);
@@ -689,7 +696,7 @@ async function pass(env, mode) {
   ok(await both((v, a) => !v.items[a], Tk2), say('Alice returns hers too'));
   if (!phone) {
     m = await marks();
-    it0 = (await V(alice)).items[I.S];
+    it0 = await settled(I.S);
     by = await dragItem(alice, I.S, FREE.g, { shift: true });
     ok(await lies(I.S, moved(it0, by), "it.k === 's'"), say('Shift+drag moves the supply itself, on both screens'));
     await logOk(m, 'Alice', /^moved the Coin supply$/, 'Shift+drag a supply');
@@ -726,7 +733,7 @@ async function pass(env, mode) {
   ok((await domBoth(I.tbag)).every((d) => d.bn === '2'), say('both bags read 2'));
   await logOk(m, 'Alice', /^drew a piece from the bag Tiles$/, 'pull into the hand');
   m = await marks();
-  it0 = (await V(alice)).items[I.pouch];
+  it0 = await settled(I.pouch);
   by = await dragItem(alice, I.pouch, FREE.d);
   ok(await lies(I.pouch, moved(it0, by), 'it.n === 4'), say('a drag moves a bag (its contents go with it)'));
   await logOk(m, 'Alice', /^moved the bag Pouch$/, 'move a bag');
@@ -823,11 +830,10 @@ async function pass(env, mode) {
   ok(await both((v, a) => !v.items[a.id] && v.players[a.b].handCount === 1, { id: Pt, b: pidB }), say('Bob drops a tile from the table onto his hand bar (toHand): in his hand, off the table'));
   ok(await until(bob, (v, a, ct) => ct.hand().some((c) => c.t === a), ref('tile')), say('his hand holds it'));
   await logOk(m, 'Bob', /^took T from the table into hand$/, 'toHand');
-  const xs = (await V(alice)).items[X];
+  const xs = await settled(X);
   await drag(bob, await spot(bob, X), await hb(bob)); // a coin can't be held: it is just moved
   ok(await both((v, a) => !!v.items[a.X] && v.players[a.b].handCount === 1, { X, b: pidB }), say('a coin (not a hand type) dropped on the hand bar stays on the table'));
-  await quiet();
-  it0 = (await V(alice)).items[X];
+  it0 = await settled(X);
   by = await dragItem(bob, X, [xs.x + 30, xs.y + 30]);
   ok(await lies(X, moved(it0, by)), say('(and dragged back)'));
 
@@ -883,7 +889,7 @@ async function pass(env, mode) {
   await press(alice, I.board, 'lock');
   ok(await both((v, a) => !v.items[a]?.lock, I.board), say('Alice unlocks the board'));
   await barIs(alice, I.board, ['rl', 'rr', 'lock', 'give', 'del'], 'the unlocked board');
-  const bd0 = (await V(alice)).items[I.board];
+  const bd0 = await settled(I.board);
   const bfrom = await spot(alice, I.board), bto = [bfrom[0] - 30, bfrom[1] - 20], [ba, bb] = [await tab(alice, bfrom), await tab(alice, bto)];
   await drag(alice, bfrom, bto);
   ok(await lies(I.board, moved(bd0, [bb[0] - ba[0], bb[1] - ba[1]]), `it.z === ${bd0.z}`), say(`unlocked, a drag moves the board, and its z stays in the boards' band (${bd0.z})`));
@@ -961,9 +967,14 @@ async function pass(env, mode) {
     await deselect(bob);
   }
 
-  section(say('the end state agrees on both screens'));
+  section(say('the end state agrees on both screens; no notice but the refusals asked for'));
   const [va, vb] = await Promise.all(P.map(V));
   ok(same(va.items, vb.items), say('both views hold the same items'));
+  const asked = { Alice: ['🚫 That belongs to Bob'], Bob: ['🔒 That is locked in place', '🚫 That belongs to Alice'] };
+  for (const p of P) {
+    const seen = await toastsSince(p, 0);
+    ok(same(seen, asked[NAME.get(p)]), say(`${NAME.get(p)}'s notices: ${JSON.stringify(seen)}`));
+  }
   await Promise.all(P.map((p) => p.screenshot({ path: `${__dirname}/shots/p2-pieces-${mode}-${NAME.get(p)}.png` })));
   await Promise.all(P.map((p) => p.context().close()));
 }
