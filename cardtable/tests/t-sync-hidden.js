@@ -9,12 +9,11 @@ const { ok, section, logHas } = h;
 
 /** A raw Trystero peer (no app code) recording everything the room sends it. */
 async function spy(env, invite) {
-  const page = await env.page('Spy');
-  await page.goto(`${env.base}/cardtable/cah-cards.js`);
+  const page = await h.rawPage(env, 'Spy'); // no app code: a raw Trystero peer
   await page.evaluate(async ({ invite, relay }) => {
     const { joinRoom } = await import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm');
     const [, roomId, password] = invite.match(/#room~([0-9a-f]+)~([0-9a-f]+)/);
-    const room = joinRoom({ appId: 'gk-cardtable', password, relayConfig: { urls: [relay] } }, roomId);
+    const room = joinRoom({ appId: 'gk-cardtable', password, rtcPolyfill: window.RawRTC, relayConfig: { urls: [relay] } }, roomId);
     const S = (window.S = { got: {} });
     for (const ch of ['state', 'note']) {
       const a = room.makeAction(ch);

@@ -56,8 +56,11 @@ const KIT = {
 /** A second box whose pieces anyone may lock (lockable 'anyone'); the same seats, so loading it keeps them. */
 const LOCKABLE = {
   name: 'Lockables', imgs: [], lockable: 'anyone', seats: KIT.seats,
-  types: { gem: { kind: 'token', name: 'Gem', faces: [{ color: '#a855f7' }] } },
-  setup: [{ piece: 'gem', at: [920, 120] }, { bag: [{ t: 'gem', n: 2 }], name: 'Sack', at: [1030, 230] }],
+  types: {
+    gem: { kind: 'token', name: 'Gem', faces: [{ color: '#a855f7' }] },
+    oval: { kind: 'token', name: 'Oval', shape: 'round', w: 120, h: 50, stack: 'none', faces: [{ color: '#22d3ee' }] }, // round, not circular: a turn shows
+  },
+  setup: [{ piece: 'gem', at: [920, 120] }, { bag: [{ t: 'gem', n: 2 }], name: 'Sack', at: [1030, 230] }, { piece: 'oval', at: [1000, 40] }],
 };
 // Free felt (table points, centres) where pieces are dropped, and where a tap deselects.
 const FREE = { a: [640, 400], b: [750, 410], c: [650, 560], d: [760, 560], e: [1100, 160], f: [700, 650], g: [560, 660] };
@@ -628,6 +631,7 @@ async function pass(env, mode) {
   const lits = (await V(alice)).items, gem = at(lits, 920, 120), sack = at(lits, 1030, 230);
   ok(lits[sack]?.box === lb && lits[I.pouch]?.box === kit, say(`a bag's public form carries its box (D88): ${lits[sack]?.box === lb}, ${lits[I.pouch]?.box === kit}`));
   await barIs(bob, gem, ['lock', 'claim', 'del'], 'a lockable gem (a plain disc)');
+  await barIs(bob, at(lits, 1000, 40), ['lock', 'rl', 'rr', 'claim', 'del'], 'a plain oval (round, but wider than high: a turn shows, ⟲ ⟳)');
   await barIs(bob, sack, ['pull', 'lock', 'del'], 'a bag of the lockable box');
   m = await marks();
   await press(bob, gem, 'lock');

@@ -21,7 +21,8 @@
 //                key) and its guest reconnects
 //   (5) pending  a ct-pending-<room> marker ahead of the save warns at boot (not one
 //                the save caught up with); a reload right after a move keeps the move
-//                or says it was lost
+//                or says it was lost; a tab hidden right after a move (a phone
+//                switching apps) saves it at once, marked pending until it commits
 //   (6) newer    a save of state v STATE_V + 1: the pinned toast, the tab hosts, and
 //                the record (and its catalog) are byte for byte the same after play
 //   (7) skew     a core.js, store.js or templates.js of another MODULE_V: the banner,
@@ -448,6 +449,29 @@ const okWait = async (promise, msg) => ok(await promise.then((x) => x !== false,
     const it = (await L.view(hal)).items[halStd], kept = it?.x === to.x && it?.y === to.y, warned = await shown(hal, PENDING) > 0;
     ok(kept || warned, `a reload right after a move: the move is ${kept ? 'kept' : 'lost'}${warned ? ', and the host is warned' : ''}`);
   }
+  // A phone that switches apps or locks hides the tab, often with no
+  // pagehide, then suspends its timers (and may discard it): the move is
+  // saved at once, not SAVE_DEFER_MS (250 ms) later.
+  await L.act(hal, { t: 'move', id: halStd, x: 520, y: 600 });
+  ok(await settled(hal), '(the save has caught up)');
+  const hid = await hal.evaluate(([r, id]) => new Promise((done) => {
+    window.__ct.act({ t: 'move', id, x: 540, y: 620 }); // (the host's own move commits at once, and asks for its save)
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    delete document.visibilityState;
+    const mark = localStorage.getItem(`ct-pending-${r}`);
+    setTimeout(() => { // (read before a deferred save could even have started)
+      const q = indexedDB.open('cardtable');
+      q.onerror = () => done({ mark, err: String(q.error) });
+      q.onsuccess = () => {
+        const g = q.result.transaction('saves').objectStore('saves').get(r);
+        g.onsuccess = () => { const it = g.result?.state?.items?.[id]; q.result.close(); done({ mark, at: it && [it.x, it.y] }); };
+      };
+    }, 200);
+  }), [halRoom, halStd]);
+  ok(hid.mark !== null && L.same(hid.at, [540, 620]),
+    `the host's tab is hidden right after a move: the move is marked pending (${hid.mark}) and in the save 200 ms later (${JSON.stringify(hid.at || hid.err)})`);
+  ok(await L.until(async () => (await marker()) === null, 5000), 'and the marker goes once that save commits');
 
   // ---------------------------------------------------------------------------------
   section('(6) a save from a newer Card Table');

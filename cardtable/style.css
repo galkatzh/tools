@@ -107,6 +107,8 @@ select {
 }
 #watch-me { display: flex; align-items: center; gap: 8px; padding-right: 4px; pointer-events: auto; white-space: normal; border-radius: 14px; }
 #sit-btn { background: #059669; padding: 5px 12px; min-height: 32px; }
+.gutters #watch-box { max-width: calc(var(--gutter) - 16px); } /* opened, it wraps in the right margin, clear of the felt */
+.gutters #watchers { white-space: normal; }
 /* a short screen (a phone in landscape): compact chips over the table's corner; a tap opens them (app.js renderWatchers) */
 @media (max-height: 500px) { #watchers { pointer-events: auto; cursor: pointer; } }
 /* nothing to hold and an empty hand: no hand bar (app.js renderAll) */
@@ -215,11 +217,13 @@ body.nohand #hand-bar { display: none; }
 #rules-btns button:hover { background: #8b5cf6; }
 #rules-btn.on { background: #7c3aed; }
 /* the table's hint ("The host left — …"): in screen space, over the table
-   and the seat labels, whatever the view's zoom, pan or turn */
+   and the seat labels, whatever the view's zoom, pan or turn — on a plate
+   that reads over a board or pieces, no wider than the middle of the felt
+   nor the gap between the labels beside it (--hint-w: app.js placeSeats) */
 #table-hint {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  font-size: 24px; color: #ffffffcc; text-shadow: 0 0 8px #000, 0 1px 3px #000; /* readable over a board or pieces */
-  text-align: center; padding: 24px; pointer-events: none; white-space: pre-line; z-index: 9100;
+  position: absolute; left: 50%; top: 50%; translate: -50% -50%; width: max-content; max-width: min(24em, var(--hint-w, 60%));
+  font-size: 24px; color: #fff; text-shadow: 0 1px 3px #000; background: #0f172ae0; border-radius: 12px; padding: 10px 18px;
+  text-align: center; pointer-events: none; white-space: pre-line; z-index: 9100;
 }
 @media (max-width: 480px), (max-height: 500px) { #table-hint { font-size: 18px; } }
 
@@ -279,15 +283,26 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
   background: #0ea5e9; color: #fff; font-size: 12px; font-weight: 700;
   border-radius: 999px; padding: 2px 5px; box-shadow: 0 1px 3px #0008; z-index: 1;
 }
-.pile .pname {
-  position: absolute; top: 100%; margin-top: 8px; width: 140%; left: -20%; text-align: center;
-  font-size: 13px; color: #e2e8f0; text-shadow: 0 1px 3px #000; pointer-events: none;
+/* Badges read upright on every screen, as a board's printed text does (D91):
+   ×N, ∞, a pile's count, 🔒 and a bag turn about their own centres against
+   the view (--view: the view sheet's, app.js layout) and their item's own
+   turn (--rot, on the item's element); and on a table drawn small they grow
+   (--bz: the view sheet's too). */
+.item > .count, .bag > .bagbox, .item > .lockb { rotate: calc(-1 * (var(--view, 0deg) + var(--rot, 0deg))); }
+.item > .count, .item > .odot, .item > .lockb { scale: var(--bz, 1); }
+/* A pile's name, under the pile on every screen: anchored at its centre,
+   turned upright there, then moved down (screen down, once turned) past the
+   pile's corners (--pr: half its diagonal; a card pile's by default, app.js
+   kind sets a piece pile's) and past its count, which a turned view may
+   bring down there, grown (10 units, a grown count's half height); it grows
+   too (at most 2×), from its top edge. */
+.pile { --pr: 86px; }
+.pile > .pname {
+  position: absolute; left: 50%; top: 50%; width: max-content; max-width: 140%; text-align: center;
+  font-size: 13px; line-height: 1.2; color: #e2e8f0; text-shadow: 0 1px 3px #000; pointer-events: none;
+  translate: -50% -50%; rotate: calc(-1 * (var(--view, 0deg) + var(--rot, 0deg)));
+  transform: translateY(calc(var(--pr) + 10px * var(--bz, 1))) scale(min(var(--bz, 1), 2)) translateY(50%);
 }
-/* A pile's count and name, ×N, ∞ and a bag read upright on every screen, as
-   a board's printed text does (D91): each turns about its own centre against
-   the view (--view: the view sheet's, app.js layout) and its item's own turn
-   (--rot, on the item's element). */
-.pile > .count, .piece > .count, .pile > .pname, .bag > .bagbox { rotate: calc(-1 * (var(--view, 0deg) + var(--rot, 0deg))); }
 
 /* --- pieces, supplies, bags and boards (pieces.js; sized w × h by app.js) ---
    A face is one grid cell holding its layers: colour, image, board SVG,
@@ -302,6 +317,8 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 .pimg, .psvg { width: 100%; height: 100%; }
 .psvg { pointer-events: none; }
 .blabels { font-family: Georgia, 'Times New Roman', serif; font-weight: 700; opacity: 0.85; }
+/* a coordinate grows with the badges, but no more than its margin holds (--lmax: pieces.js gridSVG) */
+.blabels text { scale: min(var(--bz, 1), var(--lmax, 1)); }
 /* A board's printed text turns about its own centre, against the view
    (--view: app.js layout sets it through the view sheet) and the board's own
    turn (--rot, on the board's element), D91: its coordinates by the whole
@@ -340,13 +357,16 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 .shape-pawn .pface { clip-path: polygon(40% 0, 60% 0, 70% 14%, 64% 32%, 57% 42%, 74% 84%, 90% 100%, 10% 100%, 26% 84%, 43% 42%, 36% 32%, 30% 14%); }
 /* a clip-path cuts its own shadow off: the item casts it instead */
 .item.shape-hex, .item.shape-meeple, .item.shape-pawn { filter: drop-shadow(0 2px 3px #0009); }
-.item.selected .pface, .item.selected .bagbox { outline: 3px solid #fbbf24; outline-offset: 1px; }
+/* Selection rings, in table units: they grow with the badges (--bz, set on a
+   selected item by the view sheet), so a phone's fit still shows them. */
+.item.selected .pface, .item.selected .bagbox { --u: calc(1px * var(--bz, 1)); outline: calc(3 * var(--u)) solid #fbbf24; outline-offset: var(--u); }
 /* a ring set off by a dark edge, as the outline above is by its offset: it shows on a yellow piece too */
-.item.shape-round.selected .pface, .item.shape-disc.selected .pface { outline: 0; box-shadow: 0 0 0 1.5px #000b, 0 0 0 4.5px #fbbf24, 0 3px 8px #0008; }
+.item.shape-round.selected .pface, .item.shape-disc.selected .pface { outline: 0; box-shadow: 0 0 0 calc(1.5 * var(--u)) #000b, 0 0 0 calc(4.5 * var(--u)) #fbbf24, 0 3px 8px #0008; }
 /* a cut-out shape's clip-path cuts its outline off: the item draws the edge and the ring, as it does its shadow */
 .item.selected.shape-hex, .item.selected.shape-meeple, .item.selected.shape-pawn {
-  filter: drop-shadow(1px 0 0 #000b) drop-shadow(-1px 0 0 #000b) drop-shadow(0 1px 0 #000b) drop-shadow(0 -1px 0 #000b)
-    drop-shadow(2px 0 0 #fbbf24) drop-shadow(-2px 0 0 #fbbf24) drop-shadow(0 2px 0 #fbbf24) drop-shadow(0 -2px 0 #fbbf24) drop-shadow(0 2px 3px #0009);
+  --u: calc(1px * var(--bz, 1));
+  filter: drop-shadow(var(--u) 0 0 #000b) drop-shadow(calc(-1 * var(--u)) 0 0 #000b) drop-shadow(0 var(--u) 0 #000b) drop-shadow(0 calc(-1 * var(--u)) 0 #000b)
+    drop-shadow(calc(2 * var(--u)) 0 0 #fbbf24) drop-shadow(calc(-2 * var(--u)) 0 0 #fbbf24) drop-shadow(0 calc(2 * var(--u)) 0 #fbbf24) drop-shadow(0 calc(-2 * var(--u)) 0 #fbbf24) drop-shadow(0 2px 3px #0009);
 }
 /* a pile of pieces: its top, on a stack of edges */
 .item.multi .pface { box-shadow: 2px 2px 0 #cbd5e1, 4px 4px 0 #94a3b8, 5px 5px 8px #0007; }
@@ -364,7 +384,7 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 }
 .item.selected > .odot { display: block; }
 @media (hover: hover) { .item:hover > .odot { display: block; } }
-.item .lockb { display: none; position: absolute; left: 50%; bottom: -12px; transform: translateX(-50%); font-size: 15px; font-style: normal; pointer-events: none; filter: drop-shadow(0 1px 2px #000); }
+.item .lockb { display: none; position: absolute; left: 50%; bottom: -12px; translate: -50% 0; font-size: 15px; font-style: normal; pointer-events: none; filter: drop-shadow(0 1px 2px #000); }
 .item.selected .lockb { display: block; }
 .item.board .lockb { bottom: 8px; }
 /* dice: a roll tumbles them on every screen (pieces.js tumble) */

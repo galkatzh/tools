@@ -144,19 +144,27 @@ async function clickItem(p, id, touch) {
  *  transform on the way, the view's, the board's and its own included), off
  *  (px from its box's centre to its anchor — its own x, y placed by the
  *  board's SVG), near (px to the nearest other text's anchor), fs (its font
- *  size on screen, px, its own scale included), out (board units its box
- *  stands past the board's edge, 0 inside)} each; and `bare`, the angle the
- *  first coordinate shows while its own turn is taken off for a moment: the
- *  view's turn plus the board's, which D91 undoes. */
+ *  size on screen, px, its own scale included), out (board units its ink
+ *  stands past the board's edge, 0 inside: the glyphs' own bounds, measured
+ *  on a canvas in its font, centred on its anchor as the text is)} each; and
+ *  `bare`, the angle the first coordinate shows while its own turn is taken
+ *  off for a moment: the view's turn plus the board's, which D91 undoes. */
 const boardTexts = (p, id) => p.evaluate((id) => {
   const svg = document.querySelector(`.item[data-id="${id}"] svg.psvg`), M = svg.getScreenCTM(), Mi = M.inverse(), els = [...svg.querySelectorAll('text')];
-  const [, , W, H] = svg.getAttribute('viewBox').split(' ').map(Number);
+  const [, , W, H] = svg.getAttribute('viewBox').split(' ').map(Number), ctx = document.createElement('canvas').getContext('2d');
   const angle = (el) => { const m = el.getScreenCTM(); return Math.round((Math.atan2(m.b, m.a) * 1800) / Math.PI) / 10; };
   const anchors = els.map((el) => new DOMPoint(+el.getAttribute('x'), +el.getAttribute('y')).matrixTransform(M));
+  /** Text el's ink: its corners in its own user units (text-anchor middle, dominant-baseline central: the canvas's centre, middle). */
+  const ink = (el) => {
+    const cs = getComputedStyle(el), x = +el.getAttribute('x'), y = +el.getAttribute('y');
+    Object.assign(ctx, { font: `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`, textAlign: 'center', textBaseline: 'middle' });
+    const k = ctx.measureText(el.textContent), [l, r, t, b] = [x - k.actualBoundingBoxLeft, x + k.actualBoundingBoxRight, y - k.actualBoundingBoxAscent, y + k.actualBoundingBoxDescent];
+    return [[l, t], [r, t], [l, b], [r, b]];
+  };
   const texts = els.map((el, k) => {
-    const r = el.getBoundingClientRect(), d = (q) => Math.hypot(r.left + r.width / 2 - q.x, r.top + r.height / 2 - q.y), m = el.getScreenCTM(), bb = el.getBBox();
-    // its box's corners, through its own turn to the screen and back into board units
-    const corners = [[bb.x, bb.y], [bb.x + bb.width, bb.y], [bb.x, bb.y + bb.height], [bb.x + bb.width, bb.y + bb.height]].map(([x, y]) => new DOMPoint(x, y).matrixTransform(m).matrixTransform(Mi));
+    const r = el.getBoundingClientRect(), d = (q) => Math.hypot(r.left + r.width / 2 - q.x, r.top + r.height / 2 - q.y), m = el.getScreenCTM();
+    // its ink's corners, through its own turn and scale to the screen and back into board units
+    const corners = ink(el).map(([x, y]) => new DOMPoint(x, y).matrixTransform(m).matrixTransform(Mi));
     const out = Math.max(0, ...corners.flatMap((q) => [-q.x, q.x - W, -q.y, q.y - H]));
     return { t: el.textContent, label: el.classList.contains('slabel'), a: angle(el), off: d(anchors[k]), near: Math.min(...anchors.filter((_, j) => j !== k).map(d)), fs: parseFloat(getComputedStyle(el).fontSize) * Math.hypot(m.a, m.b), out: Math.round(out * 10) / 10 };
   });
@@ -168,14 +176,16 @@ const boardTexts = (p, id) => p.evaluate((id) => {
 }, id);
 /** Checks (h.ok) that the printed texts of board `id` on page p (`who`, for
  *  the messages) read as D91 has them — each coordinate upright, each space
- *  or zone label never upside down (at most a quarter turn off upright) and
- *  inside the board — that each sits by its own anchor, and that without its
- *  turn a coordinate would read at `bare` degrees (the view's turn plus the
- *  board's): the reading is live, and the view really turns it. */
+ *  or zone label never upside down (at most a quarter turn off upright), all
+ *  of them inside the board (a coordinate grows on a table drawn small, but
+ *  no more than its margin holds) — that each sits by its own anchor, and
+ *  that without its turn a coordinate would read at `bare` degrees (the
+ *  view's turn plus the board's): the reading is live, and the view really turns it. */
 async function upright(p, id, bare, who) {
   const b = await boardTexts(p, id), coords = b.texts.filter((x) => !x.label), labels = b.texts.filter((x) => x.label);
-  const crooked = coords.filter((x) => Math.abs(x.a) > 0.5), astray = b.texts.filter((x) => !(x.off <= 0.5 * x.fs && x.off < x.near));
+  const crooked = coords.filter((x) => Math.abs(x.a) > 0.5), astray = b.texts.filter((x) => !(x.off <= 0.5 * x.fs && x.off < x.near)), out = coords.filter((x) => x.out > 0.5);
   h.ok(coords.length > 0 && !crooked.length, `${who}: all ${coords.length} of the board's coordinates read upright (${crooked.map((x) => `${x.t} at ${x.a}°`).join(', ') || 'every one at 0°'})`);
+  h.ok(!out.length, `${who}: and stay inside the board (${out.map((x) => `${x.t}: ${x.out} past the edge`).join(', ') || `${coords.length} inside, at ${coords[0]?.fs.toFixed(1)} px`})`);
   if (labels.length) {
     const wrong = labels.filter((x) => Math.abs(x.a) > 90.5 || x.out > 0.5);
     h.ok(!wrong.length, `${who}: its ${labels.length} space and zone labels are never upside down, and stay inside the board (${labels.map((x) => `"${x.t}" at ${x.a}°, ${x.out} past the edge`).join('; ')})`);
@@ -184,28 +194,47 @@ async function upright(p, id, bare, who) {
   h.ok(angDiff(b.bare, bare) < 0.5, `${who}: without its own turn a coordinate would read at ${b.bare}° (the view's turn and the board's: ${bare}°)`);
 }
 /** The badges on page p that read upright on every screen (D91): a pile's
- *  count and name, ×N, ∞, and a bag — [{what, a, bare}]: `a`, its on-screen
- *  angle (degrees, 0 when upright), read from two probes put at its top
- *  corners; `bare`, the angle with its own turn taken off for a moment, less
- *  its item's rot (so: the view's turn, which the badge undoes). */
-const badgeAngles = (p) => p.evaluate(() => [...document.querySelectorAll('#table .item > .count, #table .pile > .pname, #table .bag > .bagbox')].map((el) => {
-  const pos = el.style.position, rot = +window.__ct.view().items[el.closest('.item').dataset.id].rot || 0;
+ *  count and name, ×N, ∞, a shown 🔒 and a bag — [{what, a, bare, below?,
+ *  off?}]: `a`, its on-screen angle (degrees, 0 when upright), read from two
+ *  probes put at its top corners; `bare`, the angle with its own turn taken
+ *  off for a moment (--view and --rot zeroed on it), less its item's rot
+ *  (so: the view's turn, which the badge undoes). A pile's name also has
+ *  `below`, px from the pile's lowest corner on the screen down to the
+ *  name's top (≥ 0: it sits under the pile, clear of it), `off`, px from
+ *  the pile's centre across to the name's, and `count`, px² of the pile's
+ *  count that it covers. */
+const badgeAngles = (p) => p.evaluate(() => [...document.querySelectorAll('#table .item > .count, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb')].filter((el) => el.getClientRects().length).map((el) => {
+  const pos = el.style.position, item = el.closest('.item'), rot = +window.__ct.view().items[item.dataset.id].rot || 0;
+  /** Client rects of probes put at (left, top) in element e. */
+  const probes = (e, pts) => pts.map(([left, top]) => { const i = document.createElement('i'); i.style.cssText = `position:absolute;top:${top};left:${left};width:0;height:0`; e.appendChild(i); const r = i.getBoundingClientRect(); i.remove(); return r; });
   if (getComputedStyle(el).position === 'static') el.style.position = 'relative'; // (a probe's place is its parent's box)
-  const probe = (left) => { const i = document.createElement('i'); i.style.cssText = `position:absolute;top:0;left:${left};width:0;height:0`; el.appendChild(i); const r = i.getBoundingClientRect(); i.remove(); return r; };
-  const angle = () => { const a = probe('0'), b = probe('100%'); return Math.round((Math.atan2(b.top - a.top, b.left - a.left) * 1800) / Math.PI) / 10; };
-  const a = angle();
-  el.style.rotate = 'none';
-  const bare = angle() - rot;
-  el.style.rotate = '';
+  const angle = () => { const [a, b] = probes(el, [['0', '0'], ['100%', '0']]); return Math.round((Math.atan2(b.top - a.top, b.left - a.left) * 1800) / Math.PI) / 10; };
+  const a = angle(), out = { what: `${el.className} "${el.textContent}"`, a };
+  el.style.setProperty('--view', '0deg');
+  el.style.setProperty('--rot', '0deg');
+  out.bare = (((angle() - rot) % 360) + 360) % 360;
+  el.style.removeProperty('--view');
+  el.style.removeProperty('--rot');
   el.style.position = pos;
-  return { what: `${el.className} "${el.textContent}"`, a, bare: ((bare % 360) + 360) % 360 };
+  if (el.classList.contains('pname')) {
+    const c = probes(item, [['0', '0'], ['100%', '0'], ['0', '100%'], ['100%', '100%'], ['50%', '50%']]), n = el.getBoundingClientRect();
+    out.below = Math.round((n.top - Math.max(...c.slice(0, 4).map((q) => q.top))) * 10) / 10;
+    out.off = Math.round((n.left + n.width / 2 - c[4].left) * 10) / 10;
+    const k = item.querySelector(':scope > .count')?.getBoundingClientRect();
+    out.count = k ? Math.round(Math.max(0, Math.min(n.right, k.right) - Math.max(n.left, k.left)) * Math.max(0, Math.min(n.bottom, k.bottom) - Math.max(n.top, k.top))) : 0;
+  }
+  return out;
 }));
 /** Checks (h.ok) that every badge on page p (`who`) reads upright, and that
- *  without its turn it would read at `turn`, the view's (the reading is live). */
+ *  without its turn it would read at `turn`, the view's (the reading is
+ *  live); and that a pile's name sits under its pile on the screen, centred
+ *  and clear of it (D91 amended after the close-out's second review). */
 async function badgesUpright(p, turn, who) {
   const b = await badgeAngles(p), crooked = b.filter((x) => Math.abs(x.a) > 0.5), bare = b.filter((x) => angDiff(x.bare, turn) > 0.5);
-  h.ok(b.length > 0 && !crooked.length, `${who}: all ${b.length} badges (a pile's count and name, ×N, ∞, a bag) read upright (${crooked.map((x) => `${x.what} at ${x.a}°`).join(', ') || 'every one at 0°'})`);
+  h.ok(b.length > 0 && !crooked.length, `${who}: all ${b.length} badges (a pile's count and name, ×N, ∞, 🔒, a bag) read upright (${crooked.map((x) => `${x.what} at ${x.a}°`).join(', ') || 'every one at 0°'})`);
   h.ok(!bare.length, `${who}: without its own turn each would read at the view's turn plus its item's, ${turn}° (${bare.map((x) => `${x.what}: ${x.bare}°`).join(', ') || 'all'})`);
+  const names = b.filter((x) => 'below' in x), astray = names.filter((x) => x.below < -0.5 || Math.abs(x.off) > 1 || x.count > 0);
+  if (names.length) h.ok(!astray.length, `${who}: each pile's name sits under its pile on the screen, centred, clear of it and of its count (${names.map((x) => `${x.what}: ${x.below} px below, ${x.off} px across, ${x.count} px² of the count covered`).join('; ')})`);
 }
 /** The actions page p has sent so far (bytes on the `act` channel; p1-lib's RTC hook). */
 const sentActs = (p) => p.evaluate(() => window.__rtc.sent.act || 0);

@@ -937,11 +937,27 @@ async function sendImage(peer, box, h) {
 }
 
 function connect() {
+  /** The page's RTCPeerConnection, for Trystero (D95). Each page keeps a
+   *  pool of 20 offers made in advance; Trystero 0.25.3 hands out one older
+   *  than 57 s by an ICE restart that first rolls the unanswered offer back.
+   *  In Chromium that rollback drops the data channel's m-line, so the
+   *  restart's offer is empty and the peer that answers it never links: a
+   *  guest joining or reloading into a room whose host has been open for
+   *  over a minute (or a host reloading beside a guest that has), whenever
+   *  the older page's id sorts first and so makes the offer. Here the
+   *  rollback of an offer never answered (no remote description yet) does
+   *  nothing, as in Trystero 0.26: the restart re-offers the same
+   *  connection, whole. (tests/h.js gives the raw test peers the same class.) */
+  class WholeOffers extends RTCPeerConnection {
+    setLocalDescription(d) {
+      return d?.type === 'rollback' && !this.remoteDescription ? Promise.resolve() : super.setLocalDescription(d);
+    }
+  }
   // window.CARDTABLE_RELAYS overrides the default public Nostr relays (tests, self-hosting).
   // redundancy 10 (default 5): more relays per room = better odds that two
   // peers share a live one when parts of the public infrastructure are down.
   const relays = window.CARDTABLE_RELAYS;
-  room = joinRoom({ appId: 'gk-cardtable', password, relayConfig: relays ? { urls: relays } : { redundancy: 10 } }, roomId);
+  room = joinRoom({ appId: 'gk-cardtable', password, rtcPolyfill: WholeOffers, relayConfig: relays ? { urls: relays } : { redundancy: 10 } }, roomId);
   const actA = room.makeAction('act');
   const stateA = room.makeAction('state');
   const decksA = room.makeAction('decks');
@@ -1126,14 +1142,15 @@ function updateNet() {
   netEl.title = `${n + 1} player${n ? 's' : ''} here · ${r} signaling relays connected${r ? '' : ' — searching for relays'}${resyncing ? ' · re-syncing with the host…' : ''}`;
   if (role === 'guest') {
     hintEl.classList.toggle('hidden', view.seq > 0 && !!hostPeer);
-    // Blame the host only when we can still reach the room: with no peers
-    // and no relays, it's OUR connection that dropped — once the relays
-    // were up on this page, or had RELAY_GRACE_MS to come up. (A page the
-    // watchdog reloaded for an absent host shows its kept table, paused,
-    // while they open: that is no lost connection.)
-    hintEl.textContent = !view.seq ? 'Waiting for the host…\n(the table lives in the host\'s open tab)'
-      : n === 0 && r === 0 && (relaysSeen || Date.now() - bootAt > RELAY_GRACE_MS) ? 'Connection lost — reconnecting…'
-        : 'The host left — the table is paused until they return';
+    // Our own side first: with no peers and no relays, it's OUR connection
+    // that is down, never the host — once the relays were up on this page
+    // (lost), or had RELAY_GRACE_MS to come up (never reached). Until then a
+    // page with no table is still connecting, and one the watchdog reloaded
+    // for an absent host shows its kept table, paused.
+    const ours = n === 0 && r === 0 && (relaysSeen || Date.now() - bootAt > RELAY_GRACE_MS);
+    hintEl.textContent = ours ? (relaysSeen ? 'Connection lost — reconnecting…' : "Can't reach the signalling relays — reconnecting…")
+      : view.seq ? 'The host left — the table is paused until they return'
+        : relaysSeen ? 'Waiting for the host…\n(the table lives in the host\'s open tab)' : 'Connecting…';
   }
 }
 
@@ -1147,36 +1164,46 @@ function updateNet() {
 // A guest without the host counts, whatever other peers it has: one that
 // never got the table, at once (then the backoff's 20 s); one that had it,
 // once the host has been gone HOST_GONE_MS — a link to a returning host
-// that never forms (WebRTC signalling that stalled on one side) would
-// otherwise freeze its screen for good, the "host left" hint up forever.
+// that never forms (its relays lost, or a WebRTC offer that went wrong:
+// see WholeOffers in connect()) would otherwise freeze its screen for
+// good, the "host left" hint up forever.
 // That guest keeps its table across the reload (keepPaused): a host that
 // simply left leaves its guests the last table, paused, as before — and
 // when the host was last seen, so the next page counts the absence on.
 // The backoff lives in sessionStorage precisely so it survives those
 // reloads; it goes once we're back (the host here again, for a guest), not
 // merely when nothing starves yet: a guest that kept its table would
-// otherwise restart it at 20 s on every page, and reload every minute.
-const HOST_GONE_MS = 60000;
-let hostSeenAt = Date.now(); // guest: when the host was last reachable (or this page loaded; resumePaused: the last page's)
+// otherwise restart it at 20 s on every page, and reload every minute. It is
+// the room's, and only the page its reload opened trusts it (written up to
+// REJOIN_FRESH_MS before this page booted), as only that page takes the
+// kept table's "host last seen": a later visit to the room in this tab (the
+// tab went elsewhere, or was restored; a reload that landed on the
+// browser's offline page) starts afresh, with its 20 s of grace.
+const HOST_GONE_MS = 60000, REJOIN_FRESH_MS = 15000; // (a reload and the boot after it take a few seconds; a later visit, a minute or more)
+const rejoinKey = () => `ct-rejoin-${roomId}`;
+/** Whether a record written at `at` came from the reload that opened this page. */
+const fromMyReload = (at) => Number.isFinite(at) && bootAt - at < REJOIN_FRESH_MS;
+let hostSeenAt = bootAt; // guest: when the host was last reachable (or this page loaded; resumePaused: the last page's)
 setInterval(() => {
   if (!room) return;
   updateNet(); // keep the relay indicator fresh even when nothing happens
   const n = Object.keys(room.getPeers()).length, now = Date.now(), back = role !== 'guest' || hostHere();
   if (back) hostSeenAt = now;
+  const ours = n === 0 && openRelays() === 0; // nobody, and no relay: our own connection is down
   const hostless = role === 'guest' && !back && (view.seq === 0 || now - hostSeenAt > HOST_GONE_MS);
-  const starving = (n === 0 && openRelays() === 0) || hostless;
   try {
-    if (!starving) {
-      if (back) sessionStorage.removeItem('ct-rejoin');
+    if (!ours && !hostless) {
+      if (back) sessionStorage.removeItem(rejoinKey());
       return;
     }
-    const st = JSON.parse(sessionStorage.getItem('ct-rejoin') || '{}');
+    const kept = JSON.parse(sessionStorage.getItem(rejoinKey()) || '{}'), st = fromMyReload(kept.at) ? kept : {};
     const backoff = clamp(st.backoff || 20000, 20000, 120000);
     if (now - (st.at || bootAt) < backoff) return;
-    sessionStorage.setItem('ct-rejoin', JSON.stringify({ backoff: Math.min(backoff * 2, 120000), at: now }));
-    // Each cause says what it is: our relays, a host never found, or one gone a while (and how long).
+    sessionStorage.setItem(rejoinKey(), JSON.stringify({ backoff: Math.min(backoff * 2, 120000), at: now }));
+    // Each cause says what it is: our relays (checked first: then the host
+    // may well be there), a host never found, or one gone a while (and how long).
     const away = Math.round((now - hostSeenAt) / 1000);
-    const [why, msg] = !hostless ? ['no relays reachable', 'Connection is struggling — reconnecting…']
+    const [why, msg] = ours ? ['no relays reachable', 'Connection is struggling — reconnecting…']
       : view.seq ? [`the host has been unreachable for ${away} s`, `The host has been away for ${away < 90 ? 'a minute' : `${Math.round(away / 60)} minutes`} — reconnecting…`]
         : ['no host found yet', 'No host found yet — looking again…'];
     console.warn(`reconnecting via reload: ${why}`);
@@ -1193,7 +1220,7 @@ const pausedKey = () => `ct-paused-${roomId}`;
 function keepPaused() {
   try {
     const bx = Object.fromEntries(Object.entries(boxes).map(([id, b]) => [id, { ...b, ...boxInfo[id] }]));
-    sessionStorage.setItem(pausedKey(), JSON.stringify({ view, decks, boxes: bx, seenAt: hostSeenAt }));
+    sessionStorage.setItem(pausedKey(), JSON.stringify({ view, decks, boxes: bx, seenAt: hostSeenAt, at: Date.now() }));
   } catch (err) { console.error('could not keep the paused table across the reload', err); }
 }
 /** Guest, at boot: the table keepPaused kept, shown again, paused (the hint
@@ -1204,8 +1231,8 @@ function resumePaused() {
     const kept = sessionStorage.getItem(pausedKey());
     if (kept === null) return;
     sessionStorage.removeItem(pausedKey());
-    const { view: v, decks: d, boxes: b, seenAt } = JSON.parse(kept);
-    if (Number.isFinite(seenAt) && seenAt <= Date.now()) hostSeenAt = seenAt; // the host's absence goes on counting
+    const { view: v, decks: d, boxes: b, seenAt, at } = JSON.parse(kept);
+    if (fromMyReload(at) && Number.isFinite(seenAt) && seenAt <= bootAt) hostSeenAt = seenAt; // the host's absence goes on counting
     view = viewFromSnap(v);
     setTable(view.table);
     takeDecks(d);
@@ -1236,10 +1263,12 @@ function resumePaused() {
 // whose migration couldn't be written (store.js loadSave). A state that
 // can't be stored at all (a rules script left a function in t.data) costs
 // the rules, not the save (_unsaveable).
-// An IndexedDB write started as the page goes away may never commit, so
-// pagehide also leaves the seq it meant to save in localStorage (synchronous):
-// ct-pending-<room>. A commit of that seq removes it; a boot that finds it
-// ahead of the save says the last moment of play was lost.
+// A tab that goes away (pagehide), or is hidden (visibilitychange: a phone
+// may suspend, then discard it, with no pagehide), saves at once (flushSave).
+// An IndexedDB write started then may never commit, so it also leaves the
+// seq it meant to save in localStorage (synchronous): ct-pending-<room>. A
+// commit of that seq removes it; a boot that finds it ahead of the save says
+// the last moment of play was lost.
 const SAVE_DEFER_MS = 250;
 let persistT = 0, lastSave = 0, saving = false, again = false, persistWarned = false;
 let savedSeq = -1; // host: the seq of the last save that committed
@@ -1293,18 +1322,26 @@ function persist() {
   if (role !== 'host' || noSave || persistT) return;
   persistT = setTimeout(() => { persistT = 0; doSave(); }, Math.max(lastSave ? SAVE_DEFER_MS : 0, 1000 - (Date.now() - lastSave)));
 }
-// Leaving: the table's last moment is saved first (if it isn't yet), then the
-// room is left — which marks the guests offline, a change not worth a save.
+/** Host, leaving or maybe leaving: the table's last moment is saved now, if
+ *  it isn't yet (not SAVE_DEFER_MS later), and marked pending until that
+ *  save commits (see above). */
+function flushSave() {
+  if (role !== 'host' || noSave || T.state.seq === savedSeq) return;
+  try { localStorage.setItem(pendingKey(), String(T.state.seq)); } catch (err) { console.error('could not mark the save as pending', err); }
+  clearTimeout(persistT);
+  persistT = 0;
+  doSave(true);
+}
+// Leaving: the save first, then the room is left — which marks the guests
+// offline, a change not worth a save. A tab hidden may never come back
+// either: a phone that switches apps or locks often hides it with no
+// pagehide, then suspends its timers and may discard it.
 window.addEventListener('pagehide', () => {
-  if (role === 'host' && !noSave && T.state.seq !== savedSeq) {
-    try { localStorage.setItem(pendingKey(), String(T.state.seq)); } catch (err) { console.error('could not mark the save as pending', err); }
-    clearTimeout(persistT);
-    persistT = 0;
-    doSave(true);
-  }
+  flushSave();
   try { room?.leave(); } catch (err) { console.error('leaving the room failed', err); }
 });
-/** Host, at boot: a save this tab left pending (pagehide) that never
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(); });
+/** Host, at boot: a save this tab left pending (flushSave) that never
  *  committed is said, once — unless the boot says worse (a save lost). */
 function checkPending(save) {
   const mark = localStorage.getItem(pendingKey());
@@ -1586,6 +1623,9 @@ function kind(el, cls, w, h) {
   el.dataset.kc = cls.join(' ');
   el.style.width = w ? `${w}px` : '';
   el.style.height = h ? `${h}px` : '';
+  // a piece pile's half diagonal: its name sits just past it (style.css .pname; a card pile's is the default)
+  if (w && cls.includes('pile')) el.style.setProperty('--pr', `${Math.round(Math.hypot(w, h) / 2)}px`);
+  else el.style.removeProperty('--pr');
 }
 
 // Seat labels: everyone sees the same seating, each from their own rotation.
@@ -1649,11 +1689,13 @@ let seatSpots = ''; // where placeSeats last put the button row and the notices
  *  pan, zoom and pinch frame, so it moves things by transform only: a
  *  layout per frame would also make the browser hit-test the whole table
  *  for hover, which is slow with 1,000 cards (B4). */
+const HINT_BAND = 60; // half the height of the hint's plate, about (3 lines on a phone)
 function placeSeats() {
   const W = wrapW, H = wrapH;
   let rowBottom = 12, noticeTop = 10; // #rules-btns' and #notices' default spots (CSS)
   const angles = view.seats && seatEls.some((s) => s.seat) && seatAngles(TABLE, view.seats);
   const corner = []; // the labels the watchers' box (top right, watchW × watchH) could cover: [top, bottom]
+  let side = Infinity; // how far the hint's plate may reach either side of the middle before a label beside it
   for (const { p, seat, el, hw, hh } of seatEls) {
     // (the seat's point is read here, not kept with the label: a new table
     // size moves it, and layout() places the labels again then)
@@ -1668,7 +1710,12 @@ function placeSeats() {
     if (p === pid && y > H / 2) rowBottom = Math.max(rowBottom, H - (y - hh) + 6);
     // Labels across the top: the banner and toasts start just below them.
     if (y < H / 4) noticeTop = Math.max(noticeTop, y + hh + 4);
+    if (Math.abs(y - H / 2) < hh + HINT_BAND) side = Math.min(side, Math.abs(x - W / 2) - hw - 8);
   }
+  // The table's hint, centred on the table area, on a plate that wraps in
+  // the middle of the felt and between the labels beside it.
+  const hintW = `${Math.round(Math.max(140, Math.min(0.6 * feltW, 2 * side)))}px`;
+  if (hintW !== hintEl.style.getPropertyValue('--hint-w')) hintEl.style.setProperty('--hint-w', hintW);
   // (#table-wrap and #notices both start at #main's top: the offsets agree)
   const strip = $('game-strip'); // the "What are we playing?" strip pushes the notices down too
   if (!strip.classList.contains('hidden')) noticeTop = Math.max(noticeTop, strip.offsetTop + strip.offsetHeight + 4);
@@ -1686,9 +1733,11 @@ function placeSeats() {
   $('rules-btns').style.translate = `0 ${12 - rowBottom}px`;
   $('notices').style.translate = `0 ${noticeTop - 10}px`;
   $('watch-box').style.translate = `0 ${watchTop - 8}px`;
-  const main = $('main');
-  main.classList.toggle('gutters', gutters);
-  main.style.setProperty('--gutter', `${gutter | 0}px`);
+  $('main').classList.toggle('gutters', gutters);
+  // (on the three boxes that use it: on #main, an inherited property, it
+  // would restyle every element of the table at each frame of a zoom or of
+  // a rectangle's turn, whose fit changes as it turns)
+  for (const id of ['notices', 'rules-btns', 'watch-box']) $(id).style.setProperty('--gutter', `${gutter | 0}px`);
 }
 
 // --- the seat menu (spec §2g) and the watchers -----------------------------------
@@ -1749,23 +1798,26 @@ wrapEl.addEventListener('click', (e) => {
 });
 
 /** The watchers chip ("👀 Carol, Dan": the online players without a seat),
- *  and for a watcher how to sit down again: tap a free named seat, or with
- *  automatic seating the Sit down button. On a short screen (a phone in
- *  landscape: the table fills its height, and a board reaches the corner)
- *  both are compact ("👀 2", "👀 Watching") until a tap opens them. */
-const shortScreen = matchMedia('(max-height: 500px)');
-let watchSig = '', watchW = 0, watchH = 0, watchOpen = false; // what the watchers' box shows; its size; opened by a tap
+ *  and for a watcher how to sit down again: tap a free named seat (while one
+ *  is free), or with automatic seating the Sit down button. On a short
+ *  screen (a phone in landscape: the table fills its height, and a board
+ *  reaches the corner) both are compact ("👀 2", "👀 Watching") until a tap
+ *  opens them, in the right margin, for WATCH_OPEN_MS or until the next
+ *  touch on the table. */
+const shortScreen = matchMedia('(max-height: 500px)'), WATCH_OPEN_MS = 6000;
+let watchSig = '', watchW = 0, watchH = 0, watchOpen = false, watchT = 0; // what the watchers' box shows; its size; opened by a tap; its closing timer
 function renderWatchers() {
   const watching = Object.entries(view.players).filter(([, pl]) => pl.seat == null && pl.online), me = view.players[pid];
-  const compact = shortScreen.matches && !watchOpen;
-  const sig = `${watching.map(([, pl]) => pl.name).join()}|${me?.seat == null}|${!!me}|${!!view.seats}|${compact}`;
+  const compact = shortScreen.matches && !watchOpen, free = !!view.seats?.some((st) => !seatHolder(st.id));
+  const sig = `${watching.map(([, pl]) => pl.name).join()}|${me?.seat == null}|${!!me}|${!!view.seats}|${free}|${compact}`;
   if (sig === watchSig) return;
   watchSig = sig;
   $('watchers').textContent = `👀 ${compact ? watching.length : watching.map(([, pl]) => pl.name || 'Player').join(', ')}`;
   $('watchers').classList.toggle('hidden', !watching.length);
   const iWatch = !!me && me.seat == null;
   $('watch-me').classList.toggle('hidden', !iWatch);
-  $('watch-me-text').textContent = compact ? '👀 Watching' : view.seats ? '👀 You are watching — tap a free seat to sit' : '👀 You are watching';
+  $('watch-me-text').textContent = compact ? '👀 Watching' : !view.seats ? '👀 You are watching'
+    : free ? '👀 You are watching — tap a free seat to sit' : '👀 You are watching — every seat is taken';
   $('sit-btn').classList.toggle('hidden', !!view.seats);
   const box = $('watch-box');
   [watchW, watchH] = [box.offsetWidth, box.offsetHeight]; // (placeSeats keeps the labels clear of it)
@@ -1773,12 +1825,19 @@ function renderWatchers() {
 $('sit-btn').addEventListener('click', () => act({ t: 'seat', sit: true }));
 /** Renders the watchers' box again (its texts, its size), and puts the seat labels clear of it. */
 const rewatch = () => { renderWatchers(); placeSeats(); };
-shortScreen.addEventListener('change', () => { watchOpen = false; rewatch(); });
+/** Opens (for WATCH_OPEN_MS) or closes a short screen's watchers' box. */
+function openWatch(open) {
+  clearTimeout(watchT);
+  watchOpen = open;
+  if (open) watchT = setTimeout(() => openWatch(false), WATCH_OPEN_MS);
+  rewatch();
+}
+shortScreen.addEventListener('change', () => openWatch(false));
 $('watch-box').addEventListener('click', (e) => {
   if (e.target.closest('#sit-btn') || !shortScreen.matches) return;
-  watchOpen = !watchOpen;
-  rewatch();
+  openWatch(!watchOpen);
 });
+wrapEl.addEventListener('pointerdown', (e) => { if (watchOpen && !e.target.closest('#watch-box')) openWatch(false); });
 
 let handSig = '';
 let sortHand = false; // ⇅: show the hand sorted (display only — the host's order is untouched)
@@ -1985,21 +2044,29 @@ function rotv(x, y, a) {
 
 // The view sheet: what follows the view, written as rules of one adopted
 // stylesheet, so that only what they match restyles, and only when the view
-// changed. Badges (a stack's ×N, a supply's ∞, an owner's dot) are drawn in
-// table units, so on a table drawn small (a phone's fit) they'd be a few
-// pixels: they grow back toward a readable size, by at most BADGE_MAX× (rule
-// 0), and a board's coordinates by at most LABEL_MAX× (1: more would push
-// them out of the margin they're sized for). What reads upright on every
-// screen turns back against the view (2: --view, style.css D91): a board's
-// printed text, the badges with a number or a name, a bag. A rule, not a
-// property on #table: an inherited property there would restyle all 3,700
-// elements of the 1,000-piece bench table (9 ms a turn on a desktop, 16 ms
-// on the B4 phone, with a labelled board of 51 texts); the rule restyles
-// what it matches alone (2 and 4 ms, their redraw too).
-const viewSheet = new CSSStyleSheet(), BADGE_MAX = 3, LABEL_MAX = 1.6;
-viewSheet.replaceSync('.item > .count, .item > .odot {} #table .blabels text {} #table .psvg text, #table .item > .count, #table .pile > .pname, #table .bag > .bagbox {}');
+// changed. A rule, not a property on #table: an inherited property there
+// would restyle all 3,700 elements of the 1,000-piece bench table (9 ms a
+// turn on a desktop, 16 ms on the B4 phone, with a labelled board of 51
+// texts); a rule restyles what it matches alone.
+//   0  --bz, the badges' growth (style.css). Badges (×N, ∞, a pile's count
+//      and name, an owner's dot, 🔒) and selection rings are drawn in table
+//      units, so on a table drawn small (a phone's fit) they'd be a few
+//      pixels: they grow back toward a readable size, by at most BADGE_MAX×;
+//      a board's coordinates too, by at most what fits their margin (its
+//      --lmax, pieces.js gridSVG).
+//   1  --view for a board's printed text (D91), which turns back against
+//      the view: every frame of a turn (a board holds a few dozen texts).
+//   2  --view for the badges with a number or a name, 🔒 and a bag, which
+//      turn back too (D91).
+// On a 1,000-stack table the badges are a thousand: a restyle of them all
+// takes 20 to 40 ms on the B4 phone. So while two fingers move the view (a
+// pinch, a twist) they keep their size and turn, moving with the table as
+// its pieces do, and settle (upright, readable) once the fingers lift (D96).
+const viewSheet = new CSSStyleSheet(), BADGE_MAX = 3;
+viewSheet.replaceSync('#table .item > .count, #table .item > .odot, #table .item > .lockb, #table .pile > .pname, #table .item.selected, #table .blabels text {} '
+  + '#table .psvg text {} #table .item > .count, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb {}');
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, viewSheet];
-let badgeZ = '', textAngle = 0;
+let badgeZ = '', textAngle = 0, badgeAngle = 0, feltW = 0;
 
 function layout() {
   const w = (wrapW = wrapEl.clientWidth), h = (wrapH = wrapEl.clientHeight);
@@ -2009,11 +2076,10 @@ function layout() {
   const bw = rect ? TABLE_W * c + TABLE_H * sn : TABLE_W, bh = rect ? TABLE_W * sn + TABLE_H * c : TABLE_H;
   scale = Math.min(w / bw, h / bh) * zoomZ; // fit × user zoom
   const bz = clamp(0.67 / scale, 1, BADGE_MAX).toFixed(2); // (a 12-unit badge text shows ≥ 8 px while it can)
-  if (bz !== badgeZ) {
-    viewSheet.cssRules[0].style.scale = badgeZ = bz;
-    viewSheet.cssRules[1].style.scale = Math.min(bz, LABEL_MAX);
-  }
-  if (viewAngle !== textAngle) viewSheet.cssRules[2].style.setProperty('--view', `${(textAngle = viewAngle)}deg`);
+  if (viewAngle !== textAngle) viewSheet.cssRules[1].style.setProperty('--view', `${(textAngle = viewAngle)}deg`);
+  if (!pinch && bz !== badgeZ) viewSheet.cssRules[0].style.setProperty('--bz', (badgeZ = bz));
+  if (!pinch && viewAngle !== badgeAngle) viewSheet.cssRules[2].style.setProperty('--view', `${(badgeAngle = viewAngle)}deg`);
+  feltW = bw * scale; // (the hint's plate fits its middle: placeSeats)
   // keep at least the table's center reachable
   panX = clamp(panX, -(bw * scale) / 2, (bw * scale) / 2);
   panY = clamp(panY, -(bh * scale) / 2, (bh * scale) / 2);
@@ -2297,20 +2363,30 @@ peekEl.addEventListener('click', () => peekEl.classList.add('hidden'));
 // A button clicked or tapped lets go of the focus, as one pressed on the
 // table does (pointerdown): the keys below skip a focused button, and Space
 // or Enter would press it again — after the bar's ⟳ (which leaves the bar as
-// it was: syncBar redraws only what changed), 🧭 in the header, or a dialog
-// that ? 📜 or + Deck opened, R must turn the piece and Space roll the die.
-// It lets go at once (a key may follow right away), and again one task
-// later: a dialog that the click closes hands the focus back to the button
-// that opened it only after the click. A focus the click put elsewhere
-// stays: in an open dialog, or in the chat (➤ puts it back there). A button
-// reached and pressed from the keyboard (detail 0), or a dialog closed with
-// Escape, keeps the focus.
+// it was: syncBar redraws only what changed) or 🧭 in the header, R must turn
+// the piece and Space roll the die. A focus the click put elsewhere stays: in
+// an open dialog, or in the chat (➤ puts it back there). A button reached
+// and pressed from the keyboard (detail 0) keeps the focus.
+// A dialog that closes hands the focus back to the button that opened it,
+// however it closes (a button, Escape, or + Deck's form once its deck is
+// built: after an await, for a guest or an image deck). So that button lets
+// go again then, if a pointer pressed it last (one pressed from the keyboard
+// keeps it): `close` doesn't bubble, hence the capture.
+const byPointer = new WeakSet(); // the buttons a pointer, not a key, pressed last
+/** Blurs the focused button, unless it is in an open dialog (`opener`: only
+ *  one a pointer pressed last). */
+function letGo(opener) {
+  const f = document.activeElement;
+  if (f?.matches('button') && !f.closest('dialog[open]') && (!opener || byPointer.has(f))) f.blur();
+}
 document.addEventListener('click', (e) => {
-  if (!e.detail || !e.target.closest?.('button')) return;
-  const letGo = () => { const f = document.activeElement; if (f?.matches('button') && !f.closest('dialog[open]')) f.blur(); };
+  const b = e.target.closest?.('button');
+  if (!b) return;
+  if (!e.detail) { byPointer.delete(b); return; }
+  byPointer.add(b);
   letGo();
-  setTimeout(letGo);
 });
+document.addEventListener('close', () => { letGo(true); setTimeout(() => letGo(true)); }, true); // (at once, and after a browser that restores the focus later)
 // Keys, outside inputs (an open <dialog> keeps them, Escape included: the
 // browser closes it). Escape closes the zoom or peek overlay, else the seat
 // menu, else dismisses the action bar. The others are the bar's shortcuts on
@@ -2427,6 +2503,12 @@ function startPinch() {
   };
 }
 
+/** The two-finger gesture ends: the badges, which kept still meanwhile, settle (layout). */
+function endPinch() {
+  pinch = null;
+  layout();
+}
+
 function updatePinch() {
   const [p1, p2] = [...tPtrs.values()];
   const m = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
@@ -2539,7 +2621,7 @@ function endHoldZoom() {
 window.addEventListener('pointercancel', (e) => {
   tPtrs.delete(e.pointerId);
   endHoldZoom();
-  if (tPtrs.size < 2) pinch = null;
+  if (pinch && tPtrs.size < 2) endPinch();
   handResize = null;
   feltDrag = null;
   if (handDrag?.moved) { ghost?.remove(); ghost = null; }
@@ -2552,7 +2634,7 @@ window.addEventListener('pointerup', (e) => {
   if (pinch || drag?.moved || feltDrag?.moved || handDrag?.moved) dragEndAt = e.timeStamp;
   if (endHoldZoom()) return;
   if (pinch) {
-    if (tPtrs.size < 2) pinch = null; // gesture ends; a leftover finger is inert
+    if (tPtrs.size < 2) endPinch(); // a leftover finger is inert
     return;
   }
   if (handResize) {

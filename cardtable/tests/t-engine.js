@@ -37,12 +37,11 @@ const rulesOn = (page) => page.locator('#rules-btn').evaluate((el) => el.classLi
 
 /** Eve: a bare trystero peer in her own page, seated under her own pid/key. */
 async function eve(env, invite) {
-  const page = await env.page('Eve');
-  await page.goto(`${env.base}/cardtable/cah-cards.js`); // same origin, app not loaded
+  const page = await h.rawPage(env, 'Eve'); // no app code: a raw Trystero peer
   await page.evaluate(async ({ invite, relay, pid, key, v }) => {
     const { joinRoom } = await import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm');
     const [, roomId, password] = invite.match(/#room~([0-9a-f]+)~([0-9a-f]+)/);
-    const room = joinRoom({ appId: 'gk-cardtable', password, relayConfig: { urls: [relay] } }, roomId);
+    const room = joinRoom({ appId: 'gk-cardtable', password, rtcPolyfill: window.RawRTC, relayConfig: { urls: [relay] } }, roomId);
     const act = room.makeAction('act'), state = room.makeAction('state');
     window.E = { states: [], send: (a) => act.send({ ...a, _pid: pid, _name: 'Eve', _key: key, _v: v }) };
     state.onMessage = (m) => E.states.push(m);

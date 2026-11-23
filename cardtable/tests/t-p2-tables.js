@@ -66,6 +66,16 @@ const TURNED = {
   },
   setup: [{ piece: 'board', at: 'center', rot: 30 }, { piece: 'chip', n: 4, at: [500, 900], rot: 45 }, { supply: 'chip', at: [1300, 900] }, { bag: ['chip', 'chip'], name: 'Sack', at: [900, 1350] }],
 };
+/** A round table with a named seat at each quarter (empty ones show as ghost labels): one beside the middle on each side, whatever the view. */
+const ROUND4 = {
+  name: 'Round four', imgs: [], table: { shape: 'round', w: 1800, h: 1800 },
+  seats: [0, 90, 180, 270].map((angle) => ({ id: `a${angle}`, name: `Seat ${angle}°`, angle })),
+  types: { // (a 10 × 10 board in a 20-unit margin: its two-digit ranks can hardly grow, D97)
+    peg: QUAD.types.peg,
+    board: { kind: 'board', name: 'Ten', w: 740, faces: [{ color: '#5c3a1e' }], board: { grid: { type: 'square', cols: 10, rows: 10, cell: 70, x: 20, y: 20, draw: 'checker', labels: 'chess' } } },
+  },
+  setup: [{ piece: 'board', at: 'center' }, { piece: 'peg', at: [400, 400] }],
+};
 /** Automatic seating: a box with no seats (and no table: the table stays). */
 const PLAIN = { name: 'Plain', imgs: [], types: { peg: QUAD.types.peg }, setup: [{ piece: 'peg', at: 'center' }] };
 const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who plays?' }],
@@ -111,8 +121,8 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
     ok(await p.waitForFunction(() => { const el = document.getElementById('watchers'); return !el.classList.contains('hidden') && el.textContent === '👀 Carol'; }, null, { timeout: 15000 }).then(() => true, () => false),
       `${name(p)}'s screen shows the watchers chip "👀 Carol"`);
   }
-  ok(await P.shows(carol, '#watch-me') && (await carol.textContent('#watch-me-text')) === '👀 You are watching — tap a free seat to sit' && !(await P.shows(carol, '#sit-btn')),
-    'Carol is told "👀 You are watching — tap a free seat to sit" (no Sit down button with named seats)');
+  ok(await P.shows(carol, '#watch-me') && (await carol.textContent('#watch-me-text')) === '👀 You are watching — every seat is taken' && !(await P.shows(carol, '#sit-btn')),
+    'Carol is told "👀 You are watching — every seat is taken" (no Sit down button with named seats)');
   ok(!(await P.shows(bob, '#watch-me')) && !(await P.shows(host, '#watch-me')), 'the seated players are not told they watch');
   ok(await P.inViewport(carol, '#watch-box > :not(.hidden)'), 'on the phone the chip and the notice are on screen (top right)');
   const chip = await carol.evaluate(() => { const a = document.getElementById('watch-box').getBoundingClientRect(), b = document.getElementById('toolbar').getBoundingClientRect(); return a.top >= b.bottom - 0.5; });
@@ -156,6 +166,8 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
   await P.pick(bob, 'Stand up (watch)');
   ok(await P.waitView(host, 'v.players[a].seat === null && !v.players[a].seatId', bob.pid), 'Bob stands up: he watches');
   ok(!!(await P.label(carol, 'Black — empty')) && !!(await P.label(bob, 'Black — empty')), 'Black is a ghost again on the other screens');
+  ok(await carol.waitForFunction(() => document.getElementById('watch-me-text').textContent === '👀 You are watching — tap a free seat to sit', null, { timeout: 10000 }).then(() => true, () => false),
+    'a seat is free: Carol is told "👀 You are watching — tap a free seat to sit"');
   ok(await host.waitForFunction(() => /^👀 /.test(document.getElementById('watchers').textContent)
     && document.getElementById('watchers').textContent.slice(3).split(', ').sort().join() === 'Bob,Carol', null, { timeout: 15000 }).then(() => true, () => false),
   'the chip lists both watchers ("👀 Bob, Carol")');
@@ -397,6 +409,33 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
   ok(files.length === 8 && files.every((y) => y === 590), `the files a–h lie in the 20-unit strip just under the grid (y 590: the grid ends at 580), not halfway down the 120 units below it (${files.join(', ')})`);
   await shot(bob, 'tables-turned-board-desk');
   await shot(carol, 'tables-turned-board-phone');
+
+  section('a 10 × 10 board\'s two-digit ranks stay in their margin on a phone; the paused hint\'s plate, on a round table with a seat at each quarter, fits between the labels beside the middle (desktop; a phone in landscape)');
+  ok((await act(host, { t: 'loadBox', box: ROUND4, setup: true, clear: true })).ok, 'the host loads a round table with four named seats and a 10 × 10 board');
+  for (const p of [bob, carol]) {
+    ok(await P.waitView(p, 'Object.values(v.items).some((it) => it.z < 0)'), `${name(p)} has the board`);
+    await h.sleep(500);
+    const board = await P.viewOf(p, 'Object.keys(v.items).find((id) => v.items[id].z < 0)');
+    await P.upright(p, board, (await P.tf(p)).rot, `${name(p)} (${p === carol ? 'iPhone' : 'desktop'})`);
+  }
+  await carol.setViewportSize({ width: 844, height: 390 });
+  for (const p of [bob, carol]) {
+    ok(await P.waitView(p, "v.table.shape === 'round' && v.seats?.length === 4"), `${name(p)} has it`);
+    await h.sleep(800);
+    // (shown as a guest's paused table shows it — the layout alone, measured in one go)
+    const r = await p.evaluate(() => {
+      const el = document.getElementById('table-hint'), was = [el.className, el.textContent];
+      el.classList.remove('hidden');
+      el.textContent = 'The host left — the table is paused until they return';
+      const q = el.getBoundingClientRect(), w = document.getElementById('table-wrap').getBoundingClientRect();
+      const seats = [...document.querySelectorAll('.seat')].map((s) => ({ t: s.textContent, r: s.getBoundingClientRect() }));
+      const hit = seats.filter(({ r }) => r.left < q.right && q.left < r.right && r.top < q.bottom && q.top < r.bottom).map((s) => s.t);
+      [el.className, el.textContent] = was;
+      return { seats: seats.length, hit, plate: [q.left, q.top, q.width, q.height].map(Math.round), inside: q.left >= w.left && q.right <= w.right && q.top >= w.top && q.bottom <= w.bottom };
+    });
+    ok(r.seats >= 4 && !r.hit.length && r.inside, `${name(p)}: the hint's plate (${r.plate.join(', ')}) covers none of the ${r.seats} seat labels (${JSON.stringify(r.hit)}), inside the table area`);
+  }
+  await carol.setViewportSize(P.PHONE.viewport);
 
   section('5: an old v2 save (size 1800) resumes as a round table');
   {

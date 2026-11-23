@@ -37,7 +37,6 @@ import json, sys, threading
 sys.path.insert(0, ${JSON.stringify(APP)})
 from cli import Bridge
 b = Bridge(port=int(sys.argv[1] or 0), token=sys.argv[2] or None)
-print('READY', b.port, b.token, b.url_for('http://x/#room~ab~cd~cli~1-old', sys.argv[3] or 'Bot'), flush=True)
 def boom(s, p): raise RuntimeError('listener boom')
 b.on(boom)
 def waiter():
@@ -45,6 +44,8 @@ def waiter():
     except Exception as e: print('WAIT REJECTED', e, flush=True)
 threading.Thread(target=waiter, daemon=True).start()
 b.on(lambda s, p: print('STATE', json.dumps(s), flush=True))
+# READY last, once every listener is on: the suite sends a state the moment it reads it
+print('READY', b.port, b.token, b.url_for('http://x/#room~ab~cd~cli~1-old', sys.argv[3] or 'Bot'), flush=True)
 held = None
 for line in sys.stdin:
     c = json.loads(line)

@@ -1,7 +1,6 @@
 // E2E (Phase 1, spec §1l "t-p1-delta.js"): delta sync keeps every screen equal
 // to the host. Ground truth is the host's own save, recomputed in Node by
 // core.js (publicItems / publicPlayers, the log, each player's hand).
-// The reloads come first (see the note on stalled connections below).
 //   (3)  the host reloads mid-game: guests take the new epoch's snapshot, hands intact
 //   (4)  a guest reloads: a snapshot brings its table and its hand back
 //   (6)  the version gate: `_v: 1` or no `_v` gets the reload note, no seat and no state
@@ -78,42 +77,41 @@ const NAMES = { host: 'Alice', a: 'Bob', b: 'Carol' };
   /** Trystero's id for page p (a raw peer addresses it by this). */
   const peerOf = (p) => p.evaluate(() => import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm').then((m) => m.selfId));
   const bPeer = await peerOf(b);
-  // In this harness a new WebRTC connection now and then never forms: Trystero's
-  // signalling stalls (Phase 0 alike: a host reloaded every 15 s lost its guests
-  // for over a minute on its 5th and 6th reloads). The helpers below try again
-  // when the connection itself never came up, and only then: a page that is
-  // connected but doesn't catch up is a failure.
-  /** A raw Trystero peer (final-lib's Mallory: no app code), once the host has
-   *  sent her the public snapshot every newcomer gets and she is connected to
-   *  the peers in `also`. What she receives is stamped with its arrival time. */
+  // A link that doesn't form within LINK_MS fails at once, with what both
+  // sides see: these used to be retried as "the harness's signalling stall",
+  // which was the app's own bug (D95: Trystero's pooled offers, older than a
+  // minute, went out empty; WholeOffers in app.js, h.rawPage for raw peers).
+  const LINK_MS = 15000;
+  /** What page p's own net status says (its "● n" tooltip). */
+  const status = (p) => p.$eval('#net-status', (el) => `${el.textContent} ${el.title}`).catch((e) => `(unreadable: ${e.message})`);
+  /** A raw Trystero peer (final-lib's Mallory: no app code), once she is
+   *  connected to the host and the peers in `also`, and the host has sent her
+   *  the public snapshot every newcomer gets. What she receives is stamped
+   *  with its arrival time. */
   async function rawPeer(also = []) {
     const need = [await peerOf(host), ...also];
-    for (let k = 1; ; k++) {
-      const R = await mallory(env, invite);
-      await R.evaluate(() => {
-        for (const ch of ['state', 'note']) {
-          const arr = (window.M.got[ch] ||= []);
-          arr.push = function (...xs) { for (const x of xs) x.at = performance.now(); return Array.prototype.push.apply(this, xs); };
-        }
-      });
-      const linked = () => R.evaluate((need) => need.every((x) => window.M.room.getPeers()[x]), need);
-      if (await L.until(async () => (await linked()) && R.evaluate(() => window.M.got.state.length > 0), 45000, 250)) return R;
-      const st = await R.evaluate(() => ({ peers: Object.keys(window.M.room.getPeers()), states: window.M.got.state.length }));
-      if (await linked()) throw new Error(`the host never sent a newcomer its public snapshot (${JSON.stringify(st)})`);
-      console.log(`  (a raw peer's connections never formed: ${JSON.stringify(st)}, needed ${need} — ${k < 3 ? 'trying a fresh one' : 'giving up'})`);
-      await R.context().close();
-      if (k === 3) throw new Error('a raw peer could not join the room');
+    const R = await mallory(env, invite, 0);
+    await R.evaluate(() => {
+      for (const ch of ['state', 'note']) {
+        const arr = (window.M.got[ch] ||= []);
+        arr.push = function (...xs) { for (const x of xs) x.at = performance.now(); return Array.prototype.push.apply(this, xs); };
+      }
+    });
+    const st = () => R.evaluate((need) => ({ peers: Object.keys(window.M.room.getPeers()), need, states: window.M.got.state.length }), need);
+    if (!(await L.until(() => R.evaluate((need) => need.every((x) => window.M.room.getPeers()[x]), need), LINK_MS, 250))) {
+      throw new Error(`a raw peer's links never formed in ${LINK_MS / 1000} s (${JSON.stringify(await st())}; the host: ${await status(host)})`);
     }
+    if (!(await L.until(() => R.evaluate(() => window.M.got.state.length > 0), 30000, 250))) throw new Error(`the host never sent a newcomer its public snapshot (${JSON.stringify(await st())})`);
+    return R;
   }
-  /** Reloads page p until `back()` holds (45 s each try). A reload whose
-   *  connections never formed (`linked()` false) is tried again, twice at most. */
+  /** Reloads page p: its links must form within LINK_MS (`linked()`), and
+   *  then `back()` hold within 30 s. */
   async function reload(p, back, linked) {
-    for (let k = 1; ; k++) {
-      await p.reload();
-      if (await L.until(() => back().catch(() => false), 45000, 300)) return true;
-      if (k === 3 || (await linked().catch(() => false))) return false;
-      console.log(`  (the reloaded page's connections never formed — reloading again, try ${k + 1})`);
+    await p.reload();
+    if (!(await L.until(() => linked().catch(() => false), LINK_MS, 300))) {
+      throw new Error(`the reloaded page's links never formed in ${LINK_MS / 1000} s (it: ${await status(p)}; the host: ${await status(host)})`);
     }
+    return L.until(() => back().catch(() => false), 30000, 300);
   }
   /** Host move number k: item k (in id order) to a spot of its own; returns {id, x, y}. */
   const hostMove = async (k) => {
@@ -160,7 +158,7 @@ const NAMES = { host: 'Alice', a: 'Bob', b: 'Carol' };
     const rec = await L.saved(host), handA = L.truthOf(rec, pids.host).hands[pids.a];
     ok(handA.length > 0, `Bob holds ${handA.length} cards before reloading`);
     ok(await reload(a, () => a.evaluate(() => window.__ct.view().seq > 0 && !!window.__ct.view().players[localStorage.getItem('ct-pid')]?.online),
-      () => a.evaluate(() => window.__ct.view().seq > 0)), 'Bob is back at the table');
+      () => a.$eval('#net-status', (el) => +(/● (\d+)/.exec(el.textContent)?.[1] || 1) >= 3)), 'Bob is back at the table');
     const r4 = await converged('Bob reloaded');
     ok(L.same(r4.views.a.hand, handA), `Bob's hand is intact after the reload (${r4.views.a.hand.length} cards)`);
     ok(r4.views.a.perf.snaps >= 1, `Bob's fresh page was sent a snapshot (${r4.views.a.perf.snaps})`);

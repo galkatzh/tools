@@ -98,7 +98,7 @@ const CONFIRM = (title) => `Clear the table and set up ${title}? The current gam
     const fs = async (p) => Math.min(...(await P.boardTexts(p, boardId)).texts.map((x) => x.fs));
     const grow = await bob.evaluate((id) => getComputedStyle(document.querySelector(`.item[data-id="${id}"] .blabels text`)).scale, boardId);
     const [fa, fb] = [await fs(host), await fs(bob)];
-    ok(fb >= 6.5 && +grow > 1, `on Bob's phone the coordinates grow with the badges (scale ${grow}): ${fb.toFixed(1)} px, against ${fa.toFixed(1)} px on Alice's desktop`);
+    ok(fb >= 5.5 && +grow >= 1.25, `on Bob's phone the coordinates grow with the badges, as far as their 20-unit margin holds (scale ${grow}, D97): ${fb.toFixed(1)} px, against ${fa.toFixed(1)} px on Alice's desktop`);
   }
 
   section('Draughts: Light moves, Dark can\'t touch Light\'s men');

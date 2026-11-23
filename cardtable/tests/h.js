@@ -167,6 +167,25 @@ async function start(opts = {}) {
 }
 
 // --- common page helpers ----------------------------------------------------
+/** Init script: window.RawRTC, the RTCPeerConnection a raw test peer hands
+ *  Trystero (`joinRoom({..., rtcPolyfill: window.RawRTC})`): the app's own
+ *  (WholeOffers in app.js connect(), D95). Without it, a raw peer open for
+ *  over a minute makes empty offers, and a page that answers one never links. */
+function rawRtc() {
+  window.RawRTC = class extends RTCPeerConnection {
+    setLocalDescription(d) {
+      return d?.type === 'rollback' && !this.remoteDescription ? Promise.resolve() : super.setLocalDescription(d);
+    }
+  };
+}
+/** A raw test peer's page (`label`: no app code): a same-origin page that
+ *  doesn't run the app, with window.RawRTC (rawRtc). */
+async function rawPage(env, label) {
+  const page = await env.page(label);
+  await page.addInitScript(rawRtc);
+  await page.goto(plain(env));
+  return page;
+}
 const joinAs = async (page, name) => {
   await page.waitForSelector('#name-dialog[open]');
   await page.fill('#name-first', name);
@@ -303,6 +322,6 @@ function quotaStub() {
 }
 
 module.exports = {
-  start, ok, section, report, joinAs, hostAndGuest, logHas, toastHas, handCount, waitHand, playFromHand, enableRules, sleep, crash,
+  start, ok, section, report, rawPage, joinAs, hostAndGuest, logHas, toastHas, handCount, waitHand, playFromHand, enableRules, sleep, crash,
   bodies, viewFrom, plain, idb, withStore, plantSave, quotaStub, playwright, APP_ROOT, PROTO, MODULE_V,
 };

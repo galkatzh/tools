@@ -7,7 +7,14 @@
 //   B3   a guest applies and draws a one-item patch: p95 ≤ 4 ms (__ct.perf.lastApplyMs)
 //   B4   panning on an emulated phone (iPhone 13, CPU × 2): no long task over 50 ms
 //        (from the pan's first event on: not the probe's search for bare felt),
-//        and rAF interval p95 ≤ max(20 ms, 1.25 × the same pan over an empty table)
+//        and rAF interval p95 ≤ max(20 ms, 1.25 × the same pan over an empty table);
+//        on the bench box, also a two-finger twist (half a turn in 3 s) over 1,000
+//        ×3 stacks, whose badges turn back against the view (D91), once the
+//        fingers lift (D96): the same budgets while they twist (after one twist
+//        not measured: the table's first turn off its axes redraws its layer
+//        once), then the badges settle at the view's exact angle in one task
+//        under 150 ms (a restyle of the 1,000 badges: 50–95 ms here, once per
+//        gesture, where every frame of a twist paid it before D96)
 //   B6   the host saves the 1,000-item table: every save's main-thread part ≤ 8 ms
 //        (__ct.perf.lastSaveSyncMs, around doSave's synchronous IndexedDB put): ten
 //        throttled saves (rapid play) and five unthrottled ones (a move 1.1 s
@@ -18,8 +25,8 @@
 // board, 600 tokens, 250 tiles, 50 dice, 60 supplies, 39 bags), loaded with
 // __ct.act({t: 'loadBox', box, setup: true, clear: true}) — its Node budgets
 // B1, B2, B5 and B7 are core-p2-bench.mjs's — and adds the two below. It runs
-// first, the cards after it: B10's new guests link to the host reliably early
-// in a session, less so late in a long one (see joinRender).
+// first, the cards after it. A new page's links must form within LINK_MS
+// (15 s; they take under a second): one that doesn't fails the suite.
 //   B10  a guest renders a 1,000-piece snapshot (__ct.perf.lastSnapRenderMs): ≤ 400 ms
 //        on a desktop, ≤ 1,500 ms on the iPhone 13 at CPU × 2: a new guest joining (and
 //        drawing the pieces, never "?" placeholders), and a snapshot asked for after a
@@ -31,8 +38,8 @@ const A = require('./assets-lib');
 const P = require('./p2t-lib');
 const { ok, section } = h;
 
-const B1_MAX = 1.5 * 1024, B3_MAX = 4, B4_LONG = 50, B4_FLOOR = 20, B6_MAX = 8, B10_DESK = 400, B10_PHONE = 1500, B11_MAX = 30;
-const PAN_MS = 3000;
+const B1_MAX = 1.5 * 1024, B3_MAX = 4, B4_LONG = 50, B4_SETTLE = 150, B4_FLOOR = 20, B6_MAX = 8, B10_DESK = 400, B10_PHONE = 1500, B11_MAX = 30;
+const PAN_MS = 3000, TWIST_MS = 3000;
 
 /** The throwaway script that builds the table (spec §1k): 20 standard decks,
  *  1,000 cards dealt face up in a 40 × 25 grid inside the felt. */
@@ -102,6 +109,50 @@ async function pan(p) {
       po.disconnect();
       return { gaps: frames.slice(1).map((t, k) => t - frames[k]), long, moved };
     }, PAN_MS);
+  } finally { await unthrottle(); }
+}
+
+/** A two-finger twist on page p, under CDP CPU throttling × 2: two touch
+ *  pointers about the table area's centre turn half a turn over TWIST_MS,
+ *  driven once per animation frame; rAF timestamps and long tasks collected
+ *  in the page. Returns {gaps (ms between frames), long (the durations of
+ *  the long tasks while the fingers move), settle (theirs from the task
+ *  where they lift on: the badges settle there), turned (degrees the view turned)}. */
+async function twist(p) {
+  const unthrottle = await throttle(p);
+  try {
+    return await p.evaluate(async (ms) => {
+      const table = document.getElementById('table'), r = document.getElementById('table-wrap').getBoundingClientRect();
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2, R = Math.min(r.width, r.height) / 5;
+      const rot = () => +/rotate\(([-\d.e]+)deg\)/.exec(table.style.transform)[1];
+      await new Promise((res) => setTimeout(res, 0)); // (the observer starts in a task of its own: see pan)
+      const tasks = [];
+      const po = new PerformanceObserver((l) => { for (const e of l.getEntries()) tasks.push(e); });
+      po.observe({ type: 'longtask' });
+      const ev = (type, id, x, y) => new PointerEvent(type, { pointerId: id, pointerType: 'touch', isPrimary: id === 7, button: 0, buttons: type === 'pointerup' ? 0 : 1, clientX: x, clientY: y, bubbles: true, cancelable: true });
+      /** The two fingers at angle a (radians), opposite each other: their distance stays, so the view only turns. */
+      const fingers = (a) => [[7, cx + R * Math.cos(a), cy + R * Math.sin(a)], [8, cx - R * Math.cos(a), cy - R * Math.sin(a)]];
+      const a0 = rot();
+      for (const [id, x, y] of fingers(0)) table.dispatchEvent(ev('pointerdown', id, x, y));
+      const frames = [];
+      await new Promise((done) => {
+        const t0 = performance.now();
+        const step = (ts) => {
+          frames.push(ts);
+          const t = ts - t0;
+          if (t >= ms) { done(); return; }
+          for (const [id, x, y] of fingers((Math.PI * t) / ms)) window.dispatchEvent(ev('pointermove', id, x, y));
+          requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+      });
+      const turned = (((rot() - a0) % 360) + 360) % 360, up = performance.now();
+      for (const [id, x, y] of fingers(Math.PI)) window.dispatchEvent(ev('pointerup', id, x, y));
+      await new Promise((res) => setTimeout(res, 300)); // the observer delivers late entries
+      po.disconnect();
+      const dur = (es) => es.map((e) => Math.round(e.duration)); // (a task that holds the lift began before it, in the same frame)
+      return { gaps: frames.slice(1).map((t, k) => t - frames[k]), long: dur(tasks.filter((e) => e.startTime + e.duration < up)), settle: dur(tasks.filter((e) => e.startTime + e.duration >= up)), turned };
+    }, TWIST_MS);
   } finally { await unthrottle(); }
 }
 
@@ -185,6 +236,9 @@ function placeholderWatch() {
   }
   /** How many players page p sees connected, itself included (its "● n"). */
   const here = (p) => p.$eval('#net-status', (el) => +(/● (\d+)/.exec(el.textContent)?.[1] || 1));
+  /** Page p's net status tooltip (who it sees, its relays), for a failure's message. */
+  const netTitle = (p) => p.$eval('#net-status', (el) => el.title).catch((e) => `unreadable: ${e.message}`);
+  const LINK_MS = 15000; // a new page's links form in well under a second (D95)
   /** How many face images page p has drawn. */
   const drawn = (p) => p.evaluate(() => [...document.querySelectorAll('.item img.face')].filter((i) => i.src.startsWith('blob:') && i.complete && i.naturalWidth > 0).length);
   /** B8: the 40-image deck `deck` is dealt face up from (x0, y0); Bob pulls
@@ -195,12 +249,13 @@ function placeholderWatch() {
     const pulled = await mover.evaluate(() => window.__rtc.recv.asset || 0);
     if (pulls) ok(pulled > 0, `(${pulled} asset bytes received)`);
     await mover.addInitScript(A.needLog);
-    for (let k = 1; ; k++) { // (a reload whose links never formed — the harness's signalling stall, see t-p1-delta — is tried again)
-      await mover.reload();
-      if (await mover.waitForFunction((n) => document.querySelectorAll('.item').length >= n, extra ? 1040 : 40, { timeout: 45000 }).then(() => true, () => false)) break;
-      const linked = (await here(mover)) >= 3;
-      console.log(`  (Bob's reload, try ${k}: no table after 45 s; he sees ${await here(mover)} players, the host ${await here(host)})`);
-      if (linked || k === 3) throw new Error(`Bob's reload never got the table (${linked ? 'linked to everyone' : 'never linked to the host'})`);
+    await mover.reload();
+    // (his links form at once, or never: D95. Not retried — that hid the bug.)
+    if (!(await L.until(async () => (await here(mover).catch(() => 0)) >= 3, LINK_MS, 250))) {
+      throw new Error(`Bob's reload never linked to everyone in ${LINK_MS / 1000} s: he sees ${await here(mover).catch(() => '?')} players ("${await netTitle(mover)}"), the host "${await netTitle(host)}"`);
+    }
+    if (!(await mover.waitForFunction((n) => document.querySelectorAll('.item').length >= n, extra ? 1040 : 40, { timeout: 45000 }).then(() => true, () => false))) {
+      throw new Error(`Bob's reload, linked to everyone, never got the table ("${await netTitle(mover)}")`);
     }
     ok(await L.until(async () => (await drawn(mover)) === 40, 30000), `Bob reloads: 40 faces drawn again${extra}`);
     await h.sleep(2000); // a request, had he sent one, would be answered by now
@@ -208,8 +263,7 @@ function placeholderWatch() {
     ok(again.bytes === 0 && again.needs === 0, `B8: 0 asset bytes re-sent (${again.bytes} B, ${again.needs} image requests)`);
   }
 
-  // --- Phase 2 (spec §2k) first: new WebRTC links to a host form reliably early in
-  // a session (late in a long one they sometimes don't, see joinRender), and B10's joins need them ---
+  // --- Phase 2 (spec §2k) first ---
   section('§2k: an empty 6000 × 4000 table (the B4 baseline for the pieces)');
   ok((await L.act(host, { t: 'loadBox', box: P.BENCH, setup: false, clear: true })).ok,
     'the host clears the table and takes the bench box\'s table (loadBox without its setup)');
@@ -239,34 +293,30 @@ function placeholderWatch() {
     ph: document.querySelectorAll('.pface.placeholder').length, maxPh: window.__ph, perf: window.__ct?.perf, net: document.getElementById('net-status')?.title }));
   /** A new guest `name` (a fresh page: `o.ctx` its device, `o.slow` CPU × 2
    *  from before it loads) joins and draws the table; its page is closed
-   *  afterwards. A page whose WebRTC links never all formed (the harness's
-   *  signalling stall, see t-p1-delta) is replaced by a fresh one, and
-   *  logged; one linked to everyone that still gets no table fails. Returns
+   *  afterwards. Its links must form within LINK_MS, and the table come in
+   *  45 s: else the join fails (null), with what each side sees. Returns
    *  {ms: lastSnapRenderMs, ph: the most "?" shown at once, dom, drawn, done:
    *  whether every piece showed its face}. */
   async function joinRender(name, o = {}) {
-    for (let attempt = 1; ; attempt++) {
-      const p = await env.page(name, { ctx: o.ctx });
-      await p.addInitScript(placeholderWatch);
-      const unthrottle = o.slow ? await throttle(p) : null;
-      try {
-        await p.goto(host.url());
-        await h.joinAs(p, name);
-        if (await p.waitForFunction(() => Object.keys(window.__ct?.view().items || {}).length >= 1000, null, { timeout: 45000 }).then(() => true, () => false)) {
-          const done = await p.waitForFunction(() => window.__ct.perf.lastSnapRenderMs > 0 && document.querySelectorAll('.item').length >= 1000 && !document.querySelector('.pface.placeholder'), null, { timeout: 30000 })
-            .then(() => true, () => false);
-          if (!done) console.log(`  (${name} has the table but never drew it all: ${JSON.stringify(await state(p))})`);
-          await h.sleep(1500); // (the snapshot that registers the player redraws nothing: it doesn't count)
-          return { ...(await p.evaluate(() => ({ ms: window.__ct.perf.lastSnapRenderMs, ph: window.__ph, dom: document.querySelectorAll('.item').length, drawn: window.__ct.perf.drawn }))), done };
-        }
-        const linked = (await here(p)) >= 4;
-        console.log(`  (${name}, try ${attempt}: no table after 45 s: ${JSON.stringify(await state(p))}; the host: "${await host.evaluate(() => document.getElementById('net-status').title)}")`);
-        if (linked) throw new Error(`${name}, linked to everyone, never got the table`);
-        if (attempt === 3) { ok(false, `${name} could join: three fresh pages never linked to the host (see above)`); return null; }
-      } finally {
-        await unthrottle?.();
-        await p.context().close();
+    const p = await env.page(name, { ctx: o.ctx });
+    await p.addInitScript(placeholderWatch);
+    const unthrottle = o.slow ? await throttle(p) : null;
+    try {
+      await p.goto(host.url());
+      await h.joinAs(p, name);
+      const linked = await L.until(async () => (await here(p).catch(() => 0)) >= 4, LINK_MS, 250);
+      if (!linked || !(await p.waitForFunction(() => Object.keys(window.__ct?.view().items || {}).length >= 1000, null, { timeout: 45000 }).then(() => true, () => false))) {
+        ok(false, `${name} joins: ${linked ? 'linked to everyone, it never got the table' : `its links never formed in ${LINK_MS / 1000} s`} (${JSON.stringify(await state(p))}; the host: "${await netTitle(host)}")`);
+        return null;
       }
+      const done = await p.waitForFunction(() => window.__ct.perf.lastSnapRenderMs > 0 && document.querySelectorAll('.item').length >= 1000 && !document.querySelector('.pface.placeholder'), null, { timeout: 30000 })
+        .then(() => true, () => false);
+      if (!done) console.log(`  (${name} has the table but never drew it all: ${JSON.stringify(await state(p))})`);
+      await h.sleep(1500); // (the snapshot that registers the player redraws nothing: it doesn't count)
+      return { ...(await p.evaluate(() => ({ ms: window.__ct.perf.lastSnapRenderMs, ph: window.__ph, dom: document.querySelectorAll('.item').length, drawn: window.__ct.perf.drawn }))), done };
+    } finally {
+      await unthrottle?.();
+      await p.context().close();
     }
   }
   for (const [what, o, max] of [['desktop', {}, B10_DESK], ['iPhone 13 at CPU × 2', { ctx: P.PHONE, slow: true }, B10_PHONE]]) {
@@ -319,6 +369,28 @@ function placeholderWatch() {
   const deck0 = await A.addDeck(host, A.imgDeck('Forty', A.tinyPngs(40, 8)), 150, 150);
   ok(deck0.ok && deck0.pile, 'the host adds a deck of 40 images beside the bench');
   await rejoinB8(deck0, 5000, 100, true, ', and the 1,000 pieces');
+
+  section('§2k B4: a two-finger twist on the phone, over 1,000 ×3 stacks (each badge turns back against the view: D91, D96)');
+  const STACKS = { name: 'Stacks', imgs: [], table: { shape: 'rect', w: 6000, h: 4000 }, types: { chip: { kind: 'token', name: 'Chip', faces: [{ color: '#facc15' }] } },
+    setup: Array.from({ length: 20 }, (_, k) => ({ piece: 'chip', n: 3, at: [600, 400 + 160 * k], count: 50, spread: [100, 0] })) };
+  ok((await L.act(host, { t: 'loadBox', box: STACKS, setup: true, clear: true })).ok, 'the host loads 1,000 stacks of 3 chips');
+  ok(await phone.waitForFunction(() => document.querySelectorAll('.item > .count').length >= 1000, null, { timeout: 60000 }).then(() => true, () => false), 'the phone draws them, with their ×3');
+  await h.sleep(1000);
+  // One twist first, not measured: the first time the table turns off its
+  // axes (the pan before kept it square), the browser draws its layer again
+  // once, text included — a 60–65 ms frame with these 1,000 ×3 badges, none
+  // with plain chips, and never again on the page.
+  const warm = await twist(phone);
+  console.log(`  (a first twist, not measured: long tasks [${warm.long}], then [${warm.settle}] as the fingers lift)`);
+  await h.sleep(1000);
+  const tw = await twist(phone), twP95 = L.pct(tw.gaps, 95), twLimit = Math.max(B4_FLOOR, 1.25 * pbase.p95);
+  console.log(`  twist: ${tw.gaps.length} frames, turned ${tw.turned.toFixed(1)}°, rAF p95 ${twP95.toFixed(1)} ms, long tasks [${tw.long}], then [${tw.settle}] as the fingers lift`);
+  ok(tw.gaps.length > 30 && Math.abs(tw.turned - 180) < 20, `the scripted twist turns the view (${tw.turned.toFixed(1)}°, ${tw.gaps.length} frames)`);
+  ok(!tw.long.some((d) => d > B4_LONG), `B4: no long task over ${B4_LONG} ms while the fingers twist (${tw.long.length ? tw.long.join(', ') + ' ms' : 'none'})`);
+  ok(twP95 <= twLimit, `B4: rAF interval p95 ${twP95.toFixed(1)} ms ≤ max(${B4_FLOOR}, 1.25 × ${pbase.p95.toFixed(1)}) = ${twLimit.toFixed(1)} ms`);
+  ok(!tw.settle.some((d) => d > B4_SETTLE), `B4: as they lift, the 1,000 badges settle (turn upright) in one go, no task over ${B4_SETTLE} ms (${tw.settle.length ? tw.settle.join(', ') + ' ms' : 'none over 50 ms'})`);
+  const exact = await phone.evaluate(() => ({ badge: getComputedStyle(document.querySelector('.item > .count')).getPropertyValue('--view'), view: /rotate\(([-\d.e]+)deg\)/.exec(document.getElementById('table').style.transform)[1] }));
+  ok(Math.abs(parseFloat(exact.badge) - exact.view) < 0.01, `once the fingers lift, the badges turn back by the view's exact angle (${exact.badge}, the view ${exact.view}°)`);
 
   // --- Phase 1 (spec §1k): the 1,000-card table ---
 

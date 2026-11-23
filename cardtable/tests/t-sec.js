@@ -7,12 +7,11 @@ const { ok, section, logHas } = h;
 
 /** Boots Mallory: a bare trystero peer in her own page, wired to the room. */
 async function mallory(env, invite) {
-  const page = await env.page('Mallory');
-  await page.goto(`${env.base}/cardtable/cah-cards.js`); // any same-origin page; we don't run the app
+  const page = await h.rawPage(env, 'Mallory'); // no app code: a raw Trystero peer
   await page.evaluate(async ({ invite, relay, v }) => {
     const { joinRoom } = await import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm');
     const [, roomId, password] = invite.match(/#room~([0-9a-f]+)~([0-9a-f]+)/);
-    const room = joinRoom({ appId: 'gk-cardtable', password, relayConfig: { urls: [relay] } }, roomId);
+    const room = joinRoom({ appId: 'gk-cardtable', password, rtcPolyfill: window.RawRTC, relayConfig: { urls: [relay] } }, roomId);
     const M = (window.M = { room, got: { state: [], note: [] }, send: {} });
     for (const ch of ['act', 'state', 'decks', 'note', 'rules']) {
       const a = room.makeAction(ch);

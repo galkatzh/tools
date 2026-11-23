@@ -29,8 +29,8 @@ const needlesOf = (types) => Object.entries(types).flatMap(([id, ty]) => [id, ty
   const invite = await host.evaluate(() => location.href);
   const room = invite.match(/#room~([0-9a-f]+)/)[1];
   const alice = await host.evaluate(() => localStorage.getItem('ct-pid'));
-  let M = await mallory(env, invite, 1); // the host is the only other peer (case 13 may replace her: see there)
-  let X = await arm(M);
+  const M = await mallory(env, invite, 1); // the host is the only other peer
+  const X = await arm(M);
   await M.act({ t: 'hello' });
   await M.waitForFunction((p) => window.M.fold()?.players?.[p], MPID, { timeout: 20000 });
   ok(true, 'Mallory (a raw peer) sits at the table');
@@ -396,40 +396,18 @@ const needlesOf = (types) => Object.entries(types).flatMap(([id, ty]) => [id, ty
     `on the host's screen: the hidden one is {k:'g', b: null, …} and the shown one keeps t and f (${JSON.stringify(hg[0])})`);
   ok(await host.waitForSelector(`.item[data-id="${ghost}"] .pface.placeholder`, { timeout: 10000 }).then(() => true, () => false), 'it renders as the "?" placeholder');
   ok(hostErrors.slice(errs0).some((e) => /missing/i.test(e)), `the missing box is reported with console.error (${hostErrors.slice(errs0).find((e) => /missing/i.test(e))})`);
-  // The reloaded host's WebRTC connection to Mallory now and then never forms
-  // in a loaded full run (t-p1-delta's note on stalled connections; seen
-  // lasting minutes, over three host reloads, while the raw peer stayed).
-  // So a link that never forms is tried again with a fresh side: first the
-  // host reloads again, then Mallory is replaced by a fresh raw peer, who
-  // keeps everything she received and her seat (t-p1-delta's rawPeer does the
-  // same). Once they ARE connected, the host must have sent her its public
-  // snapshot (every newcomer gets one): that failing is a real bug, never retried.
-  for (let k = 1; ; k++) {
-    const hostId = await host.evaluate(() => import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm').then((m) => m.selfId));
-    const linked = () => M.evaluate((x) => !!window.M.room.getPeers()[x], hostId);
-    const snapped = () => M.evaluate((k) => window.M.got.state.slice(k).some(({ m }) => window.M.body(m).kind === 'snap'), before.state);
-    if (await until(async () => (await linked()) && snapped(), 45000, 250)) break;
-    // what each side sees: Mallory's peers and relay sockets (1: open), the host's status line
-    const seen = JSON.stringify({
-      mallory: await M.evaluate(async () => ({ peers: Object.keys(window.M.room.getPeers()), relays: Object.values((await import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm')).getRelaySockets()).map((s) => s.readyState) })),
-      host: { id: hostId, status: await host.$eval('#net-status', (el) => el.title) },
-    });
-    if (await linked()) throw new Error(`the reloaded host is connected to Mallory but never sent her its public snapshot (${seen})`);
-    if (k === 3) throw new Error(`the reloaded host's connection to Mallory never formed, three times (${seen})`);
-    console.log(`  (the reloaded host's connection to Mallory never formed: ${seen} — ${k === 1 ? 'reloading it again' : 'a fresh Mallory'}, try ${k + 1})`);
-    if (k === 1) {
-      await host.reload();
-      await host.waitForFunction((x) => window.__ct?.view()?.items?.[x], ghost, { timeout: 30000 });
-      continue;
-    }
-    const got = await M.evaluate(() => window.M.got), old = M;
-    M = await mallory(env, invite, 0);
-    await M.evaluate((g) => { // what she received before, then what came since she joined
-      const now = window.M.got;
-      window.M.got = Object.fromEntries([...new Set([...Object.keys(g), ...Object.keys(now)])].map((ch) => [ch, [...(g[ch] || []), ...(now[ch] || [])]]));
-    }, got);
-    X = await arm(M);
-    await old.context().close();
+  // Once they are connected, the reloaded host must send Mallory its public
+  // snapshot (every newcomer gets one). Their link must form within 15 s:
+  // it used to be retried, as "the harness's signalling stall", which was
+  // the bug D95 fixes (a raw peer open for over a minute made empty offers).
+  const hostId = await host.evaluate(() => import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm').then((m) => m.selfId));
+  const seen = async () => JSON.stringify({ // what each side sees: Mallory's peers and relay sockets (1: open), the host's status line
+    mallory: await M.evaluate(async () => ({ peers: Object.keys(window.M.room.getPeers()), relays: Object.values((await import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm')).getRelaySockets()).map((s) => s.readyState) })),
+    host: { id: hostId, status: await host.$eval('#net-status', (el) => el.title) },
+  });
+  if (!(await until(() => M.evaluate((x) => !!window.M.room.getPeers()[x], hostId), 15000, 250))) throw new Error(`the reloaded host's link to Mallory never formed in 15 s (${await seen()})`);
+  if (!(await until(() => M.evaluate((k) => window.M.got.state.slice(k).some(({ m }) => window.M.body(m).kind === 'snap'), before.state), 30000, 250))) {
+    throw new Error(`the reloaded host is connected to Mallory but never sent her its public snapshot (${await seen()})`);
   }
   await M.act({ t: 'hello' });
   await M.waitForFunction(([k, p]) => window.M.got.state.slice(k).some(({ m }) => { const d = window.M.body(m); return d.kind === 'snap' && d.to === p; }), [before.state, MPID], { timeout: 30000 });

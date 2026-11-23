@@ -513,17 +513,30 @@ sync and rendering, and the Worker together with `handle`.
      - A board's coordinates read upright for every player, as on a chess
        app's flipped board: each stays by its own file or rank but turns to
        face the screen, so the player across the board never reads them
-       upside down; on a phone they grow a little, as badges do. A space's
-       or zone's label turns only by half turns: it is never upside down,
-       and still runs along its space. The badges (a pile's count and
-       name, ×N, ∞) and a bag turn to face the screen too. The pieces' own
-       faces stay as they lie.
-     - A plain disc (a checker, a man: no picture, label, text or pips)
-       looks the same at any angle, so its bar offers no turn buttons.
+       upside down; on a phone they grow a little, as badges do, but no
+       more than their margin holds. A space's or zone's label turns only by
+       half turns: it is never upside down, and still runs along its space.
+       The badges (a pile's count and name, ×N, ∞, 🔒) and a bag turn to
+       face the screen too, and a pile's name sits under its pile on every
+       screen. While two fingers turn or zoom the view, the badges move with
+       the table and settle once the fingers lift: on a table of a thousand
+       stacks, turning them all with every frame would stutter. The pieces'
+       own faces stay as they lie.
+     - A plain round piece (a checker, a man: no picture, label, text or
+       pips, and as wide as it is high) looks the same at any angle, so its
+       bar offers no turn buttons.
      - A guest whose host stays away reloads at the backoff's pace (40 s,
        80 s, then every 2 minutes), not every minute: the wait counts on
        across its reloads, and the notice says how long the host has been
-       gone.
+       gone. A page whose own connection is down says so, never that the
+       host is away.
+     - A page open for over a minute still links at once: the WebRTC
+       library's ready-made connections, re-offered after a minute, went
+       out empty, so half the guests joining or reloading into a room
+       never linked. The app now hands the library a connection that keeps
+       them whole, until the library itself is updated.
+     - A host whose tab is hidden (a phone switching apps) saves at once,
+       as one that closes does: a phone may never wake that tab again.
 3. **Space and full-rules scripting, in a Worker.**
    - Grids, spaces, zones, links and snapping, with addresses in the log.
    - Rules in a Worker with a watchdog, and atomic hooks.

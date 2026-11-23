@@ -6,12 +6,11 @@ const h = require('./h');
 /** Mallory: a RAW Trystero peer (no app code) in the room, seated with her own
  *  key. Resolves once she sees `peers` others (default 2: a host and a guest). */
 async function mallory(env, invite, peers = 2) {
-  const page = await env.page('Mallory');
-  await page.goto(`${env.base}/cardtable/cah-cards.js`); // any same-origin page; the app does not run
+  const page = await h.rawPage(env, 'Mallory'); // no app code: a raw Trystero peer
   await page.evaluate(async ({ invite, relay, v, peers }) => {
     const { joinRoom } = await import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm');
     const [, roomId, password] = invite.match(/#room~([0-9a-f]+)~([0-9a-f]+)/);
-    const room = joinRoom({ appId: 'gk-cardtable', password, relayConfig: { urls: [relay] } }, roomId);
+    const room = joinRoom({ appId: 'gk-cardtable', password, rtcPolyfill: window.RawRTC, relayConfig: { urls: [relay] } }, roomId);
     const M = (window.M = { room, got: { state: [], note: [] }, send: {} });
     for (const ch of ['act', 'state', 'decks', 'boxes', 'note', 'rules', 'asset']) {
       const a = room.makeAction(ch);

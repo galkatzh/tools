@@ -16,21 +16,27 @@
 //              bag that would overflow is not offered the drop
 //   keys       a held key acts once; after a click on a bar or header button,
 //              or on a dialog's Close (? and + Deck), the keys still reach the
-//              table (the button lets go of the focus); after ➤ in the chat
-//              they go to the chat box
+//              table (the button lets go of the focus), and so after Escape
+//              and after a guest's Add deck (it closes after an await); after
+//              ➤ in the chat they go to the chat box
 //   stale bar  a seat change redraws the bar of a selected seat-bound piece
 //   phone      the dark seat's halo, a seat label's finger-sized hit box, the
 //              watchers box clear of the labels, readable badges, the help
 //              dialog inside the screen, Sit down's size, a watcher's squared view
 //   turn cue   shows on a table with no hand bar
 //   landscape  a watcher's phone turned sideways: two compact chips, clear of
-//              the board and its men, that a tap opens
+//              the board and its men, that a tap opens (in the right margin,
+//              saying "every seat is taken" when it is) and another, a tap on
+//              the table or 6 s close
 //   watchdog   a guest whose host has been gone a minute reloads itself (saying
 //              so), keeps showing the table paused (the hint readable on the
 //              phone, in screen space), keeps its backoff (the next reload 40 s
 //              later, counting the whole absence), and gets it back live when
 //              the host returns; a host alone whose relays drop reloads and
-//              keeps no paused table
+//              keeps no paused table; a guest whose relay never opens is told
+//              so (hint, notices, console), never that the host is missing,
+//              and an old backoff in his tab (another visit's) leaves him his
+//              20 s of grace
 // Screenshots go to shots/review-*.png for review (not asserted).
 const net = require('net');
 const h = require('./h');
@@ -80,6 +86,19 @@ function hintWatch() {
   addEventListener('DOMContentLoaded', () => {
     const t = document.getElementById('table-hint');
     new MutationObserver(() => { if (!t.classList.contains('hidden')) window.__hints.push(t.textContent); }).observe(t, { childList: true, characterData: true, subtree: true, attributes: true });
+  });
+}
+/** Init script: each new text of the table's hint and of the toast, logged
+ *  to the console ("HINT …", "TOAST …"): what a page that reloads says, across its pages. */
+function sayLog() {
+  addEventListener('DOMContentLoaded', () => {
+    for (const [id, tag] of [['table-hint', 'HINT'], ['toast', 'TOAST']]) {
+      const el = document.getElementById(id);
+      let last = '';
+      const say = () => { const t = el.classList.contains('hidden') ? '' : el.textContent; if (t && t !== last) console.info(`${tag} ${t}`); last = t; };
+      new MutationObserver(say).observe(el, { childList: true, characterData: true, subtree: true, attributes: true });
+      say();
+    }
   });
 }
 /** Init script: every toast this page shows (window.__notes). */
@@ -295,18 +314,24 @@ function noticeWatch() {
   await bob.keyboard.press('Delete');
   ok(await P.waitView(bob, '!(a in v.items)', played, 5000), 'and Delete, right after that click, removes it');
 
-  section('keys after a dialog: ? or + Deck, closed with the mouse, hand the focus back to the table, not to the button that opened them');
+  section('keys after a dialog: ? or + Deck, opened with the mouse, hand the focus back to the table when they close — with a button, with Escape, or once a guest\'s deck is built — not to the button that opened them');
   const nIt = Object.keys(await items()).length;
   ok((await act({ t: 'take', id: ids.tiles })).ok && await P.waitView(bob, 'Object.keys(v.items).length === a', nIt + 1), '(the host takes a tile out of its supply)');
   const tileId = await P.viewOf(bob, "Object.keys(v.items).find((id) => v.items[id].k === 'g' && v.items[id].t.endsWith('/tile') && !a.includes(id))", ids0);
   await P.clickItem(bob, tileId);
   ok((await selected(bob)) === tileId, '(Bob selects it)');
-  for (const [open, dlg, close, what] of [['#help-btn', '#help-dialog', '#help-dialog menu button', '? then Close'], ['#add-deck-btn', '#deck-dialog', '#deck-dialog button[value="cancel"]', '+ Deck then Cancel']]) {
+  const decks0 = Object.keys((await L.view(bob)).items).length;
+  for (const [open, dlg, close, what] of [
+    ['#help-btn', '#help-dialog', (p) => p.click('#help-dialog menu button'), '? then Close'],
+    ['#add-deck-btn', '#deck-dialog', (p) => p.click('#deck-dialog button[value="cancel"]'), '+ Deck then Cancel'],
+    ['#help-btn', '#help-dialog', (p) => p.keyboard.press('Escape'), '? then Escape'],
+    ['#add-deck-btn', '#deck-dialog', (p) => p.click('#deck-add'), '+ Deck then Add deck (a guest\'s: the dialog closes once his copy of the deck is stored)'],
+  ]) {
     const r0 = await P.viewOf(bob, 'v.items[a].rot', tileId);
     await bob.click(open);
     await bob.waitForSelector(`${dlg}[open]`);
-    await bob.click(close);
-    await bob.waitForFunction((d) => !document.querySelector(`${d}[open]`), dlg);
+    await close(bob);
+    await bob.waitForFunction((d) => !document.querySelector(`${d}[open]`), dlg, { timeout: 15000 });
     await h.sleep(100);
     const f = await bob.evaluate(() => document.activeElement?.id || document.activeElement?.tagName);
     ok(f === 'BODY', `${what}, with the mouse: the focus goes back to the table, not to the button (it is on ${f})`);
@@ -316,6 +341,7 @@ function noticeWatch() {
     await h.sleep(500);
     ok(!(await bob.evaluate(() => !!document.querySelector('dialog[open]'))), 'Space opens no dialog again');
   }
+  ok(await P.waitView(bob, 'Object.keys(v.items).length === a + 1', decks0), '(Bob\'s standard deck is on the table)');
 
   section('keys after the chat: a message sent with ➤ leaves the focus in the chat box — what is typed next goes there, not to the selected piece');
   const rC = await P.viewOf(bob, 'v.items[a].rot', tileId);
@@ -422,7 +448,7 @@ function noticeWatch() {
   }, null, { timeout: 5000 }).then(() => true, () => false), 'Alice\'s "⏳ Your turn" cue shows, on screen, with the hand bar hidden');
   await shot(host, 'review-desk-turn');
 
-  section('phone in landscape: a watcher\'s box is two compact chips, clear of the board and its men; a tap opens it, another closes it');
+  section('phone in landscape: a watcher\'s box is two compact chips, clear of the board and its men; a tap opens it, in the right margin, and another, a tap on the table or 6 s close it; it says how to sit only while a seat is free');
   ok(await P.waitView(carol, 'Object.keys(v.items).length === 25 && v.players[me].seat == null'), '(Carol watches the draughts)');
   await carol.setViewportSize({ width: 844, height: 390 });
   await carol.tap('#log-btn'); // (the log open, as a screen this wide starts with it: the table gets the rest)
@@ -438,18 +464,58 @@ function noticeWatch() {
   ok(small.length === 2 && /^👀 \d+$/.test(small[0].text) && small[1].text.startsWith('👀 Watching') && small.every((c) => !c.covers),
     `Carol turns her phone (844 × 390): "${small.map((c) => c.text).join('", "')}", and they cover no piece nor the board (${JSON.stringify(small)})`);
   await shot(carol, 'review-phone-landscape-watching');
+  const full = (await P.viewOf(carol, 'v.seats.every((st) => Object.values(v.players).some((pl) => pl.seatId === st.id))')) ? '👀 You are watching — every seat is taken' : '👀 You are watching — tap a free seat to sit';
+  const opened = () => carol.waitForFunction((t) => document.getElementById('watch-me-text').textContent === t && !/^👀 \d+$/.test(document.getElementById('watchers').textContent), full, { timeout: 5000 }).then(() => true, () => false);
   await carol.tap('#watchers');
-  ok(await carol.waitForFunction(() => document.getElementById('watch-me-text').textContent === '👀 You are watching — tap a free seat to sit' && !/^👀 \d+$/.test(document.getElementById('watchers').textContent), null, { timeout: 5000 }).then(() => true, () => false),
-    'a tap on the chip opens the box: who watches, and how to sit');
+  ok(await opened(), `a tap on the chip opens the box: who watches, and how to sit ("${full}": Light and Dark are ${full.includes('taken') ? 'both taken' : 'not both taken'})`);
+  const big = await chips(), gutter = await carol.evaluate(() => document.getElementById('main').classList.contains('gutters') && parseFloat(document.getElementById('watch-box').style.getPropertyValue('--gutter')));
+  ok(big.every((c) => !c.covers && (!gutter || c.w <= gutter - 16)), `opened, it covers no piece nor the board${gutter ? `, wrapped in the right margin (${gutter} px)` : ''} (${JSON.stringify(big)})`);
   await carol.tap('#watchers');
   ok(same((await chips()).map((c) => c.text), small.map((c) => c.text)), 'another tap closes it again');
-  await carol.tap('#log-btn');
+  await carol.tap('#watchers');
+  ok(await opened(), '(a tap opens it again)');
+  const cw = await P.wrap(carol);
+  await carol.touchscreen.tap(cw.left + cw.W / 2, cw.top + cw.H / 2);
+  ok(await carol.waitForFunction(() => document.getElementById('watch-me-text').textContent === '👀 Watching', null, { timeout: 3000 }).then(() => true, () => false), 'a tap on the table closes it');
+  await carol.tap('#watchers');
+  ok(await opened(), '(a tap opens it again)');
+  const t6 = Date.now();
+  ok(await carol.waitForFunction(() => document.getElementById('watch-me-text').textContent === '👀 Watching', null, { timeout: 10000 }).then(() => true, () => false) && Date.now() - t6 > 4000,
+    `left alone, it closes by itself (after ${((Date.now() - t6) / 1000).toFixed(1)} s)`);
+  await carol.tap('#log-btn'); // (the log closed: the felt leaves wide margins beside it)
+  await h.sleep(800);
+  await carol.tap('#watchers');
+  ok(await opened(), '(with the log closed, a tap opens it)');
+  const wide = await chips(), margin = await carol.evaluate(() => document.getElementById('main').classList.contains('gutters') && parseFloat(document.getElementById('watch-box').style.getPropertyValue('--gutter')));
+  ok(margin > 0 && wide.every((c) => !c.covers && c.w <= margin - 16), `there it wraps in the right margin (${margin} px), covering no piece nor the board (${JSON.stringify(wide)})`);
+  await shot(carol, 'review-phone-landscape-watching-open');
+  await carol.tap('#watchers');
   await carol.setViewportSize(P.PHONE.viewport);
   await h.sleep(500);
-  ok(await carol.evaluate(() => document.getElementById('watch-me-text').textContent === '👀 You are watching — tap a free seat to sit'), 'back upright, the phone shows the whole text again');
+  ok(await carol.evaluate((t) => document.getElementById('watch-me-text').textContent === t, full), 'back upright, the phone shows the whole text again');
 
   section('watchdog: a guest whose host has been gone a minute reloads itself, keeping the table paused, and gets it back live when the host returns');
   const hostUrl = host.url(), hctx = host.context();
+  // Meanwhile Dan opens the invite on a relay that never opens (it drops
+  // every connection): this section's minutes are his, checked at its end.
+  // His tab holds an old backoff of the watchdog's for this room, from a
+  // visit a minute ago: it is not his page's, so he gets his 20 s of grace.
+  const deadRelay = net.createServer((c) => c.destroy()), room = hostUrl.match(/#room~([0-9a-f]+)/)[1];
+  await new Promise((r) => deadRelay.listen(0, '127.0.0.1', r));
+  const dan = await env.page('Dan', { relay: `ws://127.0.0.1:${deadRelay.address().port}` }), danSaid = [];
+  await dan.addInitScript(sayLog);
+  await dan.addInitScript((r) => {
+    try {
+      if (location.hash && !sessionStorage.getItem('test-planted')) {
+        sessionStorage.setItem('test-planted', '1');
+        sessionStorage.setItem(`ct-rejoin-${r}`, JSON.stringify({ backoff: 40000, at: Date.now() - 60000 }));
+      }
+    } catch (err) { console.error('could not plant the old backoff', err); }
+  }, room);
+  dan.on('console', (m) => { if (/^(HINT|TOAST) |^reconnecting via reload/.test(m.text())) danSaid.push({ at: Date.now(), t: m.text() }); });
+  const danT0 = Date.now();
+  await dan.goto(hostUrl);
+  await h.joinAs(dan, 'Dan');
   for (const p of [bob, carol]) await p.evaluate(() => { window.__stay = 1; });
   const reloaded = bob.waitForEvent('load', { timeout: 120000 }).then(() => true, () => false), why = [];
   bob.on('console', (m) => { if (/^reconnecting via reload/.test(m.text())) why.push(m.text()); });
@@ -482,7 +548,7 @@ function noticeWatch() {
   ok(hintPx >= 18, `there, "The host left — …" is readable: a line of it is ${hintPx.toFixed(1)} px tall on the screen`);
   await shot(carol, 'review-phone-paused');
   await h.sleep(Math.max(0, t1 + 11000 - Date.now())); // (two watchdog ticks on the new page)
-  const rejoin = await bob.evaluate(() => JSON.parse(sessionStorage.getItem('ct-rejoin') || 'null'));
+  const rejoin = await bob.evaluate((r) => JSON.parse(sessionStorage.getItem(`ct-rejoin-${r}`) || 'null'), room);
   ok(rejoin?.backoff === 40000, `the backoff survives the new page's ticks while the host stays away: the next try waits 40 s (${JSON.stringify(rejoin)})`);
   const lost = await bob.evaluate(() => window.__hints.filter((t) => /Connection lost/.test(t)).length);
   ok(!lost && /paused/.test((await paused()).hint), `the hint never blamed Bob's own connection while his relays opened (${lost} "Connection lost")`);
@@ -508,7 +574,17 @@ function noticeWatch() {
   await back.goto(hostUrl);
   ok(await bob.waitForFunction(() => window.__ct.perf.snaps > 0 && Object.keys(window.__ct.view().items).length === 25 && document.getElementById('table-hint').classList.contains('hidden') && !window.__stay, null, { timeout: 60000 }).then(() => true, () => false),
     'once the host is back, Bob\'s table is live again (the host\'s snapshot, the hint gone)');
-  ok(await bob.waitForFunction(() => sessionStorage.getItem('ct-rejoin') === null, null, { timeout: 15000 }).then(() => true, () => false), 'and the backoff goes');
+  ok(await bob.waitForFunction(() => !Object.keys(sessionStorage).some((k) => k.startsWith('ct-rejoin')), null, { timeout: 15000 }).then(() => true, () => false), 'and the backoff goes');
+
+  section('watchdog: a guest whose own relay never opens is told so — never that the host is missing or away');
+  const danSays = (tag) => [...new Set(danSaid.filter((x) => x.t.startsWith(`${tag} `)).map((x) => x.t.slice(tag.length + 1)))];
+  const danWhy = danSaid.filter((x) => x.t.startsWith('reconnecting')), danHints = danSays('HINT'), danToasts = danSays('TOAST');
+  ok(danWhy.length >= 2 && danWhy.every((x) => x.t === 'reconnecting via reload: no relays reachable'), `Dan's page reloads itself, each time for its relays (${JSON.stringify(danWhy.map((x) => x.t))})`);
+  ok(danWhy[0]?.at - danT0 >= 19000, `the first time ${((danWhy[0]?.at - danT0) / 1000).toFixed(1)} s after it opened: the old backoff his tab held for this room was not his page's (it would have reloaded at its first tick)`);
+  ok(danToasts.includes('Connection is struggling — reconnecting…') && !danToasts.some((t) => /host/i.test(t)), `its notices say the connection struggles (${JSON.stringify(danToasts)})`);
+  ok(danHints.includes("Can't reach the signalling relays — reconnecting…") && !danHints.some((t) => /host/i.test(t)), `its hint says the relays can't be reached, and never names the host (${JSON.stringify(danHints)})`);
+  await dan.context().close();
+  deadRelay.close();
 
   section('watchdog: a host alone whose relays drop reloads itself — and keeps no paused table (that is a guest\'s)');
   const relayPort = +env.relayUrl.split(':').pop(), socks = new Set();

@@ -39,10 +39,11 @@ node t-smoke.js         # one suite, output on the terminal
   end-to-end suite drives its own Chromium. `run-all.sh` runs the `t-*.js`
   suites and the Node-only `*.test.mjs` ones.
 - **The serial list.** The benchmarks, and the suites with a timing budget
-  (a host long task under 50 ms), run alone, one at a time after the
-  parallel batch, under the same lock: `SERIAL`, a comma-separated list of
-  suite names, default `t-p1-bench,core-p1-bench,core-p2-bench,t-p1-flood`. A listed suite
-  that doesn't exist fails the run.
+  (a host long task under 50 ms; a move that reaches a guest pulling 34 MB
+  within 1 s), run alone, one at a time after the parallel batch, under the
+  same lock: `SERIAL`, a comma-separated list of suite names, default
+  `t-p1-bench,core-p1-bench,core-p2-bench,t-p1-flood,t-p1-assets`. A listed
+  suite that doesn't exist fails the run.
 - Runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
   `/tmp/cardtable-tests.lock`): concurrent runs on a small machine starve each
   other into flaky timeouts, so a second run waits for the first.
@@ -145,6 +146,22 @@ top of `core.js` and README "How it works".
   (the host's save record, from IndexedDB) and `truthOf(save)` (the
   public table, hands and `handy`, recomputed from a save by core.js in Node), and
   `same`/`diff`, `prng`, `pct`, `until`.
+- **Raw peers.** Every raw Trystero peer (Mallory, Eve, the spies) opens
+  its page with `h.rawPage(env, label)` (a same-origin page with no app on
+  it, plus the `rawRtc` init script) and joins with `rtcPolyfill:
+  window.RawRTC`, the app's own `WholeOffers` (D95): without it a raw peer
+  open for over a minute makes empty offers, and the page that answers one
+  never links.
+- **Links fail loudly.** A page's WebRTC links form in under a second, or
+  never (D95, before the fix); no suite retries a link any more (they used
+  to, as "the harness's signalling stall", which hid that bug). A join or
+  reload whose links don't form within 15 s fails at once, saying what both
+  sides see (their "● n" and relay status). `t-p2-link.js` is the
+  regression: a guest reloaded beside a host open for over a minute (until
+  the host has made the offer twice) gets the table within 5 s each time,
+  a host reloaded beside a guest open for over a minute reaches her within
+  8 s, and an init script on each page sees no offer without an `m=` line
+  (on the app before D95 it fails all three).
 - **Raw peers and images.** final-lib's Mallory also joins the `asset`
   channel: `M.send.asset(bytes, target, {h, mime})` sends an image, and
   `M.got.asset` records `{m, peerId, metadata}`. (Phase 2: she joins the
@@ -274,17 +291,11 @@ top of `core.js` and README "How it works".
   or on another player's die sends nothing, the die's bar stays empty and
   the host's bar on the board offers only `lock` and `give` (2B's full bar);
   `roll all` over more than 20 dice is said, and sends nothing. Case 13's
-  host reload waits 45 s for the reloaded host's WebRTC link to Mallory;
-  a link that never formed (a full run's load can stall signalling for
-  minutes, as t-p1-delta notes) is tried again with a fresh side — the host
-  reloads again, then Mallory is replaced by a fresh raw peer who keeps
-  what she received and her seat (so `M` and `X` are `let`) — and each
-  failed try logs what both sides saw (her peers and relay sockets, the
-  host's status line); linked but without a snapshot fails at once. (The
-  stuck side was the long-lived raw peer: a real guest in that state
-  recovers by itself — the app's watchdog reloads a guest that has had no
-  host for a minute, `t-p2-review.js` checks it — but Mallory runs no app
-  code, hence the retries.) `t-ui.js`'s
+  host reload must link to Mallory within 15 s, and then send her its
+  public snapshot within 30 s; either failing fails at once, with what both
+  sides saw (her peers and relay sockets, the host's status line). (It used
+  to try again with a fresh side: the stuck side was the long-lived raw
+  peer, whose aged pooled offers went out empty — D95.) `t-ui.js`'s
   "seat labels follow a new table size": at a 1600 × 1400 view (no size
   draws small labels there, which are redrawn anyway), every seat label
   stays centred on its seat, `seatR(w)` from the centre, as the host's size
@@ -304,14 +315,23 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
   the seat's for a seat-bound owner; always in the DOM, displayed only under
   `.item.selected` or, where the pointer hovers — `@media (hover: hover)`,
   not the iPhone descriptor — under `.item:hover`: D90), `.lockb` (🔒,
-  displayed only under `.item.selected`). A pile's `.count` and `.pname`,
-  ×N, ∞ and a bag's `.bagbox` turn (CSS `rotate`) by −(`--view` +
-  `--rot`), so they read upright on every screen (D91; `--rot` is the
-  item's `rot`, inline on every item element whose `rot` isn't 0). A
-  selected piece shows a ring: `outline` on a rect's `.pface`, a
-  `box-shadow` ring set off by a dark edge on a round or disc one, and
-  `filter: drop-shadow(…)` on the `.item` itself for a hex, meeple or pawn
-  (whose `clip-path` cuts an outline off). A roll puts `.tumble` on every rolled die's element for
+  displayed only under `.item.selected`). ×N, ∞, a pile's `.count`, `.lockb`
+  and a bag's `.bagbox` turn (CSS `rotate`) by −(`--view` + `--rot`), so
+  they read upright on every screen (D91; `--rot` is the item's `rot`,
+  inline on every item element whose `rot` isn't 0); a pile's `.pname` is
+  anchored at the pile's centre (`left`/`top` 50%, `translate` −50%), turned
+  the same way there, and moved down by its `transform` past the pile's
+  corners and its count (`--pr`, half the pile's diagonal), so it sits under
+  its pile on every screen (D97). The view sheet (app.js) has three rules:
+  rule 0 sets `--bz`, the badges' growth (`scale` of `.count`, `.odot`,
+  `.lockb`; a `.pname` at most 2×; the rings' widths: it matches a selected
+  item too; a coordinate's, capped by its board's `--lmax`), rule 1 a
+  board text's `--view`, rule 2 the badges' `--view`; rules 0 and 2 are
+  left as they are while two fingers move the view (D96). A selected piece
+  shows a ring: `outline` on a rect's `.pface`, a `box-shadow` ring set off
+  by a dark edge on a round or disc one, and `filter: drop-shadow(…)` on the
+  `.item` itself for a hex, meeple or pawn (whose `clip-path` cuts an
+  outline off), all in multiples of `--bz` px. A roll puts `.tumble` on every rolled die's element for
   450 ms on every screen, the roller's too (its animation is off under
   reduced motion, which `h.start()` sets by default: the class still comes).
 - **`pieces.js` in Node** (B11): `import('../pieces.js')` works without a
@@ -325,23 +345,31 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
   set by the view sheet's third rule, and the board item's `rot`, inline on
   its element; each `.slabel` by that angle rounded to the nearest half turn
   (CSS `round()`), so it is never upside down (D91). The coordinates also
-  get the view sheet's second rule, a `scale` of min(badge growth, 1.6). A
-  board's `.pface` and `svg.psvg` don't clip (`overflow: visible`).
+  grow: `scale: min(var(--bz), var(--lmax))`, where `g.blabels` carries
+  `--lmax` (its margin over the widest label's box, an em tall and 0.6 em a
+  character wide; 1 to 1.6: D97). A board's `.pface` and `svg.psvg` don't
+  clip (`overflow: visible`).
   p2t-lib's `boardTexts(p, id)` reads each text off the screen (its angle
   from `getScreenCTM`, which composes every transform; its box's distance to
   its own anchor and to the nearest other one; its font size in px, its own
-  scale included; how far its box, mapped back into board units, stands past
-  the board's edge) and the angle the first coordinate would show with its
-  turn taken off for a moment; `upright(p, id, bare, who)` checks them all
-  (each coordinate upright within 0.5°, each label at most 90° off upright
-  and inside the board, each within half a font size of its own anchor and
-  nearer it than any other, `bare` the view's turn plus the board's).
-  `badgeAngles(p)` reads each badge's on-screen angle from two probes at
-  its top corners (and with its `rotate` taken off, less its item's `rot`:
-  the view's turn); `badgesUpright(p, turn, who)` checks them.
+  scale included; how far its ink — its glyphs' bounds, measured on a canvas
+  in its font and centred as it is — mapped back into board units, stands
+  past the board's edge) and the angle the first coordinate would show with
+  its turn taken off for a moment; `upright(p, id, bare, who)` checks them
+  all (each coordinate upright within 0.5° and inside the board within 0.5
+  units, each label at most 90° off upright and inside the board, each
+  within half a font size of its own anchor and nearer it than any other,
+  `bare` the view's turn plus the board's). `badgeAngles(p)` reads each
+  shown badge's on-screen angle from two probes at its top corners (and
+  with `--view` and `--rot` zeroed on it, less its item's `rot`: the view's
+  turn), and for a pile's name how far below the pile's lowest corner on
+  the screen its top is, how far across from the pile's centre, and how
+  much of the pile's count it covers; `badgesUpright(p, turn, who)` checks
+  them (upright, the live turn, a name under its pile, centred, clear of
+  the count).
 - **The bar** (`#action-bar`, built from the public view): each button has
   `data-cmd` — pieces `flip`, `roll`, `rl`/`rr` (not on a die, nor on a
-  round or disc piece whose side up is a plain colour: D92), `split` (✂ Take 1), `all`
+  circular — round or disc, `w === h` — piece whose side up is a plain colour: D92), `split` (✂ Take 1), `all`
   (✥ Move all: `.on` while armed, 5 s, a teal button whose bottom line
   drains), `hand`, `zoom`, `lock` (🔒 Lock / 🔓 Unlock), `claim`,
   `release`, `give` (the host; `.on` while open; its `giveTo` buttons, in a
@@ -491,7 +519,8 @@ the size selector's "▭ 2400 × 1200", its confirm declined, then accepted
 13 guest): draughts and backgammon from the 🎲 dialog, played with real
 drags, double-clicks and taps (see its header); the draughts board's
 coordinates upright on both screens, the Dark phone's turned 180° (D91:
-`upright`), and grown there (`scale` above 1, 6.5 px or more); the standard backgammon start is
+`upright`), and grown there as far as their 20-unit margin holds (`scale`
+1.25, 5.5 px or more: D97); the standard backgammon start is
 read off the board's own points (each checker by the triangle under it),
 either home-board side accepted; screenshots `shots/demo-*.png` and
 `shots/tables-*.png` are for review, never asserted. `t-p1-bench.js`
@@ -505,11 +534,15 @@ when the boxes are already there — and B11 in the host's page (eight 64 × 64 
 and hex, every draw mode, 4,096 fills, 64 marks: the first `boardSVG` call
 and the cached second). `core-p2-bench.mjs` adds B5, B1, B2 and B7 on its
 own 1,000-piece table (a move patch of a token; 50 `t.find({kind: 'die'})`).
-A join or reload whose WebRTC links never form (the signalling stall
-t-p1-delta describes; here a page sometimes links to the other guests but
-not to a long-running host) is tried again with a fresh page or reload,
-three times at most, and logged with both sides' player counts; one linked
-to everyone that gets no table fails.
+A join or reload whose WebRTC links don't form within 15 s fails at once,
+with both sides' status (no retry: see "Links fail loudly" above); one
+linked to everyone that gets no table fails too. After the bench box, B4
+also twists the phone (two touch pointers, half a turn in 3 s, CPU × 2)
+over 1,000 ×3 stacks: no long task over 50 ms while the fingers move, the
+rAF p95 within the pan's budget (after one twist not measured: the table's
+first turn off its axes redraws its layer once, a 60–65 ms frame with these
+badges), then one task under 150 ms as the badges settle once they lift, at
+the view's exact angle (D96).
 **`p2t-lib.js`**: `join` (a player, once the host knows it; `o.rtc` adds
 the RTC hook, `page.pid`), `waitView`/`viewOf` (an expression over `v`,
 `me`, `a`), `tf` (#table's pan, turn and scale), `wrap`, `fit` (§2g's
@@ -560,7 +593,7 @@ test cuts) reloads itself and keeps no `ct-paused-*` entry.
 entries); `t-p2-cli.js` expects the host's bar on a locked board to offer
 `lock,give`; `core-p2.test.mjs` (R) checks that the public bag carries its
 `box` (D88; `specPub` adds it); `t-p2-hidden.js` case 13 waits for the
-reloaded host's link as above, with a fresh Mallory as the last resort.
+reloaded host's link as above.
 In the 2B fix-up: `t-p2-pieces.js` expects ✥ Move (`all`) in a supply's
 bar, and its "a drag pans" check resets the view (🧭) before the tap that
 selects (on the phone, Bob's 40 px pan now takes the lone die, drawn where
@@ -601,6 +634,31 @@ review (D92: no ⟲ ⟳ on a plain disc), `t-p2-pieces.js` expects no
 and the gem, and turns the 6-face wheel (a disc with a label) instead of a
 coin to check a free rotation; `upright` checks a coordinate's `bare` turn
 (the first `.blabels text`), and the labels' own rule.
+After the close-out's second review: `t-p2-link.js` is new (D95, above); the
+raw peers open with `h.rawPage` and join with `window.RawRTC`; t-p1-bench
+(B8, B10's joins), t-p1-delta (its raw peers and reloads) and t-p2-hidden
+(case 13) no longer retry a link that never forms, they fail within 15 s;
+`t-cli-edge.js`'s Python driver prints READY once its listeners are on (the
+suite sends a state the moment it reads READY: under load the state came
+before the STATE listener, and no STATE line was ever printed);
+`t-p1-assets.js` joins the SERIAL list (its section 9 holds a 1 s budget,
+which a CPU-starved parallel batch once broke at 1.7 s with no long task on
+either page). `t-p2-review.js` adds ? closed with Escape and a guest's +
+Deck → Add deck (which closes after an await) to its dialog-focus cases;
+Dan, on a relay that drops every connection, with an old backoff of this
+room's planted in his tab: his page reloads for its relays only (never
+blaming the host), the first time after its own 20 s, and his hint says
+"Can't reach the signalling relays"; and in landscape the watcher's box
+opens in the right margin, says every seat is taken, and closes on a tap
+on the table or after 6 s. `t-p2-tables.js` expects "every seat is taken"
+while both named seats are held, and "tap a free seat" once one is free;
+on a round table with four named seats it checks a 10 × 10 board's
+two-digit ranks inside the board on the phone, and that the paused hint's
+plate covers no seat label (desktop, phone in landscape). `t-p2-pieces.js`
+expects ⟲ ⟳ on a plain oval (round, 120 × 50). `t-p1-store.js` hides the
+host's tab right after a move: marked pending, in the save 200 ms later
+(D99). `t-p2-demos.js` expects the draughts coordinates at 1.25× on the
+phone (D97).
 
 ## Storage and images (Phase 1B)
 

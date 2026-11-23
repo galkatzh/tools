@@ -73,12 +73,13 @@ export function imageOf(it, boxes) {
 export const isBoard = (it, boxes) => it.k === 'g' && (it.z < 0 || typeAt(boxes, it.t)?.kind === 'board');
 /** Whether public item `it` is a die (a hidden one never is: its type is hidden). */
 export const isDie = (it, boxes) => it.k === 'g' && typeAt(boxes, it.t)?.kind === 'die';
-/** Whether a turn of public piece `it` would show: false for a round or
- *  disc piece whose side up is a plain colour (a checker, a man), which
- *  looks the same at any angle — its bar offers no ⟲ ⟳ (app.js barFor). */
+/** Whether a turn of public piece `it` would show: false for a circular
+ *  (round or disc, as wide as high) piece whose side up is a plain colour
+ *  (a checker, a man), which looks the same at any angle — its bar offers
+ *  no ⟲ ⟳ (app.js barFor). An oval turns visibly. */
 export function turnShows(it, boxes) {
-  const L = lookOf(shownPart(it), boxes), f = L?.face;
-  return !f || !['round', 'disc'].includes(flagsOf(it, boxes).shape) || f.img !== undefined || !!f.label || !!f.text || f.pips !== undefined;
+  const L = lookOf(shownPart(it), boxes), f = L?.face, F = flagsOf(it, boxes);
+  return !f || !['round', 'disc'].includes(F.shape) || F.w !== F.h || f.img !== undefined || !!f.label || !!f.text || f.pips !== undefined;
 }
 /** The face a public piece-like item shows, when it is worth enlarging (an
  *  image, a text or a label: the long-press zoom): {t, f}, or null. */
@@ -187,6 +188,7 @@ function cellPather(g) {
   const rel = hex ? `${hex.slice(1).map((p, j) => `l${n2(p[0] - hex[j][0])} ${n2(p[1] - hex[j][1])}`).join('')}z` : `h${n2(g.cell)}v${n2(g.cell)}h${n2(-g.cell)}z`;
   return (c, r) => { const p = cellCenter(g, c, r); return `M${n2(p.x + ox)} ${n2(p.y + oy)}${rel}`; };
 }
+const LABEL_MAX = 1.6; // the most a board's coordinates grow on a table drawn small (app.js view sheet)
 /** Grid g, on a board boardH units tall, drawn: its cells (draw 'checker',
  *  'cells'), its lines ('lines'), its fills, marks and edge labels (chess
  *  and go: in the margin, when the grid leaves one; .blabels). */
@@ -233,17 +235,23 @@ function gridSVG(g, boardH) {
   if (g.type === 'square' && (L === 'chess' || L === 'go')) {
     const ext = gridExtent(g), mx = g.x, my = boardH - ext.h, m = Math.min(mx, my);
     const fs = n2(m >= 12 ? Math.min(m * 0.8, g.cell * 0.32) : g.cell * 0.2);
-    const outside = m >= 12;
+    const outside = m >= 12, files = Array.from({ length: g.cols }, (_, c) => formatAddr(g, c, g.rows - 1).replace(/\d+$/, ''));
     let t = '';
     for (let c = 0; c < g.cols; c++) {
       const p = cellCenter(g, c, g.rows - 1), y = outside ? ext.h + m / 2 : p.y + (g.snap === 'point' ? 0 : g.cell / 2) - fs * 0.35; // (in the strip the font is sized for, as the ranks are)
-      t += `<text x="${n2(p.x)}" y="${n2(y)}">${esc(formatAddr(g, c, g.rows - 1).replace(/\d+$/, ''))}</text>`;
+      t += `<text x="${n2(p.x)}" y="${n2(y)}">${esc(files[c])}</text>`;
     }
     for (let r = 0; r < g.rows; r++) {
       const p = cellCenter(g, 0, r), x = outside ? mx / 2 : p.x - (g.snap === 'point' ? 0 : g.cell / 2) + fs * 0.45;
       t += `<text x="${n2(x)}" y="${n2(p.y)}">${esc(String(g.rows - r))}</text>`;
     }
-    s += `<g class="blabels" font-size="${fs}" fill="currentColor" text-anchor="middle" dominant-baseline="central">${t}</g>`;
+    // How much the labels may grow on a table drawn small (style.css .blabels
+    // text): in a margin, as long as the widest one (an em tall, 0.6 em a
+    // character wide, whichever way the view turns it) still fits its strip
+    // (two-digit ranks hardly grow); inside the cells, up to LABEL_MAX.
+    const n = Math.max(String(g.rows).length, ...files.map((f) => f.length));
+    const lmax = outside ? Math.min(LABEL_MAX, Math.max(1, m / (fs * Math.max(1, 0.6 * n)))) : LABEL_MAX;
+    s += `<g class="blabels" style="--lmax:${n2(lmax)}" font-size="${fs}" fill="currentColor" text-anchor="middle" dominant-baseline="central">${t}</g>`;
   }
   return s;
 }

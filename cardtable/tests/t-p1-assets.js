@@ -24,9 +24,12 @@
 //                 check, a `missing` note, .face.missing and a toast; with the
 //                 note suppressed, the guest gives up after 20 s and one retry
 //   (9) pacing    during a 34 MB pull, the host's moves reach the pulling guest
-//                 in ≤ 1 s each
+//                 in ≤ 1 s each: a timing budget, so this suite runs alone,
+//                 in run-all.sh's SERIAL list (in the parallel batch, a CPU-
+//                 starved transport alone once took a move 1.7 s, with no long
+//                 task on either page)
 // (§1j case 3, 1,000 `need` requests, is t-p1-flood.js: its budget is a host
-// long task under 50 ms, so it runs alone, in run-all.sh's SERIAL list.)
+// long task under 50 ms, so it runs alone too.)
 // Images are made in code (assets-lib.js), so every asset id — the SHA-256 of
 // the bytes — is known here, independently of the app.
 'use strict';
