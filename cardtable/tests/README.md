@@ -356,6 +356,39 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
   rules off, then sends `loadBox {box: BOXES.draughts, setup: true, clear:
   true}`; the dialog then marks it playing.
 
+**`t-p2-pieces.js`** (spec §2l items 1–11, the rest of §2g's gesture
+table, the keys, the bar). Two passes: a desktop host and guest (mouse,
+Shift, double-clicks, keys; the guest with motion on, so the tumble really
+plays), then both on the iPhone 13 descriptor (CDP touches; the bar stands
+in for double-clicks). Its box `KIT` holds every kind — ×N stacks of a
+2-face coin, a chit with a back, a 6-face wheel, a 60° hex tile, tiles with
+a back that pile and go in hands, plain tiles without one, dice, a hidden
+die and a hidden token sharing a back, a coin supply and a tile supply, a
+bag of coins and a hand bag of tiles, a locked chess-labelled board — on a
+1200 × 800 table, Alice South and Bob North (his view turned 180°: screen
+points are read from the page, a probe element in `#table` mapping a table
+point to the screen and three of them inverting it); `LOCKABLE` (lockable
+`'anyone'`) adds a gem and a bag (D88). Every gesture is then read on both
+screens: `__ct.view()`, the item's DOM (classes, the ×N / ∞ pills, the
+`.odot` colour, the `.lockb` display, the pouch's count, the turn) and the
+log (the entry after a mark in `view.log`, and its `#log` row). The bar is
+checked exactly per kind and permission (guest and host, locked, someone
+else's, seat-bound, a hidden piece's flags from its back, a bag's 🔒 by its
+public box); 🔍, which the bar adds on a face with a label, text or image
+(not in §2g's list), is expected there. "Nothing sent" is read off the RTC
+hook (the guest's `act` bytes, the host's received ones) and the logs (no
+line by either player), "no notice" off assets-lib's `toastLog`, a roll's
+tumble off a MutationObserver (which dice get `.tumble` and for how long;
+where motion is on, the 450 ms CSS animation). A piece keeps the spot it
+was grabbed by, so what is moved or taken out lands at the item's place
+plus the pointer's drag in table units; a piece played from the hand lands
+centred under the pointer. Touch drags hold still 150 ms before lifting
+(lifted while moving, Chrome starts a fling, and the next tap only stops
+it: no click). A failed check saves both screens as
+`shots/p2-pieces-<pass>-fail<k>-<name>.png` (a crash: `…-crash-<k>.png`);
+each pass ends with `shots/p2-pieces-<pass>-<name>.png`. `ONLY=desktop` or
+`ONLY=phone` runs one pass.
+
 **Changed for 2B** (mechanism only; no assertion removed or weakened):
 `t-fun-games.js` lists the two box games in the strip and the dialog (9
 entries); `t-p2-cli.js` expects the host's bar on a locked board to offer
