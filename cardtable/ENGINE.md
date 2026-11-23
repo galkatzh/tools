@@ -231,6 +231,90 @@ A thin wrapper over the table's existing ops (today in `core.js`):
   so scripts key game logic on `meta.cost`/`meta.type` instead of parsing
   names. Scripts own all actual game logic.
 
+### Addresses and the spatial helpers (Phase 3)
+
+A board's structure — its grid, spaces, zones and links — has meaning:
+a **piece** (never a card, pile, supply, bag or board) placed on a
+structured board **snaps** to the spot in reach of its centre on the
+topmost board there (a grid cell; a go-style point within half a cell; a
+hex; a space first — within its `r` of its centre, or anywhere inside its
+`w × h` rectangle), centred on it, and records where (`at`). Every
+placement snaps: a human move, take, pull, split, play or deal, a script's
+`t.move`, `t.spawn`, `t.take`, `t.pull`, `t.playFromHand`, `t.deal`, and
+setups. `{x, y, free: true}` skips it.
+
+- **Addresses.** On a board, `'e4'` (chess labels), `'D4'` (go), `'3,4'`
+  (`xy`), `'2,-1'` (hex axial), or a space's id (`'bar'`). Scripts see them
+  in their **display form**: bare on the **primary board** (the oldest with
+  `primary: true`, else the oldest with a grid, else with spaces; racks
+  and mats with zones only never are), `'<typeId>:<local>'` on another
+  (`'map:c3'`), `'<typeId>#<n>:<local>'` when several boards of that type id
+  lie on the table (`n` counts them oldest first — it renumbers if an older
+  one is removed). Every call that takes an address takes these forms, and
+  a bare one names the primary board's spot, else the one other board's
+  that has it; when several could be meant it throws `TypeError("t.move:
+  address 'bar' is ambiguous — use 'tray#1:bar' or 'tray#2:bar'")`. An
+  address no board has throws too. (Inside, an address is
+  `'<board item id>:<local>'`; `t.item(id).at` is the display form.)
+- **Moving a board moves nothing else.** After a board is moved, turned
+  (quarter turns only), flipped or removed, or the table resized, every
+  piece keeps its place, and its address is read again: the spot under its
+  centre, if one is in reach, else none.
+- **Reads**: `t.where(id)` → the piece's address, or `null` (`false`: no
+  such item); `t.at(addr)` → the pieces there, copied, bottom to top;
+  `t.find({…, at, zone})` (`zone`: a zone id on any board, or
+  `'<board>:<zone>'`); `t.zones(id)` → the zones a piece lies in;
+  `t.spot(addr)` → its centre `{x, y}` on the table; `t.neighbors(addr,
+  {diag})` → the 4 (or 8) squares or 6 hexes next to it, on the grid, or a
+  space's links; `t.distance(a, b, {metric})` → steps on one board's grid
+  (`'chebyshev'`, the default, or `'manhattan'`; hexes count steps) or
+  `null` (across boards, or a space); `t.line(a, b)` → the spots strictly
+  between, along a rank, a file, a diagonal or a hex line, or `null`;
+  `t.linked(space)` → the spaces linked to it (links run both ways). They
+  read indexes kept as pieces move: a script that checks every move of a
+  400-piece game stays fast.
+- **`t.move(id, addr)`** centres an item on a spot (`t.move(id, {x, y,
+  free})` places its top-left, `t.move(id, x, y)` still works). A move
+  logs its addresses: "moved White pawn e2 → e4".
+- **What an action says** (`validate`, `onAction`): `a.to` is the address
+  the piece it places will snap to — the moved piece, or the new piece of
+  a `take`, `split`, `play` or `pull` (by its own size) — whatever a
+  client sent; `a.from` where a moved (or split) piece was; a `pull`'s
+  `a.pick` is the bag member it draws (drawn before the hooks: a veto
+  discards it, and the bag is unchanged).
+
+### Components from code (Phase 3)
+
+- `t.newBox({name, pieces, backs, decks})` registers a game box and
+  returns its id, in the `game.json` format (README, "Pieces, dice and
+  boards"): `pieces` a list of types with their `id` (and a board's `grid`,
+  `spaces`, `zones`, `links` and `primary` on the piece itself), `backs` a
+  list (`{id, color, label}`), `decks` text decks (`{name, back, cards:
+  [{name, text, color, bg, meta, count}]}`, registered as ordinary decks:
+  the box's `decks` maps their names to deck ids). No images: a script's
+  box is drawn from colours, labels and pips (any `img` throws). The same
+  box again — a reset re-running `setup` — is the box already there.
+- `t.spawn('box/type', {at, f, n, owner, up, rot, lock, as})` places a
+  piece (`as: 'supply'`: a supply) at an address, `'center'` or `{x, y,
+  free}` → its id (`false` at the 5,000-item cap); a board is locked unless
+  `lock: false`. `t.newBag([{t, f, up, n}], {at, name, owner, hand})` → a
+  bag. `t.take(supply, {at, to})` and `t.pull(bag, {at, to})` hand out a
+  piece onto the table (next to it, or `at`) or into player `to`'s hand
+  (`{hand: true, t, f}`). `t.setFace(id, f)` (a die too), `t.setCount(id, n)`
+  (0 removes it), `t.lock(id, on)`, `t.setOwner(id, pid | 'seat:<id>' |
+  null)`, `t.setSeats(defs | null)` and `t.setTable({shape, w, h, felt})`.
+  A malformed argument (an unknown type, a face out of range, a bad
+  address) throws a `TypeError` naming the call; an item that is gone is
+  `false`.
+- **Their log lines aggregate**: in one action, four or more consecutive
+  📜 Rules lines of the same kind — placed, removed, turned, counted,
+  locked, unlocked, owner, used randomness — become one: "📜 Rules removed
+  30 pieces: D4, E4, D5, …" (the first 8 addresses, or names).
+- **`t.data._timers`** is the engine's own key in `t.data`: what
+  `t.schedule` keeps (at most 1,000 timers, tags of at most 100
+  characters). Don't write it; a save holding a malformed one loses the bad
+  entries loudly (`console.error`) when it loads.
+
 ## 3. Enforcement path (the one structural change)
 
 In `apply(p, a)`: before the switch, if rules are enabled and `validate`
@@ -393,6 +477,10 @@ the default.
   changed in the state (items, players, hands, log lines, the rules'
   public part) is recorded in dirty sets that `app.js` takes once per
   broadcast tick (`T.takeDirty()`) to build the patches.
+- `cardtable/grid.js`: board geometry (pure): the address grammar,
+  snapping, and the maths under `t.neighbors`, `t.distance`, `t.line`,
+  `t.linked` and zones; `core.js` keeps the addresses (the primary board,
+  display forms) and the `byAt` / `byZone` indexes.
 - `cardtable/templates.js`: the example scripts (`RULES_TEMPLATES`) and
   the 🎲 picker's catalog (`GAMES`).
 - `cardtable/app.js`: the `note`, `rulesBtn` and `setRules` messages; the

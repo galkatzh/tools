@@ -187,7 +187,7 @@ function testGrid() {
   const accepted = off.filter(([g, s]) => grid.parseAddr(g, s) !== null).map(([, s]) => s);
   ok(!accepted.length, `parseAddr refuses what is no cell of the grid (off it, or not an address): ${accepted.join(' ') || 'none accepted'}`);
   ok([null, undefined, 4, {}, ['e', 4]].every((v) => grid.parseAddr(ch, v) === null), 'parseAddr(non-string) is null, never a throw');
-  ok(grid.MODULE_V === core.MODULE_V && core.MODULE_V === 1 && core.PROTO === 3, `grid.js exports MODULE_V like core.js (${grid.MODULE_V}, ${core.MODULE_V}); PROTO is 3 (${core.PROTO})`);
+  ok(grid.MODULE_V === core.MODULE_V && core.MODULE_V === 1 && core.PROTO === 4, `grid.js exports MODULE_V like core.js (${grid.MODULE_V}, ${core.MODULE_V}); PROTO is 4 (Phase 3: ${core.PROTO})`);
   const wide = { type: 'square', cols: 26, rows: 3, cell: 10, x: 0, y: 0, labels: 'chess' }, goWide = { type: 'square', cols: 25, rows: 3, cell: 10, x: 0, y: 0, snap: 'point', labels: 'go' };
   ok(grid.formatAddr(wide, 25, 0) === 'z3' && grid.formatAddr(goWide, 24, 2) === 'Z1' && P(goWide, 'z1') === '{"c":24,"r":2}', 'the widest boards: chess to z (26 columns), go to Z (25)');
 }
@@ -1543,7 +1543,7 @@ function testFacade() {
   ok(!newIds(T, s0).length && r.notes.includes('🚫 not now'), 'and a take');
   const NEW = ['roll', 'face', 'split', 'join', 'take', 'pull', 'toBag', 'lock', 'owner', 'seat'];
   ok(NEW.every((x) => RULED_ACTIONS.has(x)) && ['table', 'loadBox', 'clear', 'size', 'setRules'].every((x) => !RULED_ACTIONS.has(x)), 'RULED_ACTIONS: today\'s set plus roll, face, split, join, take, pull, toBag, lock, owner and seat; not table, loadBox or clear');
-  ok(isDeepStrictEqual(new Set(PUBLIC_ACTIONS), new Set([...RULED_ACTIONS, 'hello', 'snap', 'need', 'name', 'chat', 'rulesBtn'])), 'PUBLIC_ACTIONS: the ruled actions plus hello, snap, need, name, chat and rulesBtn');
+  ok(isDeepStrictEqual(new Set(PUBLIC_ACTIONS), new Set([...RULED_ACTIONS, 'hello', 'snap', 'need', 'name', 'chat', 'rulesBtn', 'drag'])), 'PUBLIC_ACTIONS: the ruled actions plus hello, snap, need, name, chat, rulesBtn and (Phase 3) drag');
 }
 
 function testLogNamesNothingHidden() {
@@ -2055,7 +2055,7 @@ function testSeats() {
 // =============================================================================
 function testMigrate() {
   section('(6) MIGRATE[2]: size → table, seats null, boardSeq 0, v 3');
-  ok(STATE_V === 3, `STATE_V is 3 (${STATE_V})`);
+  ok(STATE_V === 4, `STATE_V is 4 (Phase 3: ${STATE_V})`);
   const v2 = { v: 2, seq: 5, size: 1800, zMax: 3, keys: { [BOB]: keyOf(BOB) }, log: [{ p: HOST, txt: 'hi', ts: 1 }],
     items: { c1: { k: 'c', d: DK, i: 3, up: true, x: 500, y: 500, rot: 0, z: 1 }, p1: { k: 'p', name: 'Deck', cards: [{ d: DK, i: 1, up: false }], x: 600, y: 600, rot: 90, z: 3 } },
     players: { [HOST]: player('Alice', 90), [BOB]: player('Bob', 270, { online: false }) } };
@@ -2064,11 +2064,11 @@ function testMigrate() {
   ok(isDeepStrictEqual(m.items, v2.items) && m.players[HOST].seat === 90 && m.players[BOB].seat === 270 && isDeepStrictEqual(m.keys, v2.keys) && m.seq === 5, 'items, players (their seat angles), keys and seq are untouched');
   const v1 = { size: 2400, seq: 2, items: {}, players: { [BOB]: { ...player('Bob', 270), key: keyOf(BOB) } } };
   const m1 = migrate(json(v1));
-  ok(m1.v === 3 && isDeepStrictEqual(m1.table, { shape: 'round', w: 2400, h: 2400 }) && m1.keys[BOB] === keyOf(BOB) && !('key' in m1.players[BOB]) && m1.seats === null, 'a v1 save climbs the whole chain to v3');
+  ok(m1.v === STATE_V && isDeepStrictEqual(m1.table, { shape: 'round', w: 2400, h: 2400 }) && m1.keys[BOB] === keyOf(BOB) && !('key' in m1.players[BOB]) && m1.seats === null, `a v1 save climbs the whole chain to v${STATE_V}`);
   const T = quietly(() => createTable(json(v2), renv(1))).value;
-  ok(T.state.v === 3 && isDeepStrictEqual(T.state.table, { shape: 'round', w: 1800, h: 1800 }) && T.snapContent().table.w === 1800, 'createTable over a v2 save: a v3 table, round 1800');
+  ok(T.state.v === STATE_V && isDeepStrictEqual(T.state.table, { shape: 'round', w: 1800, h: 1800 }) && T.snapContent().table.w === 1800, `createTable over a v2 save: a v${STATE_V} table, round 1800`);
   let threw = null;
-  try { quietly(() => createTable({ ...json(v2), v: 4 }, renv(1))); } catch (e) { threw = e; }
+  try { quietly(() => createTable({ ...json(v2), v: STATE_V + 1 }, renv(1))); } catch (e) { threw = e; }
   ok(threw instanceof Error, 'a save from a newer version is refused, never downgraded');
 
   section('(6) the board z band: BOARD_Z0 + (++boardSeq), newer boards above older, below everything else');

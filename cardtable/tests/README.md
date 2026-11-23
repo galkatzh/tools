@@ -763,6 +763,69 @@ quarter turn while zooming by the refit (they keep ×3, the exact size)
 and a zoom on to 2.5× (the exact 2.14). At c48b966 the three fail: it
 wrote the landing fit's size, 1.00, 2.00 and 1.31.
 
+## Phase 3 (3A: space)
+
+What `core-p3.test.mjs` and `t-p3-space.js` drive (spec §3a–§3e, §3g, §3i;
+decisions D104–D111). Wire version 4, state version 4: raw peers import
+`PROTO` from `core.js` (`h.PROTO`), saves use `STATE_V`.
+
+- **`grid.js` in Node**: `gridSpot(g, x, y)` → `{c, r}` or null (cells: the
+  one holding the point; points: the nearest within `cell / 2`, Euclidean;
+  hexes: pixel → axial → `hexRound`), `spotAt(B, x, y)` → `{local, x, y}`
+  (spaces first: distance 0 inside a space's `w × h` rectangle, else from
+  its centre, within `r`: D104), `parseLocal`, `canonLocal`, `spotOf`,
+  `zonesAt`, `pointInPoly` (an edge or corner is inside), `neighbors(B, s,
+  {diag})`, `distance(B, a, b, {metric})`, `line(B, a, b)`, `linked(B, id)`;
+  a board's frame: `toLocal(b, x, y)`, `fromLocal(b, x, y)`, `onBoard`,
+  `turn` (quarter turns exact). Everything board-local, as `cellCenter`.
+- **`core.js` exports**: `tableBoards(entries, boxes)` → `{list, byId,
+  primary, prefix}` (shown boards with a grid, spaces or zones, oldest
+  first; the same function over host items or a public view),
+  `displayAddr(TB, q)`, `resolveAddr(TB, s)` → `{b, local, at, x, y}`,
+  `{ambiguous: [display forms]}` or null, `snapAt(TB, cx, cy)`,
+  `zonesUnder`, `boxFromDef` (game.json → a box for `cleanBox`), `liveFx(fx,
+  d)` (a tick's fx less the live drags its commit overtook), `gateTimers`,
+  `MAX_TIMERS`, `TIMER_TAG_MAX`, `AGG_MIN` (4), `AGG_NAMES` (8),
+  `MAX_GROUP` (200). On a table: `T.byAt` and `T.byZone` (getters that
+  bring them up to date), `T.boards` (its `tableBoards`), `T.snapPiece(it,
+  x, y, o)` → `{x, y, at}`, `T.display(q)`, `T.drag(p, a)` → whether an fx
+  `{p, id, x, y, live: 1}` (or `{p, ids, dx, dy, live: 1}`) was queued.
+  Host items keep `at` QUALIFIED (`'<board id>:<local>'`); the public
+  piece, the log and every script-facing value show the display form.
+  `MIGRATE[3]` reads a v3 save's addresses off its boards by containment
+  (`s.boxes`: createTable migrates the state with its catalog).
+  The B9 bench's dice now lie beside its board (`core-p2-bench.mjs`), as
+  on it they would snap, two to a cell, and carry addresses.
+- **`__ct` (Phase 3)**: `resolve(addr)` (this view's boards: `{at, local,
+  x, y}` with `at` in display form, `{ambiguous}`, or null), `snap(id, x,
+  y)` (where a move of item `id` to top-left x, y lands as this view sees
+  it: `{x, y, at}`; t-p1-bench waits for its moves there), `drawn(id)`
+  (`{x, y, tx, ty}`: its element's left/top — fanned — and translate — a
+  live drag), `lives()` (`{id: {x, y}}`: the live drags it shows), `spot()`
+  (the snap preview's `{x, y, to}` during a drag, else null).
+- **DOM**: the snap preview is `#table > .snap-ghost` (table units,
+  `translate`d; `.round` for round and disc pieces; `hidden` when off a
+  spot) and `#table-wrap > .snap-chip` (screen px, its text the display
+  address); both `pointer-events: none`. A crowded spot's top piece
+  carries `.item > .fanb` ("×k", amber, bottom left: a stack's `.count` is
+  blue, top right); `.fanb` joins the view sheet's rules 0 (`--bz`) and 2
+  (`--view`), like `.count`. Fanned members' `style.left/top` are their
+  drawn places (the state keeps them centred on the spot); a live drag is
+  the element's `style.translate`.
+- **The wire**: a guest's drag sends `{t: 'drag', id, x, y}` every 60 ms
+  (`LIVE_MS`), never a `move`; the drop is the one `move`, carrying the
+  snapped `x, y` and an advisory `to`. The host relays a drag outside its
+  queue (no state, no seq): a patch with only `fx`. Its `to`, `from` and a
+  pull's `pick` are what `validate` / `onAction` see (`prepare`).
+- **Existing suites changed for Phase 3A** (mechanism changes, no check
+  dropped): `core-p1.test.mjs` (`migrate` runs on through `MIGRATE[3]`;
+  `t.find`'s unknown-filter example is `color`, as `zone` is known now),
+  `core-p2.test.mjs` (PROTO 4, STATE_V 4, `drag` in `PUBLIC_ACTIONS`),
+  `core-p2-bench.mjs` (B9's dice beside the board), `t-p1-bench.js` (B1',
+  B3 and B6 wait for a move where it snaps: `__ct.snap`), `t-p2-cli.js` (a
+  pull's `validate` sees `pick`), `t-p2-tables.js` (the save is
+  `STATE_V`).
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores

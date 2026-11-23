@@ -37,7 +37,10 @@
 //    full snapshot for a newcomer (T.snapContent()). T.pub caches each item's
 //    public view, so neither rebuilds the whole table. Guests fold the bodies
 //    into their view with viewFromSnap() and applyViewPatch().
-import { parseAddr, formatAddr } from './grid.js?v=1';
+import {
+  parseAddr, formatAddr, onBoard, toLocal, fromLocal, spotAt, canonLocal, spotOf, zonesAt,
+  neighbors as gridNeighbors, distance as gridDistance, line as gridLine, linked as linkedSpaces,
+} from './grid.js?v=1';
 import { BOXES } from './templates.js?v=1';
 
 // --- versions -----------------------------------------------------------------
@@ -47,9 +50,9 @@ import { BOXES } from './templates.js?v=1';
 export const MODULE_V = 1;
 /** The wire protocol: actions carry it as `_v`, host bodies as `v`; a peer
  *  on another version is refused loudly rather than misread. */
-export const PROTO = 3;
+export const PROTO = 4;
 /** The host state's schema version (state.v), the newest MIGRATE target. */
-export const STATE_V = 3;
+export const STATE_V = 4;
 
 // --- table geometry ---------------------------------------------------------
 // The table is round (a circle: rotation-invariant, so every player can turn
@@ -411,7 +414,7 @@ export const MAX_ITEMS = 5000, MAX_N = 999, MAX_BAG = 1000, MAX_ROLL = 20;
 export const MAX_HAND = 1000, MAX_PILE = 5000;
 export const MAX_TYPES = 500, MAX_BACKS = 50, MAX_FACES = 64, MAX_DIE_FACES = 100, MAX_IMGS = 2000;
 export const MAX_CELLS = 4096, MAX_SPACES = 1000, MAX_ZONES = 100, MAX_POLY = 64, MAX_LINKS = 4000, MAX_FILLS = 4096, MAX_MARKS = 64;
-export const MAX_SETUP_ENTRIES = 2000, MAX_SETUP_ITEMS = 3000, MAX_SEATS = 12, MAX_META_CHARS = 2000;
+export const MAX_SETUP_ENTRIES = 2000, MAX_SETUP_ITEMS = 3000, MAX_SEATS = 12, MAX_META_CHARS = 2000, MAX_BOX_DECKS = 50;
 /** Boards sit in a z band below every other item: BOARD_Z0 + boardSeq (newer above older). */
 export const BOARD_Z0 = -1e6;
 /** A setup's `at: 'seat'`: the item's centre this far from the seat toward the table. */
@@ -569,6 +572,7 @@ function cleanType(t, at, imgs, backs) {
   if (R.has('board')) {
     if (kind !== 'board') R.fail('board', 'is only for boards');
     o.board = cleanBoard(R.get('board'), `${at}.board`);
+    o.rotStep = 90; // (spec §3a: a structured board turns by quarter turns only, so its spots stay on the grid of the table's own turns)
   }
   return o;
 }
@@ -840,6 +844,15 @@ export function cleanBox(b) {
     o.players = p;
   }
   if (R.has('lockable')) o.lockable = R.one('lockable', ['anyone']);
+  if (R.has('decks')) { // its decks, registered as ordinary decks (t.newBox; uploads in Phase 4): name → deck id
+    const d = R.get('decks');
+    if (!isObj(d) || Object.keys(d).length > MAX_BOX_DECKS) R.fail('decks', `must map at most ${MAX_BOX_DECKS} deck names to deck ids`);
+    o.decks = {};
+    for (const [name, id] of Object.entries(d)) {
+      if (!str(name, 24) || str(name, 24) !== name || !isId(id)) R.fail('decks', `has a bad entry: ${JSON.stringify(name).slice(0, 40)}`);
+      o.decks[name] = id;
+    }
+  }
   if (R.has('setup')) {
     const setup = cleanSetup(R.list('setup', MAX_SETUP_ENTRIES), o.types, o.seats);
     // (forEachSeat is counted once per named seat here; loadBox counts again with the real seats)
@@ -879,6 +892,130 @@ export function isBuiltin(b) {
   }
 }
 
+/** A box in the game.json authoring format (spec §4a) as cleanBox reads it:
+ *  `pieces` a list of types, each with its `id`, a board's structure
+ *  (primary, grid, spaces, zones, links) on the piece itself and its name
+ *  defaulting to its id; `backs` a list, each with its `id`, its face given
+ *  as color / label / text (or `face`), and any flags. Only reshapes: cleanBox
+ *  checks everything. Throws a TypeError on what isn't that shape. */
+export function boxFromDef(def) {
+  const list = (v, what) => {
+    if (v === undefined) return [];
+    if (!Array.isArray(v) || v.some((x) => !isObj(x) || typeof x.id !== 'string')) throw new TypeError(`${what} must be a list of {id, …}`);
+    if (new Set(v.map((x) => x.id)).size < v.length) throw new TypeError(`${what}: two entries share an id`);
+    return v;
+  };
+  const STRUCT = ['primary', 'grid', 'spaces', 'zones', 'links'], types = {}, backs = {};
+  for (const { id, ...p } of list(def.pieces, 'pieces')) {
+    const board = Object.fromEntries(STRUCT.filter((k) => k in p).map((k) => [k, p[k]]));
+    for (const k of STRUCT) delete p[k];
+    types[id] = { name: id, ...p, ...(Object.keys(board).length && { board }) };
+  }
+  for (const { id, color, label, text, face, ...flags } of list(def.backs, 'backs')) {
+    backs[id] = { ...flags, face: face ?? Object.fromEntries(Object.entries({ color, label, text }).filter(([, v]) => v !== undefined)) };
+  }
+  return { name: def.name ?? 'Box', imgs: [], types, backs };
+}
+/** Where `key` first appears as an object's key inside `v` (a path, e.g.
+ *  "[0].faces[1].img"), or ''. */
+function findKey(v, key, at = '') {
+  if (Array.isArray(v)) { for (let k = 0; k < v.length; k++) { const f = findKey(v[k], key, `${at}[${k}]`); if (f) return f; } return ''; }
+  if (!isObj(v)) return '';
+  for (const [k, x] of Object.entries(v)) { if (k === key) return `${at}.${k}`; const f = findKey(x, key, `${at}.${k}`); if (f) return f; }
+  return '';
+}
+
+// --- boards: addresses, the primary board and snapping (spec §3a) ----------------
+// A piece placed on a structured board snaps to its spots (grid.js) and
+// records where, as a QUALIFIED address "<board item id>:<local>" (its
+// `at`). Everything a person or a script reads shows the DISPLAY form: bare
+// on the primary board, "<typeId>:<local>" on another, "<typeId>#<n>:<local>"
+// when several boards of that type id lie on the table (n counts them oldest
+// first). These pure functions read an item map, host or public (a hidden
+// board shows only its back: it has no spots), so the host (core), the page
+// (the snap preview, the fan, the CLI) and Node agree.
+/** The table's structured boards: every shown board whose type has a
+ *  structure (a grid, spaces or zones), from `entries` ([id, item] pairs).
+ *  {list (oldest first: by z, the boards' band), byId, primary (the id of
+ *  the oldest `primary: true` board with a grid or spaces, else the oldest
+ *  with a grid, else with spaces: zones-only boards never count), prefix
+ *  (id → "typeId" or "typeId#n")}. A board in the list is {id, x, y, w, h,
+ *  rot, z, typeId, B (its structure)}. */
+export function tableBoards(entries, boxes) {
+  const list = [];
+  for (const [id, it] of entries) {
+    if (it.k !== 'g' || !(it.z < 0) || it.up === false || 'b' in it) continue;
+    const ty = typeAt(boxes, it.t), B = ty?.kind === 'board' && ty.board;
+    if (B && (B.grid || B.spaces?.length || B.zones?.length)) list.push({ id, x: num(it.x), y: num(it.y), w: ty.w, h: ty.h, rot: num(it.rot), z: it.z, typeId: it.t.slice(it.t.indexOf('/') + 1), B });
+  }
+  list.sort((a, b) => a.z - b.z);
+  const spots = list.filter((b) => b.B.grid || b.B.spaces?.length);
+  const primary = (spots.find((b) => b.B.primary) || spots.find((b) => b.B.grid) || spots[0])?.id ?? null;
+  const count = new Map(), seen = new Map(), prefix = new Map();
+  for (const b of list) count.set(b.typeId, (count.get(b.typeId) || 0) + 1);
+  for (const b of list) {
+    const n = (seen.get(b.typeId) || 0) + 1;
+    seen.set(b.typeId, n);
+    prefix.set(b.id, count.get(b.typeId) > 1 ? `${b.typeId}#${n}` : b.typeId);
+  }
+  return { list, byId: new Map(list.map((b) => [b.id, b])), primary, prefix };
+}
+/** The display form of qualified address (or zone) `q` on boards TB (tableBoards). */
+export function displayAddr(TB, q) {
+  const k = q.indexOf(':'), id = q.slice(0, k);
+  return id === TB.primary ? q.slice(k + 1) : TB.prefix.has(id) ? `${TB.prefix.get(id)}:${q.slice(k + 1)}` : q;
+}
+/** The boards a board reference names: an item id, "typeId" or "typeId#n". */
+function boardsNamed(TB, ref) {
+  const b = TB.byId.get(ref);
+  if (b) return [b];
+  const exact = TB.list.filter((x) => TB.prefix.get(x.id) === ref);
+  return exact.length ? exact : TB.list.filter((x) => x.typeId === ref);
+}
+/** Where address `s` is on boards TB — any form: qualified, display, or bare
+ *  (the primary board first, then the one other board that has it):
+ *  {b (the board), local (canonical), at (qualified), x, y (its centre on
+ *  the table)}; {ambiguous: [display forms]} when several boards could be
+ *  meant; null when no board has it. */
+export function resolveAddr(TB, s) {
+  if (typeof s !== 'string' || !s) return null;
+  const k = s.indexOf(':'), local = k < 0 ? s : s.slice(k + 1);
+  let cands;
+  if (k >= 0) cands = boardsNamed(TB, s.slice(0, k));
+  else {
+    const P = TB.byId.get(TB.primary);
+    cands = P && canonLocal(P.B, local) !== null ? [P] : TB.list.filter((b) => b.id !== TB.primary);
+  }
+  cands = cands.filter((b) => canonLocal(b.B, local) !== null);
+  if (cands.length > 1) return { ambiguous: cands.map((b) => displayAddr(TB, `${b.id}:${canonLocal(b.B, local)}`)) };
+  if (!cands.length) return null;
+  const b = cands[0], loc = canonLocal(b.B, local), l = spotOf(b.B, loc), p = fromLocal(b, l.x, l.y);
+  return { b, local: loc, at: `${b.id}:${loc}`, x: p.x, y: p.y };
+}
+/** The topmost board of TB under table point (x, y) (or the board `id`, when given), or undefined. */
+const boardUnder = (TB, x, y, id) => (id ? TB.byId.get(id) : TB.list.findLast((b) => onBoard(b, x, y)));
+/** Snapping (spec §3a): the spot within reach of table point (cx, cy) — a
+ *  piece's centre — on the topmost board under it (whichever is primary):
+ *  {b, local, at (qualified), x, y (the spot's centre on the table)}, or null
+ *  (no board there, or no spot of that board in reach). */
+export function snapAt(TB, cx, cy) {
+  const b = boardUnder(TB, cx, cy);
+  if (!b) return null;
+  const l = toLocal(b, cx, cy), s = spotAt(b.B, l.x, l.y);
+  if (!s) return null;
+  const p = fromLocal(b, s.x, s.y);
+  return { b, local: s.local, at: `${b.id}:${s.local}`, x: p.x, y: p.y };
+}
+/** The zones holding table point (cx, cy), qualified ("<board id>:<zone
+ *  id>"): those of the board `onId` (the board a piece's address is on), else
+ *  of the topmost board under the point. */
+export function zonesUnder(TB, cx, cy, onId) {
+  const b = boardUnder(TB, cx, cy, onId);
+  if (!b?.B.zones) return [];
+  const l = toLocal(b, cx, cy);
+  return zonesAt(b.B, l.x, l.y).map((z) => `${b.id}:${z}`);
+}
+
 // --- rules engine (see ENGINE.md) ------------------------------------------
 // Host-only execution of a host-written script that can veto actions
 // (validate) and drive automations (setup/onAction/onButton/onJoin/onLeave/
@@ -890,7 +1027,9 @@ export const RULED_ACTIONS = new Set(['move', 'rot', 'flip', 'shuffle', 'draw', 
 /** Every action type a guest may send: the host refuses anything else at the
  *  network boundary. The host's own actions (HOST_ACTIONS) and its internal
  *  jobs (types starting with "_") never come from the wire. */
-export const PUBLIC_ACTIONS = new Set([...RULED_ACTIONS, 'hello', 'snap', 'need', 'name', 'chat', 'rulesBtn']);
+export const PUBLIC_ACTIONS = new Set([...RULED_ACTIONS, 'hello', 'snap', 'need', 'name', 'chat', 'rulesBtn', 'drag']);
+/** The most items one action names at once: a group's live drag (Phase 4's group too). */
+export const MAX_GROUP = 200;
 /** Actions only the host may take: a guest's is refused with "🚫 Only the host can do that". */
 export const HOST_ACTIONS = new Set(['size', 'setRules', 'table', 'loadBox', 'clear']);
 /** Actions that take from or give to the actor's hand: a refusal re-sends it. */
@@ -899,6 +1038,11 @@ const HAND_ACTIONS = new Set(['play', 'handPile', 'toHand', 'draw']);
  *  vetoed action from making the host re-send many items to everyone (a
  *  roll's dice need none: nothing changes them before the host does). */
 const NAMED_IDS = 8;
+/** Rules log aggregation (spec §3e): a run of AGG_MIN or more consecutive
+ *  Rules lines of one op in an action becomes one line naming the first
+ *  AGG_NAMES addresses or labels; AGG_VERB says what each op did. */
+export const AGG_MIN = 4, AGG_NAMES = 8;
+const AGG_VERB = { placed: 'placed', removed: 'removed', turned: 'turned', counted: 'counted', locked: 'locked', unlocked: 'unlocked', owner: 'set the owner of' };
 /** The most t.data may hold, as JSON (checked after validate() and once per job that ran hooks: dataOver). */
 export const DATA_MAX_CHARS = 4e6;
 
@@ -941,9 +1085,11 @@ function pubTop(m, boxes) {
  *  §2d). A pile becomes {…, n: count, top}; a face-down loose card loses its
  *  index `i`; a hidden piece or supply shows its back's ref `b` (null when
  *  its box is missing — never its `t` or `f`, whatever fails); a bag shows
- *  how many it holds, never what. Everyone renders this one shape, the host
- *  included; only host LOGIC reads host.items. `boxes`: the box map. */
-export function pubItem(it, boxes) {
+ *  how many it holds, never what; a piece on a board shows its address `at`
+ *  (a position is public, a hidden piece's too: spec §3d), in the display
+ *  form `disp(at)` gives (displayAddr). Everyone renders this one shape, the
+ *  host included; only host LOGIC reads host.items. `boxes`: the box map. */
+export function pubItem(it, boxes, disp = (q) => q) {
   if (it.k === 'p') {
     const { cards, ...rest } = it, top = cards.at(-1);
     return { ...rest, n: cards.length, top: top && pubTop(top, boxes) };
@@ -955,6 +1101,7 @@ export function pubItem(it, boxes) {
     if (it.n > 1) o.n = it.n;
     if (it.owner) o.owner = it.owner;
     if (it.lock) o.lock = true;
+    if (it.at) o.at = disp(it.at);
     return o;
   }
   const { i, ...rest } = it;
@@ -1012,7 +1159,50 @@ export const MIGRATE = {
     s.v = 3;
     return s;
   },
+  /** v3 → v4 (Phase 3): the rules' per-player state (asks and secrets:
+   *  empty; hints are never saved), their timers through the engine gate
+   *  (gateTimers), and each piece's address read off the boards it lies on,
+   *  by containment alone (nothing moves). */
+  3(s) {
+    if (isObj(s.rules)) {
+      s.rules.secret ||= {};
+      s.rules.asks ||= {};
+      delete s.rules.hints;
+      gateTimers(s.rules);
+    }
+    try {
+      const items = isObj(s.items) ? s.items : {}, boxes = isObj(s.boxes) ? s.boxes : {}, TB = tableBoards(Object.entries(items), boxes);
+      for (const it of Object.values(items)) {
+        if (it?.k !== 'g' || it.z < 0) continue;
+        const { w, h } = sizeOf(it, boxes), spot = snapAt(TB, num(it.x) + w / 2, num(it.y) + h / 2);
+        if (spot) it.at = spot.at;
+        else delete it.at;
+      }
+    } catch (err) { console.error('MIGRATE[3]: the pieces\' addresses could not be read off their boards', err); }
+    s.v = 4;
+    return s;
+  },
 };
+/** The most timers t.schedule keeps (rules.data._timers), and the longest tag. */
+export const MAX_TIMERS = 1000, TIMER_TAG_MAX = 100;
+/** The engine-state gate on rules.data._timers (spec §3a), run on every save
+ *  load and by t.schedule: a list of at most MAX_TIMERS {at: a finite
+ *  number, tag: a string of at most TIMER_TAG_MAX chars}; anything else is
+ *  dropped with console.error (a list that isn't one, whole). In place, on
+ *  rules `r`. */
+export function gateTimers(r) {
+  const t = isObj(r?.data) ? r.data._timers : undefined;
+  if (t === undefined) return;
+  if (!Array.isArray(t)) {
+    console.error('rules.data._timers is not a list: dropped', t);
+    delete r.data._timers;
+    return;
+  }
+  const kept = t.filter((x) => isObj(x) && Number.isFinite(x.at) && typeof x.tag === 'string' && x.tag.length <= TIMER_TAG_MAX).map(({ at, tag }) => ({ at, tag }));
+  if (kept.length < t.length) console.error(`rules.data._timers: dropped ${t.length - kept.length} malformed ${t.length - kept.length === 1 ? 'timer' : 'timers'}`);
+  if (kept.length > MAX_TIMERS) console.error(`rules.data._timers: dropped ${kept.length - MAX_TIMERS} timers past ${MAX_TIMERS}`);
+  r.data._timers = kept.slice(0, MAX_TIMERS);
+}
 /** Lifts state `s` to STATE_V through MIGRATE (in place); a state from a
  *  newer Card Table is refused, never downgraded. */
 export function migrate(s) {
@@ -1038,6 +1228,20 @@ export function sharedText(o) {
   const bad = OWN_FIELDS.find((k) => k in o);
   if (bad) throw new Error(`a shared body part may not carry "${bad}"`);
   return JSON.stringify(o);
+}
+/** A broadcast tick's action markers `fx`, less the live drags (spec §3c)
+ *  that a commit in the same tick overtook — an item the tick's patch
+ *  carries (dirty `d`: changed or removed) shows where it now is, never a
+ *  stale glide — and, of one item's live drags, all but the last. */
+export function liveFx(fx, d) {
+  const gone = (id) => d.items.has(id) || d.removed.has(id), last = new Map();
+  fx.forEach((f, k) => { if (f.live && f.id) last.set(f.id, k); });
+  return fx.flatMap((f, k) => {
+    if (!f.live) return [f];
+    if (f.id) return gone(f.id) || last.get(f.id) !== k ? [] : [f];
+    const ids = f.ids.filter((id) => !gone(id));
+    return ids.length ? [{ ...f, ids }] : [];
+  });
 }
 /** One recipient's body as JSON text: its own fields `mine` (never empty:
  *  `to` at least), then the shared JSON text (sharedText). */
@@ -1144,6 +1348,7 @@ export function createTable(host, env = {}) {
   host.boxes ??= {};
   host.boxSrc ??= {};
   migrate(host);
+  gateTimers(host.rules); // (every load: a hand-edited save can't plant a bad timer)
   host.keys ??= {};
   try { host.table = cleanTable(host.table); } catch (err) {
     console.error('the saved table is unreadable: a small round one instead', err);
@@ -1181,17 +1386,37 @@ export function createTable(host, env = {}) {
   const handy = new Set(); // the ids of items one could hold in a hand (T.handy), kept with T.pub (refresh)
   let handySent;           // what the last takeDirty() saw of `handy.size > 0`
   /** T.byKind: 'c' (cards), 'p' (piles), 'g' (pieces), 's' (supplies), 'b' (bags) → their ids;
-   *  T.byType: a type ref → the pieces and supplies of that type; T.byOwner: an owner → its items. */
+   *  T.byType: a type ref → the pieces and supplies of that type; T.byOwner: an owner → its items;
+   *  T.byAt: a qualified address → the pieces there; T.byZone: '<board id>:<zone id>' → the
+   *  pieces in that zone (a piece's zones: zonesOf). boardIds: every board (the z band below 0). */
   const byKind = new Map(['c', 'p', 'g', 's', 'b'].map((k) => [k, new Set()]));
-  const byType = new Map(), byOwner = new Map();
-  /** Adds item `id` to the indexes (on) or takes it out. */
+  const byType = new Map(), byOwner = new Map(), byAt = new Map(), byZone = new Map(), zonesOf = new Map(), boardIds = new Set();
+  let tbVer = 0; // bumped by whatever may change a board (see tb())
+  let spotsReady = false; // (while the saved items are first indexed, zones wait for every board: see below)
+  /** Puts `id` in (on) or out of map's set under `key`, which goes when empty. */
+  function inSet(map, key, id, on) {
+    const set = map.get(key) || (on ? map.set(key, new Set()).get(key) : null);
+    set?.[on ? 'add' : 'delete'](id);
+    if (set && !set.size) map.delete(key);
+  }
+  /** Adds item `id` to the indexes (on) or takes it out. A piece's zones are
+   *  read where it lies when it goes in (zonesUnder), and kept until it goes
+   *  out: an item moved in place goes out first (place's `o.id`, or a
+   *  recount by syncSpots). */
   function index(id, it, on) {
     byKind.get(it.k)?.[on ? 'add' : 'delete'](id);
-    for (const [map, key] of [[byType, (it.k === 'g' || it.k === 's') && it.t], [byOwner, it.owner]]) {
-      if (!key) continue;
-      const set = map.get(key) || (on ? map.set(key, new Set()).get(key) : null);
-      set?.[on ? 'add' : 'delete'](id);
-      if (set && !set.size) map.delete(key);
+    if ((it.k === 'g' || it.k === 's') && it.t) inSet(byType, it.t, id, on);
+    if (it.owner) inSet(byOwner, it.owner, id, on);
+    if (it.k !== 'g') return;
+    if (it.z < 0) { boardIds[on ? 'add' : 'delete'](id); tbVer++; return; }
+    if (it.at) inSet(byAt, it.at, id, on);
+    if (!on) {
+      for (const z of zonesOf.get(id) || []) inSet(byZone, z, id, false);
+      zonesOf.delete(id);
+    } else if (spotsReady) {
+      const { w, h } = size(it), zs = zonesUnder(tb(), it.x + w / 2, it.y + h / 2, it.at?.slice(0, it.at.indexOf(':')));
+      zonesOf.set(id, zs);
+      for (const z of zs) inSet(byZone, z, id, true);
     }
   }
   for (const [id, it] of Object.entries(host.items)) index(id, it, true);
@@ -1276,6 +1501,7 @@ export function createTable(host, env = {}) {
    *  ignored; true when it is on the table. */
   const touch = (id) => {
     if (!own(host.items, id)) return false;
+    if (boardIds.has(id)) tbVer++; // (a board about to change: tb() reads the boards again)
     dirty.items.add(id);
     stale.add(id);
     return true;
@@ -1298,25 +1524,119 @@ export function createTable(host, env = {}) {
   /** Puts item `it` at top-left (x, y), clamped onto the table for its size
    *  (clampToTable), with a z: on top of everything (zTop), or for a new board
    *  the next one in the boards' band (BOARD_Z0 + boardSeq); a board keeps
-   *  its z when moved. Every op that places an item comes through here. */
-  function place(it, x, y) {
-    const { w, h } = size(it);
-    ({ x: it.x, y: it.y } = clampToTable(host.table, x, y, w, h));
+   *  its z when moved. Every op that places an item comes through here (spec
+   *  §0.2), and a piece snaps (snapPiece): it is centred on the spot in reach
+   *  and records its address (`at`), or loses it. `o.free`: no snapping;
+   *  `o.at`: centred on that qualified address (already resolved), whatever
+   *  lies on top of it; `o.id`: the item is on the table (moved in place), so
+   *  its index entries follow it. */
+  function place(it, x, y, o = {}) {
+    if (o.id) index(o.id, it, false);
+    let p;
+    if (isPiece(it)) {
+      p = snapPiece(it, x, y, o);
+      if (p.at) it.at = p.at;
+      else delete it.at;
+    } else { const { w, h } = size(it); p = clampToTable(host.table, x, y, w, h); }
+    ({ x: it.x, y: it.y } = p);
     if (!(it.z < 0)) it.z = isBoard(it) ? BOARD_Z0 + ++host.boardSeq : zTop();
+    if (o.id) index(o.id, it, true);
+  }
+  /** Whether item `it` (host or new) is a piece that snaps: a piece, never a board (spec D22). */
+  const isPiece = (it) => it.k === 'g' && !(it.z < 0) && !isBoard(it);
+  /** Where piece `it` (on the table or not: nothing changes) lands when put
+   *  at top-left (x, y) (spec §3a, Snapping): its centre, in its size (its
+   *  back's when hidden), on the spot in reach of the topmost board under it
+   *  (snapAt) — {x, y (the top-left that centres it there), at (the spot's
+   *  qualified address)} — or, with no spot in reach, {x, y, at: null}, x and
+   *  y clamped onto the table. `o` as for place: free, or a qualified `at`.
+   *  A spot past the table's playing area is none: the piece stays clamped. */
+  function snapPiece(it, x, y, o = {}) {
+    const { w, h } = size(it), p = clampToTable(host.table, x, y, w, h);
+    const s = o.at ? resolveAddr(tb(), o.at) : o.free ? null : snapAt(tb(), p.x + w / 2, p.y + h / 2);
+    if (!s) return { ...p, at: null };
+    const q = clampToTable(host.table, s.x - w / 2, s.y - h / 2, w, h);
+    return { ...q, at: Math.abs(q.x + w / 2 - s.x) < 1e-6 && Math.abs(q.y + h / 2 - s.y) < 1e-6 ? s.at : null };
   }
   /** Brings the cached public items (T.pub) and `handy` up to date: `handy`
    *  holds the items one could hold in a hand (spec §2a: cards, piles of
    *  cards, bags made for hands, pieces whose type — or back, when hidden —
    *  says so: flagsOf's `hand`). */
   function refresh() {
+    syncSpots(); // (the addresses first: what they show is public)
     for (const id of stale) {
       const it = own(host.items, id);
-      if (it) pub.set(id, pubItem(it, host.boxes));
+      if (it) pub.set(id, pubItem(it, host.boxes, display));
       else pub.delete(id);
       if (it && flags(it).hand) handy.add(id);
       else handy.delete(id);
     }
     stale.clear();
+  }
+
+  // --- boards and addresses (spec §3a; the pure part is tableBoards & co. above) ---
+  let tbSig = null, tbNow = null, tbAt = -1;
+  /** The table's structured boards (tableBoards), read again whenever a
+   *  board changed — its place, turn, side, type, or the set of boards: tbVer
+   *  counts what may have changed one (a board indexed or touched, a box
+   *  added), and the boards' signature tells whether it did. */
+  function tb() {
+    if (tbAt === tbVer) return tbNow;
+    tbAt = tbVer;
+    let sig = '';
+    for (const id of boardIds) { const b = host.items[id]; sig += `${id} ${b.t} ${b.x} ${b.y} ${b.rot} ${b.z} ${b.up === false} ${!!typeOf(b.t)};`; }
+    if (sig !== tbSig) { tbSig = sig; tbNow = tableBoards([...boardIds].map((id) => [id, host.items[id]]), host.boxes); }
+    return tbNow;
+  }
+  let spotTB = null, spotSig = null; // the boards every piece's address and zones were last read against (and tb()'s signature then)
+  let respot = false;  // pieces moved under the boards (a table resize, a resume): read them again too
+  /** When a board changed (moved, turned, flipped, added or removed: anything
+   *  tb() sees) or the pieces were shifted under them, reads every piece's
+   *  address and zones again by containment — a piece whose centre is on a
+   *  spot in reach (as snapping would find it) gets that address, any other
+   *  loses its own — and MOVES NOTHING (spec §3a: a board move is a
+   *  deliberate rearrangement, never a mass move). A piece whose address
+   *  changed, or only its display form (the primary board or a "#n" did),
+   *  is re-sent. Run before anything reads the addresses or the indexes. */
+  function syncSpots() {
+    const T = tb();
+    if (tbSig === spotSig && !respot) return;
+    const was = spotTB;
+    [spotTB, spotSig, respot] = [T, tbSig, false];
+    for (const id of [...byKind.get('g')]) {
+      const it = host.items[id];
+      if (!isPiece(it)) continue;
+      const before = it.at ? displayAddr(was, it.at) : null, { w, h } = size(it), s = snapAt(T, it.x + w / 2, it.y + h / 2);
+      index(id, it, false);
+      if (s) it.at = s.at;
+      else delete it.at;
+      index(id, it, true);
+      if (before !== (s ? displayAddr(T, s.at) : null)) touch(id);
+    }
+  }
+  /** The display form of a qualified address or zone (displayAddr). */
+  const display = (q) => displayAddr(tb(), q);
+  /** Resolves address `s` (any form) for a script call `call`: {at, x, y,
+   *  b, local}, or a TypeError naming the call — no such address, or one
+   *  several boards could mean ("use 'tray#1:bar' or 'tray#2:bar'"). */
+  function addrOf(call, s) {
+    if (typeof s !== 'string') throw new TypeError(`${call}: an address must be a string, got ${JSON.stringify(s)}`);
+    const r = resolveAddr(tb(), s);
+    if (r?.ambiguous) throw new TypeError(`${call}: address '${s}' is ambiguous — use ${r.ambiguous.map((a) => `'${a}'`).join(r.ambiguous.length > 2 ? ', ' : ' or ').replace(/, ('[^']*')$/, ' or $1')}`);
+    if (!r) throw new TypeError(`${call}: no such address '${s}' on the table's boards`);
+    return r;
+  }
+  // The saved items' addresses (a v4 save's, or MIGRATE[3]'s by containment)
+  // stand; one that names no spot on the table is dropped, loudly. Then the zones.
+  spotsReady = true;
+  spotTB = tb();
+  spotSig = tbSig;
+  for (const id of [...byKind.get('g')]) {
+    const it = host.items[id];
+    if (it.z < 0) continue;
+    index(id, it, false);
+    if (it.at !== undefined && resolveAddr(spotTB, it.at)?.at !== it.at) { console.error(`item ${id}: its saved address ${JSON.stringify(it.at)} names no spot on the table — dropped`); delete it.at; }
+    index(id, it, true);
   }
 
   // --- seats ------------------------------------------------------------------
@@ -1386,7 +1706,7 @@ export function createTable(host, env = {}) {
       });
       const name = (k) => order[k]?.[1].name || (order[k] ? 'a player' : 'empty');
       const watching = order.slice(seats.length).map(([, pl]) => pl.name || 'a player');
-      logEvent(actor, `Seats: ${seats.map((s, k) => `${s.name} — ${name(k)}`).join(', ')}${watching.length ? ` · watching: ${watching.join(', ')}` : ''}`);
+      logEvent(actor, `${actor === RULES ? 'set the seats: ' : 'Seats: '}${seats.map((s, k) => `${s.name} — ${name(k)}`).join(', ')}${watching.length ? ` · watching: ${watching.join(', ')}` : ''}`);
     }
     const kept = new Set((seats || []).map((s) => s.id));
     for (const s of was || []) {
@@ -1409,6 +1729,7 @@ export function createTable(host, env = {}) {
       ({ x: it.x, y: it.y } = clampToTable(tb, it.x + dx, it.y + dy, w, h));
       touch(id);
     }
+    respot = true; // (moving nothing more: the addresses are read again, syncSpots)
     if (host.seats) {
       for (const [q, pl] of Object.entries(host.players)) if (pl.seatId) { pl.seat = namedAngle(pl.seatId); touchPlayer(q); }
     }
@@ -1454,12 +1775,41 @@ export function createTable(host, env = {}) {
    *  `chat` marks a chat line (talk), `loud` an on-the-record one (a peek); the
    *  buckets are capped separately (LOG_CAPS, trimLog). */
   function logEvent(p, txt, chat, as, loud) {
+    if (runs.length) flushRuns(); // (an aggregating run ends at any other line)
     const last = host.log.at(-1);
     if (!chat && last && last.p === p && last.txt === txt) return;
     const e = { p, txt, ts: now(), ...(chat ? { c: 1 } : {}), ...(as ? { n: as } : {}), ...(loud ? { k: 1 } : {}) };
     host.log.push(e);
     host.log = trimLog(host.log);
     dirty.log.push(e);
+  }
+  // Aggregation (spec §3e): in one action, a run of AGG_MIN or more
+  // consecutive Rules lines of the same op — placed, removed, turned,
+  // counted, locked, unlocked, owner, used randomness — becomes one line
+  // ("📜 Rules removed 30 pieces: D4, E4, D5, …"): a go capture or a setup
+  // would otherwise flush the action log. The lines wait in `runs` until
+  // another line is written, or the action commits (flushRuns).
+  let runs = [];
+  /** Logs `txt` for an op of the kind `op` on item `it` (for 'random': the
+   *  number of draws): a person's at once, a script's into the run. */
+  function logOp(actor, op, txt, it) {
+    if (actor !== RULES) return logEvent(actor, txt);
+    runs.push({ op, txt, it: op === 'random' ? it : { at: it.at && display(it.at), name: label(it), kind: isCard(it) ? 'cards' : it.k === 'g' ? 'pieces' : 'items' } });
+  }
+  /** Writes the waiting Rules lines: each run of AGG_MIN or more of one op
+   *  as one line naming the first AGG_NAMES addresses (or labels), the rest
+   *  line by line. */
+  function flushRuns() {
+    const all = runs;
+    runs = [];
+    for (let k = 0, j; k < all.length; k = j) {
+      for (j = k + 1; j < all.length && all[j].op === all[k].op;) j++;
+      const run = all.slice(k, j), op = run[0].op;
+      if (run.length < AGG_MIN) { for (const r of run) logEvent(RULES, r.txt); continue; }
+      if (op === 'random') { const n = run.reduce((m, r) => m + r.it, 0); logEvent(RULES, `used randomness (${n} draws)`); continue; }
+      const kinds = new Set(run.map((r) => r.it.kind)), names = run.slice(0, AGG_NAMES).map((r) => r.it.at || r.it.name);
+      logEvent(RULES, `${AGG_VERB[op]} ${run.length} ${kinds.size === 1 ? [...kinds][0] : 'items'}: ${names.join(', ')}${run.length > AGG_NAMES ? ', …' : ''}`);
+    }
   }
   function dropIfEmpty(pileId) {
     if (host.items[pileId]?.cards.length === 0) remove(pileId);
@@ -1554,7 +1904,7 @@ export function createTable(host, env = {}) {
       it.rot = turned(it, o.rot);
       place(it, num(o.x, at.x), num(o.y, at.y));
       nid = put(mint(host.items), it);
-      logEvent(actor, `dealt ${!up ? `a ${piece ? 'piece' : 'card'} face down` : piece ? oneLabel(it) : cardName(host.decks, c.d, c.i)} from ${label(pile)}`);
+      logEvent(actor, `dealt ${!up ? `a ${piece ? 'piece' : 'card'} face down` : piece ? oneLabel(it) : cardName(host.decks, c.d, c.i)} from ${label(pile)}${toAt(it)}`);
       mark(actor, nid);
     }
     touch(pileId);
@@ -1676,16 +2026,23 @@ export function createTable(host, env = {}) {
     return true;
   }
 
-  function opMove(actor, id, x, y) {
+  /** Moves item `id` to top-left (x, y) — a piece snaps, or takes `o`'s
+   *  place (see place: free, or a qualified `at`) — logged with its
+   *  addresses: "moved {label} {from} → {to}", "… to {to}", "… from {from}". */
+  function opMove(actor, id, x, y, o = {}) {
     const it = own(host.items, id);
     if (!it) return gone('move', id);
     if (!may(actor, it)) return false;
     touch(id);
-    place(it, num(x, it.x), num(y, it.y));
-    logEvent(actor, `moved ${label(it)}`);
+    const from = it.at && display(it.at);
+    place(it, num(x, it.x), num(y, it.y), { ...o, id });
+    const to = it.at && display(it.at);
+    logEvent(actor, `moved ${label(it)}${from && to ? ` ${from} → ${to}` : to ? ` to ${to}` : from ? ` from ${from}` : ''}`);
     mark(actor, id);
     return true;
   }
+  /** " to {address}" for a piece just placed on a spot (the log), else ''. */
+  const toAt = (it) => (it.at ? ` to ${display(it.at)}` : '');
 
   /** Turns item `id` to `rot` degrees — a piece, supply or pile of pieces
    *  in steps of its rotStep (its back's when hidden). */
@@ -1705,7 +2062,7 @@ export function createTable(host, env = {}) {
     if (!it) return gone('remove', id);
     if (!may(actor, it)) return false;
     const extra = it.k === 'p' ? ` (${it.cards.length} ${unit(it)})` : it.k === 'b' ? ` (${it.of.length} pieces)` : '';
-    logEvent(actor, `removed ${label(it)}${extra}`);
+    logOp(actor, 'removed', `removed ${label(it)}${extra}${it.at ? ` from ${display(it.at)}` : ''}`, it);
     mark(actor, id);
     remove(id);
     return true;
@@ -1743,7 +2100,7 @@ export function createTable(host, env = {}) {
     place(it, num(o.x, host.table.w / 2 - w / 2), num(o.y, host.table.h / 2 - h / 2));
     const nid = put(mint(host.items), it);
     const what = !up ? `a ${piece ? 'piece' : 'card'} face down` : piece ? oneLabel(it) : cardName(host.decks, c.d, c.i);
-    logEvent(actor, `played ${what} from ${actor === RULES ? `${pl.name || 'a player'}'s hand` : 'hand'}`);
+    logEvent(actor, `played ${what} from ${actor === RULES ? `${pl.name || 'a player'}'s hand` : 'hand'}${toAt(it)}`);
     mark(actor, nid);
     return nid;
   }
@@ -1840,7 +2197,7 @@ export function createTable(host, env = {}) {
     const at = nextTo(it);
     place(nu, num(x, at.x), num(y, at.y));
     const nid = put(mint(host.items), nu);
-    logEvent(actor, `took ${k} from ${before}`);
+    logEvent(actor, `took ${k} from ${before}${toAt(nu)}`);
     mark(actor, nid);
     return nid;
   }
@@ -1866,9 +2223,12 @@ export function createTable(host, env = {}) {
   }
 
   /** A new piece from supply `id` — onto the table at (x, y), or into the
-   *  actor's hand (`hand`) — owned by the supply's owner, if it has one. */
-  function opTake(actor, id, x, y, hand) {
-    const s = own(host.items, id), pl = own(host.players, actor);
+   *  hand (`hand`) of player `to` (the actor's own; a script names one) —
+   *  owned by the supply's owner, if it has one. `po`: how it is placed
+   *  (place's o). Returns its id, or for a hand its entry {hand: true, t, f,
+   *  up?}, or false. */
+  function opTake(actor, id, x, y, hand, to = actor, po = {}) {
+    const s = own(host.items, id), pl = own(host.players, to);
     if (!s) return gone('take', id);
     if (s.k !== 's') return no(actor, '🚫 That is not a supply');
     if (!mayHandle(actor, s)) return false;
@@ -1876,46 +2236,50 @@ export function createTable(host, env = {}) {
     if (hand) {
       if (!pl) return false;
       if (!flags(s).hand) return no(actor, "🚫 That can't be held in a hand");
-      if (!handRoom(actor, actor)) return false;
+      if (!handRoom(actor, to)) return false;
       pl.hand.push(entryOf(nu));
-      touchPlayer(actor, { hand: true });
-      logEvent(actor, `took ${oneLabel(nu)} into hand`);
+      touchPlayer(to, { hand: true });
+      logEvent(actor, actor === RULES ? `took ${oneLabel(nu)} from ${label(s)} into ${pl.name || 'a player'}'s hand` : `took ${oneLabel(nu)} into hand`);
       mark(actor, id);
-      return true;
+      return { hand: true, ...entryOf(nu) };
     }
     if (!cap(actor)) return false;
     const at = nextTo(s);
-    place(nu, num(x, at.x), num(y, at.y));
+    place(nu, num(x, at.x), num(y, at.y), po);
     const nid = put(mint(host.items), nu);
-    logEvent(actor, `took ${oneLabel(nu)} from ${label(s)}`);
+    logEvent(actor, `took ${oneLabel(nu)} from ${label(s)}${toAt(nu)}`);
     mark(actor, nid);
     return nid;
   }
 
-  /** A random piece out of bag `id` (randInt) — onto the table at (x, y), as
-   *  it was put in (face up or down), or into the actor's hand (`hand`, for
-   *  a bag made for hands). */
-  function opPull(actor, id, x, y, hand) {
-    const bag = own(host.items, id), pl = own(host.players, actor);
+  /** A random piece out of bag `id` — member `pick` when the action drew it
+   *  already (prepare: a.pick), else one drawn now (randInt) — onto the
+   *  table at (x, y), as it was put in (face up or down), or into the hand
+   *  (`hand`, for a bag made for hands) of player `to` (the actor's own; a
+   *  script names one). `po`: how it is placed (place's o). Returns its id,
+   *  or for a hand its entry {hand: true, t, f, up?}, or false. */
+  function opPull(actor, id, x, y, hand, pick, to = actor, po = {}) {
+    const bag = own(host.items, id), pl = own(host.players, to);
     if (!bag) return gone('pull', id);
     if (bag.k !== 'b') return no(actor, '🚫 That is not a bag');
     if (!bag.of.length) return no(actor, '🚫 That bag is empty');
     if (!mayHandle(actor, bag)) return false;
     if (hand && (!pl || !bag.hand)) return no(actor, "🚫 That bag's pieces can't be held in a hand");
-    if (hand ? !handRoom(actor, actor) : !cap(actor)) return false;
-    const at = nextTo(bag), m = bag.of.splice(rint(bag.of.length), 1)[0];
+    if (hand ? !handRoom(actor, to) : !cap(actor)) return false;
+    const k = Number.isInteger(pick) && pick >= 0 && pick < bag.of.length ? pick : rint(bag.of.length);
+    const at = nextTo(bag), m = bag.of.splice(k, 1)[0];
     touch(id);
     if (hand) {
       pl.hand.push(entryOf(m));
-      touchPlayer(actor, { hand: true });
-      logEvent(actor, `drew a piece from ${label(bag)}`);
+      touchPlayer(to, { hand: true });
+      logEvent(actor, actor === RULES ? `drew a piece from ${label(bag)} into ${pl.name || 'a player'}'s hand` : `drew a piece from ${label(bag)}`);
       mark(actor, id);
-      return true;
+      return { hand: true, ...entryOf(m) };
     }
     const nu = { k: 'g', t: m.t, f: m.f, rot: 0, ...(m.up === false && { up: false }) };
-    place(nu, num(x, at.x), num(y, at.y));
+    place(nu, num(x, at.x), num(y, at.y), po);
     const nid = put(mint(host.items), nu);
-    logEvent(actor, `drew ${m.up === false ? 'a piece' : oneLabel(nu)} from ${label(bag)}`);
+    logEvent(actor, `drew ${m.up === false ? 'a piece' : oneLabel(nu)} from ${label(bag)}${toAt(nu)}`);
     mark(actor, nid);
     return nid;
   }
@@ -1955,7 +2319,7 @@ export function createTable(host, env = {}) {
     touch(id);
     if (on) it.lock = true;
     else delete it.lock;
-    logEvent(actor, `${on ? 'locked' : 'unlocked'} ${label(it)}`);
+    logOp(actor, on ? 'locked' : 'unlocked', `${on ? 'locked' : 'unlocked'} ${label(it)}`, it);
     mark(actor, id);
     return true;
   }
@@ -1982,7 +2346,7 @@ export function createTable(host, env = {}) {
     if ((it.owner ?? null) === to) return false;
     const what = label(it);
     setOwner(id, it, to);
-    logEvent(actor, to === null ? `released ${what}` : to === actor ? `claimed ${what}` : `gave ${what} to ${ownerName(to)}`);
+    logOp(actor, 'owner', to === null ? `released ${what}` : to === actor ? `claimed ${what}` : `gave ${what} to ${ownerName(to)}`, it);
     mark(actor, id);
     return true;
   }
@@ -2053,6 +2417,7 @@ export function createTable(host, env = {}) {
     host.boxes[id] = box;
     host.boxSrc[id] = { src, ...(by && by !== RULES && { by }) };
     listAt(boxKeys, key).push(id);
+    tbVer++; // (a board waiting for its box has one now)
     emit({ t: 'box', id });
     return id;
   }
@@ -2087,14 +2452,20 @@ export function createTable(host, env = {}) {
         const ids = run(e.group, seat);
         if (e.shuffle) {
           // (cleanBox saw to it that these agree on everything else that shows: rot, lock, n, owner)
+          // (a place carries its address: they lie on the same spots, re-indexed)
           const byBack = new Map();
           for (const id of ids) {
             const it = host.items[id];
-            if (it.k === 'g' && it.up === false) listAt(byBack, backRef(host.boxes, it.t)).push(it);
+            if (it.k === 'g' && it.up === false) listAt(byBack, backRef(host.boxes, it.t)).push([id, it]);
           }
           for (const list of byBack.values()) {
-            const spots = shuffle(list.map((it) => [it.x, it.y, it.z]));
-            list.forEach((it, k) => { [it.x, it.y, it.z] = spots[k]; });
+            const spots = shuffle(list.map(([, it]) => [it.x, it.y, it.z, it.at]));
+            list.forEach(([id, it], k) => {
+              index(id, it, false);
+              [it.x, it.y, it.z, it.at] = spots[k];
+              if (it.at === undefined) delete it.at;
+              index(id, it, true);
+            });
           }
         }
         return ids;
@@ -2171,12 +2542,77 @@ export function createTable(host, env = {}) {
    *  request (registration is join()'s, the answer the app's), a chat over
    *  flood control, a refused rules button. */
   function apply(p, a) {
-    const changed = act(p, a);
-    return dataOver() && !changed ? bump() : changed;
+    const changed = act(p, a), over = dataOver();
+    flushRuns();
+    return over && !changed ? bump() : changed;
   }
+  /** Action `a` of player p as the hooks and the default effect see it (spec
+   *  §3c): a copy whose `to` is the display address the piece it places
+   *  would snap to — the moved piece, or for take, split and play the
+   *  PROSPECTIVE new one, in its type's size (its back's when hidden) — or
+   *  absent, whatever the payload said (a client's `to` is advisory); whose
+   *  `from` is where the moved piece (or the stack split) was; and for a
+   *  pull, `pick`: the member it draws, drawn now (a veto discards it), which
+   *  the default effect then takes. Pure but for that draw. */
+  function prepare(p, a) {
+    const o = { ...a }, it = own(host.items, a.id), pl = own(host.players, p);
+    delete o.to;
+    delete o.from;
+    delete o.pick;
+    let piece = null, at = it && nextTo(it);
+    if (a.t === 'move' && it && isPiece(it)) [piece, at] = [it, it];
+    else if (a.t === 'take' && it?.k === 's' && a.hand !== true) piece = { k: 'g', t: it.t, f: it.f, ...(it.up === false && { up: false }) };
+    else if (a.t === 'pull' && it?.k === 'b' && it.of.length) {
+      o.pick = rint(it.of.length);
+      const m = it.of[o.pick];
+      if (a.hand !== true) piece = { k: 'g', t: m.t, f: m.f, ...(m.up === false && { up: false }) };
+    } else if (a.t === 'split' && it?.k === 'g' && it.n >= 2 && a.onto === undefined) piece = it;
+    else if (a.t === 'play') {
+      const c = pl && pl.hand[handIdx(pl, a)];
+      if (c && !isCard(c)) {
+        piece = { k: 'g', t: c.t, f: c.f, ...(a.up === false && !mustShow(c.t) && { up: false }) };
+        at = { x: host.table.w / 2 - size(piece).w / 2, y: host.table.h / 2 - size(piece).h / 2 };
+      }
+    }
+    if ((a.t === 'move' || a.t === 'split') && it?.at) o.from = display(it.at);
+    if (piece) {
+      const s = snapPiece(piece, num(a.x, at.x), num(a.y, at.y));
+      if (s.at) o.to = display(s.at);
+    }
+    return o;
+  }
+  /** A live drag (spec §3c, `drag`): player p's piece, or group, on its way —
+   *  {id, x, y} or {ids (the first MAX_GROUP), dx, dy} — for the other
+   *  screens to show. It changes nothing, and runs no hook: what p may move
+   *  (mayHandle and notLocked, checked quietly — a refusal of live traffic
+   *  is a console.warn, never a notice) goes out as one fx {p, id, x, y,
+   *  live: 1} or {p, ids, dx, dy, live: 1}, finite and on the table. True
+   *  when one was queued. */
+  function drag(p, a) {
+    const ok = (id) => {
+      const it = typeof id === 'string' && own(host.items, id);
+      if (it && (!it.owner || resolveOwner(it.owner) === p) && !it.lock) return it;
+      console.warn('drag: not relayed', id, 'from', p);
+      return null;
+    };
+    if (Array.isArray(a.ids)) {
+      const ids = [...new Set(a.ids.slice(0, MAX_GROUP))].filter(ok);
+      if (ids.length) emit({ t: 'fx', f: { p, ids, dx: clamp(num(a.dx), -host.table.w, host.table.w), dy: clamp(num(a.dy), -host.table.h, host.table.h), live: 1 } });
+      return ids.length > 0;
+    }
+    const it = ok(a.id);
+    if (!it) return false;
+    const { w, h } = size(it), q = clampToTable(host.table, num(a.x, it.x), num(a.y, it.y), w, h);
+    emit({ t: 'fx', f: { p, id: a.id, x: q.x, y: q.y, live: 1 } });
+    return true;
+  }
+  /** The actions prepare() fills in. */
+  const PREPARED = new Set(['move', 'take', 'pull', 'split', 'play']);
   /** The action itself (see apply). */
   function act(p, a) {
     if (a.t === 'hello' || a.t === 'snap' || a.t === 'need') return false;
+    if (a.t === 'drag') { drag(p, a); return false; } // (no state: the app relays it outside the queue, T.drag)
+    if (PREPARED.has(a.t)) a = prepare(p, a);
     const items = host.items, pl = own(host.players, p);
     const it = own(items, a.id);
     // Rules veto: an enabled script may block gameplay actions with a reason.
@@ -2311,7 +2747,7 @@ export function createTable(host, env = {}) {
       case 'split': opSplit(p, a.id, a.n, a.x, a.y, a.onto); break;
       case 'join': opJoin(p, a.id, a.onto); break;
       case 'take': opTake(p, a.id, a.x, a.y, a.hand === true); break;
-      case 'pull': opPull(p, a.id, a.x, a.y, a.hand === true); break;
+      case 'pull': opPull(p, a.id, a.x, a.y, a.hand === true, a.pick); break;
       case 'toBag': opToBag(p, a.id, a.bag); break;
       case 'lock': if (typeof a.on === 'boolean') opLock(p, a.id, a.on); else no(p, '🚫 Say lock or unlock (on: true or false)'); break;
       case 'owner': opOwner(p, a.id, a.to ?? null); break;
@@ -2352,7 +2788,8 @@ export function createTable(host, env = {}) {
             const prev = host.rules?.name === name ? host.rules : null, keep = prev && !a.reset;
             // Another game's state (chips, scores, a hand in progress) is lost: say so.
             const lost = keep ? ' (game state kept)' : prev ? ' (game state reset)' : host.rules ? ` («${host.rules.name}» game state discarded)` : '';
-            host.rules = { code: a.code, name, enabled: true, data: keep ? prev.data : {}, public: keep ? prev.public : {} };
+            // (v4: each player's asks and secret, kept or reset with the rest — spec §3e, Persistence)
+            host.rules = { code: a.code, name, enabled: true, data: keep ? prev.data : {}, public: keep ? prev.public : {}, asks: keep ? prev.asks || {} : {}, secret: keep ? prev.secret || {} : {} };
             emit({ t: 'rules' });
             lastRulesError = '';
             logEvent(RULES, `«${name}» enabled by ${pl?.name || 'the host'}${lost}`);
@@ -2416,6 +2853,7 @@ export function createTable(host, env = {}) {
       if (host.rules?.enabled) { runHook('onJoin', p); refreshButtons(); }
     }
     changed = dataOver() || changed || back;
+    flushRuns();
     if (changed) bump();
     return { known, back, changed };
   }
@@ -2428,6 +2866,7 @@ export function createTable(host, env = {}) {
     logEvent(p, 'left the table');
     if (host.rules?.enabled) { runHook('onLeave', p); refreshButtons(); }
     dataOver();
+    flushRuns();
     return bump();
   }
 
@@ -2489,17 +2928,20 @@ export function createTable(host, env = {}) {
       touchPlayer(p);
     }
     for (const [id, it] of Object.entries(host.items)) {
-      const { w, h } = size(it);
-      ({ x: it.x, y: it.y } = clampToTable(host.table, it.x, it.y, w, h));
+      const { w, h } = size(it), { x, y } = clampToTable(host.table, it.x, it.y, w, h);
+      if (x !== it.x || y !== it.y) respot = true; // (one pulled back: the addresses are read again, syncSpots)
+      [it.x, it.y] = [x, y];
       touch(id);
     }
+    tbSig = null; // (the boxes are fresh copies: the boards' structures too)
+    tbVer++;
     ensurePlayer(pid, name);
     logEvent(pid, 'resumed the table');
     bump();
   }
 
   // --- the engine around the script ------------------------------------------
-  const FIND_KEYS = ['kind', 'name', 'up', 'type', 'owner'];
+  const FIND_KEYS = ['kind', 'name', 'up', 'type', 'owner', 'zone', 'at'];
   /** t.find's kinds: item kinds, and the piece kinds (pieces of that type kind). */
   const FIND_KINDS = { card: 'c', pile: 'p', piece: 'g', supply: 's', bag: 'b', token: 'g', tile: 'g', die: 'g', board: 'g' };
   /** The [id, item] pairs of kind k, from the index. Items change only
@@ -2512,8 +2954,8 @@ export function createTable(host, env = {}) {
       else console.error(`the ${k} index holds ${id}, which the table doesn't: was state.items changed directly?`);
     }
   }
-  /** A script's own copy of item `id`: changing it never changes the table. */
-  const copyItem = (id, it) => ({ id, ...it, ...(it.cards && { cards: it.cards.map((c) => ({ ...c })) }), ...(it.of && { of: it.of.map((m) => ({ ...m })) }) });
+  /** A script's own copy of item `id`: changing it never changes the table (its address in the display form). */
+  const copyItem = (id, it) => ({ id, ...it, ...(it.cards && { cards: it.cards.map((c) => ({ ...c })) }), ...(it.of && { of: it.of.map((m) => ({ ...m })) }), ...(it.at && { at: display(it.at) }) });
   /** Runs one script hook; any throw disables the rules loudly. */
   function runHook(name, ...args) {
     if (!host.rules?.enabled || !hooks.has(name)) return undefined;
@@ -2542,7 +2984,7 @@ export function createTable(host, env = {}) {
    *  t.random() draws go on the record, in one line. True when the rules
    *  were disabled (a change: the caller renumbers). */
   function dataOver() {
-    if (draws) { logEvent(RULES, `used randomness (${draws} draw${draws > 1 ? 's' : ''})`); draws = 0; }
+    if (draws) { logOp(RULES, 'random', `used randomness (${draws} draw${draws > 1 ? 's' : ''})`, draws); draws = 0; }
     const names = [...jobHooks].map((h) => `${h}()`).join(', ');
     jobHooks.clear();
     const n = names && host.rules?.enabled ? JSON.stringify(host.rules.data)?.length || 0 : 0;
@@ -2635,14 +3077,17 @@ export function createTable(host, env = {}) {
     for (const x of due) runHook('onTimer', x.tag);
     refreshButtons();
     dataOver();
+    flushRuns();
     return bump();
   }
 
-  /** The [id, item] pairs t.find(q) looks at, from the indexes: the items
-   *  of one type (byType) when q names a 'box/type', else those of q's
-   *  `owners` (byOwner) when it names one, else those of its item kinds (byKind). */
-  function* candidates(q, kinds, owners) {
-    const sets = typeof q.type === 'string' && q.type.includes('/') ? [byType.get(q.type)] : owners && owners.map((o) => byOwner.get(o));
+  /** The [id, item] pairs t.find(q) looks at, from the indexes: the pieces
+   *  at an address (byAt) or in zones (byZone) when q names them, else the
+   *  items of one type (byType) when it names a 'box/type', else those of
+   *  q's `owners` (byOwner) when it names one, else those of its item kinds (byKind). */
+  function* candidates(q, kinds, owners, at, zones) {
+    const sets = at ? [byAt.get(at)] : zones ? zones.map((z) => byZone.get(z))
+      : typeof q.type === 'string' && q.type.includes('/') ? [byType.get(q.type)] : owners && owners.map((o) => byOwner.get(o));
     if (!sets) { for (const k of kinds) yield* ofKind(k); return; }
     for (const set of sets) {
       for (const id of set || []) {
@@ -2652,8 +3097,20 @@ export function createTable(host, env = {}) {
       }
     }
   }
-  /** Whether item `it` matches t.find's query `q` (its keys checked already). */
-  function found(it, q, name, owners) {
+  /** The qualified zones t.find's `zone` names: "<zone id>" on any board,
+   *  or "<board>:<zone id>" ("<typeId>[#n]" or a board's item id); a
+   *  TypeError when no board has it. */
+  function zonesNamed(z) {
+    if (typeof z !== 'string' || !z) throw new TypeError(`t.find: zone must be a zone id, got ${JSON.stringify(z)}`);
+    const k = z.indexOf(':'), T = tb(), id = k < 0 ? z : z.slice(k + 1);
+    const out = (k < 0 ? T.list : boardsNamed(T, z.slice(0, k))).filter((b) => b.B.zones?.some((x) => x.id === id)).map((b) => `${b.id}:${id}`);
+    if (!out.length) throw new TypeError(`t.find: no zone '${z}' on the table's boards`);
+    return out;
+  }
+  /** Whether item `it` (id `id`) matches t.find's query `q` (its keys checked already). */
+  function found(id, it, q, name, owners, at, zones) {
+    if (at && it.at !== at) return false;
+    if (zones && !zones.some((z) => byZone.get(z)?.has(id))) return false;
     if (name !== null && ((it.k !== 'p' && it.k !== 'b') || String(it.name || '').toLowerCase() !== name)) return false;
     if (q.up !== undefined) {
       const up = it.k === 'c' ? it.up : it.k === 'p' ? it.cards.at(-1)?.up : it.k === 'b' ? undefined : it.up !== false;
@@ -2663,6 +3120,63 @@ export function createTable(host, env = {}) {
     if (owners && !owners.includes(it.owner)) return false;
     const pk = own(FIND_KINDS, q.kind) === 'g' && q.kind !== 'piece' ? q.kind : null; // a piece kind: token, tile, die, board
     return !pk || typeOf(it.t)?.kind === pk;
+  }
+
+  // --- the facade's arguments (spec §3e: a malformed one throws a TypeError
+  // naming the call; an item that vanished is false, with a console.warn) ---
+  /** Script item `id` for call `call`: the item, or false when it vanished. */
+  function scriptItem(call, id) {
+    if (typeof id !== 'string') throw new TypeError(`${call}: an item id must be a string, got ${JSON.stringify(id)}`);
+    return own(host.items, id) || gone(call, id);
+  }
+  /** An owner for a script call: undefined, null (nobody), a player, or "seat:<a named seat>". */
+  function scriptOwner(call, o) {
+    if (o == null || (typeof o === 'string' && (o.startsWith('seat:') ? seatDef(o.slice(5)) : own(host.players, o)))) return o ?? null;
+    throw new TypeError(`${call}: owner must be a player id or 'seat:<a named seat>', got ${JSON.stringify(o)}`);
+  }
+  /** Where a script puts new item `it`: `at` an address (any form: centred
+   *  on its spot), 'center' or undefined (the table's centre, snapping as
+   *  any placement does), or {x, y, free?} (a top-left; free: no snapping).
+   *  Returns place()'s arguments [x, y, o]. */
+  function scriptSpot(call, it, at) {
+    const { w, h } = size(it);
+    if (at === undefined || at === 'center') return [host.table.w / 2 - w / 2, host.table.h / 2 - h / 2, {}];
+    if (typeof at === 'string') { const r = addrOf(call, at); return [r.x - w / 2, r.y - h / 2, isPiece(it) ? { at: r.at } : {}]; }
+    if (isObj(at) && Number.isFinite(at.x) && Number.isFinite(at.y)) return [at.x, at.y, { free: at.free === true }];
+    throw new TypeError(`${call}: at must be an address, 'center' or {x, y, free?}, got ${JSON.stringify(at)}`);
+  }
+  /** Piece type `ref` ('box/type') for call `call`, or a TypeError. */
+  function scriptType(call, ref) {
+    const ty = typeof ref === 'string' && typeOf(ref);
+    if (!ty) throw new TypeError(`${call}: unknown piece type ${JSON.stringify(ref)} — name it 'box/type'`);
+    return ty;
+  }
+  /** Face `f` of type `ty` for call `call` (default 0), or a TypeError. */
+  function scriptFace(call, ty, f = 0) {
+    if (!Number.isInteger(f) || f < 0 || f >= ty.faces.length) throw new TypeError(`${call}: ${ty.name} has faces 0 to ${ty.faces.length - 1}, got ${JSON.stringify(f)}`);
+    return f;
+  }
+  /** The display addresses of local addresses `locals` on board `b`. */
+  const displayOn = (b, locals) => locals && locals.map((l) => display(`${b.id}:${l}`));
+  /** The deck.json-style decks of a script's box (spec §3e: no images),
+   *  checked: [[name, deck (cleanDeck)]]. Each entry {name, text, color, bg,
+   *  meta, count} is a card (count: copies, ≤ 500), as an upload's manifest says. */
+  function scriptDecks(list) {
+    if (list === undefined) return [];
+    if (!Array.isArray(list)) throw new TypeError('t.newBox: decks must be a list of {name, back?, cards}');
+    const names = new Set();
+    return list.map((d, k) => {
+      if (!isObj(d) || !Array.isArray(d.cards)) throw new TypeError(`t.newBox: decks[${k}] must be {name, back?, cards: [{name, text, color, bg, meta, count}]}`);
+      if (d.back != null && !COLOR_RE.test(d.back)) throw new TypeError(`t.newBox: decks[${k}].back must be a colour like "#111" (a script's box has no images)`);
+      const name = str(d.name, 24) || 'Deck';
+      if (names.has(name)) throw new TypeError(`t.newBox: two decks are named «${name}»`);
+      names.add(name);
+      const cards = d.cards.flatMap((c, j) => {
+        if (!isObj(c) || c.file !== undefined || c.img !== undefined) throw new TypeError(`t.newBox: decks[${k}].cards[${j}] must be {name, text, color, bg, meta, count} (a script's box has no images)`);
+        return Array(clamp(Math.trunc(num(c.count, 1)), 1, 500)).fill({ n: c.name, txt: c.text, col: c.color, b: c.bg, meta: c.meta });
+      });
+      try { return [name, cleanDeck({ name, back: d.back ?? null, cards })]; } catch (err) { throw new TypeError(`t.newBox: decks[${k}]: ${err.message}`); }
+    });
   }
 
   // The script's window onto the table: full read access, the complete op set
@@ -2686,7 +3200,8 @@ export function createTable(host, env = {}) {
     /** The items matching q, copied: {kind?: 'card' | 'pile' | 'piece' |
      *  'supply' | 'bag' | 'token' | 'tile' | 'die' | 'board', name? (a pile's
      *  or a bag's, any case), up?, type? ('box/type', or a bare type id in
-     *  any box), owner? (a pid also matches 'seat:<their seat>')}. */
+     *  any box), owner? (a pid also matches 'seat:<their seat>'), at? (an
+     *  address, any form), zone? (a zone id, or "<board>:<zone id>")}. */
     find(q = {}) {
       for (const k of Object.keys(q)) if (!FIND_KEYS.includes(k)) throw new TypeError(`t.find: unknown filter '${k}' — known: ${FIND_KEYS.join(', ')}`);
       const kinds = q.kind === undefined ? [...byKind.keys()] : [own(FIND_KINDS, q.kind)];
@@ -2694,8 +3209,9 @@ export function createTable(host, env = {}) {
       const name = q.name === undefined ? null : String(q.name).toLowerCase();
       const seatId = q.owner !== undefined && own(host.players, q.owner)?.seatId;
       const owners = q.owner === undefined ? null : [q.owner, ...(seatId ? [`seat:${seatId}`] : [])];
-      const out = [];
-      for (const [id, it] of candidates(q, kinds, owners)) if (found(it, q, name, owners)) out.push(copyItem(id, it));
+      syncSpots();
+      const at = q.at === undefined ? null : addrOf('t.find', q.at).at, zones = q.zone === undefined ? null : zonesNamed(q.zone), out = [], seen = new Set();
+      for (const [id, it] of candidates(q, kinds, owners, at, zones)) if (!seen.has(id) && found(id, it, q, name, owners, at, zones)) { seen.add(id); out.push(copyItem(id, it)); }
       return out;
     },
     piles: () => [...ofKind('p')].map(([id, it]) => copyItem(id, it)),
@@ -2724,7 +3240,17 @@ export function createTable(host, env = {}) {
     stack: (id, ontoId) => opStack(RULES, id, ontoId),
     newPile: (cards, o) => opNewPile(RULES, cards, o),
     merge: (fromId, toId) => opMerge(RULES, fromId, toId),
-    move: (id, x, y) => opMove(RULES, id, x, y),
+    /** Moves item `id`: to an address (any form: centred on its spot), to
+     *  {x, y, free?} (a top-left; free: no snapping), or as ever to (x, y). */
+    move(id, a, b) {
+      if (typeof a === 'string' || isObj(a)) {
+        const it = scriptItem('t.move', id);
+        if (!it) return false;
+        const [x, y, o] = scriptSpot('t.move', it, a);
+        return opMove(RULES, id, x, y, o);
+      }
+      return opMove(RULES, id, a, b);
+    },
     rot: (id, deg) => opRot(RULES, id, deg),
     remove: (id) => opRemove(RULES, id),
     /** Rolls die `id` (the crypto RNG): its new face index, or false (not a die, or gone). */
@@ -2789,7 +3315,10 @@ export function createTable(host, env = {}) {
     tell: (p, msg) => notify(p, String(msg)),
     schedule(sec, tag) {
       if (!Number.isFinite(sec) || sec < 0) throw new Error(`t.schedule: seconds must be a number ≥ 0, got ${sec}`);
-      (host.rules.data._timers ||= []).push({ at: now() + sec * 1000, tag: String(tag) });
+      const t = String(tag), list = (host.rules.data._timers ||= []);
+      if (t.length > TIMER_TAG_MAX) throw new TypeError(`t.schedule: a tag is at most ${TIMER_TAG_MAX} chars`);
+      if (list.length >= MAX_TIMERS) throw new TypeError(`t.schedule: at most ${MAX_TIMERS} timers wait at once`);
+      list.push({ at: now() + sec * 1000, tag: t });
     },
     nextSeat(p) {
       const ps = this.players().filter((x) => x.online || x.id === p);
@@ -2807,7 +3336,214 @@ export function createTable(host, env = {}) {
         meta: c.meta, deck: deck.name,
       });
     },
+
+    // --- components from code (spec §3e) ---------------------------------------
+    /** Registers a box from `def` = {name?, pieces, backs?, decks?} in the
+     *  game.json format (§4a: pieces a list, a board's structure on its
+     *  piece; the faces shorthand) — with no images — and returns its id.
+     *  Its `decks` (deck.json-style: text cards) are registered as ordinary
+     *  decks, named in the box's `decks` ({name: deckId}). The same box again
+     *  (a reset re-running setup) is the box already there, decks and all:
+     *  nothing new is registered or logged. */
+    newBox(def) {
+      if (!isObj(def)) throw new TypeError('t.newBox: give it {name?, pieces, backs?, decks?}');
+      const extra = Object.keys(def).find((k) => !['name', 'pieces', 'backs', 'decks'].includes(k));
+      if (extra) throw new TypeError(`t.newBox: unknown field '${extra}' — known: name, pieces, backs, decks`);
+      const img = findKey([def.pieces, def.backs], 'img');
+      if (img) throw new TypeError(`t.newBox: a script's box has no images (${img})`);
+      let box;
+      try { box = cleanBox(boxFromDef(def)); } catch (err) { throw new TypeError(`t.newBox: ${err.message}`); }
+      const decks = scriptDecks(def.decks), same = canon(box);
+      for (const [id, b] of Object.entries(host.boxes)) {
+        const { decks: dm = {}, ...rest } = b;
+        if (canon(rest) === same && Object.keys(dm).length === decks.length && decks.every(([n, d]) => own(host.decks, own(dm, n)) && canon(host.decks[dm[n]]) === canon(d))) return id;
+      }
+      if (decks.length) {
+        box.decks = {};
+        for (const [name, d] of decks) {
+          const deckId = mint(host.decks);
+          host.decks[deckId] = d;
+          emit({ t: 'deck', id: deckId });
+          box.decks[name] = deckId;
+        }
+      }
+      const id = registerBox(box, 'script', RULES), n = Object.keys(box.types).length;
+      logEvent(RULES, `defined the box «${box.name}» (${n} piece ${n === 1 ? 'type' : 'types'})`);
+      return id;
+    },
+    /** Places a new piece (or supply) of type `type` ('box/type'): o = {at?
+     *  (an address, 'center', or {x, y, free?}), f?, n?, owner?, up?, rot?,
+     *  lock? (boards: locked by default), as?: 'piece' | 'supply'}. Its id, or
+     *  false at the item cap. */
+    spawn(type, o = {}) {
+      const ty = scriptType('t.spawn', type);
+      if (!isObj(o)) throw new TypeError('t.spawn: o must be {at?, f?, n?, owner?, up?, rot?, lock?, as?}');
+      const as = o.as ?? 'piece', f = scriptFace('t.spawn', ty, o.f), owner = scriptOwner('t.spawn', o.owner);
+      if (as !== 'piece' && as !== 'supply') throw new TypeError(`t.spawn: as must be 'piece' or 'supply', got ${JSON.stringify(as)}`);
+      if (o.n !== undefined && (as !== 'piece' || !Number.isInteger(o.n) || o.n < 1 || o.n > MAX_N || (o.n > 1 && ty.stack !== 'count'))) {
+        throw new TypeError(`t.spawn: n must be 1 to ${MAX_N}, on a piece whose type stacks by count (${type} ${ty.stack === 'count' ? 'does' : "doesn't"})`);
+      }
+      if (o.up !== undefined && typeof o.up !== 'boolean') throw new TypeError('t.spawn: up must be true or false');
+      if (o.up === false && !ty.back) throw new TypeError(`t.spawn: ${type} has no back, so it can't lie face down`);
+      if (o.lock !== undefined && typeof o.lock !== 'boolean') throw new TypeError('t.spawn: lock must be true or false');
+      if (o.rot !== undefined && !Number.isFinite(o.rot)) throw new TypeError('t.spawn: rot must be a number');
+      if (!cap(RULES)) return false;
+      const it = { k: as === 'supply' ? 's' : 'g', t: type, f, rot: 0, ...(o.up === false && { up: false }), ...(o.n > 1 && { n: o.n }), ...(owner && { owner }), ...((o.lock ?? ty.kind === 'board') && { lock: true }) };
+      it.rot = turned(it, o.rot);
+      place(it, ...scriptSpot('t.spawn', it, o.at));
+      const id = put(mint(host.items), it);
+      logOp(RULES, 'placed', `placed ${label(it)}${it.at ? ` on ${display(it.at)}` : ''}`, it);
+      mark(RULES, id);
+      return id;
+    },
+    /** A new bag of `contents` ([{t, f?, up?, n?}], ≤ MAX_BAG pieces in all):
+     *  o = {at?, name?, owner?, hand?} (hand: whether it may go into hands —
+     *  by default when every piece may, fixed from then on). Its id, or false
+     *  at the item cap. */
+    newBag(contents, o = {}) {
+      if (!Array.isArray(contents)) throw new TypeError('t.newBag: contents must be a list of {t, f?, up?, n?}');
+      if (!isObj(o)) throw new TypeError('t.newBag: o must be {at?, name?, owner?, hand?}');
+      const of = [];
+      for (const m of contents) {
+        if (!isObj(m)) throw new TypeError('t.newBag: each entry is {t, f?, up?, n?}');
+        const ty = scriptType('t.newBag', m.t), f = scriptFace('t.newBag', ty, m.f), n = m.n ?? 1;
+        if (m.up === false && !ty.back) throw new TypeError(`t.newBag: ${m.t} has no back, so it can't go in face down`);
+        if (!Number.isInteger(n) || n < 1 || of.length + n > MAX_BAG) throw new TypeError(`t.newBag: a bag holds 1 to ${MAX_BAG} pieces in all`);
+        for (let k = 0; k < n; k++) of.push({ t: m.t, f, ...(m.up === false && { up: false }) });
+      }
+      if (o.name !== undefined && typeof o.name !== 'string') throw new TypeError('t.newBag: name must be a string');
+      if (o.hand !== undefined && typeof o.hand !== 'boolean') throw new TypeError('t.newBag: hand must be true or false');
+      const owner = scriptOwner('t.newBag', o.owner), hand = o.hand ?? (of.length > 0 && of.every((m) => typeOf(m.t).hand));
+      // its box (who may lock it: D88) is its pieces' when they all come from one box
+      const boxIds = new Set(of.map((m) => m.t.slice(0, m.t.indexOf('/')))), box = boxIds.size === 1 ? [...boxIds][0] : null;
+      if (!cap(RULES)) return false;
+      const bag = { k: 'b', of, name: str(o.name, 24) || '', ...(box && { box }), ...(hand && { hand: true }), rot: 0, ...(owner && { owner }) };
+      place(bag, ...scriptSpot('t.newBag', bag, o.at));
+      const id = put(mint(host.items), bag);
+      logEvent(RULES, `made the bag ${bag.name || 'Bag'} (${of.length} pieces)`);
+      mark(RULES, id);
+      return id;
+    },
+    /** A new piece from supply `id` (o = {at?, to?: pid}: onto the table —
+     *  next to it, or `at` — or into that player's hand): its id, or {hand:
+     *  true, t, f, up?}, or false. */
+    take(id, o = {}) { return scriptDraw('t.take', 's', id, o); },
+    /** A random piece out of bag `id` (o = {at?, to?: pid}), as t.take. */
+    pull(id, o = {}) { return scriptDraw('t.pull', 'b', id, o); },
+    /** Turns piece or supply `id` to face `f` (a die too: no roll). */
+    setFace(id, f) {
+      const it = scriptItem('t.setFace', id);
+      if (!it) return false;
+      if (it.k !== 'g' && it.k !== 's') throw new TypeError('t.setFace: only pieces and supplies have faces');
+      const ty = typeOf(it.t);
+      if (!ty) return no(RULES, "🚫 That piece's game box is missing");
+      scriptFace('t.setFace', ty, f);
+      if (it.f === f) return true;
+      const before = label(it);
+      touch(id);
+      it.f = f;
+      logOp(RULES, 'turned', `turned ${before}${it.up === false ? '' : ` to ${faceLabel(ty.faces[f], f)}`}${it.at ? ` on ${display(it.at)}` : ''}`, it);
+      mark(RULES, id);
+      return true;
+    },
+    /** Sets piece `id`'s count to n (0 to MAX_N: 0 removes it; 2 or more on a type that stacks by count). */
+    setCount(id, n) {
+      const it = scriptItem('t.setCount', id);
+      if (!it) return false;
+      if (it.k !== 'g') throw new TypeError('t.setCount: only pieces have a count');
+      if (!Number.isInteger(n) || n < 0 || n > MAX_N) throw new TypeError(`t.setCount: n must be 0 to ${MAX_N}, got ${JSON.stringify(n)}`);
+      if (n === 0) return opRemove(RULES, id);
+      if (n > 1 && flags(it).stack !== 'count') throw new TypeError(`t.setCount: ${it.t} doesn't stack by count`);
+      if ((it.n || 1) === n) return true;
+      touch(id);
+      if (n > 1) it.n = n;
+      else delete it.n;
+      logOp(RULES, 'counted', `counted ${label(it)}${it.at ? ` on ${display(it.at)}` : ''}`, it);
+      mark(RULES, id);
+      return true;
+    },
+    /** Locks item `id` in place (on) or frees it; false when it already was so. */
+    lock(id, on) {
+      if (typeof on !== 'boolean') throw new TypeError('t.lock: on must be true or false');
+      return !!scriptItem('t.lock', id) && opLock(RULES, id, on);
+    },
+    /** Gives item `id` to `owner` (a player id, 'seat:<id>', or null: nobody); false when it already was. */
+    setOwner(id, owner) {
+      const to = scriptOwner('t.setOwner', owner);
+      return !!scriptItem('t.setOwner', id) && opOwner(RULES, id, to);
+    },
+    /** Sets the named seats (SeatDef[], spec §2a) or, with null, automatic seating; re-seats everyone. */
+    setSeats(defs) {
+      let seats = null;
+      if (defs !== null) { try { seats = cleanSeats(defs); } catch (err) { throw new TypeError(`t.setSeats: ${err.message}`); } }
+      setSeats(RULES, seats);
+    },
+    /** Sets the table: {shape, w, h, felt?} (spec §2a). */
+    setTable(def) {
+      let tb;
+      try { tb = cleanTable(def); } catch (err) { throw new TypeError(`t.setTable: ${err.message}`); }
+      setTable(RULES, tb);
+    },
+
+    // --- spatial reads (spec §3e): addresses in any form in, display forms out ---
+    /** Piece `id`'s address (display form), or null; false when it vanished. */
+    where(id) {
+      const it = scriptItem('t.where', id);
+      if (!it) return false;
+      syncSpots();
+      return it.at ? display(it.at) : null;
+    },
+    /** The pieces at address `a`, copied, bottom to top (by z). */
+    at(a) {
+      const r = addrOf('t.at', a);
+      syncSpots();
+      return [...(byAt.get(r.at) || [])].map((id) => copyItem(id, host.items[id])).sort((x, y) => x.z - y.z);
+    },
+    /** The zones piece `id` lies in (display forms: "<zone>" on the primary board, else "<board>:<zone>"); false when it vanished. */
+    zones(id) {
+      if (!scriptItem('t.zones', id)) return false;
+      syncSpots();
+      return (zonesOf.get(id) || []).map(display);
+    },
+    /** The centre of address `a` on the table: {x, y}. */
+    spot(a) { const r = addrOf('t.spot', a); return { x: r.x, y: r.y }; },
+    /** The addresses next to `a`, in bounds: a square grid's 4 ({diag: true}: 8), a hex's 6, a space's links. */
+    neighbors(a, o = {}) {
+      if (!isObj(o)) throw new TypeError('t.neighbors: o must be {diag?}');
+      const r = addrOf('t.neighbors', a);
+      return displayOn(r.b, gridNeighbors(r.b.B, r.local, { diag: o.diag === true }));
+    },
+    /** Steps from `a` to `b` on one board's grid (o.metric: 'chebyshev', the default, or 'manhattan'; hexes: cube distance); null across boards or for spaces. */
+    distance(a, b, o = {}) {
+      if (!isObj(o) || (o.metric !== undefined && o.metric !== 'chebyshev' && o.metric !== 'manhattan')) throw new TypeError("t.distance: o.metric must be 'chebyshev' or 'manhattan'");
+      const p = addrOf('t.distance', a), q = addrOf('t.distance', b);
+      return p.b === q.b ? gridDistance(p.b.B, p.local, q.local, o) : null;
+    },
+    /** The addresses strictly between `a` and `b` on one board's grid (squares: along a rank, file or diagonal; hexes: a straight line), or null. */
+    line(a, b) {
+      const p = addrOf('t.line', a), q = addrOf('t.line', b);
+      return p.b === q.b ? displayOn(p.b, gridLine(p.b.B, p.local, q.local)) : null;
+    },
+    /** The spaces linked to space `a` (links are undirected), as addresses. */
+    linked(a) {
+      const r = addrOf('t.linked', a);
+      return displayOn(r.b, linkedSpaces(r.b.B, r.local));
+    },
   };
+  /** t.take and t.pull (`kind` 's' or 'b'): onto the table (next to it, or o.at) or into o.to's hand. */
+  function scriptDraw(call, kind, id, o) {
+    if (!isObj(o)) throw new TypeError(`${call}: o must be {at?, to?}`);
+    if (o.to !== undefined && !own(host.players, o.to)) throw new TypeError(`${call}: no player ${JSON.stringify(o.to)}`);
+    if (o.to !== undefined && o.at !== undefined) throw new TypeError(`${call}: at or to, not both`);
+    const it = scriptItem(call, id);
+    if (!it) return false;
+    if (it.k !== kind) throw new TypeError(`${call}: ${id} is not a ${kind === 's' ? 'supply' : 'bag'}`);
+    if (o.to !== undefined) return kind === 's' ? opTake(RULES, id, 0, 0, true, o.to) : opPull(RULES, id, 0, 0, true, undefined, o.to);
+    // (a pull draws its piece first: an address centres it by its own size)
+    const pick = kind === 'b' && it.of.length ? rint(it.of.length) : undefined, m = kind === 's' ? it : it.of[pick];
+    const at = nextTo(it), [x, y, po] = o.at === undefined || !m ? [at.x, at.y, {}] : scriptSpot(call, { k: 'g', t: m.t, f: m.f, ...(m.up === false && { up: false }) }, o.at);
+    return kind === 's' ? opTake(RULES, id, x, y, false, RULES, po) : opPull(RULES, id, x, y, false, pick, RULES, po);
+  }
 
   /** Moves a player's hand onto a pile, face down (a piece without a back
    *  face up): every entry, or only those `only({d, i} | {t, f, up?})`
@@ -2848,7 +3584,8 @@ export function createTable(host, env = {}) {
   }
   /** The table as players see it (see pubItem); T.pub holds the same, kept up to date incrementally. */
   function publicItems() {
-    return Object.fromEntries(Object.entries(host.items).map(([id, it]) => [id, pubItem(it, host.boxes)]));
+    syncSpots();
+    return Object.fromEntries(Object.entries(host.items).map(([id, it]) => [id, pubItem(it, host.boxes, display)]));
   }
   const rulesView = () => (host.rules ? { name: host.rules.name, enabled: host.rules.enabled, public: host.rules.public } : null);
   let rulesSig = JSON.stringify(rulesView()); // what the last takeDirty() saw
@@ -2859,6 +3596,7 @@ export function createTable(host, env = {}) {
    *  t.public in place, so the rules are found dirty by comparison here, as
    *  is `handy` (from the items). */
   function takeDirty() {
+    flushRuns();
     refresh();
     const d = dirty, sig = JSON.stringify(rulesView()), h = handy.size > 0;
     dirty = newDirty();
@@ -2940,6 +3678,7 @@ export function createTable(host, env = {}) {
         host.boxes[id] = cleanBox(rec.box);
         host.boxSrc[id] = { src: rec.src, ...(rec.by && { by: rec.by }) };
         boxKeys = null;
+        tbVer++;
         emit({ t: 'box', id });
       } catch (err) { console.error(`patched box ${id} rejected`, err); }
     }
@@ -2948,7 +3687,7 @@ export function createTable(host, env = {}) {
       host.rules = { ...was, ...s.rules };
       if (host.rules.code !== was?.code || host.rules.enabled !== was?.enabled) emit({ t: 'rules' });
     }
-    if (s.table) { host.table = cleanTable(s.table); dirty.table = true; }
+    if (s.table) { host.table = cleanTable(s.table); dirty.table = true; respot = true; }
     if ('seats' in s) { host.seats = s.seats && cleanSeats(s.seats); dirty.seats = true; }
     if (Array.isArray(s.log)) {
       host.log = trimLog(host.log.concat(s.log));
@@ -2964,6 +3703,13 @@ export function createTable(host, env = {}) {
     state: host,
     api: tApi, // the rules facade `t`
     byKind, byType, byOwner,
+    /** T.byAt (a qualified address → the pieces there) and T.byZone ('<board
+     *  id>:<zone id>' → the pieces in it), brought up to date (syncSpots). */
+    get byAt() { syncSpots(); return byAt; },
+    get byZone() { syncSpots(); return byZone; },
+    /** The table's structured boards: tableBoards() of its items, kept. */
+    get boards() { return tb(); },
+    snapPiece, display,
     /** The game boxes of the catalog: {boxId: Box} (where each came from: state.boxSrc). */
     get boxes() { return host.boxes; },
     /** id → public item for every item on the table: publicItems(), kept incrementally. */
@@ -2972,13 +3718,13 @@ export function createTable(host, env = {}) {
     get handy() { refresh(); return handy.size; },
     /** The last rules-script error, for the rules dialog ('' after a successful enable). */
     get rulesError() { return lastRulesError; },
-    apply, join, leave, open, resume, runTimers, mayAct, publicItems, publicPlayers, unsaveable,
+    apply, join, leave, open, resume, runTimers, mayAct, publicItems, publicPlayers, unsaveable, drag,
     /** Every asset id the table's decks and boxes show: the only images the host serves (app.js). */
     assetRefs: () => assetRefs(host.decks, host.boxes),
     takeDirty, patchContent, snapContent, refreshFor, applyStatePatch,
     /** The state as saved: all of it but the catalog (decks, boxes and where
      *  each box came from), which store.js keeps apart, each written once. */
-    snapshot() { const s = { ...host }; delete s.decks; delete s.boxes; delete s.boxSrc; return s; },
+    snapshot() { flushRuns(); syncSpots(); const s = { ...host }; delete s.decks; delete s.boxes; delete s.boxSrc; return s; },
     /** The effects queued since the last drain, oldest first (see the top of this file). */
     drain() { const out = effects; effects = []; return out; },
   };

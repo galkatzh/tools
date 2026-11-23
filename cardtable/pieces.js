@@ -153,6 +153,25 @@ export function zoomView(c, boxes, img) {
   return { html: itemView(it, boxes, img).html, w, h };
 }
 
+/** How far apart pieces sharing a spot with no fan direction are drawn, in table units. */
+export const FAN_STEP = 6;
+/** Where k pieces sharing one spot are drawn (spec §3g: fanned at render
+ *  time; the state keeps them all centred on the spot): offsets from the
+ *  spot's centre, in its board's frame, bottom (lowest z) first. On a space
+ *  with a `dir` they run from its far end toward `dir`, a piece's size apart
+ *  (its h up or down, its w left or right), squeezed to (L − size)/(k − 1)
+ *  when that many would overflow the space's length L (its h or w): a
+ *  backgammon point's 15 checkers stay inside its triangle. Elsewhere
+ *  FAN_STEP apart, toward the board's top. `sizes`: [{w, h}], bottom first. */
+export function fanOffsets(sp, sizes) {
+  const k = sizes.length, d = sp?.dir;
+  if (!d) return sizes.map((_, j) => ({ x: 0, y: -FAN_STEP * j }));
+  const v = d === 'up' || d === 'down', s = Math.max(...sizes.map((z) => (v ? z.h : z.w)));
+  const L = Math.max(s, num(v ? sp.h : sp.w) || 2 * num(sp.r)), step = k > 1 ? Math.min(s, (L - s) / (k - 1)) : 0;
+  const sign = d === 'up' || d === 'left' ? -1 : 1, start = -sign * (L - s) / 2;
+  return sizes.map((_, j) => { const o = start + sign * j * step; return v ? { x: 0, y: o } : { x: o, y: 0 }; });
+}
+
 /** Plays the dice tumble (spec §2g: a roll, on every screen) on item element
  *  `el`: the .tumble class for 450 ms, which CSS turns into a spin and a
  *  pulse — or into nothing with reduced motion, where the face just changes. */

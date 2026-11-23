@@ -349,7 +349,8 @@ const PROBE = `({ name: 'Probe', validate(t, a) {
   await check('Alice', 'take Gold', (a) => keys(a, ['t', 'id', 'x', 'y', 'hand']) && a.t === 'take' && a.id === I.gold && !a.hand, 'a take from the supply named by its type');
   await check('Alice', 'take Gold 600 700', (a) => keys(a, ['t', 'id', 'x', 'y', 'hand']) && a.id === I.gold && a.x === 600 && a.y === 700 && !a.hand, 'a take at 600,700');
   ok(await until(async () => Object.values((await view()).items).some((it) => it.t === ref('gold') && it.k === 'g' && it.x === 600 && it.y === 700), 5000), 'a Gold token lies at 600,700');
-  await check('Alice', 'pull Tiles --hand', (a) => keys(a, ['t', 'id', 'hand']) && a.t === 'pull' && a.id === I.bag && a.hand === true, 'a pull into the hand from the bag named "Tiles"');
+  // (Phase 3: the host draws a pull's piece before the hooks, spec §3c: validate sees it as a.pick)
+  await check('Alice', 'pull Tiles --hand', (a) => keys(a, ['t', 'id', 'hand', 'pick']) && a.t === 'pull' && a.id === I.bag && a.hand === true && Number.isInteger(a.pick), 'a pull into the hand from the bag named "Tiles"');
   await check('Alice', `split ${I.man4}`, (a) => keys(a, ['t', 'id', 'n', 'x', 'y']) && a.t === 'split' && a.id === I.man4 && (a.n ?? 1) === 1, '{t: split, id}');
   await check('Alice', `split ${I.man4} 2 1000 800`, (a) => eq(a, { t: 'split', id: I.man4, n: 2, x: 1000, y: 800 }), '{t: split, id, n, x, y}');
   await check('Alice', `bag ${I.tile} Tiles`, (a) => eq(a, { t: 'toBag', id: I.tile, bag: I.bag }), '{t: toBag, id, bag} (the bag named "Tiles")');
@@ -368,7 +369,7 @@ const PROBE = `({ name: 'Probe', validate(t, a) {
   await check('Bob', `face ${I.wheel} 1`, (a) => eq(a, { t: 'face', id: I.wheel, f: 1 }), '{t: face, id, f}');
   await check('Bob', 'take Gold --hand', (a) => eq(a, { t: 'take', id: I.gold, hand: true }), '{t: take, id, hand: true}');
   await check('Bob', 'take Gold 650 750', (a) => keys(a, ['t', 'id', 'x', 'y', 'hand']) && a.id === I.gold && a.x === 650 && a.y === 750 && !a.hand, 'a take at 650,750');
-  await check('Bob', 'pull Tiles --hand', (a) => keys(a, ['t', 'id', 'hand']) && a.id === I.bag && a.hand === true, 'a pull into the hand');
+  await check('Bob', 'pull Tiles --hand', (a) => keys(a, ['t', 'id', 'hand', 'pick']) && a.id === I.bag && a.hand === true && Number.isInteger(a.pick), 'a pull into the hand');
   await check('Bob', `split ${man2} 1 1100 900`, (a) => eq(a, { t: 'split', id: man2, n: 1, x: 1100, y: 900 }), '{t: split, id, n, x, y}');
   await check('Bob', `bag ${man1} Tiles`, (a) => eq(a, { t: 'toBag', id: man1, bag: I.bag }), '{t: toBag, id, bag}');
   await check('Bob', `lock ${I.wheel}`, (a) => eq(a, { t: 'lock', id: I.wheel, on: true }), '{t: lock, id, on: true}');

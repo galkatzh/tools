@@ -42,6 +42,7 @@ const L = require('./p1-lib');
 const P = require('./p2t-lib');
 const { shot } = require('./fun-lib');
 const { BOXES } = require(path.join(h.APP_ROOT, 'cardtable/templates.js'));
+const { STATE_V } = require(path.join(h.APP_ROOT, 'cardtable/core.js'));
 const { ok, section } = h;
 
 /** Item 2's box: two named seats in their own colours (not a player's), a
@@ -621,8 +622,8 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
       'a guest who joins sees the same round table');
     let rec = null;
     ok(await L.until(async () => (rec = await h.idb(olga, 'saves', room))?.state?.players?.[pete.pid], 15000, 200)
-      && rec.v === 3 && rec.state.v === 3 && !('size' in rec.state) && JSON.stringify(rec.state.table) === JSON.stringify({ shape: 'round', w: 1800, h: 1800 }) && rec.state.seats === null && rec.state.boardSeq === 0,
-    `the next save is v3: table round 1800, no size, seats null, boardSeq 0 (${JSON.stringify(rec && { v: rec.v, table: rec.state.table, size: rec.state.size, seats: rec.state.seats, boardSeq: rec.state.boardSeq })})`);
+      && rec.v === STATE_V && rec.state.v === STATE_V && !('size' in rec.state) && JSON.stringify(rec.state.table) === JSON.stringify({ shape: 'round', w: 1800, h: 1800 }) && rec.state.seats === null && rec.state.boardSeq === 0,
+    `the next save is v${STATE_V} (v3 then, Phase 3's v4 now): table round 1800, no size, seats null, boardSeq 0 (${JSON.stringify(rec && { v: rec.v, table: rec.state.table, size: rec.state.size, seats: rec.state.seats, boardSeq: rec.state.boardSeq })})`);
   }
 
   await env.done();

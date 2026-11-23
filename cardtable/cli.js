@@ -76,6 +76,8 @@ class Bridge {
   roll(...ids) { this.send({ t: 'roll', ids }); }
   /** Takes a piece from a supply (an id or its type's name): onto the table (at x, y, or beside it), or into the hand. */
   take(supply, x = null, y = null, hand = false) { this.send({ t: 'take', id: supply, x, y, hand }); }
+  /** Puts item `ref` on a board's spot `addr` ('e4', 'bar', 'map:c3'): an item id moves there; a supply (id or type name) hands out a piece there. */
+  place(ref, addr) { this.send({ t: 'place', id: ref, at: addr }); }
   /** Sits in named seat `id`; '-' stands up to watch, '+' sits down again (automatic seating). */
   seat(id) { this.send(id === '-' ? { t: 'seat', watch: true } : id === '+' ? { t: 'seat', sit: true } : { t: 'seat', id }); }
   route(req, res) {
@@ -162,6 +164,7 @@ const HELP = `commands:
   take <supply> [x y] [--hand]  take a piece from a supply (id or type name)
   pull <bag> [x y] [--hand]     draw a random piece from a bag (id or name)
   split <id> [n] [x y]    take n (default 1) off a ×N stack
+  place <ref> <addr>      put a piece on a board's spot (e4, bar, map:c3); a supply (id or type name) hands one out there
   bag <id> <bag>          put a piece into a bag
   lock|unlock <id>        lock an item in place, or free it
   claim|release <id>      make an item yours, or nobody's
@@ -175,7 +178,7 @@ function fmtCard(c) { return c.text && c.name.startsWith('“') ? `“${c.text}�
 /** A table item as one line: every line keeps the `  [id] … @x,y` frame
  *  (parsers split on it), then the owner and 🔒 when present (spec §2i). */
 function fmtItem(it) {
-  const at = ` @${it.x},${it.y}`, tail = `${it.owner ? ` owner:${it.owner}` : ''}${it.locked ? ' 🔒' : ''}`, n = it.n ? ` ×${it.n}` : '';
+  const at = ` @${it.x},${it.y}${it.at ? ` at:${it.at}` : ''}`, tail = `${it.owner ? ` owner:${it.owner}` : ''}${it.locked ? ' 🔒' : ''}`, n = it.n ? ` ×${it.n}` : '';
   const head = `  [${it.id}] `;
   switch (it.kind) {
     case 'card': return `${head}${it.up ? fmtCard(it) : 'face-down card'}${at}${tail}`;
@@ -288,6 +291,9 @@ function runCmd(bridge, line) {
       const [n, x, y] = nums.length === 2 ? [null, ...nums] : nums;
       return bridge.send({ t: 'split', id: args[0], n: n ?? null, x: x ?? null, y: y ?? null });
     }
+    case 'place':
+      if (args.length < 2) throw new Error('place <ref> <addr>');
+      return bridge.place(args.slice(0, -1).join(' '), args.at(-1));
     case 'bag':
       if (args.length < 2) throw new Error('bag <id> <bag>');
       return bridge.send({ t: 'toBag', id: args[0], bag: args.slice(1).join(' ') });

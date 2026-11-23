@@ -177,6 +177,12 @@ class Bridge:
         table (at x, y, or beside it), or into the hand."""
         self.send(t='take', id=supply, x=x, y=y, hand=hand)
 
+    def place(self, ref, addr):
+        """Puts item `ref` on a board's spot `addr` ('e4', 'bar', 'map:c3'):
+        an item id moves there; a supply (id or type name) hands out a piece
+        there."""
+        self.send(t='place', id=ref, at=addr)
+
     def seat(self, sid):
         """Sits in named seat `sid`; '-' stands up to watch, '+' sits down
         again (automatic seating)."""
@@ -210,6 +216,7 @@ HELP = """commands:
   take <supply> [x y] [--hand]  take a piece from a supply (id or type name)
   pull <bag> [x y] [--hand]     draw a random piece from a bag (id or name)
   split <id> [n] [x y]    take n (default 1) off a ×N stack
+  place <ref> <addr>      put a piece on a board's spot (e4, bar, map:c3); a supply (id or type name) hands one out there
   bag <id> <bag>          put a piece into a bag
   lock|unlock <id>        lock an item in place, or free it
   claim|release <id>      make an item yours, or nobody's
@@ -245,7 +252,7 @@ def fmt_hand(c):
 def fmt_item(it):
     """A table item as one line: every line keeps the `  [id] … @x,y` frame
     (parsers split on it), then the owner and 🔒 when present (spec §2i)."""
-    at = f" @{it['x']},{it['y']}"
+    at = f" @{it['x']},{it['y']}" + (f" at:{it['at']}" if it.get('at') else '')
     tail = (f" owner:{it['owner']}" if it.get('owner') else '') + (' 🔒' if it.get('locked') else '')
     n = f" ×{it['n']}" if it.get('n') else ''
     head = f"  [{it['id']}] "
@@ -386,6 +393,10 @@ def run_cmd(bridge, line):
             raise ValueError('split <id> [n] [x y]')
         n, x, y = ([None] + nums) if len(nums) == 2 else (nums + [None] * 3)[:3]
         bridge.send(t='split', id=args[0], n=n, x=x, y=y)
+    elif cmd == 'place':
+        if len(args) < 2:
+            raise ValueError('place <ref> <addr>')
+        bridge.place(' '.join(args[:-1]), args[-1])
     elif cmd == 'bag':
         if len(args) < 2:
             raise ValueError('bag <id> <bag>')

@@ -558,6 +558,37 @@ sync and rendering, and the Worker together with `handle`.
    - Components from code and the spatial helpers.
    - *Demos:* chess with full rules (§6), go 9×9 and 19×19 (up to 361 stones:
      a real scale test), reversi.
+   - *Under way*, in three parts: space, the Worker, then play (the ask,
+     hint and secret UI and the demos). Space is built (README "Pieces,
+     dice and boards", ENGINE.md "Addresses and the spatial helpers"):
+     snapping, addresses, the spatial helpers, components from code, the
+     snap preview, fanned spots and live drags; state v4, wire version 4.
+     Rules still run on the page until the Worker part. The decisions taken
+     on the way:
+     - A space reaches as far as its drawn rectangle, not only a circle
+       round its centre: a checker dropped on the far end of the tall bar
+       lands on the bar, not on the point whose centre is nearer.
+     - The address a script names is where the piece goes, even under a
+       board lying on top; `free: true` leaves a piece where it is put,
+       with no address. A person never names an address: a drop names a
+       place, the host snaps it (the terminal's `place` resolves one first,
+       and says so when it isn't on any board or could be on two).
+     - Moving, turning or removing a board never moves a piece: the
+       pieces read their spots again, whatever changed the boards.
+     - Boards of one type number together across games (`board#2`), so a
+       spot's name never means two places.
+     - Pieces sharing a spot fan out as drawn — along a backgammon point
+       from its base, even a lone checker; elsewhere a few units apart —
+       and a press on the crowd takes the top one. The doubling cube now
+       waits beside the board: on the bar it fanned in with every checker
+       sent there.
+     - Someone else's drag glides on your screen and changes nothing until
+       the drop; it moves by a transform, so a big table never lays itself
+       out mid-drag.
+     - A script's run of placements or removals is one log line, naming
+       the first spots.
+     - A script's box with text decks is found again by content, decks
+       included: a reset that runs the same setup adds nothing.
 4. **Game boxes.**
    - `game.json` plus `.zip` upload, declarative setup and reset.
    - Export with the current position.

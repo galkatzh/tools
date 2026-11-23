@@ -122,6 +122,25 @@ Playing on the free table:
   their margin holds; the table's notice ("The host left — …") stays the
   same size on the screen, whatever the zoom, on a plate that fits
   between the seat labels beside it.
+- **Snapping.** A piece dropped on a board's squares, points, hexes or
+  spaces snaps to the one in reach and sits centred on it: draughts men on
+  their squares, a checker on its backgammon point, a stone on a go
+  point. While you drag one over a board, a dashed outline shows where it
+  will land, and a chip by your finger names the spot — **e4** (chess
+  squares), **D4** (go points), **3,4** (other grids), **2,-1** (hexes),
+  **p6** (a space). Spots on a game's main board read bare; on another,
+  with its name first (*map:c3*, or *tray#2:bar* for the second tray). The
+  log says where pieces went ("Alice moved Light man c3 → d4"). Moving a
+  board moves nothing else: the pieces stay where they are, and know their
+  new spots. Cards, piles, supplies and bags never snap.
+- **Pieces sharing a spot fan out** so each shows: a backgammon point's
+  checkers line up from its base toward its tip, squeezed together when
+  many (15 on one point still fit inside it); elsewhere they step up a
+  little. The top one carries an amber **×k** (how many are there); a tap
+  or a drag on the crowd takes the top piece.
+- **Live drags.** While someone drags a piece, everyone sees it glide; the
+  table itself only changes when they let go (the drop is the one move, so
+  a rules script judges only the drop).
 - **Hidden pieces** show only their back, to everyone: nobody's screen, not
   even its traffic, learns what a face-down tile or a bag holds. A box's
   pieces and its `meta` data are public, though — anyone at the table can
@@ -357,7 +376,15 @@ shuffle, flip, piles, hands, …), persistent scratch state (`t.data`),
 broadcast UI state (`t.public`, e.g. the ⏳ turn marker), scripted buttons,
 timers, and player messaging. `validate` can veto any gameplay action with a
 reason (the actor gets a toast; the block goes in the log); everything a
-script does is logged as the "📜 Rules" actor.
+script does is logged as the "📜 Rules" actor. A script can also build its
+game from code — `t.newBox` (piece types, boards with grids and spaces,
+text decks), `t.spawn` (a piece onto `'e4'`), `t.newBag`, `t.setFace`, … —
+and read the board: `t.where(id)`, `t.at('e4')`, `t.neighbors`,
+`t.distance`, `t.line`, `t.linked` (ENGINE.md, "Addresses and the spatial
+helpers"). Every action tells it where a piece goes (`a.to`, `a.from`: "e4"),
+and a run of its own placements or removals is logged as one line
+("📜 Rules removed 12 pieces: D4, E4, …"). Live drags never reach a script:
+only the drop does.
 
 Scripts run **on the host only** — guests receive data, never code — and
 everyone can read the exact script being enforced (read-only view in the
@@ -436,14 +463,16 @@ Game pieces have their own commands (both REPLs; `help` lists them):
 | `take <supply> [x y] [--hand]` | takes a piece from a supply (an id or its type's name) |
 | `pull <bag> [x y] [--hand]` | draws a random piece from a bag (an id or its name) |
 | `split <id> [n] [x y]` | takes `n` (default 1) off a ×N stack |
+| `place <ref> <addr>` | puts a piece on a board's spot (`e4`, `bar`, `map:c3`), centred; a supply (an id or its type's name) hands out a piece there. An address no board has, or one several boards could mean, is said and nothing is sent |
 | `bag <id> <bag>` | puts a piece into a bag |
 | `lock <id>` / `unlock <id>` | locks an item in place, or frees it |
 | `claim <id>` / `release <id>` | makes an item yours, or nobody's |
 | `seat <id>` / `seat -` / `seat +` | sits in a named seat; stands up to watch; sits down again |
 
 `table` lists pieces too, one per line in the same `  [id] … @x,y` frame,
-the owner and 🔒 after it when present: `[ab12cd34] ♛ Light man (token)
-×3 @412,620 owner:Alice 🔒`, `[cd34ef56] hidden piece ×2 @80,90`,
+a piece's spot (`at:e4`), the owner and 🔒 after it when present:
+`[ab12cd34] ♛ Light man (token) ×3 @412,620 owner:Alice 🔒`, `[3c4d5e6f]
+Light man (token) @610,610 at:d4`, `[cd34ef56] hidden piece ×2 @80,90`,
 `[ef56ab12] supply Gold (token) ∞ @200,200`, `[0a1b2c3d] bag "Tiles" ×42
 @300,300`, `[1a2b3c4d] pile "stack" ×5 top: hidden piece @500,500`,
 `[2b3c4d5e] board Chessboard (board) @0,0 🔒` (a piece or a supply whose
@@ -453,11 +482,11 @@ as `[light]`, and a watcher as `(watching)`.
 Scripting: `require('./cli.js')` / `from cli import Bridge` exposes the
 bridge as a small API — the same in both languages: `state`, `send`,
 `wait`, `on`, plus `chat`, `play`, `draw`, `btn`, `roll(*ids)`,
-`take(supply, x, y, hand)` and `seat(id)` (`'-'` stands up, `'+'` sits
-down again). The state also carries the table (`shape`, `w`, `h`), the
+`take(supply, x, y, hand)`, `place(ref, addr)` and `seat(id)` (`'-'`
+stands up, `'+'` sits down again). The state also carries the table (`shape`, `w`, `h`), the
 named `seats` (each with its `player`, or null), `me` (your `seat` angle
 and `seatId`), and the pieces (`kind`, `type`, `typeRef`, `face`, `label`,
-…; a hidden one only `kind: "hidden"`). `play()` names the card
+`at` when on a board's spot, …; a hidden one only `kind: "hidden"`). `play()` names the card
 by its `key` (each hand card has one), so the tab's own state lag can't
 change which card goes. Pass it the card itself — `play(s.hand[i])` from
 a state you hold — when you play several: a bare index is resolved

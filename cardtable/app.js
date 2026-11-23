@@ -22,8 +22,9 @@ import {
   CARD_W, CARD_H, RANKS, RULES, playR, clampToTable, seatAt, seatAngles, sizeOf, flagsOf, typeAt, PID_RE, ASSET_RE, rand, clamp, own, num, peerText,
   cleanDeck, cleanDeckV1, cleanBox, isBuiltin, deckOverBudget, assetRefs, cleanName, standardDeck, cardName, pieceName, faceLabel, createTable,
   MODULE_V as CORE_V, PROTO, PUBLIC_ACTIONS, HOST_ACTIONS, MAX_ROLL, MAX_N, MAX_BAG, MAX_HAND, MAX_PILE, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch, roundTable, FELT,
+  tableBoards, snapAt, displayAddr, resolveAddr, liveFx,
 } from './core.js?v=1';
-import { MODULE_V as GRID_V } from './grid.js?v=1';
+import { MODULE_V as GRID_V, turn } from './grid.js?v=1';
 import * as pieces from './pieces.js?v=1';
 import { RULES_TEMPLATES, GAMES, BOXES, MODULE_V as TEMPLATES_V } from './templates.js?v=1';
 import * as store from './store.js?v=1';
@@ -332,6 +333,7 @@ function commit(changed, actor) {
 const pendingActs = [];
 function act(a) {
   if (role === 'host') {
+    if (a.t === 'drag') { relay(pid, a); return Promise.resolve({ ok: true }); }
     const done = submit(pid, a);
     flush(); // the host's own move shows at once, not on the next tick
     return done;
@@ -339,7 +341,7 @@ function act(a) {
   if (!room) { console.warn('action before the room is up', a); return Promise.resolve({ ok: false, error: 'not connected yet' }); }
   const target = hostPeer && room.getPeers()[hostPeer] ? hostPeer : null;
   if (!target) {
-    if (a.t !== 'hello' && a.t !== 'snap' && a.t !== 'need') { // (an image request times out and asks again)
+    if (a.t !== 'hello' && a.t !== 'snap' && a.t !== 'need' && a.t !== 'drag') { // (an image request times out and asks again; a live drag is gone with its moment)
       pendingActs.push({ a, at: Date.now() });
       if (pendingActs.length > 30) pendingActs.shift();
       note('Reconnecting to the host — your move will be sent when it\'s back');
@@ -352,6 +354,12 @@ function act(a) {
     note('Failed to reach the host');
     return { ok: false, error: err.message };
   });
+}
+/** Host: player p's live drag (spec §3c): no state, no queue, no hook —
+ *  what core relays (T.drag: only what p may move, on the table) goes out
+ *  with the next broadcast tick, unless a commit in that tick overtakes it. */
+function relay(p, a) {
+  if (T.drag(p, a)) { drain(p); scheduleBroadcast(); }
 }
 /** The anonymous knock: asks whoever hosts this room for a (signed, public) snapshot. */
 const knock = () => sendAct({ t: 'hello', _v: PROTO }).catch((err) => console.error('hello failed', err));
@@ -462,8 +470,8 @@ function broadcast() {
     rulesCodeDirty = false;
     if (room) sendRules({ code: host.rules?.code || '', name: host.rules?.name || '' });
   }
-  const d = T.takeDirty(), content = T.patchContent(d);
-  if (fxQueue.length) content.fx = fxQueue;
+  const d = T.takeDirty(), content = T.patchContent(d), fx = liveFx(fxQueue, d); // (a live drag this tick's commit overtook stays home)
+  if (fx.length) content.fx = fx;
   if (annQueue.length) content.ann = annQueue;
   fxQueue = [];
   annQueue = [];
@@ -679,6 +687,7 @@ function receive(d, peer) {
   // later (the same items) redraws nothing.
   if (d.kind === 'snap' && perf.drawn > drawn0) { void tableEl.offsetHeight; perf.lastSnapRenderMs = performance.now() - t0; }
   for (const f of Array.isArray(d.fx) ? d.fx : []) {
+    if (f?.live) { if (f.p !== pid) showLive(f); continue; } // (our own drag is already under our finger)
     if (Array.isArray(f?.roll)) for (const id of f.roll) { const el = itemEls.get(id); if (el) pieces.tumble(el); } // every screen, the roller's too
     if (f?.p !== pid) showFx(f); // own actions stay silent
   }
@@ -1095,7 +1104,8 @@ function connect() {
     // to it (introduce): one that answers it may be lost, so it asks for one too.
     if (action.t === 'snap' || action.t === 'hello') wantSnap(peer);
     if (action.t === 'need') serveImages(peer, action.a);
-    submit(p, action);
+    if (action.t === 'drag') relay(p, action);
+    else submit(p, action);
   };
 
   room.onPeerJoin = () => {
@@ -1550,6 +1560,109 @@ function redrawLanded() {
   arrived(itemsByAsset, hs, (z) => hs.includes('t' in z ? pieces.imageOf({ k: 'g', ...z }, boxes) : sideImage(z.d, z.i, true)));
 }
 
+// --- spots: pieces sharing an address are fanned (spec §3g) --------------------
+// The state keeps every piece on a spot centred on it; drawn, they fan out
+// (pieces.js fanOffsets): along a space's `dir`, or a few units apart. Each
+// piece's element is placed at its fanned spot, where it is hit-tested too;
+// the top one carries a "×k" badge (.fanb).
+const fanAt = new Map();  // display address → the ids of the pieces there
+const atOf = new Map();   // piece id → its display address
+const fanPos = new Map(); // piece id → where it is drawn (top-left), when fanned off its own
+const fanDirty = new Set(); // addresses whose fan is laid out again (layoutFans)
+let viewTB = null;        // the view's boards (core.js tableBoards), until one changes
+/** The view's structured boards (tableBoards over the public items). */
+const boardsNow = () => (viewTB ||= tableBoards(Object.entries(view.items), boxes));
+/** Item `id` (public `it`, or undefined: gone) is drawn now: its spot's
+ *  members change, and its old and new spots are laid out again. */
+function fanTrack(id, it) {
+  const at = it?.k === 'g' ? it.at : undefined, was = atOf.get(id);
+  if (was !== undefined) fanDirty.add(was);
+  if (at === was) return;
+  if (was !== undefined) { fanAt.get(was).delete(id); if (!fanAt.get(was).size) fanAt.delete(was); }
+  if (at === undefined) atOf.delete(id);
+  else { atOf.set(id, at); (fanAt.get(at) || fanAt.set(at, new Set()).get(at)).add(id); fanDirty.add(at); }
+  fanPos.delete(id);
+}
+/** The members of spot `at` on the table, bottom to top (by z). */
+const spotMembers = (at) => [...(fanAt.get(at) || [])].filter((id) => view.items[id]).sort((a, b) => view.items[a].z - view.items[b].z);
+/** Spot `at` as the boards show it: {b (its board), sp (its space, if one)}, or null. */
+function spotOn(at) {
+  const r = resolveAddr(boardsNow(), at);
+  return r?.b ? { b: r.b, sp: r.b.B.spaces?.find((x) => x.id === r.local) } : null;
+}
+/** The offset (table units) of place j of k pieces of size w × h on spot `at` (fanOffsets, turned with the board). */
+function fanOffset(at, j, sizes) {
+  const S = spotOn(at);
+  if (!S || (sizes.length < 2 && !S.sp?.dir)) return [0, 0];
+  const o = pieces.fanOffsets(S.sp, sizes)[j];
+  return turn(o.x, o.y, S.b.rot);
+}
+/** Lays out the fans of the spots that changed (fanDirty): where each member is drawn, and the top one's "×k". */
+function layoutFans() {
+  if (!viewTB) for (const at of fanAt.keys()) fanDirty.add(at);
+  for (const at of fanDirty) {
+    const ids = spotMembers(at), sizes = ids.map((id) => sizeOf(view.items[id], boxes));
+    ids.forEach((id, j) => {
+      const it = view.items[id], [ox, oy] = fanOffset(at, j, sizes);
+      if (ox || oy) fanPos.set(id, { x: it.x + ox, y: it.y + oy });
+      else fanPos.delete(id);
+      fanBadge(id, j === ids.length - 1 && ids.length > 1 ? ids.length : 0);
+      placeEl(id);
+    });
+  }
+  fanDirty.clear();
+}
+/** Gives item `id` the fan badge "×k" (k > 1), distinct from a stack's ×N, or takes it away (0). */
+function fanBadge(id, k) {
+  const el = itemEls.get(id);
+  let b = el?.querySelector(':scope > .fanb');
+  if (!k) { b?.remove(); return; }
+  if (!b) { b = document.createElement('span'); b.className = 'fanb'; el.appendChild(b); }
+  b.textContent = `×${k}`;
+}
+/** The piece a press on item `id` means: on a crowded spot, its top one (spec §3g). */
+function topOf(id) {
+  const ids = atOf.has(id) ? spotMembers(atOf.get(id)) : [];
+  return ids.length > 1 ? ids.at(-1) : id;
+}
+/** Puts item `id`'s element where it is drawn — its fanned place, or its
+ *  own — and, while someone else drags it, on its live spot by a
+ *  translation (a per-frame move never lays the table out). Our own drag
+ *  and drop (`landing`) keep it where the finger left it. */
+function placeEl(id) {
+  const el = itemEls.get(id), it = view.items[id];
+  if (!el || !it || drag?.id === id || landing?.id === id) return;
+  const p = fanPos.get(id) || it, L = lives.get(id);
+  el.style.left = `${p.x}px`;
+  el.style.top = `${p.y}px`;
+  el.style.translate = L ? `${L.x - p.x}px ${L.y - p.y}px` : '';
+  el.classList.toggle('live', !!L); // (its spot's ×k stays home: style.css)
+}
+
+// --- live drags (spec §3c, §3g): someone else's piece on its way -------------
+// A drag sends `drag` every LIVE_MS; the host relays it as an fx {live: 1}
+// (no state). Here it shows where it is (placeEl), until a committed update
+// of that item (renderItems) or LIVE_HOLD_MS without news: it glides home.
+const LIVE_MS = 60, LIVE_HOLD_MS = 1500;
+const lives = new Map(); // item id → {x, y, at}: its live top-left, and when it came
+let liveT = 0;
+/** Shows live drag `f` ({p, id, x, y} or {p, ids, dx, dy}) and its dragger's name. */
+function showLive(f) {
+  const now = performance.now();
+  if (typeof f.id === 'string' && view.items[f.id]) lives.set(f.id, { x: num(f.x), y: num(f.y), at: now });
+  for (const id of Array.isArray(f.ids) ? f.ids : []) {
+    const it = typeof id === 'string' && view.items[id];
+    if (it) lives.set(id, { ...clampToTable(TABLE, it.x + num(f.dx), it.y + num(f.dy), sizeOf(it, boxes).w, sizeOf(it, boxes).h), at: now });
+  }
+  for (const id of f.id ? [f.id] : f.ids || []) placeEl(id);
+  if (f.id) showFx(f);
+  liveT ||= setInterval(() => { // the holds that ran out
+    const t = performance.now();
+    for (const [id, L] of lives) if (t - L.at > LIVE_HOLD_MS) { lives.delete(id); placeEl(id); }
+    if (!lives.size) { clearInterval(liveT); liveT = 0; }
+  }, 250);
+}
+
 /** Draws the items: those in `prev` (a Map of id → the public item it
  *  replaced, undefined for a new one; ids gone from view.items are removed),
  *  or with prev null, all of them (after a snapshot). `prevPlayers` (pid →
@@ -1562,6 +1675,8 @@ function renderItems(prev, prevPlayers = new Map()) {
   const move = prev && !calm.matches && motionSources(prev, prevPlayers);
   for (const id of ids) {
     const it = view.items[id], before = prev?.get(id), piece = it && pieceLike(it), side = it && !piece && (it.k === 'c' ? it : it.top);
+    if ((it && isBoard(it)) || (before && isBoard(before)) || !prev) viewTB = null; // (the boards changed: every fan is laid out again)
+    fanTrack(id, it);
     const img = piece ? pieces.imageOf(it, boxes) : side && sideImage(side.d, side.i, side.up);
     let el = itemEls.get(id);
     itemsByDeck.set(id, side?.d);
@@ -1569,6 +1684,7 @@ function renderItems(prev, prevPlayers = new Map()) {
     itemsByAsset.set(id, img);
     if (!it) {
       if (el) { el.remove(); itemEls.delete(id); }
+      lives.delete(id);
       continue;
     }
     if (!el) {
@@ -1610,7 +1726,8 @@ function renderItems(prev, prevPlayers = new Map()) {
     // Anything else (a script moved it on) is shown once the hold times out.
     const at = (x, y) => Math.abs(it.x - x) < 0.5 && Math.abs(it.y - y) < 0.5;
     if (landing?.id === id && (at(landing.x, landing.y) || at(landing.ox, landing.oy))) landing = null;
-    if (drag?.id !== id && landing?.id !== id) { el.style.left = `${it.x}px`; el.style.top = `${it.y}px`; }
+    lives.delete(id); // (a committed update: no glide outlives it)
+    placeEl(id);
     el.style.transform = `rotate(${it.rot}deg)`;
     // its badges, and a board's printed text, turn back against it (style.css, D91)
     if (it.rot) el.style.setProperty('--rot', `${num(it.rot)}deg`);
@@ -1618,6 +1735,7 @@ function renderItems(prev, prevPlayers = new Map()) {
     el.style.zIndex = it.z;
     el.classList.toggle('selected', sel === id);
   }
+  layoutFans();
   // Cards a pile lost without landing on the table went into hands: fly them there.
   if (move) {
     for (const [p, o] of prevPlayers) {
@@ -2072,16 +2190,16 @@ function rotv(x, y, a) {
 // would restyle all 3,700 elements of the 1,000-piece bench table (9 ms a
 // turn on a desktop, 16 ms on the B4 phone, with a labelled board of 51
 // texts); a rule restyles what it matches alone.
-//   0  --bz, the badges' growth (style.css). Badges (×N, ∞, a pile's count
-//      and name, an owner's dot, 🔒) and selection rings are drawn in table
-//      units, so on a table drawn small (a phone's fit) they'd be a few
-//      pixels: they grow back toward a readable size, by at most BADGE_MAX×;
-//      a board's coordinates too, by at most what fits their margin (its
-//      --lmax, pieces.js gridSVG).
+//   0  --bz, the badges' growth (style.css). Badges (×N, a spot's ×k, ∞, a
+//      pile's count and name, an owner's dot, 🔒), selection rings and the
+//      snap preview's outline are drawn in table units, so on a table drawn
+//      small (a phone's fit) they'd be a few pixels: they grow back toward a
+//      readable size, by at most BADGE_MAX×; a board's coordinates too, by
+//      at most what fits their margin (its --lmax, pieces.js gridSVG).
 //   1  --view for a board's printed text (D91), which turns back against
 //      the view: every frame of a turn (a board holds a few dozen texts).
-//   2  --view for the badges with a number or a name, 🔒 and a bag, which
-//      turn back too (D91).
+//   2  --view for the badges with a number or a name (a spot's ×k too), 🔒
+//      and a bag, which turn back too (D91).
 // On a 1,000-stack table the badges are a thousand: a restyle of them all
 // (rule 0 or 2) in a frame that also moves the table is a long task on the
 // B4 phone, 50 to 670 ms (D96). So while two fingers move the view (a
@@ -2101,8 +2219,8 @@ function rotv(x, y, a) {
 // more task of 50–90 ms). D102 has the measures; B4's rested pinch, the
 // budget.
 const viewSheet = new CSSStyleSheet(), BADGE_MAX = 3, BZ_STEP = 1.25, PINCH_REST_MS = 300;
-viewSheet.replaceSync('#table .item > .count, #table .item > .odot, #table .item > .lockb, #table .pile > .pname, #table .item.selected, #table .blabels text {} '
-  + '#table .psvg text {} #table .item > .count, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb {}');
+viewSheet.replaceSync('#table .item > .count, #table .item > .fanb, #table .item > .odot, #table .item > .lockb, #table .pile > .pname, #table .item.selected, #table .blabels text, #table .snap-ghost {} '
+  + '#table .psvg text {} #table .item > .count, #table .item > .fanb, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb {}');
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, viewSheet];
 let badgeZ = '', textAngle = 0, badgeAngle = 0, feltW = 0;
 
@@ -2266,7 +2384,7 @@ function barFor(id, it) {
 function placeBar() {
   const it = view.items[sel];
   if (!it) return;
-  const { w, h } = sizeOf(it, boxes), [sx, sy] = tableToScreen(it.x + w / 2, it.y + h / 2);
+  const { w, h } = sizeOf(it, boxes), at = fanPos.get(sel) || it, [sx, sy] = tableToScreen(at.x + w / 2, at.y + h / 2); // (where it is drawn: fanned on a crowded spot)
   const half = Math.max(w, h) * 0.6 * scale; // covers rotated items too
   // The bar's real size: it wraps into rows on a narrow screen.
   const hw = barEl.offsetWidth / 2, bh = barEl.offsetHeight;
@@ -2296,8 +2414,8 @@ const bulbs = new Map(); // "pid|itemId" -> {el, timer, f}
  *  moves it lays nothing out (no layout, and so no hover hit test of the
  *  table under a resting mouse: on 1,000 cards that cost a frame, B4). */
 function placeFx(b) {
-  const it = b.f.id && view.items[b.f.id], { w, h } = it ? sizeOf(it, boxes) : { w: CARD_W, h: CARD_H };
-  const [sx, sy] = tableToScreen((it ? it.x : b.f.x) + w / 2, (it ? it.y : b.f.y) + h / 2);
+  const it = b.f.id && view.items[b.f.id], { w, h } = it ? sizeOf(it, boxes) : { w: CARD_W, h: CARD_H }, at = lives.get(b.f.id) || fanPos.get(b.f.id) || it || b.f;
+  const [sx, sy] = tableToScreen(at.x + w / 2, at.y + h / 2);
   b.el.style.translate = `${clamp(sx, 30, wrapW - 30)}px ${Math.max(20, sy - h * 0.55 * scale)}px`;
 }
 function showFx(f) {
@@ -2475,8 +2593,46 @@ const dropEl = (d) => (d.ghost ? d.el.remove() : d.el.classList.remove('dragging
 function cancelItemDrag() {
   if (!drag) return;
   dropEl(drag);
+  hideSnap();
   if (drag.moved && drag.mode === 'move' && view.items[drag.id]) act({ t: 'move', id: drag.id, x: drag.x, y: drag.y });
   drag = null;
+}
+
+// The snap preview (spec §3g): while a piece is dragged over a structured
+// board, an outline (.snap-ghost, in #table: table units) shows the spot it
+// would land on — where it will be drawn, fanned in with the pieces there
+// — and a chip by the finger (.snap-chip, screen space) names its address.
+// Computed here from the public view by core's own snapping (snapAt), so the
+// drop sends the spot the host snaps to. Both move by translation.
+const ghostEl = Object.assign(document.createElement('div'), { className: 'snap-ghost hidden' });
+const chipEl = Object.assign(document.createElement('div'), { className: 'snap-chip hidden' });
+tableEl.appendChild(ghostEl);
+wrapEl.appendChild(chipEl);
+/** What drag `d` (of public item `it`, in mode `mode`) puts down that
+ *  snaps: the piece moved, or the one a supply or a stack hands out —
+ *  {w, h, shape, rot} — or null (cards, piles, bags and boards never snap). */
+function snapsAs(it, mode) {
+  if (mode === 'move' ? it.k !== 'g' || isBoard(it) : it.k !== 's' && it.k !== 'g') return null;
+  return { ...flagsOf(it, boxes), rot: mode === 'take' ? 0 : num(it.rot) };
+}
+/** Shows where the dragged piece would land (drag.spot: {x, y, to}), or nothing. */
+function previewSnap() {
+  const P = drag.snap, T = P && boardsNow(), s = P && snapAt(T, drag.x + P.w / 2, drag.y + P.h / 2);
+  drag.spot = s ? { x: s.x - P.w / 2, y: s.y - P.h / 2, to: displayAddr(T, s.at) } : null;
+  ghostEl.classList.toggle('hidden', !s);
+  chipEl.classList.toggle('hidden', !s);
+  if (!s) return;
+  const others = spotMembers(drag.spot.to).filter((id) => id !== drag.id), [ox, oy] = fanOffset(drag.spot.to, others.length, [...others.map((id) => sizeOf(view.items[id], boxes)), P]);
+  Object.assign(ghostEl.style, { width: `${P.w}px`, height: `${P.h}px`, translate: `${drag.spot.x + ox}px ${drag.spot.y + oy}px`, rotate: `${P.rot}deg` });
+  ghostEl.classList.toggle('round', P.shape === 'round' || P.shape === 'disc');
+  const [px, py] = tableToScreen(drag.x + drag.dx, drag.y + drag.dy); // (the finger: no layout read)
+  chipEl.textContent = drag.spot.to;
+  chipEl.style.translate = `${Math.round(clamp(px + 18, 4, wrapW - 64))}px ${Math.round(Math.max(4, py - 46))}px`;
+}
+/** Takes the snap preview away. */
+function hideSnap() {
+  ghostEl.classList.add('hidden');
+  chipEl.classList.add('hidden');
 }
 
 /** What a drag that starts on public item `it` does (spec §2g): 'take' a
@@ -2512,13 +2668,14 @@ const bagTakes = (bag, it, n) => bag.k === 'b' && (bag.n || 0) + n <= MAX_BAG &&
  *  spot — and never one the host would refuse (an owner, a lock, a cap: a
  *  full bag, pile or hand takes nothing, the piece just lands there). One
  *  piece taken off a ×N stack goes onto what it lands on in one `split`
- *  {onto}: a matching stack, its supply, a bag. */
+ *  {onto}: a matching stack, its supply, a bag. A piece landing on a board
+ *  lands on the snap preview's spot (d.x, d.y), its address an advisory `to`. */
 function dropAction(d, it, tgtId, tgt, onHand) {
-  const { id, x, y, mode } = d, held = onHand && flagsOf(it, boxes).hand && handRoom(), may = !!tgt && mayTouch(tgt);
-  if (mode === 'take') return held ? { t: 'take', id, hand: true } : { t: 'take', id, x, y };
+  const { id, x, y, mode } = d, held = onHand && flagsOf(it, boxes).hand && handRoom(), may = !!tgt && mayTouch(tgt), to = d.spot && { to: d.spot.to };
+  if (mode === 'take') return held ? { t: 'take', id, hand: true } : { t: 'take', id, x, y, ...to };
   if (mode === 'split') {
     if (held) return { t: 'toHand', id };
-    return may && (counts(it, tgt, 1) || returns(it, tgt) || bagTakes(tgt, it, 1)) ? { t: 'split', id, n: 1, onto: tgtId } : { t: 'split', id, n: 1, x, y };
+    return may && (counts(it, tgt, 1) || returns(it, tgt) || bagTakes(tgt, it, 1)) ? { t: 'split', id, n: 1, onto: tgtId } : { t: 'split', id, n: 1, x, y, ...to };
   }
   if (held && (it.k === 'c' || it.k === 'g')) return { t: 'toHand', id };
   if (may && it.k === 'g') {
@@ -2529,7 +2686,7 @@ function dropAction(d, it, tgtId, tgt, onHand) {
     return tgt.k === 'p' ? { t: 'toPile', id, pile: tgtId } : { t: 'stack', id, onto: tgtId };
   }
   if (may && it.k === 'p' && tgt.k === 'p' && fits(it, tgt) && it.n + tgt.n <= MAX_PILE) return { t: 'merge', id, pile: tgtId };
-  return { t: 'move', id, x, y };
+  return { t: 'move', id, x, y, ...to };
 }
 
 /** The face a long press shows enlarged on public item `it`: a face-up card
@@ -2591,7 +2748,7 @@ tableEl.addEventListener('pointerdown', (e) => {
   tPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (tPtrs.size === 2) { e.preventDefault(); startPinch(); return; }
   if (tPtrs.size > 2 || pinch) return;
-  const el = e.target.closest('.item'), id = el?.dataset.id, it = id && view.items[id];
+  const hit = e.target.closest('.item')?.dataset.id, id = hit && topOf(hit), el = id && itemEls.get(id), it = id && view.items[id];
   const mode = it && dragMode(id, it, e);
   if (mode) e.preventDefault();
   const p = mode && toTable(e);
@@ -2602,8 +2759,13 @@ tableEl.addEventListener('pointerdown', (e) => {
   // (a guest would drop at a stale spot), and the host must not touch state
   // outside apply() (a vetoed drop has to snap back). A take or a split
   // drags a copy of one piece (made once the drag starts: a tap leaves nothing behind).
-  const g = mode ? (drag = { id, el, mode, ghost: false, dx: p.x - it.x, dy: p.y - it.y, sx: p.x, sy: p.y, x: it.x, y: it.y, ox: it.x, oy: it.y, moved: false, last: 0 })
-    : (feltDrag = { sx: e.clientX, sy: e.clientY, px: panX, py: panY, moved: false, tap: it ? id : null });
+  // An item drag starts where the item is drawn (fanned on a crowded spot:
+  // a press anywhere on the crowd takes its top piece, into the finger).
+  let g;
+  if (mode) {
+    const d0 = fanPos.get(id) || it, { w, h } = sizeOf(it, boxes), [dx, dy] = hit === id ? [p.x - d0.x, p.y - d0.y] : [w / 2, h / 2];
+    g = drag = { id, el, mode, ghost: false, dx, dy, sx: p.x, sy: p.y, x: d0.x, y: d0.y, ox: it.x, oy: it.y, moved: false, last: 0 };
+  } else g = feltDrag = { sx: e.clientX, sy: e.clientY, px: panX, py: panY, moved: false, tap: it ? id : null };
   // Touch long-press (≈450 ms without moving) zooms a face-up card, a pile's
   // top or a piece's face until the finger lifts (UX-I5); a drag, a pinch or
   // an early lift cancels it. Release-to-close also swallows the tap the
@@ -2656,6 +2818,7 @@ window.addEventListener('pointermove', (e) => {
       Object.assign(drag, { el: copy, ghost: true });
     }
     if (drag.mode === 'move' || moveAll?.id === drag.id) moveAll = null; // (an armed Move all is spent)
+    drag.snap = snapsAs(view.items[drag.id], drag.mode);
     drag.el.classList.add('dragging');
     drag.el.style.zIndex = 100000; // visually on top; the host assigns the real z on move
     select(null);
@@ -2664,11 +2827,12 @@ window.addEventListener('pointermove', (e) => {
   ({ x: drag.x, y: drag.y } = clampToTable(TABLE, p.x - drag.dx, p.y - drag.dy, w, h));
   drag.el.style.left = `${drag.x}px`;
   drag.el.style.top = `${drag.y}px`;
-  // Throttled live position for the other players; the final one is sent on drop.
-  if (role === 'guest' && drag.mode === 'move' && e.timeStamp - drag.last > 60) {
+  // The live position for the other players (a `drag`: no state); the drop is the one move.
+  if (drag.mode === 'move' && e.timeStamp - drag.last > LIVE_MS) {
     drag.last = e.timeStamp;
-    act({ t: 'move', id: drag.id, x: drag.x, y: drag.y });
+    act({ t: 'drag', id: drag.id, x: drag.x, y: drag.y });
   }
+  previewSnap();
 });
 
 /** Closes a long-press zoom (the finger lifted); true if there was one. */
@@ -2726,8 +2890,11 @@ window.addEventListener('pointerup', (e) => {
   // back (.dragging lets it through), so elementFromPoint sees underneath it.
   const under = document.elementFromPoint(e.clientX, e.clientY), tgtId = under?.closest('.item')?.dataset.id;
   dropEl(d);
+  hideSnap();
   if (tgtId === d.id) return; // a piece taken out of its stack or supply and put back on it: nothing happened
+  if (d.spot) [d.x, d.y] = [d.spot.x, d.spot.y]; // (onto the snap preview's spot: the host snaps there too)
   const a = dropAction(d, it, tgtId, tgtId && view.items[tgtId], !!under?.closest('#hand-bar'));
+  if (a.t === 'move' && d.spot) { d.el.style.left = `${d.x}px`; d.el.style.top = `${d.y}px`; }
   if (a.t === 'move') {
     // The hold heals itself: with no confirming state (a script moved the
     // card elsewhere, a veto left it mid-drag, coalescing merged the state
@@ -2754,7 +2921,7 @@ function dblAction(id, it) {
   }
 }
 tableEl.addEventListener('dblclick', (e) => {
-  const id = e.target.closest('.item')?.dataset.id, a = id && view.items[id] && dblAction(id, view.items[id]);
+  const id0 = e.target.closest('.item')?.dataset.id, id = id0 && topOf(id0), a = id && view.items[id] && dblAction(id, view.items[id]);
   if (a) act(a);
 });
 
@@ -3241,7 +3408,7 @@ function cliFace(t, f) {
 }
 /** A public item as the terminal sees it (spec §2i). */
 function cliItemInfo(id, it) {
-  const at = { x: it.x | 0, y: it.y | 0 }, mine = { ...(it.owner && { owner: cliOwner(it.owner) }), ...(it.lock && { locked: true }) };
+  const at = { x: it.x | 0, y: it.y | 0, ...(it.at && { at: it.at }) }, mine = { ...(it.owner && { owner: cliOwner(it.owner) }), ...(it.lock && { locked: true }) };
   if (it.k === 'c') return { id, kind: 'card', ...at, up: !!it.up, ...(it.up ? cliCardInfo(it.d, it.i) : {}), ...mine };
   if (it.k === 'p') {
     const t = it.top, { type = '?', label } = t && !('d' in t) && t.up ? cliFace(t.t, t.f) : {};
@@ -3375,6 +3542,15 @@ function cliExec(c) {
       case 'lock': act({ t: 'lock', id: cliItem(c.id), on: c.on !== false }); break;
       case 'owner': act({ t: 'owner', id: cliItem(c.id), to: c.to ?? null }); break;
       case 'seat': act(c.watch ? { t: 'seat', watch: true } : c.sit ? { t: 'seat', sit: true } : { t: 'seat', id: String(c.id) }); break;
+      case 'place': { // onto a board's spot (spec §3i): an item moves there, centred; a supply (id or type name) hands one out there
+        const B = boardsNow(), r = resolveAddr(B, String(c.at ?? ''));
+        if (r?.ambiguous) throw new Error(`🚫 Which board? Say '${r.ambiguous[0]}'`);
+        if (!r) throw new Error(`no such address: ${c.at}`);
+        const it = c.id != null && view.items[c.id], id = it && it.k !== 's' ? String(c.id) : cliItem(c.id, 's');
+        const { w, h } = sizeOf(view.items[id], boxes), to = displayAddr(B, r.at);
+        act({ t: view.items[id].k === 's' ? 'take' : 'move', id, x: r.x - w / 2, y: r.y - h / 2, to });
+        break;
+      }
       default: throw new Error(`unknown command: ${c.t}`);
     }
   } catch (err) {
@@ -3525,5 +3701,28 @@ async function boot() {
 // The test hook (the harness sets window.CARDTABLE_TEST before load): the same
 // act() a click uses, the view, this player's hand and log, the game boxes it
 // holds (cleanBox'd; the host's are its table's), and the counters.
-if (window.CARDTABLE_TEST) window.__ct = { act, view: () => view, hand: () => view.hand, log: () => view.log, boxes: () => boxes, perf };
+// Phase 3: `resolve(addr)` reads an address off this view's boards (core's
+// resolveAddr: {at, local, x, y} of its centre, {ambiguous}, or null),
+// `drawn(id)` where an item is drawn ({x, y, tx, ty}: its element's left/top
+// and translate — fanned on a crowded spot, gliding in a live drag),
+// `lives()` the live drags it shows ({id: {x, y}}), `spot()` the snap
+// preview's spot ({x, y, to} or null), `snap(id, x, y)` where a move of
+// item `id` to top-left (x, y) lands as this view sees it ({x, y, at}: on
+// the board's spot it snaps to, else where it is clamped, at null).
+if (window.CARDTABLE_TEST) {
+  window.__ct = {
+    act, view: () => view, hand: () => view.hand, log: () => view.log, boxes: () => boxes, perf,
+    resolve: (a) => { const r = resolveAddr(boardsNow(), a); return r && (r.ambiguous ? { ambiguous: r.ambiguous } : { at: displayAddr(boardsNow(), r.at), local: r.local, x: r.x, y: r.y }); },
+    drawn(id) {
+      const el = itemEls.get(id), [tx = 0, ty = 0] = (el?.style.translate || '').split(' ').map(parseFloat);
+      return el && { x: parseFloat(el.style.left), y: parseFloat(el.style.top), tx: tx || 0, ty: ty || 0 };
+    },
+    lives: () => Object.fromEntries([...lives].map(([id, L]) => [id, { x: L.x, y: L.y }])),
+    spot: () => drag?.spot ?? null,
+    snap(id, x, y) {
+      const it = view.items[id], { w, h } = sizeOf(it, boxes), p = clampToTable(TABLE, x, y, w, h), B = boardsNow(), s = snapsAs(it, 'move') && snapAt(B, p.x + w / 2, p.y + h / 2);
+      return s ? { x: s.x - w / 2, y: s.y - h / 2, at: displayAddr(B, s.at) } : { ...p, at: null };
+    },
+  };
+}
 boot().catch((err) => { console.error('boot failed', err); toast(`Failed to start: ${err.message}`); });

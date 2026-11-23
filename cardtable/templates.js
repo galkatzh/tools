@@ -1161,7 +1161,11 @@ function draughts() {
 
 /** Backgammon: 24 points (light's numbering: light's home board is the
  *  bottom right, point 1 next to the trays), the bar, two trays, 15 checkers
- *  a side in the standard start, two dice side by side and the doubling cube. */
+ *  a side in the standard start, two dice side by side and the doubling cube.
+ *  Checkers snap to a point (or the bar, or a tray) and fan along it (a
+ *  point's `dir`: from its base toward its tip, spec §3g); the cube waits
+ *  beside the board, off every space, so the checkers sent to the bar never
+ *  fan in with it. */
 function backgammon() {
   const W = 1800, H = 1300, BW = 1400, BH = 1000, bx = (W - BW) / 2, by = (H - BH) / 2, man = 80;
   /** Point k's column centre, board-local (the bar is at 610–690, the trays right of 1300). */
@@ -1199,7 +1203,7 @@ function backgammon() {
       point(24, 2, 'light'), point(13, 5, 'light'), point(8, 3, 'light'), point(6, 5, 'light'),
       point(1, 2, 'dark'), point(12, 5, 'dark'), point(17, 3, 'dark'), point(19, 5, 'dark'),
       { piece: 'die', count: 2, spread: [64, 0], at: [bx + 960, by + BH / 2 - 28] },
-      { piece: 'cube', at: [bx + 650 - 32, by + BH / 2 - 32] },
+      { piece: 'cube', at: [bx + BW + (W - bx - BW) / 2 - 32, H / 2 - 32] },
     ],
   };
 }

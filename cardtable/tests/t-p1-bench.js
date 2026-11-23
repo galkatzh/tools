@@ -210,8 +210,9 @@ function placeholderWatch() {
     const applyMs = [];
     for (let k = 0; k < 50; k++) {
       const a = (k / 50) * 2 * Math.PI, m = { id: ids[(k * 19) % ids.length], x: Math.round(cx + rx * Math.cos(a)), y: Math.round(cy + ry * Math.sin(a)) };
+      const to = await phone.evaluate((m) => window.__ct.snap(m.id, m.x, m.y), m); // (Phase 3: a piece on the board snaps to its cell)
       await L.act(mover, { t: 'move', ...m });
-      await phone.waitForFunction((m) => { const it = window.__ct.view().items[m.id]; return it && it.x === m.x && it.y === m.y; }, m, { timeout: 10000 });
+      await phone.waitForFunction(([m, to]) => { const it = window.__ct.view().items[m.id]; return it && it.x === to.x && it.y === to.y; }, [m, to], { timeout: 10000 });
       applyMs.push(await phone.evaluate(() => window.__ct.perf.lastApplyMs));
       await h.sleep(120); // one move per broadcast tick: no coalescing
     }
@@ -243,8 +244,9 @@ function placeholderWatch() {
     for (let k = -1; k < 15; k++) {
       if (k >= 10) await h.sleep(1100);
       const m = { id: ids.at((k * 37) % ids.length), x: x0 + 25 * k, y: y0 - 25 * k };
+      const to = await host.evaluate((m) => window.__ct.snap(m.id, m.x, m.y), m); // (Phase 3: a piece on the board snaps to its cell)
       await L.act(host, { t: 'move', ...m });
-      await host.waitForFunction((m) => { const it = window.__ct.view().items[m.id]; return it && it.x === m.x && it.y === m.y; }, m, { timeout: 10000 });
+      await host.waitForFunction(([m, to]) => { const it = window.__ct.view().items[m.id]; return it && it.x === to.x && it.y === to.y; }, [m, to], { timeout: 10000 });
       const seq = await host.evaluate(() => window.__ct.view().seq);
       let rec = null;
       const saved = await L.until(async () => (rec = await h.idb(host, 'saves', room))?.state?.seq >= seq, 15000, 100);

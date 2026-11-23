@@ -233,7 +233,9 @@ body.nohand #hand-bar { display: none; }
   position: absolute; width: var(--cw); height: var(--ch);
   cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
   -webkit-touch-callout: none; /* iOS: a long-press zooms the card, no image callout */
-  transition: left 0.18s ease-out, top 0.18s ease-out; /* remote moves glide (UX-I1) */
+  /* remote moves glide (UX-I1); a live drag moves by translate (app.js placeEl): one
+     timing for both, so a drop that lands where the glide was shows no jump */
+  transition: left 0.18s ease-out, top 0.18s ease-out, translate 0.18s ease-out;
   contain: layout style; /* a redrawn card never re-lays out the table (not paint: it would clip the outline and shadows) */
 }
 .item.dragging { pointer-events: none; cursor: grabbing; transition: none; }
@@ -288,8 +290,17 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
    the view (--view: the view sheet's, app.js layout) and their item's own
    turn (--rot, on the item's element); and on a table drawn small they grow
    (--bz: the view sheet's too). */
-.item > .count, .bag > .bagbox, .item > .lockb { rotate: calc(-1 * (var(--view, 0deg) + var(--rot, 0deg))); }
-.item > .count, .item > .odot, .item > .lockb { scale: var(--bz, 1); }
+.item > .count, .item > .fanb, .bag > .bagbox, .item > .lockb { rotate: calc(-1 * (var(--view, 0deg) + var(--rot, 0deg))); }
+.item > .count, .item > .fanb, .item > .odot, .item > .lockb { scale: var(--bz, 1); }
+/* a crowded spot's "×k" (app.js fanBadge, spec §3g): on its top piece, at the
+   bottom left, dark on amber — never mistaken for a stack's blue ×N; the
+   spot's, so it stays out of a drag that takes that piece away */
+.item > .fanb {
+  position: absolute; bottom: -9px; left: -9px; min-width: 22px; text-align: center; pointer-events: none;
+  background: #fbbf24; color: #1c1917; font-size: 12px; font-weight: 800; font-style: normal;
+  border-radius: 6px; padding: 1px 5px; box-shadow: 0 1px 3px #0009; z-index: 1;
+}
+.item.dragging > .fanb, .item.live > .fanb { display: none; }
 /* A pile's name, under the pile on every screen: anchored at its centre,
    turned upright there, then moved down (screen down, once turned) past the
    pile's corners (--pr: half its diagonal; a card pile's by default, app.js
@@ -387,6 +398,20 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 .item .lockb { display: none; position: absolute; left: 50%; bottom: -12px; translate: -50% 0; font-size: 15px; font-style: normal; pointer-events: none; filter: drop-shadow(0 1px 2px #000); }
 .item.selected .lockb { display: block; }
 .item.board .lockb { bottom: 8px; }
+/* The snap preview (app.js previewSnap, spec §3g): the spot a dragged piece
+   would land on (an outline in table units, grown on a table drawn small),
+   and its address in a chip by the finger (screen space). Both move by
+   translate; neither takes the pointer. */
+.snap-ghost {
+  position: absolute; left: 0; top: 0; pointer-events: none; z-index: 99999; border-radius: 10%;
+  outline: calc(3px * var(--bz, 1)) dashed #fbbf24; outline-offset: calc(2px * var(--bz, 1)); background: #fbbf2433;
+}
+.snap-ghost.round { border-radius: 50%; }
+.snap-chip {
+  position: absolute; left: 0; top: 0; pointer-events: none; z-index: 9900;
+  font: 700 15px/1 system-ui, sans-serif; color: #1c1917; background: #fbbf24; border-radius: 999px;
+  padding: 5px 10px; box-shadow: 0 2px 8px #000a; white-space: nowrap;
+}
 /* dice: a roll tumbles them on every screen (pieces.js tumble) */
 .tumble .pface { animation: tumble 450ms ease-out; }
 @keyframes tumble {
