@@ -14,14 +14,16 @@
 //   drops      one piece off a stack onto a bag or its supply goes in or back;
 //              dropped back on its own stack or supply, nothing is sent; a
 //              bag that would overflow is not offered the drop
-//   keys       a held key acts once
+//   keys       a held key acts once; after a click on a bar or header button
+//              the keys still reach the table (the button lets go of the focus)
 //   stale bar  a seat change redraws the bar of a selected seat-bound piece
 //   phone      the dark seat's halo, a seat label's finger-sized hit box, the
 //              watchers box clear of the labels, readable badges, the help
 //              dialog inside the screen, Sit down's size, a watcher's squared view
 //   turn cue   shows on a table with no hand bar
-//   watchdog   a guest whose host has been gone a minute reloads itself, and
-//              gets the table back when the host returns
+//   watchdog   a guest whose host has been gone a minute reloads itself (saying
+//              so), keeps showing the table paused (the hint readable on the
+//              phone), and gets it back live when the host returns
 // Screenshots go to shots/review-*.png for review (not asserted).
 const h = require('./h');
 const L = require('./p1-lib');
@@ -30,7 +32,7 @@ const { shot } = require('./fun-lib');
 const { ok, section } = h;
 
 /** The test box: a rect table, South and North seats (North near black), a
- *  board, a ×5 and a ×999 coin stack, a single coin, coin and tile supplies,
+ *  board, a ×5 and a ×999 coin stack, a single coin, coin and (two-faced) tile supplies,
  *  a bag of three coins, a die, and a pawn per seat (seat-bound). */
 const REV = {
   name: 'Review', imgs: [],
@@ -40,7 +42,7 @@ const REV = {
     coin: { kind: 'token', name: 'Coin', faces: [{ color: '#eab308' }] },
     pawn: { kind: 'token', name: 'Pawn', stack: 'none', shape: 'pawn', faces: [{ color: '#60a5fa' }] },
     die: { kind: 'die', name: 'Die' },
-    tile: { kind: 'tile', name: 'Tile', faces: [{ color: '#f5f5f4', label: 'T' }] },
+    tile: { kind: 'tile', name: 'Tile', faces: [{ color: '#f5f5f4', label: 'T' }, { color: '#bae6fd', label: 'U' }] },
     mat: { kind: 'board', name: 'Mat', w: 400, h: 240, faces: [{ color: '#a16207' }] },
   },
   setup: [
@@ -251,6 +253,32 @@ function noticeWatch() {
   ok((await rolls()) === r0 + 1, `one roll for one press, its auto-repeats ignored (${(await rolls()) - r0} rolls)`);
   await felt(bob);
 
+  section('keys after a button click: the clicked button lets go of the focus — R, Space, F and Delete reach the table');
+  const tile = (k) => P.viewOf(bob, `v.items[a]?.${k}`, played);
+  await P.clickItem(bob, played);
+  const rot0 = await tile('rot');
+  await bob.click('#action-bar [data-cmd="rr"]');
+  ok(await P.waitView(bob, 'v.items[a.id].rot !== a.rot', { id: played, rot: rot0 }), `Bob selects Alice's played tile and clicks ⟳ in its bar: it turns (${rot0}° → ${await tile('rot')}°)`);
+  const rot1 = await tile('rot'), focus = await bob.evaluate(() => document.activeElement?.tagName);
+  ok(focus === 'BODY', `the button let go of the focus (it is on ${focus})`);
+  await bob.keyboard.press('r');
+  ok(await P.waitView(bob, 'v.items[a.id].rot === a.rot', { id: played, rot: (2 * rot1 - rot0 + 360) % 360 }, 5000), `R turns it again, by the same step (${rot1}° → ${await tile('rot')}°)`);
+  const rot2 = await tile('rot'), s2 = await P.sentActs(bob);
+  await bob.keyboard.press(' ');
+  await h.sleep(900);
+  ok((await tile('rot')) === rot2 && (await P.sentActs(bob)) === s2, 'Space does nothing (a tile is no die): it does not press ⟳ again');
+  await bob.click('#action-bar [data-cmd="flip"]');
+  ok(await P.waitView(bob, 'v.items[a].f === 1', played), 'a click on Flip turns it to its other face');
+  await bob.keyboard.press('f');
+  ok(await P.waitView(bob, 'v.items[a].f === 0', played, 5000), 'F flips it back');
+  await bob.click('#action-bar [data-cmd="rl"]');
+  ok(await P.waitView(bob, 'v.items[a.id].rot === a.rot', { id: played, rot: rot1 }), '(⟲ turns it back a step)');
+  await bob.click('#view-btn');
+  await bob.keyboard.press('r');
+  ok(await P.waitView(bob, 'v.items[a.id].rot === a.rot', { id: played, rot: rot2 }, 5000), `a header button too (🧭): R right after it turns the piece (${await tile('rot')}°)`);
+  await bob.keyboard.press('Delete');
+  ok(await P.waitView(bob, '!(a in v.items)', played, 5000), 'and Delete, right after that click, removes it');
+
   section('stale bar: a seat change redraws the bar of a selected seat-bound piece');
   await P.clickItem(bob, ids.north);
   ok((await barCmds(bob)).includes('del'), `Bob selects North's pawn (his seat): his bar offers 🗑 (${(await barCmds(bob)).join(' ')})`);
@@ -336,19 +364,41 @@ function noticeWatch() {
   }, null, { timeout: 5000 }).then(() => true, () => false), 'Alice\'s "⏳ Your turn" cue shows, on screen, with the hand bar hidden');
   await shot(host, 'review-desk-turn');
 
-  section('watchdog: a guest whose host has been gone a minute reloads itself, and gets the table back when the host returns');
+  section('watchdog: a guest whose host has been gone a minute reloads itself, keeping the table paused, and gets it back live when the host returns');
   const hostUrl = host.url(), hctx = host.context();
-  await bob.evaluate(() => { window.__stay = 1; });
+  for (const p of [bob, carol]) await p.evaluate(() => { window.__stay = 1; });
   const reloaded = bob.waitForEvent('load', { timeout: 120000 }).then(() => true, () => false);
   const t0 = Date.now();
   await host.close();
   ok(await bob.waitForFunction(() => !document.getElementById('table-hint').classList.contains('hidden'), null, { timeout: 20000 }).then(() => true, () => false), 'Bob sees the host leave (the paused hint)');
+  const told = bob.waitForFunction(() => { const t = document.getElementById('toast'); return !t.classList.contains('hidden') && /…$/.test(t.textContent) && t.textContent; }, null, { timeout: 120000, polling: 50 })
+    .then((t) => t.jsonValue(), () => ''); // (the watchdog's notice, shown just before the reload)
   ok(await reloaded, `Bob's page reloads itself (after ${((Date.now() - t0) / 1000).toFixed(0)} s)`);
   ok(Date.now() - t0 > 55000, '…not before the host has been gone a minute');
+  const said = await told;
+  ok(said === 'The host has been away for a minute — reconnecting…', `its notice blames the host's absence, not the connection ("${said}")`);
+  const paused = () => bob.evaluate(() => ({
+    fresh: !window.__stay, snaps: window.__ct?.perf.snaps, items: document.querySelectorAll('.item').length,
+    faces: document.querySelectorAll('.pface.placeholder').length, hint: document.getElementById('table-hint').classList.contains('hidden') ? '' : document.getElementById('table-hint').textContent,
+  }));
+  ok(await L.until(async () => { const p = await paused(); return p.fresh && p.items === 25 && /paused/.test(p.hint); }, 10000),
+    `the new page shows the last table again, paused (${JSON.stringify(await paused())})`);
+  const pz = await paused();
+  ok(pz.snaps === 0 && pz.faces === 0, `drawn from what the tab kept, before any snapshot (${pz.snaps} snapshots), every piece with its face (${pz.faces} "?")`);
+  ok(await carol.waitForFunction(() => !window.__stay && document.querySelectorAll('.item').length === 25 && /paused/.test(document.getElementById('table-hint').textContent), null, { timeout: 30000 }).then(() => true, () => false),
+    'Carol\'s phone, reloaded too, shows it paused as well');
+  const hintPx = await carol.evaluate(() => {
+    const r = document.createRange();
+    r.selectNodeContents(document.getElementById('table-hint'));
+    const q = r.getClientRects()[0];
+    return q ? Math.min(q.width, q.height) : 0; // (one line of its text, as drawn, whichever way the view turns)
+  });
+  ok(hintPx >= 18, `there, "The host left — …" is readable: a line of it is ${hintPx.toFixed(1)} px tall on the screen`);
+  await shot(carol, 'review-phone-paused');
   const back = await hctx.newPage();
   await back.goto(hostUrl);
-  ok(await bob.waitForFunction(() => window.__ct?.view().seq > 0 && Object.keys(window.__ct.view().items).length === 25 && !window.__stay, null, { timeout: 60000 }).then(() => true, () => false),
-    'once the host is back, Bob (a fresh page) shows the table again');
+  ok(await bob.waitForFunction(() => window.__ct.perf.snaps > 0 && Object.keys(window.__ct.view().items).length === 25 && document.getElementById('table-hint').classList.contains('hidden') && !window.__stay, null, { timeout: 60000 }).then(() => true, () => false),
+    'once the host is back, Bob\'s table is live again (the host\'s snapshot, the hint gone)');
 
   await env.done();
 })().catch(h.crash);

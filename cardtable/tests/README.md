@@ -325,7 +325,8 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
   `takeHand`, `pullHand` need room under MAX_HAND). The bar follows every
   redraw (`syncBar`): a seat taken or left, a player joining, a hand
   filling up redraws it. Keys (not in an input, nor on a button; a press on the table
-  lets go of a focused button; auto-repeats ignored) run the bar's own commands when it shows them: R → `rr`, Shift+R → `rl`, F →
+  lets go of a focused button, and a clicked or tapped bar button lets go
+  of the focus itself; auto-repeats ignored) run the bar's own commands when it shows them: R → `rr`, Shift+R → `rl`, F →
   `flip`, Space → `roll`, Delete / Backspace → `del`; Esc deselects.
 - **Gestures.** A drag on a ×N stack splits one off (`split {n: 1}`, at the
   drop, or `onto` a matching stack, its supply or a bag); Shift, or ✥ armed,
@@ -380,7 +381,8 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
   a probe element at `left: x; top: y` in `#table` sits at table point (x, y).
 - **Badges** (`.item > .count`, `.item > .odot`) are scaled up by an
   adopted stylesheet rule (`scale`, 1 to 3) on a table drawn small, so a
-  ×N pill's text shows at about 8 px or more.
+  ×N pill's text shows at about 8 px or more; the same sheet's second rule
+  grows `#table-hint`'s font size by the same factor (it lies over every item).
 - **The demos.** `GAMES` entries `draughts` and `backgammon` (`box`: their
   `BOXES` key): `#games-list [data-game="draughts"]` (and the strip's) asks
   "Clear the table and set up Draughts? The current game is discarded." on a
@@ -473,14 +475,19 @@ a bar button over a label that the click redraws; a board tap with a piece
 selected only deselects; Give ▸'s buttons are spaced; ✥ looks armed and disarms after 5 s; one
 coin off a stack onto a bag or its supply goes in or back, a take or split
 dropped back on its source sends nothing, an overflowing bag is not
-offered the drop; a held Space rolls once; a seat change redraws (and
+offered the drop; a held Space rolls once; after a click on a bar button
+(⟳, Flip, ⟲) R turns again, Space does not press ⟳ again, F flips and
+Delete removes (the tile type has two faces for it); a seat change redraws (and
 empties) a selected seat-bound piece's bar, and Delete then sends nothing;
 on the phone, the near-black seat's halo, a seat label's 32 px hit box, the
 watchers box clear of the labels, badge sizes, the help dialog inside the
 screen, ✥ Move moving a supply by touch, Sit down's height, a watcher's
 squared view; the turn cue on a table without a hand bar; and the
 watchdog — the host closes its page, its guest reloads itself after about
-a minute (not before), and gets the table back when the host returns.
+a minute (not before) with the notice "The host has been away for a
+minute — reconnecting…", the new page shows the kept table again, paused
+(no snapshot yet, no "?"), and it goes live with the host's snapshot when
+the host returns.
 
 **Changed for 2B** (mechanism only; no assertion removed or weakened):
 `t-fun-games.js` lists the two box games in the strip and the dialog (9
@@ -495,7 +502,20 @@ it really is, wholly off the screen); `core-p2.test.mjs`'s split section
 replaces "split {onto} a supply of the type is refused" by the new rule
 (onto its supply the pieces go back, onto a bag they go in, atomically; a
 supply of another type, a full bag, a hand bag and a hidden stack onto a
-supply are refused whole).
+supply are refused whole). In the second fix-up, `t-p1-bench.js` measures
+what its budgets name: B4's long-task observer starts in a task of its own,
+after the probe's search for bare felt (on the 1,000-card table that
+search's thousand `elementFromPoint` calls were the 53–62 ms "long task",
+reported because it ended after the observer started in it: a CPU profile
+of six pans put every one of them before the pan's first event), and B6
+makes one unmeasured move and save before its ten (that save alone starts
+at once, in its move's burst of work, the others a second apart; it was
+the only slow one: past 5 ms in 6 of 28 series, against 2 of 252 others).
+`t-uxfix.js`'s UX-14 reads a live name bulb's place from `style.translate`
+(the app now places bulbs by a translation, not `left`/`top`: a pan frame
+lays nothing out — a trace of the card B4 pan showed each of its first ~50
+frames re-run a 7 ms hover hit test of the 1,000 cards, set off by the
+bulbs left from B1'/B3's moves, until they faded).
 
 ## Storage and images (Phase 1B)
 

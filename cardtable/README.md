@@ -105,7 +105,7 @@ Playing on the free table:
   the bar only ever offers what you may do. A tap on a board while a piece is
   selected only puts the piece's bar away (tap again to select the board).
   Badges (×N, ∞, the owner's dot) grow on a table drawn small, so a phone can
-  read them.
+  read them; so does the table's notice ("The host left — …").
 - **Hidden pieces** show only their back, to everyone: nobody's screen, not
   even its traffic, learns what a face-down tile or a bag holds. A box's
   pieces and its `meta` data are public, though — anyone at the table can
@@ -193,9 +193,14 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   recovers from dead signaling (or a guest that can't find its host, or
   has lost it for a minute — a link to a returning host that never forms
   would otherwise freeze its screen) by auto-reloading with backoff (20s doubling to 2 min, persisted in
-  sessionStorage) — a reload is the reset that provably clears wedged relay
+  sessionStorage), with a notice that names the cause (the relays, no
+  host yet, or a host away for a minute) — a reload is the reset that provably clears wedged relay
   subscriptions, and it's safe here because the host resumes from its save
-  and guests re-enter with identity and hand intact. Relay redundancy is
+  and guests re-enter with identity and hand intact. A guest that had the
+  table keeps it across that reload (the view and the decks and boxes it
+  draws with, in this tab's sessionStorage, checked again on the way back
+  in), so a host who simply left still leaves everyone the last table,
+  paused, until they return. Relay redundancy is
   raised to 10 (default 5) so two peers are more likely to share a live one.
 - **Log**: the host authors log entries while adjudicating actions (it's the
   only peer that can name cards trustworthily), keeps the last 200 actions,

@@ -754,6 +754,48 @@ function wantImages(ids) {
       if (unread.length) toast(`Couldn't read ${unread.length} card images from this browser's storage — reload this page`); // (they stay loading: never "missing")
     });
 }
+// Deck messages are deltas (or the full map for new joiners) — always merge,
+// re-sanitized here too (defense in depth, and legacy unsigned rooms).
+/** Guest: decks `d` ({deckId: deck}) from the host (or kept across a reload: keepPaused). */
+function takeDecks(d) {
+  if (role === 'host' || !d || typeof d !== 'object') return;
+  const got = [];
+  for (const [id, deck] of Object.entries(d)) {
+    if (!/^[0-9a-f]{8}$/.test(id)) { console.warn('ignored a deck with a bad id', id); continue; }
+    try { decks[id] = cleanDeck(deck); got.push(id); } catch (err) { console.error(`deck ${id} rejected`, err); }
+  }
+  // Their images: from memory, IndexedDB or the host, all in one go (before
+  // the redraw asks for them face by face). A new decks message (the host
+  // is back, or added the deck again) gives the images we gave up on another chance.
+  const refs = [...assetRefs(got.map((id) => decks[id]))];
+  for (const h of refs) if (imgs.get(h) === 'missing') imgs.delete(h);
+  wantImages(refs);
+  arrived(itemsByDeck, got, (z) => got.includes(z.d));
+}
+// Game boxes, the same way: deltas (the whole catalog for a new
+// connection), each passing cleanBox here. A box that fails is dropped,
+// loudly (once per box): its pieces draw as "?" placeholders. What the host
+// says of a box (src, by, builtin) is only ever displayed.
+/** Guest: game boxes `d` ({boxId: box and src, by, builtin}) from the host (or kept across a reload). */
+function takeBoxes(d) {
+  if (role === 'host' || !d || typeof d !== 'object') return;
+  const got = [];
+  for (const [id, b] of Object.entries(d)) {
+    if (!/^[0-9a-f]{8}$/.test(id)) { console.warn('ignored a game box with a bad id', id); continue; }
+    try {
+      boxes[id] = cleanBox(b);
+      boxInfo[id] = { src: ['host', 'upload', 'script'].includes(b.src) ? b.src : 'host', ...(PID_RE.test(b.by) && { by: b.by }), builtin: b.builtin === true };
+      got.push(id);
+    } catch (err) {
+      console.error(`game box ${id} from the host rejected`, err);
+      if (!badBoxes.has(id)) { badBoxes.add(id); toast(`A game box from the host couldn't be read: ${err.message}`); }
+    }
+  }
+  const refs = [...assetRefs({}, got.map((id) => boxes[id]))];
+  for (const h of refs) if (imgs.get(h) === 'missing') imgs.delete(h);
+  wantImages(refs);
+  arrived(itemsByBox, got, (z) => 't' in z && got.includes(pieces.boxIdOf(z.t)));
+}
 let askT = 0;
 /** Guest: asks the host for images `ids`. Requests are gathered for a
  *  moment (faces want their images one by one, and each request costs a
@@ -981,46 +1023,8 @@ function connect() {
   // Images: unsigned, so taken only from the host, only when asked for, and
   // only once their bytes check out (receiveImage).
   assetA.onMessage = (data, { peerId, metadata }) => receiveImage(data, peerId, metadata);
-  // Deck messages are deltas (or the full map for new joiners) — always merge,
-  // re-sanitized here too (defense in depth, and legacy unsigned rooms).
-  decksA.onMessage = fromHost((d) => {
-    if (role === 'host' || !d || typeof d !== 'object') return;
-    const got = [];
-    for (const [id, deck] of Object.entries(d)) {
-      if (!/^[0-9a-f]{8}$/.test(id)) { console.warn('ignored a deck with a bad id', id); continue; }
-      try { decks[id] = cleanDeck(deck); got.push(id); } catch (err) { console.error(`deck ${id} rejected`, err); }
-    }
-    // Their images: from memory, IndexedDB or the host, all in one go (before
-    // the redraw asks for them face by face). A new decks message (the host
-    // is back, or added the deck again) gives the images we gave up on another chance.
-    const refs = [...assetRefs(got.map((id) => decks[id]))];
-    for (const h of refs) if (imgs.get(h) === 'missing') imgs.delete(h);
-    wantImages(refs);
-    arrived(itemsByDeck, got, (z) => got.includes(z.d));
-  });
-  // Game boxes, the same way: deltas (the whole catalog for a new
-  // connection), each passing cleanBox here. A box that fails is dropped,
-  // loudly (once per box): its pieces draw as "?" placeholders. What the host
-  // says of a box (src, by, builtin) is only ever displayed.
-  boxesA.onMessage = fromHost((d) => {
-    if (role === 'host' || !d || typeof d !== 'object') return;
-    const got = [];
-    for (const [id, b] of Object.entries(d)) {
-      if (!/^[0-9a-f]{8}$/.test(id)) { console.warn('ignored a game box with a bad id', id); continue; }
-      try {
-        boxes[id] = cleanBox(b);
-        boxInfo[id] = { src: ['host', 'upload', 'script'].includes(b.src) ? b.src : 'host', ...(PID_RE.test(b.by) && { by: b.by }), builtin: b.builtin === true };
-        got.push(id);
-      } catch (err) {
-        console.error(`game box ${id} from the host rejected`, err);
-        if (!badBoxes.has(id)) { badBoxes.add(id); toast(`A game box from the host couldn't be read: ${err.message}`); }
-      }
-    }
-    const refs = [...assetRefs({}, got.map((id) => boxes[id]))];
-    for (const h of refs) if (imgs.get(h) === 'missing') imgs.delete(h);
-    wantImages(refs);
-    arrived(itemsByBox, got, (z) => 't' in z && got.includes(pieces.boxIdOf(z.t)));
-  });
+  decksA.onMessage = fromHost(takeDecks);
+  boxesA.onMessage = fromHost(takeBoxes);
 
   actA.onMessage = (a, { peerId: peer }) => {
     if (role !== 'host' || !a || typeof a !== 'object') return; // only the host adjudicates
@@ -1139,6 +1143,8 @@ function updateNet() {
 // once the host has been gone HOST_GONE_MS — a link to a returning host
 // that never forms (WebRTC signalling that stalled on one side) would
 // otherwise freeze its screen for good, the "host left" hint up forever.
+// That guest keeps its table across the reload (keepPaused): a host that
+// simply left leaves its guests the last table, paused, as before.
 // The backoff lives in sessionStorage precisely so it survives those reloads.
 const bootAt = Date.now(), HOST_GONE_MS = 60000;
 let hostSeenAt = Date.now(); // guest: when the host was last reachable (or this page loaded)
@@ -1155,11 +1161,44 @@ setInterval(() => {
     const backoff = clamp(st.backoff || 20000, 20000, 120000);
     if (now - (st.at || bootAt) < backoff) return;
     sessionStorage.setItem('ct-rejoin', JSON.stringify({ backoff: Math.min(backoff * 2, 120000), at: now }));
-    console.warn(`reconnecting via reload: ${openRelays() === 0 ? 'no relays reachable' : view.seq ? `the host has been unreachable for ${Math.round((now - hostSeenAt) / 1000)} s` : 'no host found yet'}`);
-    toast('Connection is struggling — reconnecting…');
+    // Each cause says what it is: our relays, a host never found, or one gone a while.
+    const [why, msg] = !hostless ? ['no relays reachable', 'Connection is struggling — reconnecting…']
+      : view.seq ? [`the host has been unreachable for ${Math.round((now - hostSeenAt) / 1000)} s`, 'The host has been away for a minute — reconnecting…']
+        : ['no host found yet', 'No host found yet — looking again…'];
+    console.warn(`reconnecting via reload: ${why}`);
+    toast(msg);
+    if (view.seq) keepPaused();
     setTimeout(() => location.reload(), 600); // let the toast paint first
   } catch (err) { console.error('watchdog failed', err); }
 }, 5000);
+const pausedKey = () => `ct-paused-${roomId}`;
+/** Guest, reloading with a table (the watchdog): keeps the view and the
+ *  catalog it draws with in sessionStorage (this tab's only) for the next
+ *  page — resumePaused shows them again, paused, until the host is back. */
+function keepPaused() {
+  try {
+    const bx = Object.fromEntries(Object.entries(boxes).map(([id, b]) => [id, { ...b, ...boxInfo[id] }]));
+    sessionStorage.setItem(pausedKey(), JSON.stringify({ view, decks, boxes: bx }));
+  } catch (err) { console.error('could not keep the paused table across the reload', err); }
+}
+/** Guest, at boot: the table keepPaused kept, shown again, paused (the hint
+ *  says so), until the host's first snapshot replaces it. It goes through
+ *  the gates the host's messages do (cleanDeck, cleanBox, viewFromSnap). */
+function resumePaused() {
+  try {
+    const kept = sessionStorage.getItem(pausedKey());
+    if (kept === null) return;
+    sessionStorage.removeItem(pausedKey());
+    const { view: v, decks: d, boxes: b } = JSON.parse(kept);
+    view = viewFromSnap(v);
+    setTable(view.table);
+    takeDecks(d);
+    takeBoxes(b);
+  } catch (err) {
+    console.error('the paused table could not be shown again', err);
+    toast(`Couldn't show the paused table again (${err.message})`);
+  }
+}
 
 // --- host persistence -----------------------------------------------------
 // The table is saved in IndexedDB (store.js): the state at most once a
@@ -1909,8 +1948,9 @@ function rotv(x, y, a) {
 // units, so on a table drawn small (a phone's fit) they'd be a few pixels:
 // they grow back toward a readable size, by at most BADGE_MAX×, through one
 // stylesheet rule — only the badges restyle, and only when the scale changes.
+// The table's hint ("The host left — …") grows the same way, by its font size.
 const badgeSheet = new CSSStyleSheet(), BADGE_MAX = 3;
-badgeSheet.replaceSync('.item > .count, .item > .odot {}');
+badgeSheet.replaceSync('.item > .count, .item > .odot {} #table-hint {}');
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, badgeSheet];
 let badgeZ = '';
 
@@ -1922,7 +1962,10 @@ function layout() {
   const bw = rect ? TABLE_W * c + TABLE_H * sn : TABLE_W, bh = rect ? TABLE_W * sn + TABLE_H * c : TABLE_H;
   scale = Math.min(w / bw, h / bh) * zoomZ; // fit × user zoom
   const bz = clamp(0.67 / scale, 1, BADGE_MAX).toFixed(2); // (a 12-unit badge text shows ≥ 8 px while it can)
-  if (bz !== badgeZ) badgeSheet.cssRules[0].style.scale = badgeZ = bz;
+  if (bz !== badgeZ) {
+    badgeSheet.cssRules[0].style.scale = badgeZ = bz;
+    badgeSheet.cssRules[1].style.fontSize = `${34 * bz}px`;
+  }
   // keep at least the table's center reachable
   panX = clamp(panX, -(bw * scale) / 2, (bw * scale) / 2);
   panY = clamp(panY, -(bh * scale) / 2, (bh * scale) / 2);
@@ -2089,11 +2132,13 @@ function showAnnounce(msg) {
 const bulbs = new Map(); // "pid|itemId" -> {el, timer, f}
 /** Puts a bulb over its item (or the spot the item left), in screen space —
  *  re-run by layout() so bulbs follow pan, zoom, rotation and resizes. */
+/** Puts name bulb `b` over its item, by a translation: a pan frame that
+ *  moves it lays nothing out (no layout, and so no hover hit test of the
+ *  table under a resting mouse: on 1,000 cards that cost a frame, B4). */
 function placeFx(b) {
   const it = b.f.id && view.items[b.f.id], { w, h } = it ? sizeOf(it, boxes) : { w: CARD_W, h: CARD_H };
   const [sx, sy] = tableToScreen((it ? it.x : b.f.x) + w / 2, (it ? it.y : b.f.y) + h / 2);
-  b.el.style.left = `${clamp(sx, 30, wrapW - 30)}px`;
-  b.el.style.top = `${Math.max(20, sy - h * 0.55 * scale)}px`;
+  b.el.style.translate = `${clamp(sx, 30, wrapW - 30)}px ${Math.max(20, sy - h * 0.55 * scale)}px`;
 }
 function showFx(f) {
   // Script ops are credited "📜 Rules" in the log; a bulb per op would just
@@ -2202,6 +2247,13 @@ function showZoom(c, caption) {
   peekEl.classList.remove('hidden');
 }
 peekEl.addEventListener('click', () => peekEl.classList.add('hidden'));
+// A button clicked or tapped lets go of the focus at once, as one pressed on
+// the table does (pointerdown): the keys below skip a focused button, and
+// Space or Enter would press it again — after the bar's ⟳ (which leaves the
+// bar as it was: syncBar redraws only what changed), or 🧭 in the header, R
+// must turn the piece and Space roll the die. A button reached and pressed
+// from the keyboard (detail 0) keeps the focus.
+document.addEventListener('click', (e) => { if (e.detail) e.target.closest?.('button')?.blur(); });
 // Keys, outside inputs (an open <dialog> keeps them, Escape included: the
 // browser closes it). Escape closes the zoom or peek overlay, else the seat
 // menu, else dismisses the action bar. The others are the bar's shortcuts on
@@ -3255,7 +3307,10 @@ async function boot() {
       : `Couldn't read this browser's storage (${readFailed}) — reload this page to try again`, false, hosting);
   }
   if (hosting) becomeHost(saved, idbFailed || (readFailed && "its save couldn't be read"));
-  else role = 'guest';
+  else {
+    role = 'guest';
+    resumePaused();
+  }
   if (window.innerWidth <= 820) sideEl.classList.add('hidden');
   layout();
   renderAll(null);

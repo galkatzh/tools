@@ -496,6 +496,16 @@ sync and rendering, and the Worker together with `handle`.
        table, so it never sees a "?" waiting for them; and a guest that
        has lost the host for a minute reloads itself, as one that never
        found the host does, so a link that never forms can't freeze it.
+       It keeps the table it had across that reload, paused, so a host who
+       simply left still leaves everyone the last table.
+     - A supply's bar has "Move" too: on touch a drag takes a piece out of
+       it, and there is no Shift key to move it instead.
+     - With a piece selected, a tap on a board only puts the bar away; the
+       next tap selects the board. A tap meant to deselect lands on the
+       board more often than not.
+     - Badges (a stack's ×N, a supply's ∞, an owner's dot) grow, up to
+       three times, on a table drawn small, such as a phone's, so they stay
+       readable.
 3. **Space and full-rules scripting, in a Worker.**
    - Grids, spaces, zones, links and snapping, with addresses in the log.
    - Rules in a Worker with a watchdog, and atomic hooks.

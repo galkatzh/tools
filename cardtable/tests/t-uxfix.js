@@ -272,7 +272,7 @@ const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   ok(!(await guest.evaluate(() => [...document.querySelectorAll('.fx-bulb')].some((b) => b.textContent.includes('Rules')))), 'script ops show no "📜 Rules" bulbs (the log credits them)');
   await guest.dblclick('.item.pile');
   await host.waitForFunction(() => [...document.querySelectorAll('.fx-bulb')].some((b) => b.textContent === 'Bob'));
-  const pos = () => host.evaluate(() => { const b = [...document.querySelectorAll('.fx-bulb')].find((x) => x.textContent === 'Bob'); return b && `${b.style.left},${b.style.top}`; });
+  const pos = () => host.evaluate(() => { const b = [...document.querySelectorAll('.fx-bulb')].find((x) => x.textContent === 'Bob'); return b?.style.translate; }); // (placed by a translation since the 2B fix-up 2)
   const p0 = await pos();
   const tw = await rect(host, '#table-wrap');
   await host.mouse.move(tw.x + tw.w * 0.3, tw.y + tw.h * 0.3);
