@@ -817,6 +817,29 @@ decisions D104–D111). Wire version 4, state version 4: raw peers import
   snapped `x, y` and an advisory `to`. The host relays a drag outside its
   queue (no state, no seq): a patch with only `fx`. Its `to`, `from` and a
   pull's `pick` are what `validate` / `onAction` see (`prepare`).
+- **`t-p3-space.js`** (spec §3l items 1, 2, 7, 8, 10, 11; §3j attacker
+  cases 4 and 7): Alice on a desktop, Bob on an iPhone 13, Carol on an
+  iPhone 13 in landscape, Mallory raw; every interaction a real drag or
+  tap. Draughts (cells, the snap preview and the chip, the three log
+  forms, live drags both ways, a locked piece), backgammon under snapping
+  (t-p2-demos's script: the fan along each point's `dir`, "×k", a tap or a
+  drag on a crowd takes its top checker, 15 on one point), then a script's
+  table (`t.newBox`, `t.spawn`: go points, pointy and flat hexes, spaces;
+  a.to / a.from / a.pick echoed by validate and onAction; a lying `to`; a
+  rack and a second map; moving and turning a board), and Mallory's drags.
+  Its expectations come from the spec's geometry, written out again in
+  **`p3-lib.js`**: `spotXY`, `addrOf` and `expectSpot` (§2a's centres and
+  grammar, §3a's snapping and D104, by brute force rather than grid.js),
+  `onTable` (a board's turn); on the screen, `screenOf` / `tableOf` (a
+  probe in `#table`: exact under any view turn), `svgLocal` / `svgScreen`
+  (through a board's SVG, as drawn), `centreOf`, `preview` (the ghost, the
+  chip and `__ct.spot()`, two frames on: touch moves arrive frame-aligned),
+  `topAt` (what is painted on top at a point, overlays included);
+  `gesture` / `dragTo` (a mouse or CDP touches, a pause per point, `mid()`
+  with the pointer still down); `actTap` (an init script: the actions a
+  page sends, decoded, in `window.__acts`), `join` (with it and p1-lib's
+  rtcHook, bodies kept), `liveFx` and `scanLive` (the live-drag fx in
+  recorded bodies).
 - **Existing suites changed for Phase 3A** (mechanism changes, no check
   dropped): `core-p1.test.mjs` (`migrate` runs on through `MIGRATE[3]`;
   `t.find`'s unknown-filter example is `color`, as `zone` is known now),
