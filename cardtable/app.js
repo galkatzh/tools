@@ -1284,9 +1284,9 @@ function resumePaused() {
 // commit of that seq removes it; a boot that finds it ahead of the save says
 // the last moment of play was lost.
 const SAVE_DEFER_MS = 250;
-let persistT = 0, lastSave = 0, saving = false, again = false, persistWarned = false;
+let persistT = 0, lastSave = 0, again = false, persistWarned = false;
 let savedSeq = -1; // host: the seq of the last save that committed
-let savingSeq = -1; // host: the seq the save in flight holds, at least (it may take a later state: store.js saveTable); -1 with none
+let savingSeq = -1; // host: a save is in flight (-1: none), holding this seq at least (it may take a later state: store.js saveTable)
 let cloneFixed = false; // host: since the last good save, the rules' state was cut down to JSON (_unsaveable) once
 let noSave = ''; // host: why this tab never writes its room's save ('' = it does)
 const savedCatalog = new Set(); // host: the deck and box ids this room's catalog holds
@@ -1297,8 +1297,7 @@ const pendingKey = () => `ct-pending-${roomId}`;
  *  the main-thread part of its state write (B6). */
 async function doSave(leaving) {
   if (role !== 'host' || noSave) return; // a demoted host's pending timer must not clobber the winner's save
-  if (saving && !leaving) { again = true; return; }
-  saving = true;
+  if (savingSeq !== -1 && !leaving) { again = true; return; }
   savingSeq = T.state.seq;
   lastSave = Date.now();
   try {
@@ -1319,7 +1318,6 @@ async function doSave(leaving) {
       if (role === 'host' && !persistWarned) { persistWarned = true; toast(`Can't save this table (${err.message}) — reloading the host tab would reset it`); }
     }
   } finally {
-    saving = false;
     savingSeq = -1;
     if (again) { again = false; doSave(); }
   }
@@ -1705,16 +1703,16 @@ function renderPlayers(viewMoved) {
   placeSeats();
 }
 let seatSpots = ''; // where placeSeats last put the button row and the notices
-/** Puts the seat labels where this view shows their seats. It runs on every
- *  pan, zoom and pinch frame, so it moves things by transform only: a
- *  layout per frame would also make the browser hit-test the whole table
- *  for hover, which is slow with 1,000 cards (B4). */
 // The hint's plate (CSS #table-hint): HINT_FELT of the felt's width on the
 // screen at most, and no wider than the gap between the labels within
 // HINT_BAND of the middle (half the tallest plate: 6 lines, 146 px, on a
 // phone held upright), HINT_GAP clear of them; HINT_MIN_W at least (and
 // always its longest word: min-width: min-content).
 const HINT_FELT = 0.6, HINT_BAND = 75, HINT_GAP = 8, HINT_MIN_W = 140;
+/** Puts the seat labels where this view shows their seats. It runs on every
+ *  pan, zoom and pinch frame, so it moves things by transform only: a
+ *  layout per frame would also make the browser hit-test the whole table
+ *  for hover, which is slow with 1,000 cards (B4). */
 function placeSeats() {
   const W = wrapW, H = wrapH;
   let rowBottom = 12, noticeTop = 10; // #rules-btns' and #notices' default spots (CSS)
@@ -2085,17 +2083,28 @@ function rotv(x, y, a) {
 //   2  --view for the badges with a number or a name, 🔒 and a bag, which
 //      turn back too (D91).
 // On a 1,000-stack table the badges are a thousand: a restyle of them all
-// takes 20 to 40 ms on the B4 phone. So while two fingers move the view (a
-// pinch, a twist) the badges keep their turn, moving with the table as its
-// pieces do, and their growth follows in steps (BZ_STEP: a handful of
-// restyles across a whole pinch, none on a twist alone, yet no badge grows
-// to cover the pieces being zoomed in on); they settle (upright, exact)
-// once the fingers lift (D96).
-const viewSheet = new CSSStyleSheet(), BADGE_MAX = 3, BZ_STEP = 1.25;
+// (rule 0 or 2) in a frame that also moves the table is a long task on the
+// B4 phone, 50 to 670 ms (D96), where at a rest it costs a frame. So
+// while two fingers move the view (a pinch, a twist) neither is written:
+// the badges keep their turn and size, moving with the table as its pieces
+// do. Once the fingers rest (PINCH_REST_MS without a move), the badges take
+// this view's size if the zoom has changed it by more than BZ_STEP since
+// they were sized (pinchRest): a restyle the resting hand doesn't feel, and
+// no badge stays grown over the pieces being zoomed in on; a twist alone
+// never resizes them (a rectangle refits as it turns: by its fit alone,
+// every twist would). They settle (upright, exact) once the fingers lift.
+const viewSheet = new CSSStyleSheet(), BADGE_MAX = 3, BZ_STEP = 1.25, PINCH_REST_MS = 120;
 viewSheet.replaceSync('#table .item > .count, #table .item > .odot, #table .item > .lockb, #table .pile > .pname, #table .item.selected, #table .blabels text {} '
   + '#table .psvg text {} #table .item > .count, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb {}');
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, viewSheet];
 let badgeZ = '', textAngle = 0, badgeAngle = 0, feltW = 0;
+
+/** Sizes the badges for the view's scale (rule 0's --bz), if that changes it:
+ *  a 12-unit badge text shows ≥ 8 px while it can. */
+function sizeBadges() {
+  const bz = clamp(0.67 / scale, 1, BADGE_MAX).toFixed(2);
+  if (bz !== badgeZ) viewSheet.cssRules[0].style.setProperty('--bz', (badgeZ = bz));
+}
 
 function layout() {
   const w = (wrapW = wrapEl.clientWidth), h = (wrapH = wrapEl.clientHeight);
@@ -2104,10 +2113,11 @@ function layout() {
   const a = (viewAngle * Math.PI) / 180, c = Math.abs(Math.cos(a)), sn = Math.abs(Math.sin(a)), rect = TABLE.shape === 'rect';
   const bw = rect ? TABLE_W * c + TABLE_H * sn : TABLE_W, bh = rect ? TABLE_W * sn + TABLE_H * c : TABLE_H;
   scale = Math.min(w / bw, h / bh) * zoomZ; // fit × user zoom
-  const bz = clamp(0.67 / scale, 1, BADGE_MAX).toFixed(2); // (a 12-unit badge text shows ≥ 8 px while it can)
   if (viewAngle !== textAngle) viewSheet.cssRules[1].style.setProperty('--view', `${(textAngle = viewAngle)}deg`);
-  if (bz !== badgeZ && (!pinch || Math.max(bz / badgeZ, badgeZ / bz) > BZ_STEP)) viewSheet.cssRules[0].style.setProperty('--bz', (badgeZ = bz));
-  if (!pinch && viewAngle !== badgeAngle) viewSheet.cssRules[2].style.setProperty('--view', `${(badgeAngle = viewAngle)}deg`);
+  if (!pinch) {
+    sizeBadges();
+    if (viewAngle !== badgeAngle) viewSheet.cssRules[2].style.setProperty('--view', `${(badgeAngle = viewAngle)}deg`);
+  }
   feltW = bw * scale; // (placeSeats: the hint's plate fits its middle, the notices the margins beside it)
   // keep at least the table's center reachable
   panX = clamp(panX, -(bw * scale) / 2, (bw * scale) / 2);
@@ -2529,11 +2539,22 @@ function startPinch() {
     d0: Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1,
     ang0: (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI,
     t0: toTable({ clientX: m.x, clientY: m.y }), // table point pinned under the fingers
+    zb: zoomZ, // the zoom the badges were last sized at
+    rest: 0, // the timer that sees the fingers rest (pinchRest)
   };
 }
 
-/** The two-finger gesture ends: the badges, which kept their turn (and grew in steps) meanwhile, settle (layout). */
+/** The fingers rest mid-pinch: the badges take this view's size if the zoom
+ *  has changed it by more than BZ_STEP since they were sized (see viewSheet). */
+function pinchRest() {
+  if (Math.max(zoomZ / pinch.zb, pinch.zb / zoomZ) <= BZ_STEP) return;
+  pinch.zb = zoomZ;
+  sizeBadges();
+}
+
+/** The two-finger gesture ends: the badges, which kept their turn (and their size, but for a rest's) meanwhile, settle (layout). */
 function endPinch() {
+  clearTimeout(pinch.rest);
   pinch = null;
   layout();
 }
@@ -2548,6 +2569,8 @@ function updatePinch() {
   manualView = true;
   layout();
   anchorView(pinch.t0, m.x, m.y); // the felt tracks the fingers
+  clearTimeout(pinch.rest);
+  pinch.rest = setTimeout(pinchRest, PINCH_REST_MS);
 }
 
 tableEl.addEventListener('pointerdown', (e) => {

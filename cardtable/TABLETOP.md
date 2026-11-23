@@ -520,9 +520,11 @@ sync and rendering, and the Worker together with `handle`.
        face the screen too, and a pile's name sits under its pile on every
        screen. While two fingers turn or zoom the view, the badges move with
        the table and settle once the fingers lift: on a table of a thousand
-       stacks, turning them all with every frame would stutter. Their size
-       follows a zoom in a few steps meanwhile, so they never swell over
-       the pieces being zoomed in on. The pieces' own faces stay as they lie.
+       stacks, turning or resizing them all as the view moves would stutter.
+       When the fingers pause mid-zoom the badges take the zoom's size, so
+       they never stay swollen over the pieces being zoomed in on; a twist
+       alone leaves their size until the lift. The pieces' own faces stay as
+       they lie.
      - A plain round piece (a checker, a man: no picture, label, text or
        pips, and as wide as it is high) looks the same at any angle, so its
        bar offers no turn buttons.

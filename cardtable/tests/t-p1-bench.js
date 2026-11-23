@@ -8,13 +8,17 @@
 //   B4   panning on an emulated phone (iPhone 13, CPU × 2): no long task over 50 ms
 //        (from the pan's first event on: not the probe's search for bare felt),
 //        and rAF interval p95 ≤ max(20 ms, 1.25 × the same pan over an empty table);
-//        on the bench box, also a two-finger twist (half a turn in 3 s) over 1,000
-//        ×3 stacks, whose badges turn back against the view (D91), once the
-//        fingers lift (D96): the same budgets while they twist (after one twist
-//        not measured: the table's first turn off its axes redraws its layer
-//        once), then the badges settle at the view's exact angle in one task
-//        under 150 ms (a restyle of the 1,000 badges: 50–95 ms here, once per
-//        gesture, where every frame of a twist paid it before D96)
+//        on the bench box, also three two-finger gestures (3 s each) over 1,000
+//        ×3 stacks, whose badges turn back against the view (D91) and grow on
+//        a table drawn small — both only once the fingers rest or lift (D96):
+//        a half-turn twist and a pinch from the fit to 12× on 6000 × 4000, and
+//        a half-turn twist on 1800 × 1200, whose fit (and the badges' exact
+//        size) changes by over 25% as it turns. The same budgets while the
+//        fingers move (after one gesture not measured: the table's first turn
+//        off its axes, or first zoom that far, redraws its layer once), then
+//        the badges settle with no task over 150 ms (a restyle of the 1,000
+//        badges, once per gesture: in a frame that also moved the table it
+//        took 50–670 ms, where every frame of a twist paid it before D96)
 //   B6   the host saves the 1,000-item table: every save's main-thread part ≤ 8 ms
 //        (__ct.perf.lastSaveSyncMs, around doSave's synchronous IndexedDB put): ten
 //        throttled saves (rapid play) and five unthrottled ones (a move 1.1 s
@@ -39,7 +43,7 @@ const P = require('./p2t-lib');
 const { ok, section } = h;
 
 const B1_MAX = 1.5 * 1024, B3_MAX = 4, B4_LONG = 50, B4_SETTLE = 150, B4_FLOOR = 20, B6_MAX = 8, B10_DESK = 400, B10_PHONE = 1500, B11_MAX = 30;
-const PAN_MS = 3000, TWIST_MS = 3000;
+const PAN_MS = 3000, GESTURE_MS = 3000;
 
 /** The throwaway script that builds the table (spec §1k): 20 standard decks,
  *  1,000 cards dealt face up in a 40 × 25 grid inside the felt. */
@@ -112,27 +116,33 @@ async function pan(p) {
   } finally { await unthrottle(); }
 }
 
-/** A two-finger twist on page p, under CDP CPU throttling × 2: two touch
- *  pointers about the table area's centre turn half a turn over TWIST_MS,
- *  driven once per animation frame; rAF timestamps and long tasks collected
- *  in the page. Returns {gaps (ms between frames), long (the durations of
- *  the long tasks while the fingers move), settle (theirs from the task
- *  where they lift on: the badges settle there), turned (degrees the view turned)}. */
-async function twist(p) {
+/** A two-finger gesture on page p over GESTURE_MS, under CDP CPU throttling
+ *  × 2, driven once per animation frame: two touch pointers opposite each
+ *  other about the table area's centre turn `turn` half-turns while their
+ *  half-distance goes from `from` to `to` px, geometrically (both by default
+ *  a fifth of the area's smaller side: a twist alone); rAF timestamps and
+ *  long tasks collected in the page. Returns {gaps (ms between frames), long
+ *  (the durations of the long tasks while the fingers move), settle (theirs
+ *  from the task where they lift on: the badges settle there), turned
+ *  (degrees the view turned), zoomed (the factor its scale grew by)}. */
+async function gesture(p, { turn = 0, from, to } = {}) {
   const unthrottle = await throttle(p);
   try {
-    return await p.evaluate(async (ms) => {
+    return await p.evaluate(async ([ms, turn, from, to]) => {
       const table = document.getElementById('table'), r = document.getElementById('table-wrap').getBoundingClientRect();
-      const cx = r.left + r.width / 2, cy = r.top + r.height / 2, R = Math.min(r.width, r.height) / 5;
-      const rot = () => +/rotate\(([-\d.e]+)deg\)/.exec(table.style.transform)[1];
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2, R = Math.min(r.width, r.height) / 5, d0 = from ?? R, d1 = to ?? R;
+      const tf = (k) => +new RegExp(`${k}\\(([-\\d.e]+)`).exec(table.style.transform)[1];
       await new Promise((res) => setTimeout(res, 0)); // (the observer starts in a task of its own: see pan)
       const tasks = [];
       const po = new PerformanceObserver((l) => { for (const e of l.getEntries()) tasks.push(e); });
       po.observe({ type: 'longtask' });
       const ev = (type, id, x, y) => new PointerEvent(type, { pointerId: id, pointerType: 'touch', isPrimary: id === 7, button: 0, buttons: type === 'pointerup' ? 0 : 1, clientX: x, clientY: y, bubbles: true, cancelable: true });
-      /** The two fingers at angle a (radians), opposite each other: their distance stays, so the view only turns. */
-      const fingers = (a) => [[7, cx + R * Math.cos(a), cy + R * Math.sin(a)], [8, cx - R * Math.cos(a), cy - R * Math.sin(a)]];
-      const a0 = rot();
+      /** The two fingers at time t (0 to 1 of the gesture). */
+      const fingers = (t) => {
+        const a = turn * Math.PI * t, d = d0 * (d1 / d0) ** t;
+        return [[7, cx + d * Math.cos(a), cy + d * Math.sin(a)], [8, cx - d * Math.cos(a), cy - d * Math.sin(a)]];
+      };
+      const a0 = tf('rotate'), s0 = tf('scale');
       for (const [id, x, y] of fingers(0)) table.dispatchEvent(ev('pointerdown', id, x, y));
       const frames = [];
       await new Promise((done) => {
@@ -141,18 +151,18 @@ async function twist(p) {
           frames.push(ts);
           const t = ts - t0;
           if (t >= ms) { done(); return; }
-          for (const [id, x, y] of fingers((Math.PI * t) / ms)) window.dispatchEvent(ev('pointermove', id, x, y));
+          for (const [id, x, y] of fingers(t / ms)) window.dispatchEvent(ev('pointermove', id, x, y));
           requestAnimationFrame(step);
         };
         requestAnimationFrame(step);
       });
-      const turned = (((rot() - a0) % 360) + 360) % 360, up = performance.now();
-      for (const [id, x, y] of fingers(Math.PI)) window.dispatchEvent(ev('pointerup', id, x, y));
+      const turned = (((tf('rotate') - a0) % 360) + 360) % 360, zoomed = tf('scale') / s0, up = performance.now();
+      for (const [id, x, y] of fingers(1)) window.dispatchEvent(ev('pointerup', id, x, y));
       await new Promise((res) => setTimeout(res, 300)); // the observer delivers late entries
       po.disconnect();
       const dur = (es) => es.map((e) => Math.round(e.duration)); // (a task that holds the lift began before it, in the same frame)
-      return { gaps: frames.slice(1).map((t, k) => t - frames[k]), long: dur(tasks.filter((e) => e.startTime + e.duration < up)), settle: dur(tasks.filter((e) => e.startTime + e.duration >= up)), turned };
-    }, TWIST_MS);
+      return { gaps: frames.slice(1).map((t, k) => t - frames[k]), long: dur(tasks.filter((e) => e.startTime + e.duration < up)), settle: dur(tasks.filter((e) => e.startTime + e.duration >= up)), turned, zoomed };
+    }, [GESTURE_MS, turn, from, to]);
   } finally { await unthrottle(); }
 }
 
@@ -370,27 +380,57 @@ function placeholderWatch() {
   ok(deck0.ok && deck0.pile, 'the host adds a deck of 40 images beside the bench');
   await rejoinB8(deck0, 5000, 100, true, ', and the 1,000 pieces');
 
+  /** Loads 1,000 stacks of 3 chips on a w × h rectangle (20 rows of 50 from
+   *  `at`, `step` apart), and waits for the phone to draw them. */
+  async function loadStacks(w, h, at, step) {
+    const box = { name: 'Stacks', imgs: [], table: { shape: 'rect', w, h }, types: { chip: { kind: 'token', name: 'Chip', faces: [{ color: '#facc15' }] } },
+      setup: Array.from({ length: 20 }, (_, k) => ({ piece: 'chip', n: 3, at: [at[0], at[1] + step[1] * k], count: 50, spread: [step[0], 0] })) };
+    ok((await L.act(host, { t: 'loadBox', box, setup: true, clear: true })).ok, `the host loads 1,000 stacks of 3 chips on a ${w} × ${h} table`);
+    ok(await phone.waitForFunction((w) => window.__ct.view().table.w === w && document.querySelectorAll('.item > .count').length >= 1000, w, { timeout: 60000 }).then(() => true, () => false), 'the phone draws them, with their ×3');
+  }
+  /** The phone's view back to the fit at its seat (🧭), and a second to settle. */
+  const refit = async () => { await phone.tap('#view-btn'); await h.sleep(1000); };
+  /** B4 for a two-finger gesture `g` (gesture's options) on the phone, from
+   *  the fit; `what` it is. A first one is not measured: the first time the
+   *  table turns off its axes, or zooms that far, the browser draws its layer
+   *  again once, text included (a 60–200 ms frame with these 1,000 ×3 badges,
+   *  none with plain chips, and never again on the page). Returns the measured one. */
+  async function gestureB4(what, g) {
+    await refit();
+    const warm = await gesture(phone, g);
+    console.log(`  (a first ${what}, not measured: long tasks [${warm.long}], then [${warm.settle}] as the fingers lift)`);
+    await refit();
+    const r = await gesture(phone, g), p95 = L.pct(r.gaps, 95), limit = Math.max(B4_FLOOR, 1.25 * pbase.p95);
+    console.log(`  ${what}: ${r.gaps.length} frames, turned ${r.turned.toFixed(1)}°, zoomed ${r.zoomed.toFixed(2)}×, rAF p95 ${p95.toFixed(1)} ms, long tasks [${r.long}], then [${r.settle}] as the fingers lift`);
+    ok(!r.long.some((d) => d > B4_LONG), `B4: no long task over ${B4_LONG} ms while the fingers move (${r.long.length ? r.long.join(', ') + ' ms' : 'none'})`);
+    ok(p95 <= limit, `B4: rAF interval p95 ${p95.toFixed(1)} ms ≤ max(${B4_FLOOR}, 1.25 × ${pbase.p95.toFixed(1)}) = ${limit.toFixed(1)} ms`);
+    ok(!r.settle.some((d) => d > B4_SETTLE), `B4: as they lift, the 1,000 badges settle (upright, their exact size) in one go, no task over ${B4_SETTLE} ms (${r.settle.length ? r.settle.join(', ') + ' ms' : 'none over 50 ms'})`);
+    return r;
+  }
+  /** The phone's badges after the lift, and what this view calls for: {view, rot (--view and the view's turn), bz, want (--bz and its exact value)}. */
+  const badges = () => phone.evaluate(() => {
+    const cs = getComputedStyle(document.querySelector('.item > .count')), t = document.getElementById('table').style.transform, s = +/scale\(([-\d.e]+)\)/.exec(t)[1];
+    return { view: parseFloat(cs.getPropertyValue('--view')), rot: +/rotate\(([-\d.e]+)deg\)/.exec(t)[1], bz: +cs.getPropertyValue('--bz'), want: Math.min(3, Math.max(1, 0.67 / s)) };
+  });
+
   section('§2k B4: a two-finger twist on the phone, over 1,000 ×3 stacks (each badge turns back against the view: D91, D96)');
-  const STACKS = { name: 'Stacks', imgs: [], table: { shape: 'rect', w: 6000, h: 4000 }, types: { chip: { kind: 'token', name: 'Chip', faces: [{ color: '#facc15' }] } },
-    setup: Array.from({ length: 20 }, (_, k) => ({ piece: 'chip', n: 3, at: [600, 400 + 160 * k], count: 50, spread: [100, 0] })) };
-  ok((await L.act(host, { t: 'loadBox', box: STACKS, setup: true, clear: true })).ok, 'the host loads 1,000 stacks of 3 chips');
-  ok(await phone.waitForFunction(() => document.querySelectorAll('.item > .count').length >= 1000, null, { timeout: 60000 }).then(() => true, () => false), 'the phone draws them, with their ×3');
-  await h.sleep(1000);
-  // One twist first, not measured: the first time the table turns off its
-  // axes (the pan before kept it square), the browser draws its layer again
-  // once, text included — a 60–65 ms frame with these 1,000 ×3 badges, none
-  // with plain chips, and never again on the page.
-  const warm = await twist(phone);
-  console.log(`  (a first twist, not measured: long tasks [${warm.long}], then [${warm.settle}] as the fingers lift)`);
-  await h.sleep(1000);
-  const tw = await twist(phone), twP95 = L.pct(tw.gaps, 95), twLimit = Math.max(B4_FLOOR, 1.25 * pbase.p95);
-  console.log(`  twist: ${tw.gaps.length} frames, turned ${tw.turned.toFixed(1)}°, rAF p95 ${twP95.toFixed(1)} ms, long tasks [${tw.long}], then [${tw.settle}] as the fingers lift`);
+  await loadStacks(6000, 4000, [600, 400], [100, 160]);
+  const tw = await gestureB4('twist (half a turn)', { turn: 1 });
   ok(tw.gaps.length > 30 && Math.abs(tw.turned - 180) < 20, `the scripted twist turns the view (${tw.turned.toFixed(1)}°, ${tw.gaps.length} frames)`);
-  ok(!tw.long.some((d) => d > B4_LONG), `B4: no long task over ${B4_LONG} ms while the fingers twist (${tw.long.length ? tw.long.join(', ') + ' ms' : 'none'})`);
-  ok(twP95 <= twLimit, `B4: rAF interval p95 ${twP95.toFixed(1)} ms ≤ max(${B4_FLOOR}, 1.25 × ${pbase.p95.toFixed(1)}) = ${twLimit.toFixed(1)} ms`);
-  ok(!tw.settle.some((d) => d > B4_SETTLE), `B4: as they lift, the 1,000 badges settle (turn upright) in one go, no task over ${B4_SETTLE} ms (${tw.settle.length ? tw.settle.join(', ') + ' ms' : 'none over 50 ms'})`);
-  const exact = await phone.evaluate(() => ({ badge: getComputedStyle(document.querySelector('.item > .count')).getPropertyValue('--view'), view: /rotate\(([-\d.e]+)deg\)/.exec(document.getElementById('table').style.transform)[1] }));
-  ok(Math.abs(parseFloat(exact.badge) - exact.view) < 0.01, `once the fingers lift, the badges turn back by the view's exact angle (${exact.badge}, the view ${exact.view}°)`);
+  let b = await badges();
+  ok(Math.abs(b.view - b.rot) < 0.01, `once the fingers lift, the badges turn back by the view's exact angle (${b.view}°, the view ${b.rot}°)`);
+
+  section('§2k B4 (pinch): a pinch-zoom on the phone from the fit to 12×, over the same stacks (their size waits for a rest of the fingers, or the lift: D96)');
+  const pz = await gestureB4('pinch', { from: 20, to: 240 });
+  ok(pz.gaps.length > 30 && Math.abs(pz.zoomed - 12) < 0.5, `the scripted pinch zooms the view (${pz.zoomed.toFixed(2)}×, ${pz.gaps.length} frames)`);
+  b = await badges();
+  ok(Math.abs(b.bz - b.want) < 0.006, `once the fingers lift, the badges take the zoom's size (--bz ${b.bz}, ${b.want.toFixed(3)} wanted)`);
+
+  section('§2k B4 (twist, a rectangle that refits as it turns): 1,000 ×3 stacks on 1800 × 1200, where the badges\' exact size changes by over 25% as the view turns');
+  await loadStacks(1800, 1200, [100, 100], [32, 50]);
+  const tr = await gestureB4('twist (half a turn)', { turn: 1 });
+  ok(tr.gaps.length > 30 && Math.abs(tr.turned - 180) < 20, `the scripted twist turns the view (${tr.turned.toFixed(1)}°, ${tr.gaps.length} frames)`);
+  await refit();
 
   // --- Phase 1 (spec §1k): the 1,000-card table ---
 

@@ -116,10 +116,9 @@ function noticeWatch() {
 
 (async () => {
   const env = await h.start();
-  /** Player `name` on its own page (`ctx`: a device; `watchdog`: the page
-   *  may reload itself, h.js), with the RTC hook and the watches, once it shows the table. */
-  async function player(name, url, ctx, watchdog) {
-    const p = await env.page(name, { ctx, watchdog });
+  /** Player `name` on its own page (`ctx`: a device), with the RTC hook and the watches, once it shows the table. */
+  async function player(name, url, ctx) {
+    const p = await env.page(name, { ctx });
     for (const f of [L.rtcHook, noticeWatch, hintWatch, placeholderWatch]) await p.addInitScript(f);
     await p.goto(url);
     await h.joinAs(p, name);
@@ -128,7 +127,7 @@ function noticeWatch() {
     return p;
   }
   const host = await player('Alice', env.url);
-  const bob = await player('Bob', host.url(), undefined, true); // (the watchdog section closes the host)
+  const bob = await player('Bob', host.url());
   const act = (a) => L.act(host, a);
   const notes = (p) => p.evaluate(() => window.__notes || []);
   /** The client point of table point (x, y) on page p (a probe in #table: the view's turn, zoom and pan apply). */
@@ -174,7 +173,7 @@ function noticeWatch() {
   ok(!!at && Math.abs(at.x - probe.x) < 1 && Math.abs(at.y - probe.y) < 1, `and it is drawn there: a probe at (600, 470) in #table sits at its centre (${probe.x.toFixed(1)},${probe.y.toFixed(1)} vs ${at && `${at.x.toFixed(1)},${at.y.toFixed(1)}`})`);
 
   section('catalog: a guest joining draws every piece with its face, once — the boxes come before the first snapshot');
-  const total = Object.keys(await items()).length, carol = await player('Carol', host.url(), P.PHONE, true);
+  const total = Object.keys(await items()).length, carol = await player('Carol', host.url(), P.PHONE);
   ok(await carol.waitForFunction((n) => document.querySelectorAll('.item').length >= n && window.__ct.perf.lastSnapRenderMs > 0, total, { timeout: 45000 }).then(() => true, () => false), `Carol's phone draws the table (${total} items)`);
   await h.sleep(1500); // (her registration snapshot follows: it redraws nothing)
   const cj = await carol.evaluate(() => ({ ph: window.__ph, drawn: window.__ct.perf.drawn, dom: document.querySelectorAll('.item').length, ms: window.__ct.perf.lastSnapRenderMs }));
@@ -525,7 +524,10 @@ function noticeWatch() {
   const danT0 = Date.now();
   await dan.goto(hostUrl);
   await h.joinAs(dan, 'Dan');
-  for (const p of [bob, carol]) await p.evaluate(() => { window.__stay = 1; });
+  for (const p of [bob, carol]) {
+    await p.evaluate(() => { window.__stay = 1; });
+    p.watchdogOK = true; // (from now on their pages may reload themselves: h.js)
+  }
   const reloaded = bob.waitForEvent('load', { timeout: 120000 }).then(() => true, () => false), why = [];
   bob.on('console', (m) => { if (/^reconnecting via reload/.test(m.text())) why.push(m.text()); });
   const t0 = Date.now();

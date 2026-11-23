@@ -141,10 +141,12 @@ async function start(opts = {}) {
     browser, relayUrl, base,
     url: `${base}/cardtable/`,
     /** New isolated browser context (own localStorage = own player) + page.
-     *  The app's watchdog reloading the page ("reconnecting via reload: …")
-     *  is a failure: a link that never formed, which a second page then
-     *  hid. Only a page that a test means to lose its host or its relays
-     *  passes `o.watchdog`. */
+     *  On every tab of that context (this page, and any the test opens later
+     *  with context().newPage()), an uncaught error is a failure, and so is
+     *  the app's watchdog reloading it ("reconnecting via reload: …"): a
+     *  link that never formed, which a second page then hid. A tab that the
+     *  test means to lose its host or its relays has `watchdogOK` set: from
+     *  the start (`o.watchdog`, this page), or from the moment it will. */
     async page(label, o = {}) {
       // Reduced motion by default: animations must never make a check flaky
       // (the app honours prefers-reduced-motion); pass ctx: { reducedMotion: 'no-preference' } to see them.
@@ -154,12 +156,16 @@ async function start(opts = {}) {
         (err) => { console.error('[cdn]', err.message); return route.abort(); }));
       // CARDTABLE_TEST: the app exposes window.__ct (act, view, hand, log, perf).
       await ctx.addInitScript((r) => { window.CARDTABLE_RELAYS = [r]; window.CARDTABLE_TEST = true; }, o.relay || relayUrl);
-      const page = await ctx.newPage();
-      page.on('console', (m) => {
-        if (!o.watchdog && /^reconnecting via reload/.test(m.text())) { failures++; console.error(`[${label} WATCHDOG RELOAD]`, m.text()); }
-        else if (m.type() === 'error' && !opts.quietConsole) console.log(`[${label} console.error]`, m.text().slice(0, 200));
+      // (the context emits 'page' for every tab, newPage()'s own before it resolves)
+      ctx.on('page', (tab) => {
+        tab.on('console', (m) => {
+          if (!tab.watchdogOK && /^reconnecting via reload/.test(m.text())) { failures++; console.error(`[${label} WATCHDOG RELOAD]`, m.text()); }
+          else if (m.type() === 'error' && !opts.quietConsole) console.log(`[${label} console.error]`, m.text().slice(0, 200));
+        });
+        tab.on('pageerror', (e) => { failures++; console.error(`[${label} PAGEERROR]`, e.message); });
       });
-      page.on('pageerror', (e) => { failures++; console.error(`[${label} PAGEERROR]`, e.message); });
+      const page = await ctx.newPage();
+      page.watchdogOK = !!o.watchdog;
       return page;
     },
     async done() {

@@ -162,9 +162,17 @@ top of `core.js` and README "How it works".
   `join`) wait up to 30 s, so a second page's link could hide a first that
   never formed. So `env.page` counts a watchdog reload (a page's console
   saying "reconnecting via reload: …") as a failure of the suite, printed
-  with the page's label as `[label WATCHDOG RELOAD]`; only a page that a
-  test means to lose its host or relays opts in, with `env.page(label,
-  {watchdog: true})` (t-p2-review's Bob, Carol, Dan and Hana). t-p1-bench,
+  with the page's label as `[label WATCHDOG RELOAD]`, as it does an
+  uncaught error (`[label PAGEERROR]`) — on every tab of that player's
+  browser: the page it opens, and any the test opens later with
+  `context().newPage()` (t-bridge's rejoining guest, t-sync-relay's twin
+  tab, the returning hosts of t-sync-ui and t-p2-review). Only a tab that a
+  test means to lose its host or relays opts out, by `watchdogOK`, from the
+  moment it may reload: from the start with `env.page(label, {watchdog:
+  true})` (t-p2-review's Dan and Hana), or set just then (t-p2-review's Bob
+  and Carol, as the host leaves). `t-harness.js` checks this: a child suite
+  whose page, or second tab, logs the watchdog's line or throws must fail
+  saying so, and one whose tab opted out must pass. t-p1-bench,
   t-p1-delta and t-p2-hidden (case 13) also fail a join or reload whose
   links don't form within 15 s at once, saying what both sides see (their
   "● n" and relay status). `t-p2-link.js` is the regression. Of two pages
@@ -343,9 +351,10 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
   `.lockb`; a `.pname` at most 2×; the rings' widths: it matches a selected
   item too; a coordinate's, capped by its board's `--lmax`), rule 1 a
   board text's `--view`, rule 2 the badges' `--view`. While two fingers
-  move the view, rule 2 is left as it is and rule 0 follows in steps
-  (written only once the growth the view calls for differs by more than
-  25%, `BZ_STEP`); both are exact once the fingers lift (D96). A selected
+  move the view, rules 0 and 2 are left as they are; once the fingers rest
+  (`PINCH_REST_MS`, 120 ms without a move), rule 0 takes this view's growth
+  if the zoom has changed by more than 25% (`BZ_STEP`) since it was
+  written; both are exact once the fingers lift (D96). A selected
   piece or card pile shows a ring: `outline` on a card pile's `.cardbox`
   and a rect's `.pface`, a `box-shadow` ring set off
   by a dark edge on a round or disc one, and `filter: drop-shadow(…)` on the
@@ -555,12 +564,16 @@ own 1,000-piece table (a move patch of a token; 50 `t.find({kind: 'die'})`).
 A join or reload whose WebRTC links don't form within 15 s fails at once,
 with both sides' status (no retry: see "Links fail loudly" above); one
 linked to everyone that gets no table fails too. After the bench box, B4
-also twists the phone (two touch pointers, half a turn in 3 s, CPU × 2)
-over 1,000 ×3 stacks: no long task over 50 ms while the fingers move, the
-rAF p95 within the pan's budget (after one twist not measured: the table's
-first turn off its axes redraws its layer once, a 60–65 ms frame with these
-badges), then one task under 150 ms as the badges settle once they lift, at
-the view's exact angle (D96).
+also takes three two-finger gestures on the phone (two touch pointers, 3 s,
+CPU × 2, from the fit at its seat: `gestureB4`) over 1,000 ×3 stacks: a
+twist of half a turn and a pinch from the fit to 12× on 6000 × 4000, and a
+half-turn twist on 1800 × 1200, whose fit — and the badges' exact size —
+changes by over 25% as it turns. Each: no long task over 50 ms while the
+fingers move, the rAF p95 within the pan's budget (after one gesture not
+measured: the table's first turn off its axes, or first zoom that far,
+redraws its layer once, a 60–200 ms frame with these badges), then no
+task over 150 ms as the badges settle once they lift, at the view's exact
+angle after the twist, at the zoom's size after the pinch (D96).
 **`p2t-lib.js`**: `join` (a player, once the host knows it; `o.rtc` adds
 the RTC hook, `page.pid`), `waitView`/`viewOf` (an expression over `v`,
 `me`, `a`), `tf` (#table's pan, turn and scale), `wrap`, `fit` (§2g's
@@ -696,6 +709,18 @@ West seat on a phone in landscape keeps the notices, a toast and the
 opened watchers' box in the margins beside the felt as the view shows it.
 `t-p1-store.js` hides the host's tab while a save is in flight, moves,
 and hides it again: one save open at a time, and the last move saved (D99).
+After its fourth review: `env.page` watches every tab of a player's
+browser, not only the page it opens, and a tab opts out (`watchdogOK`) from
+the moment it may reload — t-p2-review's Bob and Carol as the host leaves,
+no longer from their first join; `t-harness.js` is new (above). The badges'
+size waits for the fingers to rest (D96): `t-p2-tables.js` pinches from the
+fit to 3× in three legs, resting after each — `--bz` never changes while
+the fingers move, and takes the zoom's size at each rest — and, on the tall
+table in landscape zoomed in 2.5×, twists a quarter turn resting halfway:
+`--bz` stays until the lift, though the new fit changes the exact size by
+1.6×. t-p1-bench's B4 adds a pinch from the fit to 12× and a half-turn
+twist on an 1800 × 1200 rectangle (it failed both at the third review's
+fixes: long tasks of 52–83 ms and 669 ms while the fingers moved).
 
 ## Storage and images (Phase 1B)
 
