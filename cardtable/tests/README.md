@@ -270,9 +270,13 @@ top of `core.js` and README "How it works".
   or on another player's die sends nothing, the die's bar stays empty and
   the host's bar on the board offers only `lock` and `give` (2B's full bar);
   `roll all` over more than 20 dice is said, and sends nothing. Case 13's
-  host reload waits for the reloaded host's WebRTC link to Mallory as
-  t-p1-delta's `reload()` does (45 s, a reload tried again at most twice
-  when the link never formed); linked but without a snapshot fails at once. `t-ui.js`'s
+  host reload waits 45 s for the reloaded host's WebRTC link to Mallory;
+  a link that never formed (a full run's load can stall signalling for
+  minutes, as t-p1-delta notes) is tried again with a fresh side — the host
+  reloads again, then Mallory is replaced by a fresh raw peer who keeps
+  what she received and her seat (so `M` and `X` are `let`) — and each
+  failed try logs what both sides saw (her peers and relay sockets, the
+  host's status line); linked but without a snapshot fails at once. `t-ui.js`'s
   "seat labels follow a new table size": at a 1600 × 1400 view (no size
   draws small labels there, which are redrawn anyway), every seat label
   stays centred on its seat, `seatR(w)` from the centre, as the host's size
@@ -307,8 +311,8 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
   `del`), plus the host's `lock` on a locked one. Only what this player may
   do appears: an item someone else owns offers no move, a locked one
   nothing that moves, turns or removes it, and a die no rotation; a bar with
-  nothing in it stays hidden. Keys (not in an input, nor on a button) run
-  the bar's own commands when it shows them: R → `rr`, Shift+R → `rl`, F →
+  nothing in it stays hidden. Keys (not in an input, nor on a button; a press on the table
+  lets go of a focused button) run the bar's own commands when it shows them: R → `rr`, Shift+R → `rl`, F →
   `flip`, Space → `roll`, Delete / Backspace → `del`; Esc deselects.
 - **Gestures.** A drag on a ×N stack splits one off (`split {n: 1}`, at the
   drop or `onto` a matching stack); Shift, or ✥ armed, moves it all; a plain
@@ -357,7 +361,7 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
 entries); `t-p2-cli.js` expects the host's bar on a locked board to offer
 `lock,give`; `core-p2.test.mjs` (R) checks that the public bag carries its
 `box` (D88; `specPub` adds it); `t-p2-hidden.js` case 13 waits for the
-reloaded host's link as above.
+reloaded host's link as above, with a fresh Mallory as the last resort.
 
 ## Storage and images (Phase 1B)
 

@@ -2231,6 +2231,9 @@ function updatePinch() {
 tableEl.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || e.target.closest('#action-bar')) return;
   closeSeatMenu();
+  // (the preventDefault below also keeps the focus where it was: let it go, as a
+  // click elsewhere would, so the keys reach the table and not, say, 🧭)
+  document.activeElement?.blur?.();
   tPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (tPtrs.size === 2) { e.preventDefault(); startPinch(); return; }
   if (tPtrs.size > 2 || pinch) return;
