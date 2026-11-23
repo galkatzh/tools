@@ -113,7 +113,9 @@ A thin wrapper over the table's existing ops (today in `core.js`):
   orders, face-down identities, hidden pieces and bag contents — guests
   never receive those, see README "Honest limits").
   - `t.item(id)` → `{id, ...item}` (a pile with its `cards`, a bag with its
-    `of`), or `null`: one lookup, whatever the table's size.
+    `of` and its `box`: the box whose setup made it, which decides who may
+    lock it — public, like the box itself, while `of` never leaves the
+    host), or `null`: one lookup, whatever the table's size.
   - `t.find({kind, name, up, type, owner})` → the matching items. `kind`:
     `'card'`, `'pile'`, `'piece'`, `'supply'`, `'bag'`, or a piece kind
     (`'token'`, `'tile'`, `'die'`, `'board'`: pieces of that kind); `name`:

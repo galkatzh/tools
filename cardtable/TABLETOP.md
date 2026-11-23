@@ -450,13 +450,45 @@ sync and rendering, and the Worker together with `handle`.
      (magic bytes, size, header pixel size, hash) before any peer stores
      them; decks ingested outside the action queue; every module import
      versioned (`?v=MODULE_V`).
-2. **Pieces, dice and boards.**
+2. **Pieces, dice and boards.** *Done.*
    - The piece model (`k:'g'`): tokens, tiles and dice with `roll`.
    - Board images, lock, owner and rotation steps.
    - Identical stacks ×N, supplies and bags.
    - Rectangular tables, named seats, and the hand bar hiding.
    - Free-table interactions and the hidden-face reduction in the public view.
    - *Demos:* draughts and backgammon, played by hand.
+   - As built (README "Pieces, dice and boards"): game boxes in the
+     catalog beside the decks, checked by one gate (`cleanBox`) wherever
+     they come from, deduplicated by content and "built in" only by
+     content; `grid.js` for board geometry and addresses; `pieces.js` for
+     the drawing; state v3 (`table`, `seats`, the boards' z band). The
+     decisions taken on the way:
+     - A board's structure (grid, spaces, zones, links) is declared and
+       drawn now, as an SVG our code builds from numbers only — no images,
+       no markup from a box; what it *means* (snapping, addresses) comes in
+       phase 3.
+     - Dice and dominoes get their dots from a `pips` face field, not from
+       Unicode glyphs, which iOS draws unevenly.
+     - A piece can belong to a seat ("seat:white"): it follows whoever sits
+       there. An offline player's named seat waits for them; the host can
+       free it.
+     - The host is held to owner checks like everyone, and gives pieces away
+       instead.
+     - On touch, a drag takes one piece from a ×N stack; "Move all" in its
+       bar arms a whole-stack drag for 5 s (there is no Shift key).
+     - `t.roll` and `t.random` come with the human roll; the other
+       components from code wait for phase 3.
+     - A piece whose box is gone stays on the table as a "?", never deleted.
+     - Guests get a box without its setup, which may hold hidden
+       information.
+     - A hand holds at most 1,000 entries and a pile 5,000 members: a supply
+       never runs out, and nothing may grow without end.
+     - A bag remembers the box whose setup made it, which decides who may
+       lock it; that is public (it names a box, never what the bag holds).
+     - A back hides boards only or non-boards only, and the face-down
+       pieces of a shuffled group must agree on what everyone sees of
+       them (rotation, lock, count, owner): otherwise the shuffle would
+       give them away.
 3. **Space and full-rules scripting, in a Worker.**
    - Grids, spaces, zones, links and snapping, with addresses in the log.
    - Rules in a Worker with a watchdog, and atomic hooks.

@@ -83,6 +83,27 @@ select {
   pointer-events: none; z-index: 9000; white-space: nowrap; box-shadow: 0 2px 8px #0009;
 }
 .seat.offline { opacity: 0.45; }
+/* a named seat nobody holds: "White — empty", dashed in the seat's colour */
+.seat.ghost { border-style: dashed; background: #0f172a99; color: #cbd5e1; font-weight: 500; box-shadow: none; }
+/* the seat menu (a tap on a label): screen space, finger-sized */
+#seat-menu {
+  position: absolute; z-index: 100001; display: flex; flex-direction: column; gap: 4px; padding: 5px;
+  background: #0f172af0; border-radius: 10px; box-shadow: 0 4px 14px #000c; max-height: 60%; overflow-y: auto;
+}
+#seat-menu button { padding: 8px 12px; text-align: left; white-space: nowrap; }
+/* watchers (top right): who watches, and a watcher's way back to a seat */
+#watch-box {
+  position: absolute; top: 8px; right: 8px; z-index: 9600; display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  max-width: calc(100% - 16px); pointer-events: none;
+}
+#watchers, #watch-me {
+  background: #0f172ae6; border-radius: 999px; padding: 4px 12px; font-size: 13px; color: #e2e8f0;
+  box-shadow: 0 2px 8px #0009; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+#watch-me { display: flex; align-items: center; gap: 8px; padding-right: 4px; pointer-events: auto; white-space: normal; border-radius: 14px; }
+#sit-btn { background: #059669; padding: 5px 12px; }
+/* nothing to hold and an empty hand: no hand bar (app.js renderAll) */
+body.nohand #hand-bar { display: none; }
 /* a table drawn small (phones, .small-table set by renderPlayers): small,
    see-through labels, so the cards under the rim stay readable */
 .small-table .seat { font-size: 10.5px; padding: 1px 6px; background: #0f172a8c; }
@@ -253,45 +274,73 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 }
 
 /* --- pieces, supplies, bags and boards (pieces.js; sized w × h by app.js) ---
-   A face is one grid cell holding its layers: colour, image, label, text, pips.
-   Every selector here ends in a class only pieces carry: one ending in a
-   universal or a card's class would be matched against all 1,000 cards on
-   every style pass (B4). */
+   A face is one grid cell holding its layers: colour, image, board SVG,
+   label, text, pips. Every selector here ends in a class only pieces carry:
+   one ending in a universal or a card's class would be matched against all
+   1,000 cards on every style pass (B4). */
 .pface {
   height: 100%; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center;
   overflow: hidden; box-shadow: 0 1px 2px #0006, 0 3px 8px #0005;
 }
-.pimg, .plabel, .ptext, .pips, .pips2 { grid-area: 1 / 1; }
-.pimg { width: 100%; height: 100%; }
-.plabel { line-height: 1; font-weight: 700; }
+.pimg, .psvg, .plabel, .ptext, .pips, .pips2 { grid-area: 1 / 1; }
+.pimg, .psvg { width: 100%; height: 100%; }
+.psvg { pointer-events: none; }
+.blabels { font-family: Georgia, 'Times New Roman', serif; font-weight: 700; opacity: 0.85; }
+.plabel { line-height: 1; font-weight: 700; text-shadow: 0 1px 0 #ffffff30, 0 -1px 0 #0003; }
 .ptext {
   font-size: 11px; line-height: 1.2; padding: 6%; overflow: hidden; text-align: center;
   display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
 }
 .pips { width: 80%; height: 80%; display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr); place-items: center; }
 .pip { width: 64%; height: 64%; border-radius: 50%; }
-.pip.on { background: currentColor; }
+.pip.on { background: currentColor; box-shadow: inset 0 1px 1px #0006; }
 .pips2 { width: 100%; height: 100%; display: grid; grid-template: minmax(0, 1fr) / 1fr 1fr; place-items: center; }
 .pips2.tall { grid-template: 1fr 1fr / minmax(0, 1fr); }
 .pips2 > .pips + .pips { border-left: 2px solid currentColor; }
 .pips2.tall > .pips + .pips { border-left: 0; border-top: 2px solid currentColor; }
-.pface.placeholder { background: #cbd5e1; color: #475569; font-size: 30px; font-weight: 700; }
+.pface.placeholder { background: #cbd5e1; color: #475569; font-size: 30px; font-weight: 700; border: 2px dashed #64748b; }
 .pface.pback { background-image: radial-gradient(circle, #ffffff1f 0 30%, #0000 31%); background-size: 12px 12px; }
-.shape-rect .pface { border-radius: 8%; }
+/* shapes (spec §2g): rect 8%, round and disc 50% (a disc has a rim and an inset
+   shadow, like a checker), hex, meeple and pawn cut out by a polygon */
+.shape-rect .pface { border-radius: 8%; box-shadow: inset 0 -3px 0 #0002, inset 0 2px 0 #fff4, 0 1px 2px #0006, 0 3px 8px #0005; }
 .shape-round .pface, .shape-disc .pface { border-radius: 50%; }
-.shape-disc .pface { box-shadow: inset 0 0 0 3px #0000002e, inset 0 -4px 7px #0004, 0 2px 5px #0008; }
+.shape-disc .pface {
+  background-image: radial-gradient(circle at 50% 50%, #0000 0 52%, #00000024 53% 56%, #0000 57%), radial-gradient(circle at 35% 30%, #ffffff38, #0000 60%);
+  box-shadow: inset 0 0 0 3px #0000004d, inset 0 -4px 7px #0005, 0 2px 0 #0006, 0 3px 7px #0008;
+}
 .shape-hex .pface { clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%); }
 .shape-meeple .pface { clip-path: polygon(35% 0, 65% 0, 71% 18%, 64% 34%, 100% 44%, 100% 60%, 76% 60%, 86% 100%, 56% 100%, 50% 80%, 44% 100%, 14% 100%, 24% 60%, 0 60%, 0 44%, 36% 34%, 29% 18%); }
 .shape-pawn .pface { clip-path: polygon(40% 0, 60% 0, 70% 14%, 64% 32%, 57% 42%, 74% 84%, 90% 100%, 10% 100%, 26% 84%, 43% 42%, 36% 32%, 30% 14%); }
+/* a clip-path cuts its own shadow off: the item casts it instead */
+.item.shape-hex, .item.shape-meeple, .item.shape-pawn { filter: drop-shadow(0 2px 3px #0009); }
 .item.selected .pface, .item.selected .bagbox { outline: 3px solid #fbbf24; outline-offset: 1px; }
+.item.shape-round.selected .pface, .item.shape-disc.selected .pface { outline: 0; box-shadow: 0 0 0 3px #fbbf24, 0 3px 8px #0008; }
+/* a pile of pieces: its top, on a stack of edges */
+.item.multi .pface { box-shadow: 2px 2px 0 #cbd5e1, 4px 4px 0 #94a3b8, 5px 5px 8px #0007; }
 .item.board { cursor: default; }
-.item.board .pface { border-radius: 6px; box-shadow: 0 4px 18px #0009; }
-.bagbox {
-  height: 100%; border-radius: 34% 34% 14px 14px; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  color: #fef3c7; font-weight: 700; box-shadow: inset 0 -8px 14px #0005, 0 3px 8px #0007;
+.item.board .pface { border-radius: 6px; box-shadow: inset 0 0 0 2px #0003, 0 6px 22px #000a; }
+/* badges (pieces.js badgesHTML): the owner's dot, and 🔒 while selected */
+.item .odot {
+  position: absolute; left: -5px; top: -5px; width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid #f8fafc; box-shadow: 0 1px 3px #000a; pointer-events: none;
 }
-.bagbox .bname { font-size: 13px; max-width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bagbox .bn { font-size: 22px; }
+.item .lockb { display: none; position: absolute; left: 50%; bottom: -12px; transform: translateX(-50%); font-size: 15px; font-style: normal; pointer-events: none; filter: drop-shadow(0 1px 2px #000); }
+.item.selected .lockb { display: block; }
+.item.board .lockb { bottom: 8px; }
+/* dice: a roll tumbles them on every screen (pieces.js tumble) */
+.tumble .pface { animation: tumble 450ms ease-out; }
+@keyframes tumble {
+  0% { transform: rotate(0) scale(1); }
+  45% { transform: rotate(200deg) scale(1.28); }
+  100% { transform: rotate(360deg) scale(1); }
+}
+/* a bag: a drawn pouch in its colour (currentColor), its name and its count over it */
+.bagbox { height: 100%; display: grid; grid-template: 1fr auto auto 14px / minmax(0, 1fr); justify-items: center; }
+.bagbox .pouch { grid-area: 1 / 1 / 5 / 2; width: 100%; height: 100%; overflow: visible; filter: drop-shadow(0 3px 4px #0009); }
+.pouch .pbody { fill: currentColor; }
+.bagbox .bname, .bagbox .bn { grid-column: 1; z-index: 1; /* above the pouch, which its filter lifts */ color: #fef3c7; font-weight: 700; text-shadow: 0 1px 2px #000c; max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bagbox .bname { grid-row: 2; font-size: 12px; }
+.bagbox .bn { grid-row: 3; font-size: 22px; line-height: 1.1; }
 .hcard .pface { border-radius: 7px; }
 /* a rectangular table: a plain felt, round corners, no printed ring */
 #table.rect { border-radius: 24px; background: var(--felt); box-shadow: inset 0 0 60px #0008, 0 0 0 3px #7a4f2c, 0 0 0 5px #2b1a0e, 0 0 44px #000c; }
@@ -447,6 +496,7 @@ dialog ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 14px; }
 @media (prefers-reduced-motion: reduce) {
   .item, .hcard, button, .cardbox { transition: none; }
   .seat.me.turn { animation: none; box-shadow: 0 0 0 4px #f59e0b, 0 0 16px #f59e0b99; }
+  .tumble .pface { animation: none; }
   #turn-cue { animation: none; }
   .hcard:hover { transform: none; }
 }

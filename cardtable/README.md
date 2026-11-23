@@ -11,9 +11,9 @@ link, pick their nickname, and everyone plays on the same live table. A
 brand-new table asks the host *What are we playing?* in a slim strip along
 its top edge (never a pop-up; once friends sit down it shrinks to a 🎲 chip
 in the corner, clear of their seats): one click starts Hold'em, Cards Against
-Humanity, Bridge, turn order or a simple dealer, keeps the free table, or
-opens the 📜 script editor; the **🎲 Games** button offers the same picker
-any time.
+Humanity, Bridge, **Draughts**, **Backgammon**, turn order or a simple
+dealer, keeps the free table, or opens the 📜 script editor; the **🎲 Games**
+button offers the same picker any time.
 
 The table is **round** and everyone gets a **seat** on the rim (host-assigned
 into the largest empty arc, so two players sit opposite, a third between
@@ -59,6 +59,60 @@ buttons move into the margins beside the round table, off the cards. With
 *reduce motion* set in the OS, nothing glides, flips, pulses or falls — the
 cues still show.
 
+## Pieces, dice and boards
+
+Beyond cards, the table holds **game pieces**: tokens, tiles, dice and
+boards, from a *game box* (a few KB of JSON: the piece types, their faces
+and backs, the table, the seats and the starting layout). Draughts and
+Backgammon ship built in, art-free: pick them from 🎲 (on a table in use the
+host is asked first — the table is cleared, and the rules switched off:
+these are played by hand). Pieces look like pieces — discs with a rim,
+tiles, dice with pips, meeples, pawns, hexes — and a board's squares,
+points, lines and coordinates (a–h, 1–8) are drawn crisp at any zoom.
+
+Playing on the free table:
+
+- **Drag** a piece to move it. A **×N stack** gives you one piece per drag
+  (drop it on a matching stack to add it there); **Shift+drag** — on a touch
+  screen, **✥ Move all** in the piece's bar — moves the whole stack. A
+  **supply** (∞) hands out a new piece per drag; drop a piece back on its
+  supply to return it, on a **bag** to put it in, on another piece or a pile
+  of the same size to stack them, on the hand bar to hold it (if it can be
+  held).
+- **Double-click** turns a piece over (or to its next face), takes one out of
+  a supply or a bag, and **rolls a die** — together with every die touching
+  it (side by side means one throw: backgammon's two dice, a handful of
+  three). Every screen sees the dice tumble.
+- **Click** a piece for its bar: Flip, 🎲 Roll, ⟲ ⟳, ✂ Take 1, ✋ Hand,
+  🔒 Lock, 👤 Claim / Release (and the host's Give ▸), 🗑. Keys, with a
+  piece selected: **R** / **Shift+R** rotate, **F** flips, **Space** rolls,
+  **Delete** removes, **Esc** deselects. On a touch screen, press and hold a
+  piece to read its face.
+- **Owners and locks.** A piece can belong to a player or to a seat (a
+  coloured dot; draughts men belong to the Light and Dark seats, so they
+  follow whoever sits there). A **locked** piece stays put; boards are
+  locked from the start. Dragging something you may not move — locked, or
+  someone else's — pans the view instead, so a board never gets in the way;
+  the bar only ever offers what you may do.
+- **Hidden pieces** show only their back, to everyone: nobody's screen, not
+  even its traffic, learns what a face-down tile or a bag holds. A box's
+  pieces and its `meta` data are public, though — anyone at the table can
+  read them (rules scripts read `t.type(…).meta`): never put a secret there.
+
+**Tables and seats.** A game can bring a **rectangular** table (draughts
+1400 × 1200): it fits the screen whichever way it turns, and each view turns
+in quarter turns so the player's own edge is at the bottom. The host's size
+menu shows it (▭ 1400 × 1200); picking a round size switches back, after a
+confirm. A game can also name its **seats** (Light and Dark): players take
+them in order, the rest **watch** (👀 top right). Tap a seat label for its
+menu — *Sit here* on a free seat, *Stand up (watch)* on your own; the host
+also seats players and moves them to the watchers. An offline player's seat
+waits for them. With ordinary seating, a watcher taps **Sit down**.
+
+**The hand bar hides** on a table with nothing to hold (draughts,
+backgammon) while your hand is empty, so the board gets the whole screen;
+it comes back as soon as something that can be held is on the table.
+
 ## How it works
 
 Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB-DESIGN.md):
@@ -67,9 +121,11 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   the table's state and every operation on it (dealing, shuffling, the
   public view, the deck sanitizer, the rules engine and its `t` facade) with
   no DOM or network, so the page and the Node tests run the same code;
-  `store.js` is storage (IndexedDB) and image checking; `app.js` is the
-  network, rendering and input around them, and `templates.js` holds the
-  shipped rules scripts.
+  `store.js` is storage (IndexedDB) and image checking; `grid.js` is board
+  geometry (cells, hexes, addresses like `e4`); `pieces.js` draws pieces,
+  bags and boards (a board's structure is one SVG built from numbers only);
+  `app.js` is the network, rendering and input around them, and
+  `templates.js` holds the shipped rules scripts and game boxes.
 
 - **Transport**: Trystero WebRTC, signaling over public Nostr relays — no
   server, no accounts. The room id + password live in the invite link's hash
@@ -418,3 +474,9 @@ asserting it never blocks for 50 ms. The benchmarks (`t-p1-bench.js`, `core-p1-b
 assert the Phase 1 budgets on a 1,000-card table: bytes per move, apply and
 render times, phone panning, snapshot size, indexed reads, the save's
 main-thread time and zero image bytes on a warm rejoin.
+Pieces have theirs: `core-p2.test.mjs` (game boxes, every piece action and
+refusal, the public view, seats; `core-p2-bench.mjs` times a 20-dice roll),
+`t-p2-hidden.js` (a raw attacker peer finds no hidden piece in anything the
+host sends), `t-p2-cli.js` (the terminal bridges' piece commands), and the
+browser suites for the free-table gestures, rectangular tables, named seats
+and the two demos; the benchmarks also run on a 1,000-piece table.

@@ -396,7 +396,22 @@ const needlesOf = (types) => Object.entries(types).flatMap(([id, ty]) => [id, ty
     `on the host's screen: the hidden one is {k:'g', b: null, …} and the shown one keeps t and f (${JSON.stringify(hg[0])})`);
   ok(await host.waitForSelector(`.item[data-id="${ghost}"] .pface.placeholder`, { timeout: 10000 }).then(() => true, () => false), 'it renders as the "?" placeholder');
   ok(hostErrors.slice(errs0).some((e) => /missing/i.test(e)), `the missing box is reported with console.error (${hostErrors.slice(errs0).find((e) => /missing/i.test(e))})`);
-  await M.waitForFunction((k) => window.M.got.state.slice(k).some(({ m }) => window.M.body(m).kind === 'snap'), before.state, { timeout: 30000 });
+  // The reloaded host's WebRTC connection to Mallory now and then never forms
+  // in a loaded full run (t-p1-delta's note on stalled connections): such a
+  // reload is tried again, twice at most. Once they ARE connected, the host
+  // must have sent her its public snapshot (every newcomer gets one): that
+  // failing is a real bug, never retried.
+  for (let k = 1; ; k++) {
+    const hostId = await host.evaluate(() => import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm').then((m) => m.selfId));
+    const linked = () => M.evaluate((x) => !!window.M.room.getPeers()[x], hostId);
+    const snapped = () => M.evaluate((k) => window.M.got.state.slice(k).some(({ m }) => window.M.body(m).kind === 'snap'), before.state);
+    if (await until(async () => (await linked()) && snapped(), 45000, 250)) break;
+    if (await linked()) throw new Error('the reloaded host is connected to Mallory but never sent her its public snapshot');
+    if (k === 3) throw new Error("the reloaded host's connection to Mallory never formed, three times");
+    console.log(`  (the reloaded host's connection to Mallory never formed — reloading it again, try ${k + 1})`);
+    await host.reload();
+    await host.waitForFunction((x) => window.__ct?.view()?.items?.[x], ghost, { timeout: 30000 });
+  }
   await M.act({ t: 'hello' });
   await M.waitForFunction(([k, p]) => window.M.got.state.slice(k).some(({ m }) => { const d = window.M.body(m); return d.kind === 'snap' && d.to === p; }), [before.state, MPID], { timeout: 30000 });
   const snaps = (await X.bodiesSince(before.state)).filter((d) => d.kind === 'snap');

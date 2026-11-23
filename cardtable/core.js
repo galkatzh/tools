@@ -948,7 +948,7 @@ export function pubItem(it, boxes) {
     const { cards, ...rest } = it, top = cards.at(-1);
     return { ...rest, n: cards.length, top: top && pubTop(top, boxes) };
   }
-  if (it.k === 'b') { const { of, box, ...rest } = it; return { ...rest, n: of.length }; } // (its box only decides who may lock it)
+  if (it.k === 'b') { const { of, ...rest } = it; return { ...rest, n: of.length }; } // (its `box` is public: it names the box whose setup made it, never what it holds)
   if (it.k === 'g' || it.k === 's') {
     const o = it.up === false ? { k: it.k, b: backRef(boxes, it.t) } : { k: it.k, t: it.t, f: it.f };
     Object.assign(o, { x: it.x, y: it.y, rot: it.rot, z: it.z });
@@ -1119,7 +1119,7 @@ const clockwise = (pl) => (pl.seat == null ? 1e9 : (pl.seat - 90 + 360) % 360);
 // boxes:  {boxId: Box (cleanBox)}; boxSrc: {boxId: {src: 'host' | 'upload' | 'script', by?: pid}} (host-written, never read from a box)
 // items:  {itemId: card {k:'c',x,y,rot,z,d,i,up} | pile {k:'p',…,name,cards:[{d,i,up} | {t,f,up}]}
 //          | piece {k:'g',…,t,f,up?:false,n?} | supply {k:'s',…,t,f,up?:false}
-//          | bag {k:'b',…,of:[{t,f,up?}],name,color?,hand?,box? (the box that made it: who may lock it; never public)}},
+//          | bag {k:'b',…,of:[{t,f,up?}],name,color?,hand?,box? (the box whose setup made it: who may lock it; public, D88)}},
 //          every kind with owner? (a pid or 'seat:<id>') and lock?
 // players: {pid: {name, color, online, seat (an angle; null: watching), seatId?, hand:[{d,i} | {t,f,up?}]}}; keys: {pid: seat key}
 /** A table over `host` (its state, mutated in place) — see the top of this file. */

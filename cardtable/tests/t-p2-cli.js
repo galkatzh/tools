@@ -418,7 +418,9 @@ const PROBE = `({ name: 'Probe', validate(t, a) {
   await host.mouse.click(...onBoard); // (a click toggles the selection: the double-click's two left it off)
   await bob.mouse.click(...onDie);
   const selected = (page, x) => page.evaluate((x) => document.querySelector(`.item[data-id="${x}"]`).classList.contains('selected'), x);
-  ok(await selected(host, I.board) && await barHidden(host), "Alice's click selects the locked board, and its bar shows nothing");
+  // (Phase 2B's full bar: the host may unlock a board and give it away, nothing more — it isn't hers to move, turn or remove)
+  const cmds = (page) => page.evaluate(() => [...document.querySelectorAll('#action-bar [data-cmd]')].map((b) => b.dataset.cmd).join());
+  ok(await selected(host, I.board) && await cmds(host) === 'lock,give', `Alice's click selects the locked board, and its bar offers only what the host may do: unlock it, give it (${await cmds(host)})`);
   ok(await selected(bob, dice[1]) && await barHidden(bob), "Bob's selects White's die, and its bar shows nothing");
   await h.sleep(1500);
   const sentUI = (await probed()).filter((e) => e.k > kUI).map((e) => e.a);

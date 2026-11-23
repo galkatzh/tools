@@ -105,11 +105,17 @@ top of `core.js` and README "How it works".
   path), `hand()` and `log()` this player's hand and log, `boxes()` the
   game boxes this page holds (`{boxId: Box}`, each passed `cleanBox`: a
   guest's from the `boxes` channel, the host's its table's), and `perf` the
-  counters (`snaps`, `patches`, `gaps`, `snapRequests`) and the last
-  durations: `lastApplyMs`, a received body folded into the view and the
-  whole screen redrawn (items, seats, hand, log, buttons); `lastRenderMs`,
-  `renderItems` alone, on any page; `lastTickMs`, the host's broadcast tick
-  (signing and sending start; its own screen's redraw is not in it).
+  counters (`snaps`, `patches`, `gaps`, `snapRequests`, and `drawn`: item
+  elements (re)drawn since the page loaded) and the last durations:
+  `lastApplyMs`, a received body folded into the view and the whole screen
+  redrawn (items, seats, hand, log, buttons); `lastRenderMs`, `renderItems`
+  alone, on any page; `lastSnapRenderMs` (B10), the last snapshot that drew
+  items: its fold, its DOM and the style and layout they cost (read at
+  once) — a guest's first snapshot draws the table, and the one that
+  registers it a moment later redraws nothing, so it doesn't count: after
+  a guest's (re)load this is its cold render of the whole table;
+  `lastTickMs`, the host's broadcast tick (signing and sending start; its
+  own screen's redraw is not in it).
 - **The tick in Node.** `T.takeDirty()`, then `T.patchContent(d)` (or
   `T.snapContent()` in the same tick), wrapped in `{v, kind, boot, seq,
   host}`, serialized once (`sharedText`), and `spliceBody({to, tp, base,
@@ -181,7 +187,9 @@ top of `core.js` and README "How it works".
   channel (a delta, or the whole catalog for a new connection), without
   their setups. A hidden piece's public form is `{k:'g', b: '<box>/<back>'
   | null, x, y, rot, z, n?, owner?, lock?}`: never its `t` or `f`; a bag
-  is `{k:'b', name, n, hand?, …}`: never its `of`.
+  is `{k:'b', name, n, hand?, box?, …}`: never its `of` (`box`, the box
+  whose setup made it, is public since D88: it decides who may lock the
+  bag, and names no content).
 - **Loading a box** (the host): `__ct.act({t: 'loadBox', box, setup: true,
   clear: true})`, with `box` in the shape of `templates.js` `BOXES`
   (`BOXES.draughts`, `BOXES.backgammon`: import `templates.js` in Node and
@@ -259,12 +267,97 @@ top of `core.js` and README "How it works".
   the tab's `/state` POST (`page.route`); `table`, `players` and `hand` as
   text, the same in both REPLs, control characters stripped (a supply of a
   box the tab lacks: `? unknown piece`); a double-click on a locked board
-  or on another player's die sends nothing and their bar stays empty; `roll
-  all` over more than 20 dice is said, and sends nothing. `t-ui.js`'s
+  or on another player's die sends nothing, the die's bar stays empty and
+  the host's bar on the board offers only `lock` and `give` (2B's full bar);
+  `roll all` over more than 20 dice is said, and sends nothing. Case 13's
+  host reload waits for the reloaded host's WebRTC link to Mallory as
+  t-p1-delta's `reload()` does (45 s, a reload tried again at most twice
+  when the link never formed); linked but without a snapshot fails at once. `t-ui.js`'s
   "seat labels follow a new table size": at a 1600 × 1400 view (no size
   draws small labels there, which are redrawn anyway), every seat label
   stays centred on its seat, `seatR(w)` from the centre, as the host's size
   selector goes 1300 → 1800 → 2400 → 1300, on the host and the guest.
+
+## Phase 2 (2B: the interaction UI, rect tables, seats, the demos)
+
+What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
+1,000-piece bench variants drive (spec §2g, §2k):
+
+- **Items.** `.item.piece.shape-{rect|round|disc|hex|meeple|pawn}` sized
+  w × h, plus `.supply`, `.board`, `.die`, `.pile.multi` (a pile of
+  pieces); `.item.bag` (a `.bagbox` holding the drawn `.pouch` SVG, `.bname`
+  and `.bn`, the count); a board's structure is the `svg.psvg` in its
+  `.pface`. Badges: `.count` ("×N" from 2, "∞" on a supply, a pile's
+  count), `.odot` (the owner's dot: `background` is the player's colour, or
+  the seat's for a seat-bound owner), `.lockb` (🔒, displayed only under
+  `.item.selected`). A roll puts `.tumble` on every rolled die's element for
+  450 ms on every screen, the roller's too (its animation is off under
+  reduced motion, which `h.start()` sets by default: the class still comes).
+- **`pieces.js` in Node** (B11): `import('../pieces.js')` works without a
+  DOM; `boardSVG(type)` takes a cleanBox'd board type (`cleanBox(box).types.x`)
+  and returns the SVG string, cached per type object (the same string, at
+  once, the second time).
+- **The bar** (`#action-bar`, built from the public view): each button has
+  `data-cmd` — pieces `flip`, `roll`, `rl`/`rr`, `split` (✂ Take 1), `all`
+  (✥ Move all: `.on` while armed, 5 s), `hand`, `zoom`, `lock` (🔒 Lock /
+  🔓 Unlock), `claim`, `release`, `give` (the host; opens `giveTo` buttons
+  with `data-to` = a pid or `seat:<id>`), `del`; supplies `take`,
+  `takeHand`; bags `pull`, `pullHand`; cards and piles as in Phase 1 (`flip`,
+  `zoom`/`peek`, `rl`, `rr`, `hand`, `draw`, `dealup`, `dealdn`, `shuffle`,
+  `del`), plus the host's `lock` on a locked one. Only what this player may
+  do appears: an item someone else owns offers no move, a locked one
+  nothing that moves, turns or removes it, and a die no rotation; a bar with
+  nothing in it stays hidden. Keys (not in an input, nor on a button) run
+  the bar's own commands when it shows them: R → `rr`, Shift+R → `rl`, F →
+  `flip`, Space → `roll`, Delete / Backspace → `del`; Esc deselects.
+- **Gestures.** A drag on a ×N stack splits one off (`split {n: 1}`, at the
+  drop or `onto` a matching stack); Shift, or ✥ armed, moves it all; a plain
+  drag on a supply sends `take {x, y}` (onto the hand bar: `{hand: true}`).
+  Drops of a moved piece: a matching ×N stack → `join`, its supply → `join`
+  (returned), a bag → `toBag`, a same-size pile piece → `stack`, a pile it
+  fits → `toPile`, the hand bar (a hand type) → `toHand`, else `move`.
+  A drag that starts on what the player may not drag (locked — boards are —
+  or someone else's) pans the view and sends nothing; a click still selects
+  it. Double-click: a die → `roll {ids}` of its handful (every die this
+  player may handle within one die-width, transitively, ≤ 20; the clicked
+  die first), a piece → `flip`, a supply → `take` next to it, a bag →
+  `pull` (into the hand when it has `hand`), a card → `flip`, a pile →
+  `draw`; nothing on a board or on someone else's item. A double-click
+  toggles the selection twice: select with one click. Touch: a long press
+  (≈ 450 ms) on a piece whose face has an image, a text or a label opens
+  `#peek` with that face until the finger lifts.
+- **Tables.** `#table.rect` for a rectangle. The host's `#size-sel` holds,
+  on a rectangle, a first option `value="rect"`, selected and disabled,
+  "▭ {w} × {h}"; choosing a round size confirms ("Switch to a round table?
+  Items outside it are pulled in.") and sends `table {shape: 'round'}`.
+  Zoom goes up to 4 · max(w, h) / 1300 on a rectangle (4 on a round table);
+  a rectangle's seat view turns in quarter turns, the seat's nearest edge at
+  the bottom.
+- **Seats.** A named seat nobody holds is a `.seat.ghost` label ("White —
+  empty", dashed in the seat's colour); a held one reads "White — Alice"
+  (its border the seat's colour; 🂠 counts only on a table with hand items or
+  for a non-empty hand). Labels let the pointer through; a click on one
+  (not on an item under it, a board aside) opens `#seat-menu` (buttons:
+  "Stand up (watch)", "Sit here", the host's "Seat ▸ {name}" and "Move to
+  watchers"). `#watchers` ("👀 Carol, Dan": online watchers) and, for a
+  watcher, `#watch-me` ("👀 You are watching — tap a free seat to sit"
+  with named seats; "👀 You are watching" and `#sit-btn` "Sit down" with
+  automatic seating), all in `#watch-box`, top right.
+- **The hand bar.** `body.nohand` (then `#hand-bar` is `display: none`)
+  iff the view has arrived, `!view.handy` and the hand is empty.
+- **The demos.** `GAMES` entries `draughts` and `backgammon` (`box`: their
+  `BOXES` key): `#games-list [data-game="draughts"]` (and the strip's) asks
+  "Clear the table and set up Draughts? The current game is discarded." on a
+  table with items or a rules state (accept the `dialog`), switches enabled
+  rules off, then sends `loadBox {box: BOXES.draughts, setup: true, clear:
+  true}`; the dialog then marks it playing.
+
+**Changed for 2B** (mechanism only; no assertion removed or weakened):
+`t-fun-games.js` lists the two box games in the strip and the dialog (9
+entries); `t-p2-cli.js` expects the host's bar on a locked board to offer
+`lock,give`; `core-p2.test.mjs` (R) checks that the public bag carries its
+`box` (D88; `specPub` adds it); `t-p2-hidden.js` case 13 waits for the
+reloaded host's link as above.
 
 ## Storage and images (Phase 1B)
 

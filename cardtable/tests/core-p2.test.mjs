@@ -1615,7 +1615,7 @@ function specPub(it, boxes) {
       const top = it.cards.at(-1);
       return { k: 'p', name: it.name, n: it.cards.length, ...pos, top: top && ('d' in top ? (top.up ? { d: top.d, i: top.i, up: true } : { d: top.d, up: false }) : (top.up ? { t: top.t, f: top.f, up: true } : { b: specBack(boxes, top.t), up: false })) };
     }
-    case 'b': return { k: 'b', name: it.name, n: it.of.length, ...(it.hand && { hand: true }), ...(it.color && { color: it.color }), ...pos };
+    case 'b': return { k: 'b', name: it.name, n: it.of.length, ...(it.hand && { hand: true }), ...(it.color && { color: it.color }), ...(it.box && { box: it.box }), ...pos };
     default: return { k: it.k, ...(it.up === false ? { b: specBack(boxes, it.t) } : { t: it.t, f: it.f }), ...(it.n >= 2 && { n: it.n }), ...pos };
   }
 }
@@ -2220,7 +2220,7 @@ function testReviewFixes() {
     ok(happened(run(T, HOST, { t: 'loadBox', box: POOL, setup: true })), 'the host sets up a box whose pieces anyone may lock: a bag of its tiles');
     const bag = Object.keys(items(T)).find((id) => items(T)[id].k === 'b'), poolBox = items(T)[bag]?.box;
     ok(poolBox && T.boxes[poolBox]?.name === 'Pool box', `the bag carries its box (${poolBox})`);
-    ok(!('box' in T.pub.get(bag)) && isDeepStrictEqual(T.pub.get(bag), specPub(items(T)[bag], T.boxes)), `the public bag doesn't (§2d): ${JSON.stringify(T.pub.get(bag))}`);
+    ok(T.pub.get(bag).box === poolBox && isDeepStrictEqual(T.pub.get(bag), specPub(items(T)[bag], T.boxes)), `so does the public bag (§2d, D88: a guest's bar offers 🔒 exactly when it may lock it): ${JSON.stringify(T.pub.get(bag))}`);
     const answers = [], probe = () => answers.push(happened(run(T, CAROL, { t: 'lock', id: bag, on: true })) && happened(run(T, CAROL, { t: 'lock', id: bag, on: false })));
     probe();
     ok(happened(run(T, BOB, { t: 'toBag', id: 'o', bag })), 'Bob puts a tile of another box in');

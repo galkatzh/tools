@@ -1111,12 +1111,15 @@ export const RULES_TEMPLATES = {
 })`,
 };
 
-/** One entry per shipped template (k = its RULES_TEMPLATES key), plus the
+/** One entry per shipped template (k = its RULES_TEMPLATES key), the box
+ *  games (`box`: a BOXES key — set up on a cleared table, rules off), the
  *  free table (rules off) and a custom script (the 📜 dialog). */
 export const GAMES = [
   { k: 'holdem', emoji: '🃏', title: "Texas Hold'em", short: "Hold'em", pitch: 'No-limit poker: chips, blinds, betting rounds, automatic showdown', players: '2–8 players' },
   { k: 'cah', emoji: '😈', title: 'Cards Against Humanity', pitch: 'Fill in the blank; the Card Czar crowns the funniest answer', players: '3+ players' },
   { k: 'bridge', emoji: '🤝', title: 'Bridge', pitch: 'Partners bid in the chat, then tricks, trumps, the dummy and scoring', players: '4 players' },
+  { k: 'draughts', emoji: '⛀', title: 'Draughts', box: 'draughts', pitch: 'Checkers on an 8 × 8 board, played by hand: move, jump, crown with a double-click', players: '2 players' },
+  { k: 'backgammon', emoji: '🎲', title: 'Backgammon', box: 'backgammon', pitch: 'The race around the board, played by hand: two dice and the doubling cube', players: '2 players' },
   { k: 'turns', emoji: '🔁', title: 'Turn order', short: 'Turns', pitch: 'Any game you like, one player at a time', players: '2+ players' },
   { k: 'dealer', emoji: '🤵', title: 'Simple dealer', short: 'Dealer', pitch: 'A "Deal 1 to all" button and nothing enforced', players: 'any number' },
   { k: 'free', emoji: '🖐', title: 'Free table', pitch: 'No rules: deal, move and flip cards however you like', players: 'any number' },
