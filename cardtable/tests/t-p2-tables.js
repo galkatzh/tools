@@ -33,7 +33,8 @@
 //      the notices, a toast and the opened watchers' box stay in the margins
 //      beside the felt as this view shows it; there, zoomed in, a twist
 //      alone leaves the badges' size until the fingers lift, though the
-//      table's fit changes it (D96)
+//      table's fit changes it (D96); a rest after a twist and a zoom gives
+//      them the view's exact size, or keeps theirs within 25% of it (D103)
 // Screenshots go to shots/tables-*.png for review (not asserted).
 const path = require('path');
 const h = require('./h');
@@ -568,15 +569,31 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
   ok(g2.watch.l >= g2.felt.r, `opened, the watchers' box (${JSON.stringify(g2.watch)}) stays in the right margin, clear of the felt (${JSON.stringify(g2.felt)})`);
   await shot(carol, 'tables-tall-landscape');
 
-  section('D96: a twist alone on the tall rectangle — its fit, and the badges\' exact size, change as it turns; only the zoom resizes them before the fingers lift');
+  section('D96, D103: twists on the tall rectangle — its fit, and the badges\' exact size, change as it turns: a twist alone leaves their size until the fingers lift, and a rest after a twist and a zoom gives them the view\'s exact size, or keeps theirs within 25% of it');
   // In landscape, zoomed in 2.5× first (a rest: the badges take that size),
-  // so that neither end of the quarter turn is held at BADGE_MAX.
-  const tw = await pinchTwist(carol, [{ d: [30, 75], a: [0, 0] }, { d: [75, 75], a: [0, 45] }, { d: [75, 75], a: [45, 90] }]);
-  const zoomed = tw.rests[0], turning = [...tw.moves.slice(1).flat(), ...tw.rests.slice(1)], refit = Math.max(tw.end.want / zoomed.want, zoomed.want / tw.end.want);
+  // so that neither end of the quarter turn is held at BADGE_MAX; turned,
+  // she zooms on. A rest resizes when both the view's exact size and the
+  // zoom's at the fit her fingers landed on (`atLanding`) differ from the
+  // badges' by over 25%, and writes the exact one.
+  const atLanding = (g, d) => Math.min(3, Math.max(1, 0.67 / ((g.start.s * d) / 30))); // (each gesture lands at a half-distance of 30 px)
+  const tw = await pinchTwist(carol, [{ d: [30, 75], a: [0, 0] }, { d: [75, 75], a: [0, 45] }, { d: [75, 75], a: [45, 90] }, { d: [75, 110], a: [90, 90] }]);
+  const [zoomed, , turned, on] = tw.rests, turning = [...tw.moves.slice(1, 3).flat(), ...tw.rests.slice(1, 3)], refit = step(turned.want, zoomed.want);
   ok(Math.abs(zoomed.bz - zoomed.want) < 0.006, `Carol zooms in 2.5× on her phone and rests: the badges take the zoom's size (--bz ${zoomed.bz}, ${zoomed.want.toFixed(3)} wanted)`);
   ok(refit > 1.25 && turning.every((m) => m.bz === zoomed.bz),
-    `then she twists a quarter turn, resting halfway and at the end: the badges keep that size until her fingers lift, though the new fit changes their exact size by ${refit.toFixed(2)}× (${turning.map((m) => m.bz).join(' ')})`);
-  ok(Math.abs(tw.end.bz - tw.end.want) < 0.006, `then they take it (--bz ${tw.end.bz}, ${tw.end.want.toFixed(3)} wanted)`);
+    `then she twists a quarter turn, resting halfway and at the end: the badges keep that size, though the new fit changes their exact size by ${refit.toFixed(2)}× (${turning.map((m) => m.bz).join(' ')})`);
+  ok(on.bz === zoomed.bz && step(on.want, on.bz) < 1.25 && step(atLanding(tw, 110), on.bz) > 1.25,
+    `then, turned, she zooms on to ${(110 / 30).toFixed(2)}× and rests: the badges keep theirs (${on.bz}), within 25% of the view's exact size (${on.want.toFixed(3)}), though at the fit she landed on the zoom would call for ${atLanding(tw, 110).toFixed(3)}`);
+  ok(Math.abs(tw.end.bz - tw.end.want) < 0.006, `once her fingers lift they take the exact size (--bz ${tw.end.bz}, ${tw.end.want.toFixed(3)} wanted)`);
+  await carol.tap('#view-btn');
+  // From the fit at West: a quarter turn while zooming by the refit (the
+  // exact size stays, the zoom at the landing fit calls for far less), then
+  // a zoom on to 2.5×, turned (both call for over 25% less: the exact size).
+  const tz = await pinchTwist(carol, [{ d: [30, 30 * refit], a: [0, 90] }, { d: [30 * refit, 75], a: [90, 90] }]), [both, further] = tz.rests;
+  ok(both.bz === tz.start.bz && step(both.want, both.bz) < 1.25 && step(atLanding(tz, 30 * refit), both.bz) > 1.25,
+    `from the fit (badges ×${tz.start.bz}), she twists a quarter turn while zooming ${refit.toFixed(2)}× and rests: the badges keep theirs (${both.bz}), as the view's exact size (${both.want.toFixed(3)}) is within 25% of it, though at the fit she landed on the zoom would call for ${atLanding(tz, 30 * refit).toFixed(3)}`);
+  ok(Math.abs(further.bz - further.want) < 0.006 && step(further.want, both.bz) > 1.25,
+    `she zooms on to 2.5× and rests: they take the view's exact size (--bz ${further.bz}, ${further.want.toFixed(3)} wanted; at the fit she landed on, ${atLanding(tz, 75).toFixed(3)})`);
+  ok(Math.abs(tz.end.bz - tz.end.want) < 0.006, `and keep it once her fingers lift (--bz ${tz.end.bz}, ${tz.end.want.toFixed(3)} wanted)`);
   await carol.tap('#view-btn');
   await carol.setViewportSize(P.PHONE.viewport);
 

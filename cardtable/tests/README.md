@@ -353,9 +353,10 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
   board text's `--view`, rule 2 the badges' `--view`. While two fingers
   move the view, rules 0 and 2 are left as they are; once the fingers rest
   (`PINCH_REST_MS`, 300 ms without a move: a hesitation is shorter), rule 0
-  takes the zoom's growth, at the fit the fingers landed on, if it differs
-  from rule 0's by more than 25% (`BZ_STEP`); both are exact once the
-  fingers lift (D96, D102). Tests read `PINCH_REST_MS` from app.js's text
+  takes the view's exact growth if it differs from rule 0's by more than
+  25% (`BZ_STEP`) and the zoom's growth at the fit the fingers landed on
+  does too (so a twist alone never resizes); both are exact once the
+  fingers lift (D96, D102, D103). Tests read `PINCH_REST_MS` from app.js's text
   (`p2t-lib.js`). A selected
   piece or card pile shows a ring: `outline` on a card pile's `.cardbox`
   and a rect's `.pface`, a `box-shadow` ring set off
@@ -578,7 +579,10 @@ badges), then no task over 150 ms as the badges settle once they lift, at
 the view's exact angle after the twist, at the zoom's size after the pinch
 (D96). Then the same pinch in four legs (D102): with the fingers
 hesitating 200 ms between them (`--bz`, read from its rule at the end of
-each pause, never changes; no long task over 50 ms), and resting
+each pause, never changes: the check a rest too short fails; no task over
+150 ms, as a hesitation alone can let the browser raster the layer again
+at the new zoom, which the next move waits for — 50–65 ms with `--bz`
+unchanged, in 3 of 52 measured pinches), and resting
 `PINCH_REST_MS` + 50 ms (at each rest `--bz` takes the zoom's size if it
 differs from it by over 25%, and the fingers move on 50 ms after that
 write: no task over 150 ms while they are down — a resize at a rest costs
@@ -744,9 +748,20 @@ just past 25% from the fit whose size is within 25% of the fit's ×3 (it
 keeps ×3), a 200 ms hesitation (no resize, though a rest there would),
 rests of `PINCH_REST_MS` + 200 ms that resize or keep by the 25% rule, and a
 lift that is exact; at 182d588 the first three fail (it wrote 2.44 at that
-first rest and at the hesitation). t-p1-bench's B4 adds the paused and
-rested pinches (above); at 182d588 the paused one fails: a 61 ms task as
-the fingers moved on, and `--bz` written at the hesitations.
+first rest, which the hesitation still showed; with a 120 ms rest alone,
+the hesitation's check fails on its own, a 2.06 write). t-p1-bench's B4
+adds the paused and rested pinches (above); at 182d588 the paused one
+fails on `--bz`, written at the hesitations (it also had a 61 ms task as
+the fingers moved on: since the sixth review the row's task budget is
+150 ms, as a hesitation's raster alone can cost 50–65 ms).
+After its sixth review (D103: a rest writes the view's exact size, when
+both it and the zoom's at the fit the fingers landed on differ from the
+badges' by over 25%), `t-p2-tables.js` adds, on the tall rectangle in
+landscape, a zoom after the quarter turn (to 3.67×: the badges keep 1.31,
+within 25% of the exact 1.46) and a second gesture from the fit: a
+quarter turn while zooming by the refit (they keep ×3, the exact size)
+and a zoom on to 2.5× (the exact 2.14). At c48b966 the three fail: it
+wrote the landing fit's size, 1.00, 2.00 and 1.31.
 
 ## Storage and images (Phase 1B)
 

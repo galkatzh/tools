@@ -19,10 +19,11 @@
 //        its layer once), then the badges settle with no task over 150 ms (a
 //        restyle of the 1,000 badges: in a frame that also moved the table it
 //        took 50–670 ms, where every frame of a twist paid it before D96).
-//        Then the pinch in four legs: with 200 ms hesitations (no resize, no
-//        long task over 50 ms), and with rests just past PINCH_REST_MS, where
-//        the badges resize and the fingers move on 50 ms later (no task over
-//        150 ms: a resize costs at a rest what it does at the lift)
+//        Then the pinch in four legs: with 200 ms hesitations (no resize; no
+//        task over 150 ms: a hesitation alone can let the browser raster the
+//        layer again, 50–65 ms), and with rests just past PINCH_REST_MS,
+//        where the badges resize and the fingers move on 50 ms later (no task
+//        over 150 ms: a resize costs at a rest what it does at the lift)
 //   B6   the host saves the 1,000-item table: every save's main-thread part ≤ 8 ms
 //        (__ct.perf.lastSaveSyncMs, around doSave's synchronous IndexedDB put): ten
 //        throttled saves (rapid play) and five unthrottled ones (a move 1.1 s
@@ -444,7 +445,11 @@ function placeholderWatch() {
   const step = (x, y) => Math.max(x / y, y / x), sizes = (r) => r.pauses.map((m) => `${m.bz} for ${m.want.toFixed(2)}`).join(', ');
 
   section(`§2k B4 (paused pinch): the same pinch in four legs, the fingers hesitating ${HESITATE_MS} ms between them, shorter than a rest (${P.PINCH_REST_MS} ms): the badges keep their size (D102)`);
-  const pp = await gestureB4('paused pinch', { from: 20, to: 240, legs: 4, pause: HESITATE_MS }, { p95: false });
+  // (Its task budget is B4_SETTLE's: a hesitation alone can let the browser
+  // raster the layer again at the new zoom, which the next move waits for,
+  // 50–65 ms with --bz unchanged. What a too-short rest would cost, a
+  // resize at a hesitation, the --bz check below catches.)
+  const pp = await gestureB4('paused pinch', { from: 20, to: 240, legs: 4, pause: HESITATE_MS }, { long: B4_SETTLE, p95: false });
   ok(pp.pauses.length === 3 && pp.pauses.every((m) => m.bz === 3) && pp.pauses.some((m) => step(m.want, 3) > 1.25),
     `no hesitation resizes the badges, though the zoom calls for over 25% less at one (--bz at each: ${sizes(pp)})`);
 

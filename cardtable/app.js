@@ -2088,16 +2088,18 @@ function rotv(x, y, a) {
 // pinch, a twist) neither is written: the badges keep their turn and size,
 // moving with the table as its pieces do. Once the fingers rest
 // (PINCH_REST_MS without a move: longer than a hesitation mid-pinch), the
-// badges take the zoom's size, at the fit the fingers landed on, if it
-// differs from theirs by more than BZ_STEP (pinchRest): no badge stays grown
-// over the pieces being zoomed in on, and no restyle buys a change you
-// can't see (held at BADGE_MAX, a 1.9× zoom moves the size 3.00 → 2.98); a
-// twist alone never resizes them (a rectangle refits as it turns: by its
-// fit, every twist would). They settle (upright, exact) once the fingers
-// lift. A resize still costs, at a rest or a lift: a task of 50–100 ms on
-// the B4 phone, then the browser rasters the table's layer again, which
-// fingers that move again within about 100 ms wait for (one more task of
-// 50–90 ms). D102 has the measures; B4's rested pinch, the budget.
+// badges take the view's exact size if it differs from theirs by more than
+// BZ_STEP, and the zoom's size at the fit the fingers landed on does too
+// (pinchRest, D103): no badge stays grown over the pieces being zoomed in
+// on; no restyle buys a change you can't see (held at BADGE_MAX, a zoom to
+// 3.46× the fit, 1.9× that of the rest before, moves the size 3.00 → 2.98);
+// and a twist alone never resizes them (a rectangle refits as it turns: by
+// its exact size alone, every twist would). They settle (upright, exact)
+// once the fingers lift. A resize still costs, at a rest or a lift: a task
+// of 50–100 ms on the B4 phone, then the browser rasters the table's layer
+// again, which fingers that move again within about 100 ms wait for (one
+// more task of 50–90 ms). D102 has the measures; B4's rested pinch, the
+// budget.
 const viewSheet = new CSSStyleSheet(), BADGE_MAX = 3, BZ_STEP = 1.25, PINCH_REST_MS = 300;
 viewSheet.replaceSync('#table .item > .count, #table .item > .odot, #table .item > .lockb, #table .pile > .pname, #table .item.selected, #table .blabels text {} '
   + '#table .psvg text {} #table .item > .count, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb {}');
@@ -2545,17 +2547,18 @@ function startPinch() {
     d0: Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1,
     ang0: (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI,
     t0: toTable({ clientX: m.x, clientY: m.y }), // table point pinned under the fingers
-    fit: scale / zoomZ, // the fit as the fingers land: a rest's badge size goes by it (pinchRest)
+    fit: scale / zoomZ, // the fit as the fingers land: whether a rest resizes the badges goes by it too (pinchRest)
     rest: 0, // the timer that sees the fingers rest (pinchRest)
   };
 }
 
-/** The fingers rest mid-pinch: the badges take the zoom's size, at the fit
- *  the fingers landed on, if it differs from theirs by more than BZ_STEP
- *  (see viewSheet). */
+/** The fingers rest mid-pinch: the badges take the view's exact size if it
+ *  differs from theirs by more than BZ_STEP, and so does the zoom's size at
+ *  the fit the fingers landed on — which a twist leaves as it is, though it
+ *  refits a rectangle (see viewSheet). */
 function pinchRest() {
-  const s = pinch.fit * zoomZ, bz = badgeSize(s);
-  if (Math.max(bz / badgeZ, badgeZ / bz) > BZ_STEP) sizeBadges(s);
+  const far = (s) => { const bz = badgeSize(s); return Math.max(bz / badgeZ, badgeZ / bz) > BZ_STEP; };
+  if (far(scale) && far(pinch.fit * zoomZ)) sizeBadges(scale);
 }
 
 /** The two-finger gesture ends: the badges, which kept their turn (and their size, but for a rest's) meanwhile, settle (layout). */
