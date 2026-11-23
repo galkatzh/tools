@@ -78,8 +78,8 @@ space's or zone's label only ever turns by a half turn: it never reads
 upside down, and still runs along its space). So do the badges — a pile's
 count and name, ×N, ∞, 🔒 — and a bag, and a pile's name always sits under
 its pile on your screen; while two fingers turn or zoom the view they move
-with the table, take the zoom's size when the fingers pause, and settle
-when they lift. A piece's own face (its
+with the table, take the zoom's size when the fingers rest a moment, and
+settle when they lift. A piece's own face (its
 label, text, pips, art) stays as it lies on the table.
 
 Playing on the free table:

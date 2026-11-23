@@ -352,9 +352,11 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
   item too; a coordinate's, capped by its board's `--lmax`), rule 1 a
   board text's `--view`, rule 2 the badges' `--view`. While two fingers
   move the view, rules 0 and 2 are left as they are; once the fingers rest
-  (`PINCH_REST_MS`, 120 ms without a move), rule 0 takes this view's growth
-  if the zoom has changed by more than 25% (`BZ_STEP`) since it was
-  written; both are exact once the fingers lift (D96). A selected
+  (`PINCH_REST_MS`, 300 ms without a move: a hesitation is shorter), rule 0
+  takes the zoom's growth, at the fit the fingers landed on, if it differs
+  from rule 0's by more than 25% (`BZ_STEP`); both are exact once the
+  fingers lift (D96, D102). Tests read `PINCH_REST_MS` from app.js's text
+  (`p2t-lib.js`). A selected
   piece or card pile shows a ring: `outline` on a card pile's `.cardbox`
   and a rect's `.pface`, a `box-shadow` ring set off
   by a dark edge on a round or disc one, and `filter: drop-shadow(…)` on the
@@ -564,16 +566,30 @@ own 1,000-piece table (a move patch of a token; 50 `t.find({kind: 'die'})`).
 A join or reload whose WebRTC links don't form within 15 s fails at once,
 with both sides' status (no retry: see "Links fail loudly" above); one
 linked to everyone that gets no table fails too. After the bench box, B4
-also takes three two-finger gestures on the phone (two touch pointers, 3 s,
-CPU × 2, from the fit at its seat: `gestureB4`) over 1,000 ×3 stacks: a
-twist of half a turn and a pinch from the fit to 12× on 6000 × 4000, and a
-half-turn twist on 1800 × 1200, whose fit — and the badges' exact size —
-changes by over 25% as it turns. Each: no long task over 50 ms while the
-fingers move, the rAF p95 within the pan's budget (after one gesture not
-measured: the table's first turn off its axes, or first zoom that far,
-redraws its layer once, a 60–200 ms frame with these badges), then no
-task over 150 ms as the badges settle once they lift, at the view's exact
-angle after the twist, at the zoom's size after the pinch (D96).
+also takes five two-finger gestures on the phone (two touch pointers, 3 s
+of moves, CPU × 2, from the fit at its seat: `gestureB4`) over 1,000 ×3
+stacks: a twist of half a turn and a pinch from the fit to 12× on 6000 ×
+4000, and a half-turn twist on 1800 × 1200, whose fit — and the badges'
+exact size — changes by over 25% as it turns. Each: no long task over 50
+ms while the fingers are down, the rAF p95 within the pan's budget (after
+one gesture not measured: the table's first turn off its axes, or first
+zoom that far, redraws its layer once, a 60–200 ms frame with these
+badges), then no task over 150 ms as the badges settle once they lift, at
+the view's exact angle after the twist, at the zoom's size after the pinch
+(D96). Then the same pinch in four legs (D102): with the fingers
+hesitating 200 ms between them (`--bz`, read from its rule at the end of
+each pause, never changes; no long task over 50 ms), and resting
+`PINCH_REST_MS` + 50 ms (at each rest `--bz` takes the zoom's size if it
+differs from it by over 25%, and the fingers move on 50 ms after that
+write: no task over 150 ms while they are down — a resize at a rest costs
+what the settle at the lift does). These two skip the p95 check: their
+moves are the pinch's, their pauses idle frames. The p95 rows compare
+against the empty-table pan measured once, near the start: on a box short
+of CPU for raster (another heavy job beside the run), a gesture's or a
+pan's p95 can read 33 ms (every other frame) with no long task at all, on
+the app before a change as after it (at the Phase 2 close-out's fifth
+review the 6000 × 4000 twist failed so in 3 runs of 8, and the 1,000-card
+pan once). A red p95 row with no long task points at the box, not the app.
 **`p2t-lib.js`**: `join` (a player, once the host knows it; `o.rtc` adds
 the RTC hook, `page.pid`), `waitView`/`viewOf` (an expression over `v`,
 `me`, `a`), `tf` (#table's pan, turn and scale), `wrap`, `fit` (§2g's
@@ -582,7 +598,8 @@ their menu, by click or tap), `feltPoint`, `mouseDrag`/`touchDrag` (CDP
 touches)/`dragOn`, `itemXY`/`clickItem`, `sentActs`, `rgb`, `shows`,
 `inViewport`, `boardTexts`/`upright` (a board's texts as the screen shows
 them, D91: see "`pieces.js` in Node" above), `badgeAngles`/`badgesUpright`
-(the same for the badges), `PHONE` and `BENCH`.
+(the same for the badges), `PHONE`, `BENCH` and `PINCH_REST_MS` (read
+from app.js's text: a rest of the fingers, D102).
 
 **`t-p2-review.js`**: the regressions of the 2B review, one section per
 issue (a desktop host, a desktop guest, an iPhone 13 watcher; see its
@@ -721,6 +738,15 @@ table in landscape zoomed in 2.5×, twists a quarter turn resting halfway:
 1.6×. t-p1-bench's B4 adds a pinch from the fit to 12× and a half-turn
 twist on an 1800 × 1200 rectangle (it failed both at the third review's
 fixes: long tasks of 52–83 ms and 669 ms while the fingers moved).
+After its fifth review (D102: a rest is 300 ms, and resizes by the badges'
+size): `t-p2-tables.js`'s pinch goes in five legs — a first rest at a zoom
+just past 25% from the fit whose size is within 25% of the fit's ×3 (it
+keeps ×3), a 200 ms hesitation (no resize, though a rest there would),
+rests of `PINCH_REST_MS` + 200 ms that resize or keep by the 25% rule, and a
+lift that is exact; at 182d588 the first three fail (it wrote 2.44 at that
+first rest and at the hesitation). t-p1-bench's B4 adds the paused and
+rested pinches (above); at 182d588 the paused one fails: a 61 ms task as
+the fingers moved on, and `--bz` written at the hesitations.
 
 ## Storage and images (Phase 1B)
 

@@ -521,10 +521,13 @@ sync and rendering, and the Worker together with `handle`.
        screen. While two fingers turn or zoom the view, the badges move with
        the table and settle once the fingers lift: on a table of a thousand
        stacks, turning or resizing them all as the view moves would stutter.
-       When the fingers pause mid-zoom the badges take the zoom's size, so
-       they never stay swollen over the pieces being zoomed in on; a twist
-       alone leaves their size until the lift. The pieces' own faces stay as
-       they lie.
+       When the fingers rest mid-zoom (hold still a moment: a mere
+       hesitation doesn't count) the badges take the zoom's size if it has
+       changed by over a quarter, so they never stay swollen over the
+       pieces being zoomed in on; a twist alone leaves their size until the
+       lift. A resize costs a stutter of its own on such a table, so the
+       badges wait for a real rest, and skip a change too small to see.
+       The pieces' own faces stay as they lie.
      - A plain round piece (a checker, a man: no picture, label, text or
        pips, and as wide as it is high) looks the same at any angle, so its
        bar offers no turn buttons.

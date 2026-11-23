@@ -3,11 +3,17 @@
 // itself. Everything here reads the screen (the DOM, #table's transform) or
 // drives real gestures: a mouse, CDP touches, the keyboard.
 'use strict';
+const fs = require('fs');
+const path = require('path');
 const h = require('./h');
 const L = require('./p1-lib');
 
 const { devices } = h.playwright;
 const PHONE = devices['iPhone 13'];
+/** app.js's PINCH_REST_MS, read from its text: how long two fingers hold
+ *  still before the app sees a rest, where the badges may resize (D96). */
+const PINCH_REST_MS = +(/\bPINCH_REST_MS = (\d+)/.exec(fs.readFileSync(path.join(h.APP_ROOT, 'cardtable/app.js'), 'utf8'))?.[1]
+  ?? (() => { throw new Error('p2t-lib: no `PINCH_REST_MS = <ms>` in app.js'); })());
 
 /** A player in its own context (`o.ctx`: a device descriptor; `o.rtc`: with
  *  p1-lib's RTC byte counter, window.__rtc), joined as `name`, once the host
@@ -277,6 +283,6 @@ const inViewport = (p, sel) => p.evaluate((s) => [...document.querySelectorAll(s
 }), sel);
 
 module.exports = {
-  PHONE, BENCH, join, waitView, viewOf, tf, wrap, fit, angDiff, labels, label, menu, openMenu, pick, feltPoint,
+  PHONE, PINCH_REST_MS, BENCH, join, waitView, viewOf, tf, wrap, fit, angDiff, labels, label, menu, openMenu, pick, feltPoint,
   mouseDrag, touchDrag, dragOn, itemXY, clickItem, sentActs, rgb, shows, inViewport, boardTexts, upright, badgeAngles, badgesUpright,
 };

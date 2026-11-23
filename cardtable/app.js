@@ -2084,25 +2084,31 @@ function rotv(x, y, a) {
 //      turn back too (D91).
 // On a 1,000-stack table the badges are a thousand: a restyle of them all
 // (rule 0 or 2) in a frame that also moves the table is a long task on the
-// B4 phone, 50 to 670 ms (D96), where at a rest it costs a frame. So
-// while two fingers move the view (a pinch, a twist) neither is written:
-// the badges keep their turn and size, moving with the table as its pieces
-// do. Once the fingers rest (PINCH_REST_MS without a move), the badges take
-// this view's size if the zoom has changed it by more than BZ_STEP since
-// they were sized (pinchRest): a restyle the resting hand doesn't feel, and
-// no badge stays grown over the pieces being zoomed in on; a twist alone
-// never resizes them (a rectangle refits as it turns: by its fit alone,
-// every twist would). They settle (upright, exact) once the fingers lift.
-const viewSheet = new CSSStyleSheet(), BADGE_MAX = 3, BZ_STEP = 1.25, PINCH_REST_MS = 120;
+// B4 phone, 50 to 670 ms (D96). So while two fingers move the view (a
+// pinch, a twist) neither is written: the badges keep their turn and size,
+// moving with the table as its pieces do. Once the fingers rest
+// (PINCH_REST_MS without a move: longer than a hesitation mid-pinch), the
+// badges take the zoom's size, at the fit the fingers landed on, if it
+// differs from theirs by more than BZ_STEP (pinchRest): no badge stays grown
+// over the pieces being zoomed in on, and no restyle buys a change you
+// can't see (held at BADGE_MAX, a 1.9× zoom moves the size 3.00 → 2.98); a
+// twist alone never resizes them (a rectangle refits as it turns: by its
+// fit, every twist would). They settle (upright, exact) once the fingers
+// lift. A resize still costs, at a rest or a lift: a task of 50–100 ms on
+// the B4 phone, then the browser rasters the table's layer again, which
+// fingers that move again within about 100 ms wait for (one more task of
+// 50–90 ms). D102 has the measures; B4's rested pinch, the budget.
+const viewSheet = new CSSStyleSheet(), BADGE_MAX = 3, BZ_STEP = 1.25, PINCH_REST_MS = 300;
 viewSheet.replaceSync('#table .item > .count, #table .item > .odot, #table .item > .lockb, #table .pile > .pname, #table .item.selected, #table .blabels text {} '
   + '#table .psvg text {} #table .item > .count, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb {}');
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, viewSheet];
 let badgeZ = '', textAngle = 0, badgeAngle = 0, feltW = 0;
 
-/** Sizes the badges for the view's scale (rule 0's --bz), if that changes it:
- *  a 12-unit badge text shows ≥ 8 px while it can. */
-function sizeBadges() {
-  const bz = clamp(0.67 / scale, 1, BADGE_MAX).toFixed(2);
+/** The badges' growth for the table's scale `s`: a 12-unit badge text shows ≥ 8 px while it can. */
+const badgeSize = (s) => clamp(0.67 / s, 1, BADGE_MAX);
+/** Sizes the badges for scale `s` (rule 0's --bz), if that changes it. */
+function sizeBadges(s) {
+  const bz = badgeSize(s).toFixed(2);
   if (bz !== badgeZ) viewSheet.cssRules[0].style.setProperty('--bz', (badgeZ = bz));
 }
 
@@ -2115,7 +2121,7 @@ function layout() {
   scale = Math.min(w / bw, h / bh) * zoomZ; // fit × user zoom
   if (viewAngle !== textAngle) viewSheet.cssRules[1].style.setProperty('--view', `${(textAngle = viewAngle)}deg`);
   if (!pinch) {
-    sizeBadges();
+    sizeBadges(scale);
     if (viewAngle !== badgeAngle) viewSheet.cssRules[2].style.setProperty('--view', `${(badgeAngle = viewAngle)}deg`);
   }
   feltW = bw * scale; // (placeSeats: the hint's plate fits its middle, the notices the margins beside it)
@@ -2539,17 +2545,17 @@ function startPinch() {
     d0: Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1,
     ang0: (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI,
     t0: toTable({ clientX: m.x, clientY: m.y }), // table point pinned under the fingers
-    zb: zoomZ, // the zoom the badges were last sized at
+    fit: scale / zoomZ, // the fit as the fingers land: a rest's badge size goes by it (pinchRest)
     rest: 0, // the timer that sees the fingers rest (pinchRest)
   };
 }
 
-/** The fingers rest mid-pinch: the badges take this view's size if the zoom
- *  has changed it by more than BZ_STEP since they were sized (see viewSheet). */
+/** The fingers rest mid-pinch: the badges take the zoom's size, at the fit
+ *  the fingers landed on, if it differs from theirs by more than BZ_STEP
+ *  (see viewSheet). */
 function pinchRest() {
-  if (Math.max(zoomZ / pinch.zb, pinch.zb / zoomZ) <= BZ_STEP) return;
-  pinch.zb = zoomZ;
-  sizeBadges();
+  const s = pinch.fit * zoomZ, bz = badgeSize(s);
+  if (Math.max(bz / badgeZ, badgeZ / bz) > BZ_STEP) sizeBadges(s);
 }
 
 /** The two-finger gesture ends: the badges, which kept their turn (and their size, but for a rest's) meanwhile, settle (layout). */

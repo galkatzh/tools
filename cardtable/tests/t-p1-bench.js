@@ -8,17 +8,21 @@
 //   B4   panning on an emulated phone (iPhone 13, CPU × 2): no long task over 50 ms
 //        (from the pan's first event on: not the probe's search for bare felt),
 //        and rAF interval p95 ≤ max(20 ms, 1.25 × the same pan over an empty table);
-//        on the bench box, also three two-finger gestures (3 s each) over 1,000
-//        ×3 stacks, whose badges turn back against the view (D91) and grow on
-//        a table drawn small — both only once the fingers rest or lift (D96):
-//        a half-turn twist and a pinch from the fit to 12× on 6000 × 4000, and
-//        a half-turn twist on 1800 × 1200, whose fit (and the badges' exact
-//        size) changes by over 25% as it turns. The same budgets while the
-//        fingers move (after one gesture not measured: the table's first turn
-//        off its axes, or first zoom that far, redraws its layer once), then
-//        the badges settle with no task over 150 ms (a restyle of the 1,000
-//        badges, once per gesture: in a frame that also moved the table it
-//        took 50–670 ms, where every frame of a twist paid it before D96)
+//        on the bench box, also five two-finger gestures (3 s of moves each)
+//        over 1,000 ×3 stacks, whose badges turn back against the view (D91)
+//        and grow on a table drawn small — both only once the fingers rest or
+//        lift (D96, D102): a half-turn twist and a pinch from the fit to 12×
+//        on 6000 × 4000, and a half-turn twist on 1800 × 1200, whose fit (and
+//        the badges' exact size) changes by over 25% as it turns. The same
+//        budgets while the fingers are down (after one gesture not measured:
+//        the table's first turn off its axes, or first zoom that far, redraws
+//        its layer once), then the badges settle with no task over 150 ms (a
+//        restyle of the 1,000 badges: in a frame that also moved the table it
+//        took 50–670 ms, where every frame of a twist paid it before D96).
+//        Then the pinch in four legs: with 200 ms hesitations (no resize, no
+//        long task over 50 ms), and with rests just past PINCH_REST_MS, where
+//        the badges resize and the fingers move on 50 ms later (no task over
+//        150 ms: a resize costs at a rest what it does at the lift)
 //   B6   the host saves the 1,000-item table: every save's main-thread part ≤ 8 ms
 //        (__ct.perf.lastSaveSyncMs, around doSave's synchronous IndexedDB put): ten
 //        throttled saves (rapid play) and five unthrottled ones (a move 1.1 s
@@ -43,7 +47,7 @@ const P = require('./p2t-lib');
 const { ok, section } = h;
 
 const B1_MAX = 1.5 * 1024, B3_MAX = 4, B4_LONG = 50, B4_SETTLE = 150, B4_FLOOR = 20, B6_MAX = 8, B10_DESK = 400, B10_PHONE = 1500, B11_MAX = 30;
-const PAN_MS = 3000, GESTURE_MS = 3000;
+const PAN_MS = 3000, GESTURE_MS = 3000, HESITATE_MS = 200; // (a pause of the fingers shorter than a rest: PINCH_REST_MS)
 
 /** The throwaway script that builds the table (spec §1k): 20 standard decks,
  *  1,000 cards dealt face up in a 40 × 25 grid inside the felt. */
@@ -116,22 +120,28 @@ async function pan(p) {
   } finally { await unthrottle(); }
 }
 
-/** A two-finger gesture on page p over GESTURE_MS, under CDP CPU throttling
- *  × 2, driven once per animation frame: two touch pointers opposite each
- *  other about the table area's centre turn `turn` half-turns while their
- *  half-distance goes from `from` to `to` px, geometrically (both by default
- *  a fifth of the area's smaller side: a twist alone); rAF timestamps and
- *  long tasks collected in the page. Returns {gaps (ms between frames), long
- *  (the durations of the long tasks while the fingers move), settle (theirs
- *  from the task where they lift on: the badges settle there), turned
- *  (degrees the view turned), zoomed (the factor its scale grew by)}. */
-async function gesture(p, { turn = 0, from, to } = {}) {
+/** A two-finger gesture on page p over GESTURE_MS of moves, under CDP CPU
+ *  throttling × 2, driven once per animation frame: two touch pointers
+ *  opposite each other about the table area's centre turn `turn` half-turns
+ *  while their half-distance goes from `from` to `to` px, geometrically (both
+ *  by default a fifth of the area's smaller side: a twist alone), in `legs`
+ *  equal legs with the fingers held still `pause` ms between them; rAF
+ *  timestamps and long tasks collected in the page. Returns {gaps (ms
+ *  between frames), long (the durations of the long tasks while the fingers
+ *  are down), settle (theirs from the task where they lift on: the badges
+ *  settle there), turned (degrees the view turned), zoomed (the factor its
+ *  scale grew by), pauses (at the end of each pause: {bz (the view sheet's
+ *  --bz), want (the --bz the scale calls for)})}. */
+async function gesture(p, { turn = 0, from, to, legs = 1, pause = 0 } = {}) {
   const unthrottle = await throttle(p);
   try {
-    return await p.evaluate(async ([ms, turn, from, to]) => {
+    return await p.evaluate(async ([ms, turn, from, to, legs, pause]) => {
       const table = document.getElementById('table'), r = document.getElementById('table-wrap').getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2, R = Math.min(r.width, r.height) / 5, d0 = from ?? R, d1 = to ?? R;
       const tf = (k) => +new RegExp(`${k}\\(([-\\d.e]+)`).exec(table.style.transform)[1];
+      // (--bz read from its rule, not a badge's computed style: that would restyle them here)
+      const bzRule = [...document.adoptedStyleSheets].flatMap((s) => [...s.cssRules]).find((x) => x.style?.getPropertyValue('--bz'));
+      const pauses = [], span = ms / legs, cycle = span + pause;
       await new Promise((res) => setTimeout(res, 0)); // (the observer starts in a task of its own: see pan)
       const tasks = [];
       const po = new PerformanceObserver((l) => { for (const e of l.getEntries()) tasks.push(e); });
@@ -149,9 +159,12 @@ async function gesture(p, { turn = 0, from, to } = {}) {
         const t0 = performance.now();
         const step = (ts) => {
           frames.push(ts);
-          const t = ts - t0;
-          if (t >= ms) { done(); return; }
-          for (const [id, x, y] of fingers(t / ms)) window.dispatchEvent(ev('pointermove', id, x, y));
+          const t = ts - t0, k = Math.min(legs - 1, Math.floor(t / cycle)), into = t - k * cycle;
+          if (t >= legs * cycle - pause) { done(); return; }
+          if (into < span) { // leg k moves (its first frame closes the pause before it)
+            if (pauses.length < k) pauses.push({ bz: +bzRule.style.getPropertyValue('--bz'), want: Math.min(3, Math.max(1, 0.67 / tf('scale'))) });
+            for (const [id, x, y] of fingers((k + into / span) / legs)) window.dispatchEvent(ev('pointermove', id, x, y));
+          }
           requestAnimationFrame(step);
         };
         requestAnimationFrame(step);
@@ -161,8 +174,8 @@ async function gesture(p, { turn = 0, from, to } = {}) {
       await new Promise((res) => setTimeout(res, 300)); // the observer delivers late entries
       po.disconnect();
       const dur = (es) => es.map((e) => Math.round(e.duration)); // (a task that holds the lift began before it, in the same frame)
-      return { gaps: frames.slice(1).map((t, k) => t - frames[k]), long: dur(tasks.filter((e) => e.startTime + e.duration < up)), settle: dur(tasks.filter((e) => e.startTime + e.duration >= up)), turned, zoomed };
-    }, [GESTURE_MS, turn, from, to]);
+      return { gaps: frames.slice(1).map((t, k) => t - frames[k]), long: dur(tasks.filter((e) => e.startTime + e.duration < up)), settle: dur(tasks.filter((e) => e.startTime + e.duration >= up)), turned, zoomed, pauses };
+    }, [GESTURE_MS, turn, from, to, legs, pause]);
   } finally { await unthrottle(); }
 }
 
@@ -394,16 +407,19 @@ function placeholderWatch() {
    *  the fit; `what` it is. A first one is not measured: the first time the
    *  table turns off its axes, or zooms that far, the browser draws its layer
    *  again once, text included (a 60–200 ms frame with these 1,000 ×3 badges,
-   *  none with plain chips, and never again on the page). Returns the measured one. */
-  async function gestureB4(what, g) {
+   *  none with plain chips, and never again on the page). Budgets: no task
+   *  over `long` ms while the fingers are down; the rAF p95 of a pan (`p95`:
+   *  off for a pinch with pauses, whose moves are the pinch's, its pauses
+   *  idle frames); no settle task over B4_SETTLE. Returns the measured one. */
+  async function gestureB4(what, g, { long = B4_LONG, p95: tight = true } = {}) {
     await refit();
     const warm = await gesture(phone, g);
     console.log(`  (a first ${what}, not measured: long tasks [${warm.long}], then [${warm.settle}] as the fingers lift)`);
     await refit();
     const r = await gesture(phone, g), p95 = L.pct(r.gaps, 95), limit = Math.max(B4_FLOOR, 1.25 * pbase.p95);
     console.log(`  ${what}: ${r.gaps.length} frames, turned ${r.turned.toFixed(1)}°, zoomed ${r.zoomed.toFixed(2)}×, rAF p95 ${p95.toFixed(1)} ms, long tasks [${r.long}], then [${r.settle}] as the fingers lift`);
-    ok(!r.long.some((d) => d > B4_LONG), `B4: no long task over ${B4_LONG} ms while the fingers move (${r.long.length ? r.long.join(', ') + ' ms' : 'none'})`);
-    ok(p95 <= limit, `B4: rAF interval p95 ${p95.toFixed(1)} ms ≤ max(${B4_FLOOR}, 1.25 × ${pbase.p95.toFixed(1)}) = ${limit.toFixed(1)} ms`);
+    ok(!r.long.some((d) => d > long), `B4: no ${long === B4_LONG ? 'long task' : 'task'} over ${long} ms while the fingers are down (${r.long.length ? r.long.join(', ') + ' ms' : 'none over 50 ms'})`);
+    if (tight) ok(p95 <= limit, `B4: rAF interval p95 ${p95.toFixed(1)} ms ≤ max(${B4_FLOOR}, 1.25 × ${pbase.p95.toFixed(1)}) = ${limit.toFixed(1)} ms`);
     ok(!r.settle.some((d) => d > B4_SETTLE), `B4: as they lift, the 1,000 badges settle (upright, their exact size) in one go, no task over ${B4_SETTLE} ms (${r.settle.length ? r.settle.join(', ') + ' ms' : 'none over 50 ms'})`);
     return r;
   }
@@ -425,6 +441,17 @@ function placeholderWatch() {
   ok(pz.gaps.length > 30 && Math.abs(pz.zoomed - 12) < 0.5, `the scripted pinch zooms the view (${pz.zoomed.toFixed(2)}×, ${pz.gaps.length} frames)`);
   b = await badges();
   ok(Math.abs(b.bz - b.want) < 0.006, `once the fingers lift, the badges take the zoom's size (--bz ${b.bz}, ${b.want.toFixed(3)} wanted)`);
+  const step = (x, y) => Math.max(x / y, y / x), sizes = (r) => r.pauses.map((m) => `${m.bz} for ${m.want.toFixed(2)}`).join(', ');
+
+  section(`§2k B4 (paused pinch): the same pinch in four legs, the fingers hesitating ${HESITATE_MS} ms between them, shorter than a rest (${P.PINCH_REST_MS} ms): the badges keep their size (D102)`);
+  const pp = await gestureB4('paused pinch', { from: 20, to: 240, legs: 4, pause: HESITATE_MS }, { p95: false });
+  ok(pp.pauses.length === 3 && pp.pauses.every((m) => m.bz === 3) && pp.pauses.some((m) => step(m.want, 3) > 1.25),
+    `no hesitation resizes the badges, though the zoom calls for over 25% less at one (--bz at each: ${sizes(pp)})`);
+
+  section(`§2k B4 (rested pinch): the same pinch in four legs, the fingers resting ${P.PINCH_REST_MS + 50} ms between them: at a rest the badges take the zoom's size if it differs by over 25%, and the fingers move on 50 ms later (D102)`);
+  const rp = await gestureB4('rested pinch', { from: 20, to: 240, legs: 4, pause: P.PINCH_REST_MS + 50 }, { long: B4_SETTLE, p95: false });
+  ok(rp.pauses.length === 3 && rp.pauses.every((m, k) => { const was = k ? rp.pauses[k - 1].bz : 3; return step(m.want, was) > 1.25 ? Math.abs(m.bz - m.want) < 0.006 : m.bz === was; })
+    && rp.pauses.some((m) => m.bz !== 3), `at each rest the badges take the zoom's size if it differs from theirs by over 25%, and keep theirs otherwise (--bz at each: ${sizes(rp)})`);
 
   section('§2k B4 (twist, a rectangle that refits as it turns): 1,000 ×3 stacks on 1800 × 1200, where the badges\' exact size changes by over 25% as the view turns');
   await loadStacks(1800, 1200, [100, 100], [32, 50]);

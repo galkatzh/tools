@@ -24,7 +24,8 @@
 //      and space's labels never upside down and inside the board; the
 //      badges (×N, ∞, a deck's count and name, a bag) read upright; on the
 //      phone a selected deck's ring grows as a piece's does, and a pinch-zoom
-//      resizes the badges only when the fingers rest, exact once they lift (D96)
+//      resizes the badges only when the fingers rest (not at a hesitation),
+//      and only by over 25%, exact once they lift (D96, D102)
 //   hint  every text of the paused hint stays on its plate (an iPhone held
 //      upright too), whose plate covers no seat label beside the middle
 //      (desktop, a phone in landscape)
@@ -98,13 +99,14 @@ const HINTS = ['Connecting…', "Can't reach the signaling relays — reconnecti
   "Waiting for the host…\n(the table lives in the host's open tab)", 'The host left — the table is paused until they return'];
 /** A two-finger gesture on page p, by touch pointers opposite each other
  *  about the table area's centre: `legs`, each {d: [from, to] (their
- *  half-distance, px), a: [from, to] (their angle, degrees)} in 4 moves sent
- *  back to back (what a move writes, it writes then: layout), each leg
- *  followed by a 300 ms rest (the app sees one after PINCH_REST_MS, 120),
- *  then the lift. Returns the view sheet's --bz with the table's scale —
- *  {s, bz, want (the --bz this scale calls for, D96)} — at the start, after
- *  each move (`moves`, by leg), after each rest (`rests`), and after the lift (`end`). */
-const pinchTwist = (p, legs) => p.evaluate(async (legs) => {
+ *  half-distance, px), a: [from, to] (their angle, degrees), rest (ms the
+ *  fingers then hold still: by default 200 ms past PINCH_REST_MS, after
+ *  which the app sees a rest)} in 4 moves sent back to back (what a move
+ *  writes, it writes then: layout), then the lift. Returns the view sheet's
+ *  --bz with the table's scale — {s, bz, want (the --bz this scale calls
+ *  for, D96)} — at the start, after each move (`moves`, by leg), at the end
+ *  of each leg's rest (`rests`), and after the lift (`end`). */
+const pinchTwist = (p, legs) => p.evaluate(async ([legs, restMs]) => {
   const table = document.getElementById('table'), r = document.getElementById('table-wrap').getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
   const bzRule = [...document.adoptedStyleSheets].flatMap((s) => [...s.cssRules]).find((x) => x.style?.getPropertyValue('--bz'));
   const ev = (type, id, d, a) => {
@@ -117,20 +119,20 @@ const pinchTwist = (p, legs) => p.evaluate(async (legs) => {
   };
   const start = state(), moves = [], rests = [], lerp = ([x, y], t) => x + (y - x) * t;
   for (const id of [7, 8]) table.dispatchEvent(ev('pointerdown', id, legs[0].d[0], legs[0].a[0]));
-  for (const { d, a } of legs) {
+  for (const { d, a, rest = restMs } of legs) {
     const leg = [];
     for (let k = 1; k <= 4; k++) {
       for (const id of [7, 8]) window.dispatchEvent(ev('pointermove', id, lerp(d, k / 4), lerp(a, k / 4)));
       leg.push(state());
     }
     moves.push(leg);
-    await new Promise((res) => setTimeout(res, 300));
+    await new Promise((res) => setTimeout(res, rest));
     rests.push(state());
   }
   const { d, a } = legs.at(-1);
   for (const id of [7, 8]) window.dispatchEvent(ev('pointerup', id, d[1], a[1]));
   return { start, moves, rests, end: state() };
-}, legs);
+}, [legs, P.PINCH_REST_MS + 200]);
 /** Automatic seating: a box with no seats (and no table: the table stays). */
 const PLAIN = { name: 'Plain', imgs: [], types: { peg: QUAD.types.peg }, setup: [{ piece: 'peg', at: 'center' }] };
 const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who plays?' }],
@@ -477,17 +479,30 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
     `Carol taps the deck: its ring grows with the badges, as a piece's does (${ring?.w} table px at --bz ${ring?.bz}: ${ring?.px.toFixed(2)} px on her screen)`);
   const free = await P.feltPoint(carol, { band: [0.3, 0.7] });
   await carol.touchscreen.tap(free.x, free.y);
-  // A pinch-zoom on the phone, from the fit to 3× it, in three legs, the
-  // fingers resting after each (D96): while they move, the badges keep their
-  // size (a restyle of them all is a long task on a big table); at each rest
-  // they take the size the zoom calls for (never the fit's ×3 over the pieces
-  // zoomed in on); once the fingers lift it is exact.
-  const pz = await pinchTwist(carol, [[30, 45], [45, 67], [67, 90]].map((d) => ({ d, a: [0, 0] })));
+  // A pinch-zoom on the phone, from the fit to 3.3× it, in five legs (D96):
+  // while the fingers move, the badges keep their size (a restyle of them
+  // all is a long task on a big table); a hesitation (200 ms, shorter than
+  // PINCH_REST_MS) leaves it; at a rest they take the size the zoom calls
+  // for (never the fit's ×3 over the pieces zoomed in on) if it differs
+  // from theirs by over 25% (BZ_STEP), and keep theirs otherwise (a restyle
+  // that changes nothing you'd see costs as much: D102); once the fingers
+  // lift it is exact. The first rest is at a zoom over 25% past the fit
+  // whose size is within 25% of the fit's ×3 (held there by BADGE_MAX).
+  const w0 = 0.67 / (await P.tf(carol)).s, z1 = (1.25 + w0 / 2.4) / 2; // (the fit's size, unclamped; a zoom between 1.25 and w0 / (3 / 1.25))
+  const pz = await pinchTwist(carol, [{ d: [30, 30 * z1] }, { d: [30 * z1, 45], rest: 200 }, { d: [45, 60] }, { d: [60, 90] }, { d: [90, 100] }].map((l) => ({ ...l, a: [0, 0] })));
   const steady = (g) => g.moves.every((leg, k) => leg.every((m) => m.bz === (k ? g.rests[k - 1] : g.start).bz));
-  ok(pz.start.bz === 3 && pz.rests.at(-1).s > 2.5 * pz.start.s && steady(pz),
+  const step = (x, y) => Math.max(x / y, y / x), prev = (k) => (k ? pz.rests[k - 1] : pz.start).bz, [first, hes] = pz.rests;
+  const rests = pz.rests.map((m, k) => ({ ...m, was: prev(k) })).filter((m, k) => k !== 1); // (leg 2 hesitates)
+  ok(pz.start.bz === 3 && pz.rests.at(-1).s > 3 * pz.start.s && steady(pz),
     `Carol pinches from the fit (badges ×${pz.start.bz}) to ${(pz.rests.at(-1).s / pz.start.s).toFixed(1)}× it: while her fingers move, the badges keep their size (${pz.moves.map((leg) => leg.map((m) => m.bz).join(' ')).join(' | ')})`);
-  ok(pz.rests.every((m) => Math.abs(m.bz - m.want) < 0.006), `each time her fingers rest, they take the size the zoom calls for (${pz.rests.map((m) => `${m.bz} for ${m.want.toFixed(3)}`).join('; ')})`);
-  ok(Math.abs(pz.end.bz - pz.end.want) < 0.006, `once the fingers lift it is exact (--bz ${pz.end.bz}, ${pz.end.want.toFixed(3)} wanted)`);
+  ok(w0 / 2.4 > 1.26 && first.s > 1.25 * pz.start.s && first.bz === 3 && step(first.want, 3) < 1.25,
+    `her first rest, zoomed ${(first.s / pz.start.s).toFixed(3)}× from the fit: the badges keep ×3, as the zoom calls for ${first.want.toFixed(3)}, under 25% from it`);
+  ok(hes.bz === 3 && step(hes.want, 3) > 1.25,
+    `then her fingers hesitate (200 ms): the badges keep their size (${hes.bz}), though the zoom calls for ${hes.want.toFixed(3)}`);
+  ok(rests.every((m) => (step(m.want, m.was) > 1.25 ? Math.abs(m.bz - m.want) < 0.006 : m.bz === m.was))
+    && rests.some((m) => m.bz !== m.was) && rests.slice(1).some((m) => m.bz !== m.want),
+    `each time they rest (${P.PINCH_REST_MS + 200} ms), the badges take the zoom's size if it differs from theirs by over 25%, and keep theirs otherwise (${rests.map((m) => `${m.was} → ${m.bz} for ${m.want.toFixed(3)}`).join('; ')})`);
+  ok(Math.abs(pz.end.bz - pz.end.want) < 0.006 && pz.end.bz !== pz.rests.at(-1).bz, `once the fingers lift it is exact (--bz ${pz.end.bz}, ${pz.end.want.toFixed(3)} wanted)`);
   await carol.tap('#view-btn');
 
   section('a 10 × 10 board\'s two-digit ranks stay in their margin on a phone; the paused hint, on a round table with a seat at each quarter, stays on its plate (an iPhone held upright too), which fits between the labels beside the middle (desktop; a phone in landscape)');
