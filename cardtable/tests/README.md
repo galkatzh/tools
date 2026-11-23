@@ -304,25 +304,44 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
   the seat's for a seat-bound owner; always in the DOM, displayed only under
   `.item.selected` or, where the pointer hovers — `@media (hover: hover)`,
   not the iPhone descriptor — under `.item:hover`: D90), `.lockb` (🔒,
-  displayed only under `.item.selected`). A roll puts `.tumble` on every rolled die's element for
+  displayed only under `.item.selected`). A pile's `.count` and `.pname`,
+  ×N, ∞ and a bag's `.bagbox` turn (CSS `rotate`) by −(`--view` +
+  `--rot`), so they read upright on every screen (D91; `--rot` is the
+  item's `rot`, inline on every item element whose `rot` isn't 0). A
+  selected piece shows a ring: `outline` on a rect's `.pface`, a
+  `box-shadow` ring set off by a dark edge on a round or disc one, and
+  `filter: drop-shadow(…)` on the `.item` itself for a hex, meeple or pawn
+  (whose `clip-path` cuts an outline off). A roll puts `.tumble` on every rolled die's element for
   450 ms on every screen, the roller's too (its animation is off under
   reduced motion, which `h.start()` sets by default: the class still comes).
 - **`pieces.js` in Node** (B11): `import('../pieces.js')` works without a
   DOM; `boardSVG(type)` takes a cleanBox'd board type (`cleanBox(box).types.x`)
   and returns the SVG string, cached per type object (the same string, at
-  once, the second time). On the table each of its `<text>`s turns about
-  its own centre (`transform-box: fill-box`) by −(`--view` + `--rot`): the
-  view's angle, set by the view sheet's third rule (`#table .psvg text`),
-  and the board item's `rot`, inline on its element (D91). p2t-lib's
-  `boardTexts(p, id)` reads each text off the screen (its angle from
-  `getScreenCTM`, which composes every transform; its box's distance to its
-  own anchor and to the nearest other one; its font size in px) and the
-  angle the first would show with its turn taken off for a moment;
-  `upright(p, id, bare, who)` checks them all (upright within 0.5°, within
-  half a font size of its own anchor and nearer it than any other, `bare`
-  the view's turn plus the board's).
+  once, the second time). Its coordinates are the `<text>`s of
+  `g.blabels` (files in the margin strip right under the grid: `y` =
+  grid bottom + min(margins) / 2), its spaces' and zones' labels
+  `text.slabel`. On the table each coordinate turns about its own centre
+  (`transform-box: fill-box`) by −(`--view` + `--rot`): the view's angle,
+  set by the view sheet's third rule, and the board item's `rot`, inline on
+  its element; each `.slabel` by that angle rounded to the nearest half turn
+  (CSS `round()`), so it is never upside down (D91). The coordinates also
+  get the view sheet's second rule, a `scale` of min(badge growth, 1.6). A
+  board's `.pface` and `svg.psvg` don't clip (`overflow: visible`).
+  p2t-lib's `boardTexts(p, id)` reads each text off the screen (its angle
+  from `getScreenCTM`, which composes every transform; its box's distance to
+  its own anchor and to the nearest other one; its font size in px, its own
+  scale included; how far its box, mapped back into board units, stands past
+  the board's edge) and the angle the first coordinate would show with its
+  turn taken off for a moment; `upright(p, id, bare, who)` checks them all
+  (each coordinate upright within 0.5°, each label at most 90° off upright
+  and inside the board, each within half a font size of its own anchor and
+  nearer it than any other, `bare` the view's turn plus the board's).
+  `badgeAngles(p)` reads each badge's on-screen angle from two probes at
+  its top corners (and with its `rotate` taken off, less its item's `rot`:
+  the view's turn); `badgesUpright(p, turn, who)` checks them.
 - **The bar** (`#action-bar`, built from the public view): each button has
-  `data-cmd` — pieces `flip`, `roll`, `rl`/`rr`, `split` (✂ Take 1), `all`
+  `data-cmd` — pieces `flip`, `roll`, `rl`/`rr` (not on a die, nor on a
+  round or disc piece whose side up is a plain colour: D92), `split` (✂ Take 1), `all`
   (✥ Move all: `.on` while armed, 5 s, a teal button whose bottom line
   drains), `hand`, `zoom`, `lock` (🔒 Lock / 🔓 Unlock), `claim`,
   `release`, `give` (the host; `.on` while open; its `giveTo` buttons, in a
@@ -394,9 +413,14 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
 - **Badges** (`.item > .count`, `.item > .odot`) are scaled up by an
   adopted stylesheet rule (`scale`, 1 to 3; app.js's view sheet) on a table
   drawn small, so a ×N pill's text shows at about 8 px or more; the same
-  sheet's second rule grows `#table-hint`'s font size by the same factor (it
-  lies over every item), and its third sets `--view` for the boards' texts
-  (D91).
+  sheet's second rule scales a board's coordinates (`#table .blabels text`)
+  by the same factor, up to 1.6, and its third sets `--view` for the boards'
+  texts, the badges with a number or a name and the bags (D91).
+  `#table-hint` lies in `#table-wrap`, outside `#table`: screen space, a
+  fixed 24 px (18 px on a phone), above the seat labels, whatever the view.
+- **Watchers on a short screen** (`max-height: 500px`, a phone in
+  landscape): `#watchers` reads "👀 N" and `#watch-me-text` "👀 Watching"
+  until a tap on the box opens them (the whole texts), another closes them.
 - **The demos.** `GAMES` entries `draughts` and `backgammon` (`box`: their
   `BOXES` key): `#games-list [data-game="draughts"]` (and the strip's) asks
   "Clear the table and set up Draughts? The current game is discarded." on a
@@ -424,7 +448,10 @@ dots show (`dotsShown`: those displayed, with a box) is read on both
 screens (D90): only on the selected item, none once it is deselected (on
 the phone too, whose tap leaves a stale `:hover`), under the desktop mouse
 and gone with it, and on someone else's piece once a click or tap selects
-it. The bar is
+it. The badges read upright on both screens (`badgesUpright`: Bob's view is
+turned 180°), and a selected hex tile and yellow coin show their rings
+(the computed `filter` and `box-shadow` hold the ring's yellow and the dark
+edge). The bar is
 checked exactly per kind and permission (guest and host, locked, someone
 else's, seat-bound, a hidden piece's flags from its back, a bag's 🔒 by its
 public box); 🔍, which the bar adds on a face with a label, text or image
@@ -455,14 +482,16 @@ seating); a seat-bound pawn moved by whoever sits its seat and panned by
 the one who left it (nothing sent: the RTC hook's `act` bytes); the hand
 bar with draughts, a deck, a held card, on all three screens, and the
 refit; D91 on a round table whose named seats turn the three views 90°,
-235° and 120°, with a chessboard turned 30° (`TURNED`): p2t-lib's
-`upright` on each screen; a v2 save (`size: 1800`) planted and resumed;
+235° and 120°, with a chessboard turned 30° that has a labelled zone and
+space below its grid, a ×4 stack turned 45°, a supply, a bag and a deck
+(`TURNED`): p2t-lib's `upright` and `badgesUpright` on each screen, and
+the files' anchors in the 20-unit strip under the grid; a v2 save (`size: 1800`) planted and resumed;
 the size selector's "▭ 2400 × 1200", its confirm declined, then accepted
 (the corner pegs pulled in). `t-p2-demos.js` (a desktop host, an iPhone
 13 guest): draughts and backgammon from the 🎲 dialog, played with real
 drags, double-clicks and taps (see its header); the draughts board's
 coordinates upright on both screens, the Dark phone's turned 180° (D91:
-`upright`); the standard backgammon start is
+`upright`), and grown there (`scale` above 1, 6.5 px or more); the standard backgammon start is
 read off the board's own points (each checker by the triangle under it),
 either home-board side accepted; screenshots `shots/demo-*.png` and
 `shots/tables-*.png` are for review, never asserted. `t-p1-bench.js`
@@ -488,7 +517,8 @@ formula), `labels`/`label`/`openMenu`/`pick`/`menu` (the seat labels and
 their menu, by click or tap), `feltPoint`, `mouseDrag`/`touchDrag` (CDP
 touches)/`dragOn`, `itemXY`/`clickItem`, `sentActs`, `rgb`, `shows`,
 `inViewport`, `boardTexts`/`upright` (a board's texts as the screen shows
-them, D91: see "`pieces.js` in Node" above), `PHONE` and `BENCH`.
+them, D91: see "`pieces.js` in Node" above), `badgeAngles`/`badgesUpright`
+(the same for the badges), `PHONE` and `BENCH`.
 
 **`t-p2-review.js`**: the regressions of the 2B review, one section per
 issue (a desktop host, a desktop guest, an iPhone 13 watcher; see its
@@ -501,17 +531,29 @@ coin off a stack onto a bag or its supply goes in or back, a take or split
 dropped back on its source sends nothing, an overflowing bag is not
 offered the drop; a held Space rolls once; after a click on a bar button
 (⟳, Flip, ⟲) R turns again, Space does not press ⟳ again, F flips and
-Delete removes (the tile type has two faces for it); a seat change redraws (and
+Delete removes (the tile type has two faces for it); after ? then Close and
++ Deck then Cancel, clicked, the focus is on the body (not back on the
+button that opened the dialog), R turns the selected tile and Space opens
+no dialog; after a chat message sent with a click on ➤, the focus is in the
+chat box and " r", Backspace and Delete go there (nothing sent, the tile
+unchanged); a seat change redraws (and
 empties) a selected seat-bound piece's bar, and Delete then sends nothing;
 on the phone, the near-black seat's halo, a seat label's 32 px hit box, the
 watchers box clear of the labels, badge sizes, the help dialog inside the
 screen, ✥ Move moving a supply by touch, Sit down's height, a watcher's
-squared view; the turn cue on a table without a hand bar; and the
-watchdog — the host closes its page, its guest reloads itself after about
-a minute (not before) with the notice "The host has been away for a
-minute — reconnecting…", the new page shows the kept table again, paused
-(no snapshot yet, no "?"), and it goes live with the host's snapshot when
-the host returns.
+squared view; the turn cue on a table without a hand bar; the watcher's
+phone turned to 844 × 390 with the log open: two compact chips that cover
+no piece nor the board, opened and closed by a tap; and the watchdog — the
+host closes its page, its guest reloads itself after about a minute (not
+before) with the notice "The host has been away for a minute —
+reconnecting…", the new page shows the kept table again, paused (no
+snapshot yet, no "?"; the hint never says "Connection lost", read by
+`hintWatch`), keeps `ct-rejoin` (40 s) through its ticks, reloads again
+40–52 s later saying "for 2 minutes" (the console: unreachable for 95 s or
+more), where a wheel zoom leaves the hint at 24 px and inside the table
+area; it goes live with the host's snapshot when the host returns, and
+`ct-rejoin` goes. Last, a host alone (Hana, whose relay is a TCP proxy the
+test cuts) reloads itself and keeps no `ct-paused-*` entry.
 
 **Changed for 2B** (mechanism only; no assertion removed or weakened):
 `t-fun-games.js` lists the two box games in the strip and the dialog (9
@@ -532,9 +574,20 @@ after the probe's search for bare felt (on the 1,000-card table that
 search's thousand `elementFromPoint` calls were the 53–62 ms "long task",
 reported because it ended after the observer started in it: a CPU profile
 of six pans put every one of them before the pan's first event), and B6
-makes one unmeasured move and save before its ten (that save alone starts
-at once, in its move's burst of work, the others a second apart; it was
-the only slow one: past 5 ms in 6 of 28 series, against 2 of 252 others).
+makes one unmeasured move and save before the measured ones (after the
+idle pan, that one ran slow alone in some series: 10.0 ms once). After the
+close-out review B6 measures both paths a save takes: ten moves right after
+the last save (rapid play: the throttle makes each wait), and five each
+1.1 s after it (unhurried play: no throttle; the app now starts that save
+250 ms after the move, out of its burst of work, where it had run at once
+at 2.4 ms median and once 11.5 ms under a full run's load; a page's first
+save still starts at once, which t-p1-review's "newer" and t-p2-tables'
+v2-save sections rely on: they leave a fresh table right away), each
+against the 8 ms budget. `t-p1-review.js`'s log section counts the lines the three
+moves really added (a move whose line repeats the one before collapses
+into it: with 20 decks, two of the cards can share a name, which had made
+it see 2 rows for 3 moves now and then) and expects one row in and one out
+per line.
 `t-uxfix.js`'s UX-14 reads a live name bulb's place from `style.translate`
 (the app now places bulbs by a translation, not `left`/`top`: a pan frame
 lays nothing out — a trace of the card B4 pan showed each of its first ~50
@@ -542,7 +595,12 @@ frames re-run a 7 ms hover hit test of the 1,000 cards, set off by the
 bulbs left from B1'/B3's moves, until they faded). At the Phase 2
 close-out (D90: the owner dot shows only on the selected or hovered item),
 `t-p2-review.js` taps North's pawn on the phone before it measures that
-pawn's dot (a hidden dot has no box), and taps the felt after.
+pawn's dot (a hidden dot has no box), and taps the felt after. After its
+review (D92: no ⟲ ⟳ on a plain disc), `t-p2-pieces.js` expects no
+`rl`/`rr` in the bars of the plain coins, the chit and its hidden stack,
+and the gem, and turns the 6-face wheel (a disc with a label) instead of a
+coin to check a free rotation; `upright` checks a coordinate's `bare` turn
+(the first `.blabels text`), and the labels' own rule.
 
 ## Storage and images (Phase 1B)
 

@@ -138,36 +138,74 @@ async function clickItem(p, id, touch) {
   else await p.mouse.click(c.x, c.y);
 }
 /** Board item `id`'s printed texts on page p, as the screen shows them (D91):
- *  `texts`, one {t (the text), a (its on-screen angle in degrees, 0 when it
- *  reads upright: getScreenCTM composes every transform on the way, the
- *  view's and the board's included), off (px from its box's centre to its
- *  anchor — its own x, y placed by the board's SVG), near (px to the
- *  nearest other text's anchor), fs (its font size on screen, px)} each;
- *  and `bare`, the angle the first text shows while its own turn is taken
- *  off for a moment: the view's turn plus the board's, which D91 undoes. */
+ *  `texts`, one {t (the text), label (a space's or zone's label, .slabel:
+ *  turned by the nearest half turn; else a coordinate), a (its on-screen
+ *  angle in degrees, 0 when it reads upright: getScreenCTM composes every
+ *  transform on the way, the view's, the board's and its own included), off
+ *  (px from its box's centre to its anchor — its own x, y placed by the
+ *  board's SVG), near (px to the nearest other text's anchor), fs (its font
+ *  size on screen, px, its own scale included), out (board units its box
+ *  stands past the board's edge, 0 inside)} each; and `bare`, the angle the
+ *  first coordinate shows while its own turn is taken off for a moment: the
+ *  view's turn plus the board's, which D91 undoes. */
 const boardTexts = (p, id) => p.evaluate((id) => {
-  const svg = document.querySelector(`.item[data-id="${id}"] svg.psvg`), M = svg.getScreenCTM(), els = [...svg.querySelectorAll('text')];
+  const svg = document.querySelector(`.item[data-id="${id}"] svg.psvg`), M = svg.getScreenCTM(), Mi = M.inverse(), els = [...svg.querySelectorAll('text')];
+  const [, , W, H] = svg.getAttribute('viewBox').split(' ').map(Number);
   const angle = (el) => { const m = el.getScreenCTM(); return Math.round((Math.atan2(m.b, m.a) * 1800) / Math.PI) / 10; };
   const anchors = els.map((el) => new DOMPoint(+el.getAttribute('x'), +el.getAttribute('y')).matrixTransform(M));
   const texts = els.map((el, k) => {
-    const r = el.getBoundingClientRect(), d = (q) => Math.hypot(r.left + r.width / 2 - q.x, r.top + r.height / 2 - q.y);
-    return { t: el.textContent, a: angle(el), off: d(anchors[k]), near: Math.min(...anchors.filter((_, j) => j !== k).map(d)), fs: parseFloat(getComputedStyle(el).fontSize) * Math.hypot(M.a, M.b) };
+    const r = el.getBoundingClientRect(), d = (q) => Math.hypot(r.left + r.width / 2 - q.x, r.top + r.height / 2 - q.y), m = el.getScreenCTM(), bb = el.getBBox();
+    // its box's corners, through its own turn to the screen and back into board units
+    const corners = [[bb.x, bb.y], [bb.x + bb.width, bb.y], [bb.x, bb.y + bb.height], [bb.x + bb.width, bb.y + bb.height]].map(([x, y]) => new DOMPoint(x, y).matrixTransform(m).matrixTransform(Mi));
+    const out = Math.max(0, ...corners.flatMap((q) => [-q.x, q.x - W, -q.y, q.y - H]));
+    return { t: el.textContent, label: el.classList.contains('slabel'), a: angle(el), off: d(anchors[k]), near: Math.min(...anchors.filter((_, j) => j !== k).map(d)), fs: parseFloat(getComputedStyle(el).fontSize) * Math.hypot(m.a, m.b), out: Math.round(out * 10) / 10 };
   });
-  const el = els[0], turn = el.style.transform;
+  const el = svg.querySelector('.blabels text'), turn = el.style.transform;
   el.style.transform = 'none';
   const bare = angle(el);
   el.style.transform = turn;
   return { texts, bare };
 }, id);
-/** Checks (h.ok) that every printed text of board `id` on page p (`who`, for
- *  the messages) reads upright and sits by its own anchor (D91), and that
- *  without its turn it would read at `bare` degrees (the view's turn plus
- *  the board's): the reading is live, and the view really turns it. */
+/** Checks (h.ok) that the printed texts of board `id` on page p (`who`, for
+ *  the messages) read as D91 has them — each coordinate upright, each space
+ *  or zone label never upside down (at most a quarter turn off upright) and
+ *  inside the board — that each sits by its own anchor, and that without its
+ *  turn a coordinate would read at `bare` degrees (the view's turn plus the
+ *  board's): the reading is live, and the view really turns it. */
 async function upright(p, id, bare, who) {
-  const b = await boardTexts(p, id), crooked = b.texts.filter((x) => Math.abs(x.a) > 0.5), astray = b.texts.filter((x) => !(x.off <= 0.5 * x.fs && x.off < x.near));
-  h.ok(b.texts.length > 0 && !crooked.length, `${who}: all ${b.texts.length} of the board's texts read upright (${crooked.map((x) => `${x.t} at ${x.a}°`).join(', ') || 'every one at 0°'})`);
+  const b = await boardTexts(p, id), coords = b.texts.filter((x) => !x.label), labels = b.texts.filter((x) => x.label);
+  const crooked = coords.filter((x) => Math.abs(x.a) > 0.5), astray = b.texts.filter((x) => !(x.off <= 0.5 * x.fs && x.off < x.near));
+  h.ok(coords.length > 0 && !crooked.length, `${who}: all ${coords.length} of the board's coordinates read upright (${crooked.map((x) => `${x.t} at ${x.a}°`).join(', ') || 'every one at 0°'})`);
+  if (labels.length) {
+    const wrong = labels.filter((x) => Math.abs(x.a) > 90.5 || x.out > 0.5);
+    h.ok(!wrong.length, `${who}: its ${labels.length} space and zone labels are never upside down, and stay inside the board (${labels.map((x) => `"${x.t}" at ${x.a}°, ${x.out} past the edge`).join('; ')})`);
+  }
   h.ok(!astray.length, `${who}: each sits by its own file, rank or space: its centre within half its font size of its anchor, nearer its own than any other (${astray.map((x) => `${x.t}: ${x.off.toFixed(1)} px off, ${x.near.toFixed(1)} px to another`).join(', ') || 'all'})`);
-  h.ok(angDiff(b.bare, bare) < 0.5, `${who}: without its own turn a text would read at ${b.bare}° (the view's turn and the board's: ${bare}°)`);
+  h.ok(angDiff(b.bare, bare) < 0.5, `${who}: without its own turn a coordinate would read at ${b.bare}° (the view's turn and the board's: ${bare}°)`);
+}
+/** The badges on page p that read upright on every screen (D91): a pile's
+ *  count and name, ×N, ∞, and a bag — [{what, a, bare}]: `a`, its on-screen
+ *  angle (degrees, 0 when upright), read from two probes put at its top
+ *  corners; `bare`, the angle with its own turn taken off for a moment, less
+ *  its item's rot (so: the view's turn, which the badge undoes). */
+const badgeAngles = (p) => p.evaluate(() => [...document.querySelectorAll('#table .item > .count, #table .pile > .pname, #table .bag > .bagbox')].map((el) => {
+  const pos = el.style.position, rot = +window.__ct.view().items[el.closest('.item').dataset.id].rot || 0;
+  if (getComputedStyle(el).position === 'static') el.style.position = 'relative'; // (a probe's place is its parent's box)
+  const probe = (left) => { const i = document.createElement('i'); i.style.cssText = `position:absolute;top:0;left:${left};width:0;height:0`; el.appendChild(i); const r = i.getBoundingClientRect(); i.remove(); return r; };
+  const angle = () => { const a = probe('0'), b = probe('100%'); return Math.round((Math.atan2(b.top - a.top, b.left - a.left) * 1800) / Math.PI) / 10; };
+  const a = angle();
+  el.style.rotate = 'none';
+  const bare = angle() - rot;
+  el.style.rotate = '';
+  el.style.position = pos;
+  return { what: `${el.className} "${el.textContent}"`, a, bare: ((bare % 360) + 360) % 360 };
+}));
+/** Checks (h.ok) that every badge on page p (`who`) reads upright, and that
+ *  without its turn it would read at `turn`, the view's (the reading is live). */
+async function badgesUpright(p, turn, who) {
+  const b = await badgeAngles(p), crooked = b.filter((x) => Math.abs(x.a) > 0.5), bare = b.filter((x) => angDiff(x.bare, turn) > 0.5);
+  h.ok(b.length > 0 && !crooked.length, `${who}: all ${b.length} badges (a pile's count and name, ×N, ∞, a bag) read upright (${crooked.map((x) => `${x.what} at ${x.a}°`).join(', ') || 'every one at 0°'})`);
+  h.ok(!bare.length, `${who}: without its own turn each would read at the view's turn plus its item's, ${turn}° (${bare.map((x) => `${x.what}: ${x.bare}°`).join(', ') || 'all'})`);
 }
 /** The actions page p has sent so far (bytes on the `act` channel; p1-lib's RTC hook). */
 const sentActs = (p) => p.evaluate(() => window.__rtc.sent.act || 0);
@@ -211,5 +249,5 @@ const inViewport = (p, sel) => p.evaluate((s) => [...document.querySelectorAll(s
 
 module.exports = {
   PHONE, BENCH, join, waitView, viewOf, tf, wrap, fit, angDiff, labels, label, menu, openMenu, pick, feltPoint,
-  mouseDrag, touchDrag, dragOn, itemXY, clickItem, sentActs, rgb, shows, inViewport, boardTexts, upright,
+  mouseDrag, touchDrag, dragOn, itemXY, clickItem, sentActs, rgb, shows, inViewport, boardTexts, upright, badgeAngles, badgesUpright,
 };

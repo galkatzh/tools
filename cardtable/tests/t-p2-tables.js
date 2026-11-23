@@ -20,7 +20,9 @@
 //      suites run unchanged on round tables)
 //   D91  on a round table whose seats turn the views 90°, 235° and 120°, a
 //      board turned 30° shows its coordinates upright on every screen, each
-//      by its own file or rank
+//      by its own file or rank (the files just under the grid), its zone's
+//      and space's labels never upside down and inside the board; the
+//      badges (×N, ∞, a deck's count and name, a bag) read upright
 // Screenshots go to shots/tables-*.png for review (not asserted).
 const path = require('path');
 const h = require('./h');
@@ -48,13 +50,21 @@ const QUAD = {
   types: { peg: { kind: 'token', name: 'Peg', stack: 'none', faces: [{ color: '#facc15' }] } },
   setup: [{ piece: 'peg', at: [80, 80] }, { piece: 'peg', at: [2260, 80] }, { piece: 'peg', at: [80, 1060] }, { piece: 'peg', at: [2260, 1060] }],
 };
-/** D91's box: a round table whose three named seats turn the views 90°, 235° and 120° (90 − the seat's angle),
- *  and a chess-labelled board turned 30° itself. */
+/** D91's box: a round table whose three named seats turn the views 90°, 235° and 120° (90 − the seat's angle);
+ *  a chess-labelled board turned 30° itself, with a labelled zone and space below its grid; a ×4 stack
+ *  turned 45°, a supply and a bag (their badges). */
 const TURNED = {
   name: 'Turned', imgs: [], table: { shape: 'round', w: 1800, h: 1800 },
   seats: [{ id: 'e', name: 'East', angle: 0 }, { id: 'nw', name: 'Northwest', angle: 215 }, { id: 'ne', name: 'Northeast', angle: 330 }],
-  types: { board: { kind: 'board', name: 'Chessboard', w: 600, rotStep: 15, faces: [{ color: '#5c3a1e' }], board: { grid: { type: 'square', cols: 8, rows: 8, cell: 70, x: 20, y: 20, draw: 'checker', labels: 'chess' } } } },
-  setup: [{ piece: 'board', at: 'center', rot: 30 }],
+  types: {
+    board: { kind: 'board', name: 'Chessboard', w: 600, h: 700, rotStep: 15, faces: [{ color: '#5c3a1e' }], board: {
+      grid: { type: 'square', cols: 8, rows: 8, cell: 70, x: 20, y: 20, draw: 'checker', labels: 'chess' },
+      zones: [{ id: 'z', poly: [[20, 610], [290, 610], [290, 690], [20, 690]], color: '#0ea5e9', label: 'Discard zone' }],
+      spaces: [{ id: 'start', x: 445, y: 650, r: 40, mark: 'rect', w: 270, h: 70, color: '#b91c1c', label: 'Start here' }],
+    } },
+    chip: { kind: 'token', name: 'Chip', faces: [{ color: '#facc15' }] },
+  },
+  setup: [{ piece: 'board', at: 'center', rot: 30 }, { piece: 'chip', n: 4, at: [500, 900], rot: 45 }, { supply: 'chip', at: [1300, 900] }, { bag: ['chip', 'chip'], name: 'Sack', at: [900, 1350] }],
 };
 /** Automatic seating: a box with no seats (and no table: the table stays). */
 const PLAIN = { name: 'Plain', imgs: [], types: { peg: QUAD.types.peg }, setup: [{ piece: 'peg', at: 'center' }] };
@@ -369,15 +379,22 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
   await bob.click('#action-bar [data-cmd="del"]');
   for (const p of all()) await handBar(p, false, 'once the card is removed too');
 
-  section('D91: a board\'s coordinates read upright at any seat angle (a round table, the board turned 30°)');
-  ok((await act(host, { t: 'loadBox', box: TURNED, setup: true, clear: true })).ok, 'the host loads a round table with seats at 0°, 215° and 330°, and a chessboard turned 30°');
+  section('D91: a board\'s coordinates read upright at any seat angle, its labels never upside down; badges read upright (a round table, the board turned 30°)');
+  ok((await act(host, { t: 'loadBox', box: TURNED, setup: true, clear: true })).ok, 'the host loads a round table with seats at 0°, 215° and 330°, a chessboard turned 30°, a ×4 stack turned 45°, a supply and a bag');
+  await host.click('#add-deck-btn');
+  await host.waitForSelector('#deck-dialog[open]');
+  await host.click('#deck-add');
   for (const p of all()) {
-    ok(await P.waitView(p, "v.table.shape === 'round' && !!v.players[me].seatId && Object.values(v.items).some((it) => it.z < 0)"), `${name(p)} has a seat and the board`);
+    ok(await P.waitView(p, "v.table.shape === 'round' && !!v.players[me].seatId && Object.values(v.items).some((it) => it.z < 0) && Object.values(v.items).some((it) => it.k === 'p')"), `${name(p)} has a seat, the board and a deck (+ Deck)`);
     const { seat, id, rot } = await P.viewOf(p, '({ seat: v.players[me].seat, ...Object.entries(v.items).filter(([, it]) => it.z < 0).map(([id, it]) => ({ id, rot: it.rot }))[0] })');
-    const turn = (((90 - seat) % 360) + 360) % 360;
+    const turn = (((90 - seat) % 360) + 360) % 360, who = `${name(p)} (${p === carol ? 'iPhone' : 'desktop'})`;
     ok(await L.until(async () => P.angDiff((await P.tf(p)).rot, turn) < 0.01, 10000, 100), `${name(p)} sits at ${seat}°: the view turns ${turn}°`);
-    await P.upright(p, id, turn + rot, `${name(p)} (${p === carol ? 'iPhone' : 'desktop'}; the board turned ${rot}°)`);
+    await p.waitForSelector('.item.pile .count');
+    await P.upright(p, id, turn + rot, `${who}; the board turned ${rot}°`);
+    await P.badgesUpright(p, turn, who);
   }
+  const files = await host.evaluate(() => [...document.querySelectorAll('.item.board .blabels text')].filter((t) => /^[a-h]$/.test(t.textContent)).map((t) => +t.getAttribute('y')));
+  ok(files.length === 8 && files.every((y) => y === 590), `the files a–h lie in the 20-unit strip just under the grid (y 590: the grid ends at 580), not halfway down the 120 units below it (${files.join(', ')})`);
   await shot(bob, 'tables-turned-board-desk');
   await shot(carol, 'tables-turned-board-phone');
 

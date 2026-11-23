@@ -9,8 +9,9 @@
 //        (from the pan's first event on: not the probe's search for bare felt),
 //        and rAF interval p95 ≤ max(20 ms, 1.25 × the same pan over an empty table)
 //   B6   the host saves the 1,000-item table: every save's main-thread part ≤ 8 ms
-//        (__ct.perf.lastSaveSyncMs, around doSave's synchronous IndexedDB put), ten
-//        saves as in play, a second apart (after one unmeasured: see savesB6)
+//        (__ct.perf.lastSaveSyncMs, around doSave's synchronous IndexedDB put): ten
+//        throttled saves (rapid play) and five unthrottled ones (a move 1.1 s
+//        after the last save), after one unmeasured (see savesB6)
 //   B8   a guest that pulled a 40-image deck reloads: 0 `asset` bytes received
 //        (the __rtc byte counter, per channel), and no image asked for
 // Phase 2 (§2k) re-runs B1', B3, B4, B6 and B8 on the bench box (P.BENCH: 1
@@ -154,15 +155,18 @@ function placeholderWatch() {
     ok(!full.long.some((d) => d > B4_LONG), `B4: no long task over ${B4_LONG} ms while panning (${full.long.length ? full.long.join(', ') + ' ms' : 'none'})`);
     ok(full.p95 <= limit, `B4: rAF interval p95 ${full.p95.toFixed(1)} ms ≤ max(${B4_FLOOR}, 1.25 × ${base.p95.toFixed(1)}) = ${limit.toFixed(1)} ms`);
   }
-  /** B6: 10 host moves of `ids`, from (x0, y0), each followed by its save (throttled to one a second): once IndexedDB holds that seq, perf.lastSaveSyncMs is that save's main-thread part.
-   *  A first move and save go unmeasured: after the idle pan, that save starts at once, in the burst of
-   *  its move's own work (the throttle has nothing to wait for), where the ten measured, like saves in
-   *  play, start a second after the last — and it alone ran slow: past 5 ms in 6 of 28 earlier series
-   *  (10.0 ms once), against 2 of their 252 other saves. */
+  /** B6: host moves of `ids`, from (x0, y0), each followed by its save: once IndexedDB holds that
+   *  seq, perf.lastSaveSyncMs is that save's main-thread part. Saves are throttled to one a second
+   *  (app.js persist), so play takes two paths, both measured: ten moves made right after the last
+   *  save (rapid play) wait out the throttle; five made 1.1 s after it (unhurried, turn-based play)
+   *  start their save as soon as the app starts one, SAVE_DEFER_MS after the move (out of its burst
+   *  of work). A first move and save, after the idle pan, go unmeasured (that one ran slow alone in
+   *  some earlier series: 10.0 ms once). */
   async function savesB6(ids, x0, y0) {
-    const room = host.url().match(/#room~([0-9a-f]+)/)[1], saveMs = [];
+    const room = host.url().match(/#room~([0-9a-f]+)/)[1], ms = { 'throttled (rapid play)': [], 'unthrottled (a move 1.1 s after the last save)': [] }, [thr, once] = Object.values(ms);
     let items = 0;
-    for (let k = -1; k < 10; k++) {
+    for (let k = -1; k < 15; k++) {
+      if (k >= 10) await h.sleep(1100);
       const m = { id: ids.at((k * 37) % ids.length), x: x0 + 25 * k, y: y0 - 25 * k };
       await L.act(host, { t: 'move', ...m });
       await host.waitForFunction((m) => { const it = window.__ct.view().items[m.id]; return it && it.x === m.x && it.y === m.y; }, m, { timeout: 10000 });
@@ -171,11 +175,13 @@ function placeholderWatch() {
       const saved = await L.until(async () => (rec = await h.idb(host, 'saves', room))?.state?.seq >= seq, 15000, 100);
       if (!saved) { ok(false, `B6: the save of seq ${seq} reached IndexedDB (it holds ${rec?.state?.seq})`); break; }
       items = Object.keys(rec.state.items).length;
-      if (k >= 0) saveMs.push(await host.evaluate(() => window.__ct.perf.lastSaveSyncMs));
+      if (k >= 0) (k < 10 ? thr : once).push(await host.evaluate(() => window.__ct.perf.lastSaveSyncMs));
     }
-    console.log(`  lastSaveSyncMs per save: ${saveMs.map((x) => x.toFixed(2)).join(', ')} ms (${items} items saved)`);
-    ok(saveMs.length === 10 && items >= 1000 && saveMs.every((x) => x > 0 && x <= B6_MAX),
-      `B6: each of ${saveMs.length} saves of ${items} items takes ≤ ${B6_MAX} ms on the main thread (max ${Math.max(...saveMs).toFixed(2)} ms)`);
+    for (const [path, xs] of Object.entries(ms)) {
+      console.log(`  lastSaveSyncMs per save, ${path}: ${xs.map((x) => x.toFixed(2)).join(', ')} ms (${items} items saved)`);
+      ok(xs.length === (xs === thr ? 10 : 5) && items >= 1000 && xs.every((x) => x > 0 && x <= B6_MAX),
+        `B6, ${path}: each of ${xs.length} saves of ${items} items takes ≤ ${B6_MAX} ms on the main thread (max ${Math.max(...xs).toFixed(2)} ms)`);
+    }
   }
   /** How many players page p sees connected, itself included (its "● n"). */
   const here = (p) => p.$eval('#net-status', (el) => +(/● (\d+)/.exec(el.textContent)?.[1] || 1));

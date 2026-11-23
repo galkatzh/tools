@@ -14,17 +14,25 @@
 //   drops      one piece off a stack onto a bag or its supply goes in or back;
 //              dropped back on its own stack or supply, nothing is sent; a
 //              bag that would overflow is not offered the drop
-//   keys       a held key acts once; after a click on a bar or header button
-//              the keys still reach the table (the button lets go of the focus)
+//   keys       a held key acts once; after a click on a bar or header button,
+//              or on a dialog's Close (? and + Deck), the keys still reach the
+//              table (the button lets go of the focus); after ➤ in the chat
+//              they go to the chat box
 //   stale bar  a seat change redraws the bar of a selected seat-bound piece
 //   phone      the dark seat's halo, a seat label's finger-sized hit box, the
 //              watchers box clear of the labels, readable badges, the help
 //              dialog inside the screen, Sit down's size, a watcher's squared view
 //   turn cue   shows on a table with no hand bar
+//   landscape  a watcher's phone turned sideways: two compact chips, clear of
+//              the board and its men, that a tap opens
 //   watchdog   a guest whose host has been gone a minute reloads itself (saying
 //              so), keeps showing the table paused (the hint readable on the
-//              phone), and gets it back live when the host returns
+//              phone, in screen space), keeps its backoff (the next reload 40 s
+//              later, counting the whole absence), and gets it back live when
+//              the host returns; a host alone whose relays drop reloads and
+//              keeps no paused table
 // Screenshots go to shots/review-*.png for review (not asserted).
+const net = require('net');
 const h = require('./h');
 const L = require('./p1-lib');
 const P = require('./p2t-lib');
@@ -66,6 +74,14 @@ function placeholderWatch() {
   new MutationObserver(() => { window.__ph = Math.max(window.__ph, document.querySelectorAll('.pface.placeholder').length); })
     .observe(document, { subtree: true, childList: true });
 }
+/** Init script: every text the table's hint shows on this page (window.__hints). */
+function hintWatch() {
+  window.__hints = [];
+  addEventListener('DOMContentLoaded', () => {
+    const t = document.getElementById('table-hint');
+    new MutationObserver(() => { if (!t.classList.contains('hidden')) window.__hints.push(t.textContent); }).observe(t, { childList: true, characterData: true, subtree: true, attributes: true });
+  });
+}
 /** Init script: every toast this page shows (window.__notes). */
 function noticeWatch() {
   window.__notes = [];
@@ -80,7 +96,7 @@ function noticeWatch() {
   /** Player `name` on its own page (`ctx`: a device), with the RTC hook and the watches, once it shows the table. */
   async function player(name, url, ctx) {
     const p = await env.page(name, { ctx });
-    for (const f of [L.rtcHook, noticeWatch, placeholderWatch]) await p.addInitScript(f);
+    for (const f of [L.rtcHook, noticeWatch, hintWatch, placeholderWatch]) await p.addInitScript(f);
     await p.goto(url);
     await h.joinAs(p, name);
     await p.waitForFunction(() => { const v = window.__ct?.view(); return v?.seq > 0 && !!v.players[localStorage.getItem('ct-pid')]; }, null, { timeout: 30000 });
@@ -279,6 +295,45 @@ function noticeWatch() {
   await bob.keyboard.press('Delete');
   ok(await P.waitView(bob, '!(a in v.items)', played, 5000), 'and Delete, right after that click, removes it');
 
+  section('keys after a dialog: ? or + Deck, closed with the mouse, hand the focus back to the table, not to the button that opened them');
+  const nIt = Object.keys(await items()).length;
+  ok((await act({ t: 'take', id: ids.tiles })).ok && await P.waitView(bob, 'Object.keys(v.items).length === a', nIt + 1), '(the host takes a tile out of its supply)');
+  const tileId = await P.viewOf(bob, "Object.keys(v.items).find((id) => v.items[id].k === 'g' && v.items[id].t.endsWith('/tile') && !a.includes(id))", ids0);
+  await P.clickItem(bob, tileId);
+  ok((await selected(bob)) === tileId, '(Bob selects it)');
+  for (const [open, dlg, close, what] of [['#help-btn', '#help-dialog', '#help-dialog menu button', '? then Close'], ['#add-deck-btn', '#deck-dialog', '#deck-dialog button[value="cancel"]', '+ Deck then Cancel']]) {
+    const r0 = await P.viewOf(bob, 'v.items[a].rot', tileId);
+    await bob.click(open);
+    await bob.waitForSelector(`${dlg}[open]`);
+    await bob.click(close);
+    await bob.waitForFunction((d) => !document.querySelector(`${d}[open]`), dlg);
+    await h.sleep(100);
+    const f = await bob.evaluate(() => document.activeElement?.id || document.activeElement?.tagName);
+    ok(f === 'BODY', `${what}, with the mouse: the focus goes back to the table, not to the button (it is on ${f})`);
+    await bob.keyboard.press('r');
+    ok(await P.waitView(bob, 'v.items[a.id].rot === a.rot', { id: tileId, rot: (r0 + 90) % 360 }, 5000), `R turns the selected tile (${r0}° → ${await P.viewOf(bob, 'v.items[a].rot', tileId)}°)`);
+    await bob.keyboard.press(' ');
+    await h.sleep(500);
+    ok(!(await bob.evaluate(() => !!document.querySelector('dialog[open]'))), 'Space opens no dialog again');
+  }
+
+  section('keys after the chat: a message sent with ➤ leaves the focus in the chat box — what is typed next goes there, not to the selected piece');
+  const rC = await P.viewOf(bob, 'v.items[a].rot', tileId);
+  await bob.click('#chat-input');
+  await bob.keyboard.type('ok');
+  await bob.click('#chat-form button');
+  ok(await P.waitView(host, "v.log.some((e) => e.txt === 'ok')"), 'Bob types "ok" and clicks ➤: it is sent');
+  const fc = await bob.evaluate(() => document.activeElement?.id || document.activeElement?.tagName), sC = await P.sentActs(bob);
+  ok(fc === 'chat-input' && (await selected(bob)) === tileId, `the focus is back in the chat box (${fc}), the tile still selected`);
+  await bob.keyboard.type(' r');
+  await bob.keyboard.press('Backspace');
+  await bob.keyboard.press('Delete');
+  await h.sleep(900);
+  ok((await P.sentActs(bob)) === sC && (await P.viewOf(bob, 'v.items[a]?.rot', tileId)) === rC && (await bob.inputValue('#chat-input')) === ' ',
+    `" r", Backspace and Delete go to the chat box ("${await bob.inputValue('#chat-input')}"): nothing is sent, the tile neither turns nor goes`);
+  await bob.fill('#chat-input', '');
+  await felt(bob);
+
   section('stale bar: a seat change redraws the bar of a selected seat-bound piece');
   await P.clickItem(bob, ids.north);
   ok((await barCmds(bob)).includes('del'), `Bob selects North's pawn (his seat): his bar offers 🗑 (${(await barCmds(bob)).join(' ')})`);
@@ -367,17 +422,45 @@ function noticeWatch() {
   }, null, { timeout: 5000 }).then(() => true, () => false), 'Alice\'s "⏳ Your turn" cue shows, on screen, with the hand bar hidden');
   await shot(host, 'review-desk-turn');
 
+  section('phone in landscape: a watcher\'s box is two compact chips, clear of the board and its men; a tap opens it, another closes it');
+  ok(await P.waitView(carol, 'Object.keys(v.items).length === 25 && v.players[me].seat == null'), '(Carol watches the draughts)');
+  await carol.setViewportSize({ width: 844, height: 390 });
+  await carol.tap('#log-btn'); // (the log open, as a screen this wide starts with it: the table gets the rest)
+  await h.sleep(800);
+  const chips = () => carol.evaluate(() => {
+    const items = [...document.querySelectorAll('.item.piece')];
+    return [...document.querySelectorAll('#watch-box > :not(.hidden)')].map((e) => {
+      const r = e.getBoundingClientRect();
+      return { text: e.textContent, w: Math.round(r.width), covers: items.filter((it) => { const q = it.getBoundingClientRect(); return Math.min(r.right, q.right) > Math.max(r.left, q.left) && Math.min(r.bottom, q.bottom) > Math.max(r.top, q.top); }).length };
+    });
+  });
+  const small = await chips();
+  ok(small.length === 2 && /^👀 \d+$/.test(small[0].text) && small[1].text.startsWith('👀 Watching') && small.every((c) => !c.covers),
+    `Carol turns her phone (844 × 390): "${small.map((c) => c.text).join('", "')}", and they cover no piece nor the board (${JSON.stringify(small)})`);
+  await shot(carol, 'review-phone-landscape-watching');
+  await carol.tap('#watchers');
+  ok(await carol.waitForFunction(() => document.getElementById('watch-me-text').textContent === '👀 You are watching — tap a free seat to sit' && !/^👀 \d+$/.test(document.getElementById('watchers').textContent), null, { timeout: 5000 }).then(() => true, () => false),
+    'a tap on the chip opens the box: who watches, and how to sit');
+  await carol.tap('#watchers');
+  ok(same((await chips()).map((c) => c.text), small.map((c) => c.text)), 'another tap closes it again');
+  await carol.tap('#log-btn');
+  await carol.setViewportSize(P.PHONE.viewport);
+  await h.sleep(500);
+  ok(await carol.evaluate(() => document.getElementById('watch-me-text').textContent === '👀 You are watching — tap a free seat to sit'), 'back upright, the phone shows the whole text again');
+
   section('watchdog: a guest whose host has been gone a minute reloads itself, keeping the table paused, and gets it back live when the host returns');
   const hostUrl = host.url(), hctx = host.context();
   for (const p of [bob, carol]) await p.evaluate(() => { window.__stay = 1; });
-  const reloaded = bob.waitForEvent('load', { timeout: 120000 }).then(() => true, () => false);
+  const reloaded = bob.waitForEvent('load', { timeout: 120000 }).then(() => true, () => false), why = [];
+  bob.on('console', (m) => { if (/^reconnecting via reload/.test(m.text())) why.push(m.text()); });
   const t0 = Date.now();
   await host.close();
   ok(await bob.waitForFunction(() => !document.getElementById('table-hint').classList.contains('hidden'), null, { timeout: 20000 }).then(() => true, () => false), 'Bob sees the host leave (the paused hint)');
   const told = bob.waitForFunction(() => { const t = document.getElementById('toast'); return !t.classList.contains('hidden') && /…$/.test(t.textContent) && t.textContent; }, null, { timeout: 120000, polling: 50 })
     .then((t) => t.jsonValue(), () => ''); // (the watchdog's notice, shown just before the reload)
   ok(await reloaded, `Bob's page reloads itself (after ${((Date.now() - t0) / 1000).toFixed(0)} s)`);
-  ok(Date.now() - t0 > 55000, '…not before the host has been gone a minute');
+  const t1 = Date.now();
+  ok(t1 - t0 > 55000, '…not before the host has been gone a minute');
   const said = await told;
   ok(said === 'The host has been away for a minute — reconnecting…', `its notice blames the host's absence, not the connection ("${said}")`);
   const paused = () => bob.evaluate(() => ({
@@ -398,10 +481,55 @@ function noticeWatch() {
   });
   ok(hintPx >= 18, `there, "The host left — …" is readable: a line of it is ${hintPx.toFixed(1)} px tall on the screen`);
   await shot(carol, 'review-phone-paused');
+  await h.sleep(Math.max(0, t1 + 11000 - Date.now())); // (two watchdog ticks on the new page)
+  const rejoin = await bob.evaluate(() => JSON.parse(sessionStorage.getItem('ct-rejoin') || 'null'));
+  ok(rejoin?.backoff === 40000, `the backoff survives the new page's ticks while the host stays away: the next try waits 40 s (${JSON.stringify(rejoin)})`);
+  const lost = await bob.evaluate(() => window.__hints.filter((t) => /Connection lost/.test(t)).length);
+  ok(!lost && /paused/.test((await paused()).hint), `the hint never blamed Bob's own connection while his relays opened (${lost} "Connection lost")`);
+  const told2 = bob.waitForFunction(() => { const t = document.getElementById('toast'); return !t.classList.contains('hidden') && /…$/.test(t.textContent) && t.textContent; }, null, { timeout: 90000, polling: 50 })
+    .then((t) => t.jsonValue(), () => '');
+  const t2 = await bob.waitForEvent('load', { timeout: 90000 }).then(() => Date.now(), () => 0);
+  ok(t2 - t1 >= 39000 && t2 - t1 < 52000, `the host still away, Bob's page reloads again ${((t2 - t1) / 1000).toFixed(0)} s after the first: after the backoff's 40 s (not a fresh 20 s), and not a minute's grace again`);
+  const said2 = await told2, gone = +(/for (\d+) s$/.exec(why.at(-1) || '')?.[1] || 0);
+  ok(said2 === 'The host has been away for 2 minutes — reconnecting…' && gone >= 95, `its notice and the console count the whole absence ("${said2}"; "${why.at(-1)}")`);
+  ok(await bob.waitForFunction(() => /paused/.test(document.getElementById('table-hint').textContent) && document.querySelectorAll('.item').length === 25, null, { timeout: 15000 }).then(() => true, () => false), '(the table shows again, paused)');
+  const wr = await P.wrap(bob);
+  await bob.mouse.move(wr.left + wr.W / 2, wr.top + wr.H / 2);
+  for (let k = 0; k < 4; k++) { await bob.mouse.wheel(0, -400); await h.sleep(100); }
+  const hz = await bob.evaluate(() => {
+    const el = document.getElementById('table-hint'), w = document.getElementById('table-wrap').getBoundingClientRect(), r = document.createRange();
+    r.selectNodeContents(el);
+    const q = [...r.getClientRects()];
+    return { parent: el.parentElement.id, fs: getComputedStyle(el).fontSize, inside: q.length > 0 && q.every((b) => b.left >= w.left && b.right <= w.right && b.top >= w.top && b.bottom <= w.bottom) };
+  });
+  const zz = (await P.tf(bob)).s;
+  ok(hz.parent === 'table-wrap' && hz.fs === '24px' && hz.inside, `zoomed in (scale ${zz.toFixed(2)}), the hint keeps its 24 px and every line inside the table area (${JSON.stringify(hz)})`);
   const back = await hctx.newPage();
   await back.goto(hostUrl);
   ok(await bob.waitForFunction(() => window.__ct.perf.snaps > 0 && Object.keys(window.__ct.view().items).length === 25 && document.getElementById('table-hint').classList.contains('hidden') && !window.__stay, null, { timeout: 60000 }).then(() => true, () => false),
     'once the host is back, Bob\'s table is live again (the host\'s snapshot, the hint gone)');
+  ok(await bob.waitForFunction(() => sessionStorage.getItem('ct-rejoin') === null, null, { timeout: 15000 }).then(() => true, () => false), 'and the backoff goes');
+
+  section('watchdog: a host alone whose relays drop reloads itself — and keeps no paused table (that is a guest\'s)');
+  const relayPort = +env.relayUrl.split(':').pop(), socks = new Set();
+  const proxy = net.createServer((c) => { // (a relay of the host's own, through which the test cuts it)
+    const u = net.connect(relayPort, '127.0.0.1'), end = () => { c.destroy(); u.destroy(); };
+    for (const x of [c, u]) { socks.add(x); x.on('error', end); x.on('close', end); }
+    c.pipe(u);
+    u.pipe(c);
+  });
+  await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
+  const hana = await env.page('Hana', { relay: `ws://127.0.0.1:${proxy.address().port}` });
+  await hana.goto(env.url);
+  await h.joinAs(hana, 'Hana');
+  await hana.waitForFunction(() => window.__ct?.view().seq > 0 && document.querySelectorAll('.item').length > 0, null, { timeout: 30000 });
+  const hanaBack = hana.waitForEvent('load', { timeout: 90000 }).then(() => true, () => false);
+  proxy.close();
+  for (const x of socks) x.destroy();
+  ok(await hanaBack, 'Hana hosts a table alone; her relay is cut: her page reloads itself');
+  await hana.waitForFunction(() => window.__ct?.view().seq > 0, null, { timeout: 30000 });
+  const kept = await hana.evaluate(() => Object.keys(sessionStorage).filter((k) => k.startsWith('ct-paused-')));
+  ok(!kept.length, `the host's own reload kept no paused table in sessionStorage (${JSON.stringify(kept)})`);
 
   await env.done();
 })().catch(h.crash);

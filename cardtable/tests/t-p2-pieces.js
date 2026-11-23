@@ -6,7 +6,8 @@
 // gesture table, the keys, and the action bar for every kind and permission.
 // Each check is read on BOTH screens: __ct.view(), the DOM (classes, badges,
 // the bar's buttons; the owner dot only where its item is selected or under
-// the desktop mouse, D90) and the log. Gestures are real (mouse, keyboard, CDP
+// the desktop mouse, D90; the badges upright, D91; the selection rings; no
+// ⟲ ⟳ on a plain disc, D92) and the log. Gestures are real (mouse, keyboard, CDP
 // touch); __ct.act only sets up state, and sends the refused actions a screen
 // never offers (to see the refusal itself).
 // A failed check saves both screens in shots/ (p2-pieces-<pass>-fail<k>-*.png).
@@ -17,6 +18,7 @@ const { section } = h;
 const L = require('./p1-lib');
 const { loadBox, at } = require('./p2-lib');
 const { toastLog } = require('./assets-lib');
+const { badgesUpright } = require('./p2t-lib');
 const { devices } = h.playwright;
 
 // The test box: every kind of §2a. Bob sits North (top edge), so his view is
@@ -366,23 +368,39 @@ async function pass(env, mode) {
       ok(r.hex && r.rect && r.disc, say(`${NAME.get(p)}: hex clip-path, rect 8% radius, disc 50% (${r.hex}, ${r.rect}, ${r.disc})`));
       ok(r.hidden && r.die, say(`${NAME.get(p)}: a hidden die draws its back and is not marked a die; a shown die has pips`));
     }
+    // D91: the ×N pills, the supplies' ∞, the pile's count and the bags read upright on both screens (Bob's turned 180°)
+    await badgesUpright(alice, 0, say('Alice'));
+    await badgesUpright(bob, 180, say('Bob'));
+    // a selected piece shows its ring: a cut-out shape's (its clip-path cuts an outline off) drawn by the
+    // item's drop-shadows, a disc's set off by a dark edge (it shows on the yellow coin)
+    for (const p of P) {
+      await select(p, I.hex);
+      const hexF = await p.evaluate((id) => getComputedStyle(document.querySelector(`.item[data-id="${id}"]`)).filter, I.hex);
+      await select(p, I.C);
+      const disc = await p.evaluate((id) => getComputedStyle(document.querySelector(`.item[data-id="${id}"] .pface`)).boxShadow, I.C);
+      await deselect(p);
+      const ring = (s) => s.includes('rgb(251, 191, 36)') && s.includes('rgba(0, 0, 0, 0.73');
+      ok(ring(hexF), say(`${NAME.get(p)}: the selected hex tile has its ring and dark edge, drawn by the item (filter: ${hexF.slice(0, 90)}…)`));
+      ok(ring(disc), say(`${NAME.get(p)}: the selected yellow coin has its ring, set off by a dark edge (${disc})`));
+    }
   }
 
   // ------------------------------------------------------------------------------------------
   section(say('the bar (§2g) for every kind, from public data only: guest Bob and host Alice'));
   const HOST = ['lock', 'give'];
   for (const [id, what, want, extra = []] of [
-    [I.A, 'a ×5 coin stack', ['flip', 'rl', 'rr', 'split', 'all', 'claim', 'del']],
-    [I.C, 'a single coin', ['flip', 'rl', 'rr', 'claim', 'del']],
-    [I.chit, 'a chit with a back', ['flip', 'rl', 'rr', 'claim', 'del']],
+    // (a plain disc — no image, label, text or pips on the side up — looks the same at any angle: no ⟲ ⟳, the fix-up's change to §2g)
+    [I.A, 'a ×5 coin stack (plain discs: no ⟲ ⟳)', ['flip', 'split', 'all', 'claim', 'del']],
+    [I.C, 'a single coin (no ⟲ ⟳)', ['flip', 'claim', 'del']],
+    [I.chit, 'a chit with a back (no ⟲ ⟳)', ['flip', 'claim', 'del']],
     [I.hex, 'a one-face hex tile (no back)', ['rl', 'rr', 'claim', 'del']],
-    [I.wheel, 'the 6-face wheel', ['flip', 'rl', 'rr', 'claim', 'del'], ['zoom']],
+    [I.wheel, 'the 6-face wheel (a disc with a label: ⟲ ⟳)', ['flip', 'rl', 'rr', 'claim', 'del'], ['zoom']],
     [I.t1, 'a tile (hand, back)', ['flip', 'rl', 'rr', 'hand', 'claim', 'del'], ['zoom']],
     [I.p1, 'a plain tile (hand, no back)', ['rl', 'rr', 'hand', 'claim', 'del'], ['zoom']],
     [I.L, 'a die', ['roll', 'claim', 'del']],
     [I.hdie, 'a hidden die', ['flip', 'rl', 'rr', 'claim', 'del']],
     [I.htok, 'a hidden token sharing its back', ['flip', 'rl', 'rr', 'claim', 'del']],
-    [I.hch, 'a hidden ×2 chit stack (the back says count)', ['flip', 'rl', 'rr', 'split', 'all', 'claim', 'del']],
+    [I.hch, 'a hidden ×2 chit stack (the back says count; a plain back: no ⟲ ⟳)', ['flip', 'split', 'all', 'claim', 'del']],
   ]) {
     // (🔍 on a face with a label, text or image: the implementer's documented addition to §2g's list)
     const tag = extra.length ? ' (+🔍: the face has a label)' : '';
@@ -494,10 +512,10 @@ async function pass(env, mode) {
   ok(await rotOk(I.hex, 0), say('⟲ turns it back to 0°'));
   await press(alice, I.t1, 'rr');
   ok(await rotOk(I.t1, 90), say('Alice ⟳ a tile (rotStep 90): 90°'));
-  await press(alice, X, 'rr');
-  ok(await rotOk(X, 45), say('⟳ a coin that turns freely (rotStep 0): 45°'));
-  await press(alice, X, 'rl');
-  ok(await rotOk(X, 0), say('⟲: 0° again'));
+  await press(alice, I.wheel, 'rr');
+  ok(await rotOk(I.wheel, 45), say('⟳ the wheel, a token that turns freely (rotStep 0): 45°'));
+  await press(alice, I.wheel, 'rl');
+  ok(await rotOk(I.wheel, 0), say('⟲: 0° again'));
   await deselect(alice);
   await deselect(bob);
 
@@ -609,7 +627,7 @@ async function pass(env, mode) {
   ok(await both((v) => Object.values(v.items).some((it) => it.k === 'b' && it.name === 'Sack') && v.seats?.length === 2), say('a second box, lockable by anyone, joins the table (same seats)'));
   const lits = (await V(alice)).items, gem = at(lits, 920, 120), sack = at(lits, 1030, 230);
   ok(lits[sack]?.box === lb && lits[I.pouch]?.box === kit, say(`a bag's public form carries its box (D88): ${lits[sack]?.box === lb}, ${lits[I.pouch]?.box === kit}`));
-  await barIs(bob, gem, ['rl', 'rr', 'lock', 'claim', 'del'], 'a lockable gem');
+  await barIs(bob, gem, ['lock', 'claim', 'del'], 'a lockable gem (a plain disc)');
   await barIs(bob, sack, ['pull', 'lock', 'del'], 'a bag of the lockable box');
   m = await marks();
   await press(bob, gem, 'lock');
@@ -648,7 +666,7 @@ async function pass(env, mode) {
   ok(same(await dotsShown(alice), [X]), say(`Alice ${phone ? 'taps' : 'clicks'} Bob's coin: selected, its dot shows`));
   await deselect(alice);
   ok(same(await dotsShown(alice), []), say('deselected, it goes'));
-  await barIs(bob, X, ['flip', 'rl', 'rr', 'release', 'del'], 'his own coin');
+  await barIs(bob, X, ['flip', 'release', 'del'], 'his own coin');
   await barIs(alice, X, ['lock', 'release', 'give'], "Bob's coin");
   const x1 = (await V(alice)).items[X], ta = await alice.evaluate(() => window.__toasts.length);
   await alice.evaluate((a) => window.__ct.act(a), { t: 'move', id: X, x: 100, y: 650 }); // the host is not exempt (D17)
@@ -674,7 +692,7 @@ async function pass(env, mode) {
   ok(await both((v, a) => v.items[a]?.owner === 'seat:north', X), say('…then to the North seat: seat-bound on both'));
   await logOk(m, 'Alice', /^gave Coin to North$/, 'give to a seat');
   ok((await domBoth(X)).every((d) => d.odot === rgb('#2563eb')), say("a seat-bound owner's dot is the seat's colour (#2563eb), on both screens"));
-  await barIs(bob, X, ['flip', 'rl', 'rr', 'release', 'del'], "the North seat's coin (Bob sits North)");
+  await barIs(bob, X, ['flip', 'release', 'del'], "the North seat's coin (Bob sits North)");
   await press(bob, X, 'release');
   ok(await both((v, a) => !v.items[a]?.owner, X), say('Bob releases it'));
   // Alice's own pieces, for item 11 (from Bob's screen)
@@ -959,13 +977,16 @@ async function pass(env, mode) {
     await select(bob, I.d1);
     await bob.keyboard.press('r');
     await deselect(bob);
+    await select(alice, I.chit);
+    await alice.keyboard.press('r');
+    await deselect(alice);
     await select(alice, I.wheel);
     await alice.click('#chat-input');
     await alice.keyboard.press('f');
     await alice.keyboard.press('Delete');
     await h.sleep(1200);
     const got = await sentSince(w0), v1 = await V(alice);
-    ok(!got.length && v1.items[I.D] && v1.items[I.wheel]?.f === 1 && v1.items[I.d1].rot === r0, say(`Delete, F and R on Alice's stack, R on a die (no rotation for dice), and F or Delete typed in the chat box do nothing, send nothing, show no notice (${JSON.stringify(got)})`));
+    ok(!got.length && v1.items[I.D] && v1.items[I.wheel]?.f === 1 && v1.items[I.d1].rot === r0, say(`Delete, F and R on Alice's stack, R on a die (no rotation for dice) or on a plain chit (a turn would not show), and F or Delete typed in the chat box do nothing, send nothing, show no notice (${JSON.stringify(got)})`));
     await alice.keyboard.press('Escape');
   } else {
     section(say('touch: a long press on a piece with a label, text or image zooms its face until the finger lifts'));

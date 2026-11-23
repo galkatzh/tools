@@ -73,6 +73,13 @@ export function imageOf(it, boxes) {
 export const isBoard = (it, boxes) => it.k === 'g' && (it.z < 0 || typeAt(boxes, it.t)?.kind === 'board');
 /** Whether public item `it` is a die (a hidden one never is: its type is hidden). */
 export const isDie = (it, boxes) => it.k === 'g' && typeAt(boxes, it.t)?.kind === 'die';
+/** Whether a turn of public piece `it` would show: false for a round or
+ *  disc piece whose side up is a plain colour (a checker, a man), which
+ *  looks the same at any angle — its bar offers no ⟲ ⟳ (app.js barFor). */
+export function turnShows(it, boxes) {
+  const L = lookOf(shownPart(it), boxes), f = L?.face;
+  return !f || !['round', 'disc'].includes(flagsOf(it, boxes).shape) || f.img !== undefined || !!f.label || !!f.text || f.pips !== undefined;
+}
 /** The face a public piece-like item shows, when it is worth enlarging (an
  *  image, a text or a label: the long-press zoom): {t, f}, or null. */
 export function zoomable(it, boxes) {
@@ -161,10 +168,11 @@ export function tumble(el) {
 // boardSVG(type) draws a board type's grid, spaces, zones and links (cleanBox
 // checked every field) as an inline <svg> laid over its face. Only numbers
 // and safeColor'd colours go into it; its only text is our own coordinate
-// labels and the spaces' labels, escaped. A grid of any size is a handful of
-// <path>s (one per colour), so a 64 × 64 board stays cheap to build and to
-// draw (B11). The string is built once per type (cached: a type is an
-// immutable object of the box map).
+// labels (.blabels) and the spaces' and zones' labels (.slabel), escaped:
+// style.css turns each by its class (the view's turn varies, the string
+// doesn't). A grid of any size is a handful of <path>s (one per colour), so
+// a 64 × 64 board stays cheap to build and to draw (B11). The string is
+// built once per type (cached: a type is an immutable object of the box map).
 const svgCache = new WeakMap();
 /** A number for an SVG attribute: finite, at most two decimals. */
 const n2 = (v) => Math.round(num(v) * 100) / 100;
@@ -181,7 +189,7 @@ function cellPather(g) {
 }
 /** Grid g, on a board boardH units tall, drawn: its cells (draw 'checker',
  *  'cells'), its lines ('lines'), its fills, marks and edge labels (chess
- *  and go: in the margin, when the grid leaves one). */
+ *  and go: in the margin, when the grid leaves one; .blabels). */
 function gridSVG(g, boardH) {
   const [c0, c1] = (g.colors || ['#f0d9b5', '#b58863']).map((c) => safeColor(c)), line = g.colors ? c1 : '#1f2937';
   const cell = cellPather(g), each = (f) => { for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) f(c, r); };
@@ -228,7 +236,7 @@ function gridSVG(g, boardH) {
     const outside = m >= 12;
     let t = '';
     for (let c = 0; c < g.cols; c++) {
-      const p = cellCenter(g, c, g.rows - 1), y = outside ? ext.h + my / 2 : p.y + (g.snap === 'point' ? 0 : g.cell / 2) - fs * 0.35;
+      const p = cellCenter(g, c, g.rows - 1), y = outside ? ext.h + m / 2 : p.y + (g.snap === 'point' ? 0 : g.cell / 2) - fs * 0.35; // (in the strip the font is sized for, as the ranks are)
       t += `<text x="${n2(p.x)}" y="${n2(y)}">${esc(formatAddr(g, c, g.rows - 1).replace(/\d+$/, ''))}</text>`;
     }
     for (let r = 0; r < g.rows; r++) {
@@ -257,7 +265,7 @@ function spaceSVG(sp) {
   }
   // (a label sits on the space's own colour in a rect or a triangle, else on the board's)
   const ink = (sp.mark === 'rect' || sp.mark === 'tri') && sp.color ? contrastFor(fill) : 'currentColor';
-  if (sp.label) s += `<text x="${n2(x)}" y="${n2(y)}" font-size="${n2(Math.max(10, Math.min(r * 0.5, 40)))}" fill="${ink}" text-anchor="middle" dominant-baseline="central">${esc(sp.label)}</text>`;
+  if (sp.label) s += `<text class="slabel" x="${n2(x)}" y="${n2(y)}" font-size="${n2(Math.max(10, Math.min(r * 0.5, 40)))}" fill="${ink}" text-anchor="middle" dominant-baseline="central">${esc(sp.label)}</text>`;
   return s;
 }
 /** Board type `type` (a cleanBox'd type with a `board`) as an inline SVG
@@ -279,7 +287,7 @@ export function boardSVG(type) {
   for (const z of B.zones || []) {
     if (!z.label) continue;
     const cx = z.poly.reduce((a, p) => a + num(p[0]), 0) / z.poly.length, cy = z.poly.reduce((a, p) => a + num(p[1]), 0) / z.poly.length;
-    s += `<text x="${n2(cx)}" y="${n2(cy)}" font-size="28" fill="currentColor" fill-opacity=".8" text-anchor="middle" dominant-baseline="central">${esc(z.label)}</text>`;
+    s += `<text class="slabel" x="${n2(cx)}" y="${n2(cy)}" font-size="28" fill="currentColor" fill-opacity=".8" text-anchor="middle" dominant-baseline="central">${esc(z.label)}</text>`;
   }
   s += '</svg>';
   svgCache.set(type, s);

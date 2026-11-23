@@ -79,11 +79,14 @@ const sameTable = async (x, y) => { const [a, b] = [await L.view(x), await L.vie
     new MutationObserver((ms) => { for (const m of ms) { window.__logMut.added += m.addedNodes.length; window.__logMut.removed += m.removedNodes.length; } })
       .observe(document.getElementById('log'), { childList: true });
   });
+  const last0 = JSON.stringify((await L.view(bob)).log.at(-1));
   for (let k = 0; k < 3; k++) await L.act(host, { t: 'move', id: cards[10 + k], x: 500 + 40 * k, y: 500 });
   ok(await L.until(() => bob.evaluate((id) => window.__ct.view().items[id].x === 580, cards[12])), 'Bob sees three more moves');
   await h.sleep(300);
-  const mut = await bob.evaluate(() => window.__logMut);
-  ok(mut.added === 3 && mut.removed === 3, `each appended one row and dropped the oldest (${mut.added} added, ${mut.removed} removed: no rebuild of ~350 rows)`);
+  const mut = await bob.evaluate(() => window.__logMut), log1 = (await L.view(bob)).log;
+  // (a move whose line repeats the one before collapses into it: with 20 decks, two of the cards may share a name)
+  const fresh = log1.length - 1 - log1.findLastIndex((e) => JSON.stringify(e) === last0);
+  ok(fresh > 0 && mut.added === fresh && mut.removed === fresh, `each new line appended one row and dropped the oldest (${fresh} new lines: ${mut.added} added, ${mut.removed} removed: no rebuild of ~350 rows)`);
 
   section('no-op: an action whose target is gone re-sends what it named');
   for (const [who, p, a] of [['Bob', bob, { t: 'toPile', pile: 'deadbeef' }], ['the host', host, { t: 'stack', onto: 'deadbeef' }]]) {

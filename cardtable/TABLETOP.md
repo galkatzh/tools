@@ -510,11 +510,20 @@ sync and rendering, and the Worker together with `handle`.
        a mouse — not on every piece: a game whose men all belong to a seat
        would otherwise be covered in dots. A tap on any piece still shows
        whose it is, and its bar what you may do with it.
-     - A board's coordinates and printed labels read upright for every
-       player, as on a chess app's flipped board: each stays by its own
-       file, rank or space but turns to face the screen, so the player
-       across the board never reads them upside down. The pieces' own
+     - A board's coordinates read upright for every player, as on a chess
+       app's flipped board: each stays by its own file or rank but turns to
+       face the screen, so the player across the board never reads them
+       upside down; on a phone they grow a little, as badges do. A space's
+       or zone's label turns only by half turns: it is never upside down,
+       and still runs along its space. The badges (a pile's count and
+       name, ×N, ∞) and a bag turn to face the screen too. The pieces' own
        faces stay as they lie.
+     - A plain disc (a checker, a man: no picture, label, text or pips)
+       looks the same at any angle, so its bar offers no turn buttons.
+     - A guest whose host stays away reloads at the backoff's pace (40 s,
+       80 s, then every 2 minutes), not every minute: the wait counts on
+       across its reloads, and the notice says how long the host has been
+       gone.
 3. **Space and full-rules scripting, in a Worker.**
    - Grids, spaces, zones, links and snapping, with addresses in the log.
    - Rules in a Worker with a watchdog, and atomic hooks.

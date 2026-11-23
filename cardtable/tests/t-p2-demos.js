@@ -94,6 +94,12 @@ const CONFIRM = (title) => `Clear the table and set up ${title}? The current gam
   ok(await L.until(async () => P.angDiff((await P.tf(bob)).rot, 180) < 0.01, 10000, 100), 'Bob sits Dark, at the top: his phone\'s view is turned 180°');
   await P.upright(host, boardId, 0, 'Alice (Light, desktop)');
   await P.upright(bob, boardId, 180, 'Bob (Dark, iPhone)');
+  {
+    const fs = async (p) => Math.min(...(await P.boardTexts(p, boardId)).texts.map((x) => x.fs));
+    const grow = await bob.evaluate((id) => getComputedStyle(document.querySelector(`.item[data-id="${id}"] .blabels text`)).scale, boardId);
+    const [fa, fb] = [await fs(host), await fs(bob)];
+    ok(fb >= 6.5 && +grow > 1, `on Bob's phone the coordinates grow with the badges (scale ${grow}): ${fb.toFixed(1)} px, against ${fa.toFixed(1)} px on Alice's desktop`);
+  }
 
   section('Draughts: Light moves, Dark can\'t touch Light\'s men');
   const m1 = at(2, 5);

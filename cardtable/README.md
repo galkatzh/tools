@@ -73,7 +73,11 @@ these are played by hand). Pieces look like pieces — discs with a rim,
 tiles, dice with pips, meeples, pawns, hexes — and a board's squares,
 points, lines and coordinates (a–h, 1–8) are drawn crisp at any zoom. The
 coordinates read upright for every player, as on a chess app's flipped
-board: each stays by its file or rank, turned to face your screen.
+board: each stays by its file or rank, turned to face your screen (a
+space's or zone's label only ever turns by a half turn: it never reads
+upside down, and still runs along its space). So do the badges — a pile's
+count and name, ×N, ∞ — and a bag; a piece's own face (its label, text,
+pips, art) stays as it lies on the table.
 
 Playing on the free table:
 
@@ -92,7 +96,8 @@ Playing on the free table:
   a supply or a bag, and **rolls a die** — together with every die touching
   it (side by side means one throw: backgammon's two dice, a handful of
   three). Every screen sees the dice tumble.
-- **Click** a piece for its bar: Flip, 🎲 Roll, ⟲ ⟳, ✂ Take 1, ✋ Hand,
+- **Click** a piece for its bar: Flip, 🎲 Roll, ⟲ ⟳ (not on a die, nor on
+  a plain disc — a checker looks the same at any angle), ✂ Take 1, ✋ Hand,
   🔒 Lock, 👤 Claim / Release (and the host's Give ▸), 🗑. Keys, with a
   piece selected: **R** / **Shift+R** rotate, **F** flips, **Space** rolls,
   **Delete** removes, **Esc** deselects (a held key acts once). On a touch
@@ -108,8 +113,9 @@ Playing on the free table:
   never gets in the way; the bar only ever offers what you may do. A tap
   on a board while a piece is selected only puts the piece's bar away (tap
   again to select the board). Badges (×N, ∞, the owner's dot) grow on a
-  table drawn small, so a phone can read them; so does the table's notice
-  ("The host left — …").
+  table drawn small, so a phone can read them, and a board's coordinates
+  grow a little too; the table's notice ("The host left — …") stays the
+  same size on the screen, whatever the zoom.
 - **Hidden pieces** show only their back, to everyone: nobody's screen, not
   even its traffic, learns what a face-down tile or a bag holds. A box's
   pieces and its `meta` data are public, though — anyone at the table can
@@ -120,7 +126,8 @@ Playing on the free table:
 in quarter turns so the player's own edge is at the bottom. The host's size
 menu shows it (▭ 1400 × 1200); picking a round size switches back, after a
 confirm. A game can also name its **seats** (Light and Dark): players take
-them in order, the rest **watch** (👀 top right). Tap a seat label for its
+them in order, the rest **watch** (👀 top right: on a phone held sideways
+two small chips, "👀 2" and "👀 Watching", that a tap opens). Tap a seat label for its
 menu — *Sit here* on a free seat, *Stand up (watch)* on your own; the host
 also seats players and moves them to the watchers. An offline player's seat
 waits for them. With ordinary seating, a watcher taps **Sit down**. A guest
@@ -197,14 +204,15 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   recovers from dead signaling (or a guest that can't find its host, or
   has lost it for a minute — a link to a returning host that never forms
   would otherwise freeze its screen) by auto-reloading with backoff (20s doubling to 2 min, persisted in
-  sessionStorage), with a notice that names the cause (the relays, no
-  host yet, or a host away for a minute) — a reload is the reset that provably clears wedged relay
+  sessionStorage, and kept until the guest is back with its host), with a
+  notice that names the cause (the relays, no host yet, or how long the
+  host has been away) — a reload is the reset that provably clears wedged relay
   subscriptions, and it's safe here because the host resumes from its save
   and guests re-enter with identity and hand intact. A guest that had the
   table keeps it across that reload (the view and the decks and boxes it
-  draws with, in this tab's sessionStorage, checked again on the way back
-  in), so a host who simply left still leaves everyone the last table,
-  paused, until they return. Relay redundancy is
+  draws with, and when it last saw the host, in this tab's sessionStorage,
+  checked again on the way back in), so a host who simply left still
+  leaves everyone the last table, paused, until they return. Relay redundancy is
   raised to 10 (default 5) so two peers are more likely to share a live one.
 - **Log**: the host authors log entries while adjudicating actions (it's the
   only peer that can name cards trustworthily), keeps the last 200 actions,
@@ -221,8 +229,9 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   table (saved with it), so nobody can fill the host's browser storage.
   Card and deck names lose their control characters on the way in.
 - **Persistence**: the host saves the table in IndexedDB (`store.js`,
-  database `cardtable`): the state at most once a second, one write at a
-  time, as a structured clone (a few ms on the main thread for 1,000
+  database `cardtable`): the state at most once a second (and a quarter
+  second after the move that asked, never in its own burst of work; a
+  page's first save at once), one write at a time, as a structured clone (a few ms on the main thread for 1,000
   cards), and each deck once, into the room's catalog, in the same
   transaction (its images just before, so the catalog never names an image
   the browser lacks). Reopening the invite link in the host's browser
