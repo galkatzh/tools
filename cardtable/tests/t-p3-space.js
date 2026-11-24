@@ -29,6 +29,28 @@
 //   Mallory: drags of what she may not move are never relayed (case 4); a
 //   drag's numbers are clamped and finite, a group's at most 200 ids, all
 //   hers to move (case 7).
+// Phase 3C, play (items 3, 4, 6 and 9), on a strict "Play test" enabled from
+// the 📜 dialog (whose button then says strict on every screen):
+//   Item 3: a tap sends `select`; the hint shows on that player's screen
+//   alone (outlined piece, marks on the very squares, a numbers-only layer of
+//   its own over the board); Mallory's select hints her alone, and no body of
+//   hers, Bob's or Carol's carries another player's hint; a refused card play
+//   and a vetoed drop keep the hint, a played move clears it.
+//   Item 9: handle takes a drop of the glue stone and leaves it: on the
+//   dropping guest's screen (iPhone upright and sideways) it is back with the
+//   first patch that names it, not after the 1.5 s hold.
+//   Item 6: t.secret on Bob's "🔒 For you" card, markup as text, line breaks
+//   kept; on no other screen, in no other body.
+//   Item 4: every ask form through the panel (§3g's table, §3c's answer
+//   values) by mouse on the desktop and by taps on the iPhone; "1 of N"; what
+//   isn't offered is said and not sent; Confirm only at exactly `count`; a
+//   number out of range never sent; a prompt and labels of markup shown as
+//   text (sideways iPhone); the panel's place on all three screens (inside
+//   the viewport, never over the table, the turn cue, the watchers or a seat
+//   label; a sheet above the hand bar on phones, 44 px buttons; a centred
+//   card on the desktop); forged answers of every form, an unknown id and
+//   Mallory's answer to Bob's ask refused by the host, no hook run; a host
+//   reload mid-ask brings both prompts back, Bob's hint gone, his secret kept.
 // Screenshots: shots/p3-*.png, for review only.
 'use strict';
 const path = require('path');
@@ -37,7 +59,8 @@ const L = require('./p1-lib');
 const P = require('./p2t-lib');
 const S = require('./p3-lib');
 const { shot } = require('./fun-lib');
-const { mallory } = require('./final-lib');
+const { mallory, overlap } = require('./final-lib');
+const { record, mark, waitSeen } = require('./stones-lib');
 const { BOXES } = require(path.join(h.APP_ROOT, 'cardtable/templates.js'));
 const { ok, section } = h;
 
@@ -96,6 +119,39 @@ const SPACE = `({ name: 'Space test',
     if (cmd === 'where') t.say('where ' + t.where(id));
     if (cmd === 'many') for (let k = 0; k < 250; k++) t.spawn(t.data.box + '/stone', { at: { x: 100 + (k % 50) * 50, y: 1900 - Math.floor(k / 50) * 55, free: true } });
   } })`;
+
+/** The script of the 3C sections (strict; the default effect kept for moves
+ *  alone): an 8 × 8 board (cell 100, chess labels) with five stones (c3, d4,
+ *  e5, f6, b7), a glue stone on g2 and a deck. onSelect hints the selected
+ *  piece and every square around it; handle takes a move of the glue stone
+ *  and leaves it where it is (true), and vetoes a move to h8; onAnswer
+ *  records each answer in t.public.ans; a host press of "run" carries code
+ *  that onAction runs (the asks, the secret, the deal: the test's game master). */
+const PLAY = `({ name: 'Play test', strict: true, allow: ['move'],
+  setup(t) {
+    t.setTable({ shape: 'rect', w: 1200, h: 1200 });
+    t.setSeats(null);
+    const box = t.newBox({ name: 'Play', pieces: [
+      { id: 'board', kind: 'board', w: 840, h: 840, faces: [{ color: '#5c3a1e' }], grid: { type: 'square', cols: 8, rows: 8, cell: 100, x: 20, y: 20, draw: 'checker', colors: ['#f0d9b5', '#b58863'], labels: 'chess' } },
+      { id: 'stone', kind: 'token', w: 64, stack: 'none', faces: [{ label: 'S', color: '#f8fafc' }] },
+      { id: 'glue', kind: 'token', w: 64, stack: 'none', faces: [{ label: 'G', color: '#fbbf24' }] },
+    ] });
+    t.spawn(box + '/board', { at: { x: 180, y: 120 } });
+    for (const a of ['c3', 'd4', 'e5', 'f6', 'b7']) t.spawn(box + '/stone', { at: a });
+    t.spawn(box + '/glue', { at: 'g2' });
+    t.addStandardDeck({ x: 40, y: 1000 });
+  },
+  handle(t, a) {
+    if (a.t !== 'move') return undefined;
+    if (t.item(a.id)?.t.endsWith('/glue')) { t.say('the glue holds, not to ' + (a.to || 'the felt')); return true; } // (a line of its own each time: the log drops a repeat)
+    if (a.to === 'h8') return 'h8 is out of bounds';
+    return undefined;
+  },
+  onSelect(t, p, id) { const w = t.where(id); t.hint(p, { items: [id], spaces: w ? t.neighbors(w, { diag: true }) : [] }); },
+  onAnswer(t, p, id, v) { t.public.ans = (t.public.ans || []).concat([{ p, id, v }]).slice(-60); },
+  onAction(t, a) { if (a.t === 'rulesBtn' && a.id === 'run') new Function('t', 'a', '"use strict";\\n' + a.code)(t, a); },
+  buttons: (t) => [{ id: 'run', label: 'Run', pid: t.hostId }],
+})`;
 
 (async () => {
   const env = await h.start();
@@ -800,6 +856,395 @@ const SPACE = `({ name: 'Space test',
   ok(groups.length > 0 && !off.length, `and the positions it gives its members are on the table (${off.length} of ${g0?.ids.length} would be off it${off.length ? `, e.g. ${off[0]} at ${v0[off[0]].x + g0.dx}, ${v0[off[0]].y + g0.dy}` : ''})`);
   ok((await P.viewOf(host, 'v.seq')) === seq0 && await P.viewOf(host, 'a.ids.every((id) => v.items[id].x === a.v[id].x && v.items[id].y === a.v[id].y)', { ids: stones, v: v0 }),
     `and the table's state never changed: the seq stands (${seq0}), every stone where it was`);
+
+  // ===========================================================================
+  // Phase 3C, play (items 3, 4, 6 and 9; spec §3g, §3b, §3c, §3h): the rules'
+  // own parts on the screens of the same four players.
+  const J = JSON.stringify;
+  const run = (code) => L.act(host, { t: 'rulesBtn', id: 'run', code });
+  for (const p of [host, bob, carol]) await record(p);
+
+  section('3C: Alice clears the table and enables the strict "Play test" from the 📜 dialog (Reset ticked); the 📜 button says strict on every screen');
+  ok((await L.act(host, { t: 'clear' })).ok, '(Alice clears the table)');
+  await host.click('#rules-btn');
+  await host.waitForSelector('#rules-dialog[open]');
+  await host.fill('#rules-code', PLAY);
+  await host.check('#rules-reset');
+  await host.click('#rules-enable');
+  ok(await host.waitForFunction(() => !document.querySelector('#rules-dialog[open]'), null, { timeout: 20000 }).then(() => true, () => false), `Enable closes the dialog once the rules run (${await host.textContent('#rules-err').catch(() => '')})`);
+  const PLAYING = "v.rules?.enabled && v.rules.name === 'Play test' && v.table.w === 1200 && Object.values(v.items).filter((it) => it.at).length === 6 && Object.values(v.items).some((it) => it.k === 'p')";
+  for (const [p, who] of all) ok(await P.waitView(p, PLAYING, null, 30000), `${who}'s screen: the board, five stones and the glue stone on their squares, and the deck`);
+  for (const [p, who] of all) ok(await p.waitForFunction(() => /strict/i.test(document.getElementById('rules-btn').title), null, { timeout: 10000 }).then(() => true, () => false), `${who}'s 📜 button says the rules are strict ("${await p.getAttribute('#rules-btn', 'title')}")`);
+  const pb = await boardOf(host), pt = await typeOf(host, pb.t), PB = { ...pb, ...pt };
+  /** The centre of square `a` (a1 … h8) of the Play board, on the table (spec §2a's geometry, the board unturned). */
+  const sqC = (a) => S.onTable(PB, S.spotXY(PB.B.grid, 'abcdefgh'.indexOf(a[0]), 8 - +a.slice(1)));
+  /** The stone (or glue) standing on square `a` in page p's view. */
+  const onSq = async (a, p = host) => { const v = await items(p); return Object.keys(v).find((k) => v[k].at === a && v[k].k === 'g'); };
+  const ids0 = Object.fromEntries(await Promise.all(['c3', 'd4', 'e5', 'f6', 'b7', 'g2'].map(async (a) => [a, await onSq(a)])));
+  ok(Object.values(ids0).every(Boolean), `the six stones stand on c3, d4, e5, f6, b7 and g2 (the glue) (${J(ids0)})`);
+  ok((await run(`for (const p of [t.hostId, ${J(bob.pid)}, ${J(carol.pid)}]) t.draw(p, t.piles()[0].id, 3);`)).ok, '(the script deals three cards each to Alice, Bob and Carol)');
+  for (const [p, who] of all) ok(await P.waitView(p, 'v.hand.length === 3', null, 15000), `${who} holds three cards`);
+
+  /** What page p shows of the rules' hint: the items outlined (.hint), and the
+   *  hint layers' marks — {n: how many, at: their centres (client px)}, their
+   *  markup's tags and attributes (numbers only), and any text in them. */
+  const hintShown = (p) => p.evaluate(() => {
+    const layers = [...document.querySelectorAll('#table .hint-layer')], marks = layers.flatMap((l) => [...l.querySelectorAll('circle')]);
+    const els = layers.flatMap((l) => [...l.querySelectorAll('*')]);
+    return {
+      items: [...document.querySelectorAll('.item.hint')].map((el) => el.dataset.id).sort(),
+      layers: layers.length, inBoard: layers.some((l) => !!l.closest('.item')),
+      n: marks.length, at: marks.map((c) => { const r = c.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }),
+      tags: [...new Set(els.map((e) => e.tagName.toLowerCase()))].sort(),
+      attrs: els.flatMap((e) => [...e.attributes].map((a) => [a.name, a.value])), text: layers.map((l) => l.textContent).join(''),
+    };
+  });
+  /** Checks (ok) that page p (`who`) draws a hint on exactly the squares `sqs` (each mark within 2 px of its square's centre) and outlines exactly `its`. */
+  async function hintOn(p, who, its, sqs) {
+    let s;
+    await L.until(async () => (s = await hintShown(p)).n === sqs.length && J(s.items) === J([...its].sort()), 8000, 100);
+    const want = await Promise.all(sqs.map((a) => { const c = sqC(a); return S.screenOf(p, c.x, c.y); }));
+    const missed = sqs.filter((a, k) => !s.at.some((m) => S.dist(m, want[k]) < 2));
+    ok(s.n === sqs.length && !missed.length, `${who}: ${s.n} hint marks, on ${sqs.join(' ')}${missed.length ? ` — none on ${missed.join(' ')}` : ''}`);
+    ok(J(s.items) === J([...its].sort()), `${who}: the hinted piece is outlined (.hint: ${J(s.items)})`);
+    const nums = s.attrs.every(([k, v]) => (k === 'class' ? /^[a-z ]*$/.test(v) : k === 'viewBox' ? /^[-\d. ]+$/.test(v) : k === 'aria-hidden' || k === 'xmlns' || /^-?[\d.]+(e-?\d+)?$/.test(v)));
+    ok(s.layers > 0 && !s.inBoard && !s.text.trim() && s.tags.every((t) => ['svg', 'circle', 'g'].includes(t)) && nums,
+      `${who}: the marks are a layer of their own over the board (not in its cached SVG), numbers-only SVG (${s.tags.join(', ')}; no text)`);
+  }
+  /** The log lines on page p since `before` (its log as read earlier): the log keeps only its last lines, so they are what follows the line `before` ended with. */
+  async function logAfter(p, before) {
+    const now = await P.viewOf(p, 'v.log'), last = J(before.at(-1));
+    for (let k = now.length - 1; k >= 0; k--) if (J(now[k]) === last) return now.slice(k + 1);
+    return now;
+  }
+  const noHint = async (p) => { let s; await L.until(async () => !(s = await hintShown(p)).n && !s.items.length, 8000, 100); return !s.n && !s.items.length && !s.layers; };
+  /** Every per-recipient part (hint, ask, sec) anywhere in a list of bodies (a recursive scan): [{k, v, to}]. */
+  function partsIn(bodies) {
+    const out = [];
+    const walk = (v, to) => {
+      if (Array.isArray(v)) v.forEach((x) => walk(x, to));
+      else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) { if (['hint', 'ask', 'sec'].includes(k) && x != null && !(Array.isArray(x) && !x.length)) out.push({ k, v: x, to }); walk(x, to); }
+    };
+    for (const b of bodies) walk(b, b?.to);
+    return out;
+  }
+  const bodiesOf = (p, n) => p.evaluate((n) => window.__rtc.bodies.slice(n).map((b) => b.body), n);
+  const nBodies = (p) => p.evaluate(() => window.__rtc.bodies.length);
+  const malBodies = async (n) => h.bodies(await M.evaluate((n) => window.M.got.state.slice(n).map((x) => x.m), n));
+  const nMal = () => M.evaluate(() => window.M.got.state.length);
+
+  section('Item 3: Bob taps the d4 stone — `select` goes out, and his screen alone draws the hint on its eight neighbours');
+  const marks0 = { bob: await nBodies(bob), carol: await nBodies(carol), mal: await nMal() }, a0 = (await acts(bob)).length;
+  const D4N = ['c5', 'd5', 'e5', 'c4', 'e4', 'c3', 'd3', 'e3'], E5N = ['d6', 'e6', 'f6', 'd5', 'f5', 'd4', 'e4', 'f4'];
+  await P.clickItem(bob, ids0.d4, true);
+  ok(await L.until(async () => (await acts(bob)).slice(a0).some((x) => x.t === 'select' && x.id === ids0.d4), 5000), `the tap sent {t: 'select', id} (${J((await acts(bob)).slice(a0).map(({ at_, ...x }) => x))})`);
+  ok(await P.waitView(bob, 'v.hint && v.hint.items.includes(a)', ids0.d4), `Bob's view holds his hint (${J(await P.viewOf(bob, 'v.hint'))})`);
+  await hintOn(bob, 'Bob\'s screen', [ids0.d4], D4N);
+  await shot(bob, 'p3-play-hint-phone');
+  for (const [p, who] of [[host, 'Alice'], [carol, 'Carol']]) ok(await noHint(p) && (await P.viewOf(p, 'v.hint')) === null, `${who}'s screen has no .hint and no hint layer`);
+
+  section('Item 3: Alice clicks the e5 stone — her own hint; Bob\'s stays his; Mallory\'s select hints her alone; nobody\'s body carries another\'s hint');
+  await P.clickItem(host, ids0.e5);
+  await hintOn(host, 'Alice\'s screen', [ids0.e5], E5N);
+  ok(J(await P.viewOf(bob, 'v.hint.items')) === J([ids0.d4]), 'Bob\'s hint is still his d4 stone\'s');
+  ok(await noHint(carol), 'Carol\'s screen still has none');
+  await M.act({ t: 'select', id: ids0.b7 });
+  ok(await L.until(async () => partsIn(await malBodies(marks0.mal)).some((x) => x.k === 'hint'), 8000), 'Mallory\'s select of the b7 stone brings her own hint, in a body bound to her');
+  await h.sleep(800);
+  {
+    const mal = partsIn(await malBodies(marks0.mal)), bobs = partsIn(await bodiesOf(bob, marks0.bob)), carols = partsIn(await bodiesOf(carol, marks0.carol));
+    ok(mal.every((x) => x.k === 'hint' && x.to === MP && J(x.v.items) === J([ids0.b7])), `Mallory's bodies carry no part but her own hint (${J(mal.map((x) => ({ k: x.k, items: x.v.items, to: x.to })))})`);
+    ok(bobs.length > 0 && bobs.every((x) => x.k === 'hint' && x.to === bob.pid && J(x.v.items) === J([ids0.d4])), `Bob's bodies carry his own hint only — never Alice's e5 nor Mallory's b7 (${J(bobs.map((x) => x.v.items))})`);
+    ok(!carols.length, `Carol's bodies carry no hint at all (${carols.length})`);
+    const sa = await hintShown(host), sb = await hintShown(bob);
+    ok(J(sa.items) === J([ids0.e5]) && sa.n === 8 && J(sb.items) === J([ids0.d4]) && sb.n === 8 && await noHint(carol), `Mallory's hint shows on no screen: Alice's outlines only her e5 stone, Bob's his d4 one, Carol's nothing (${J([sa.items, sb.items])})`);
+  }
+
+  section('Hints are cleared and restored as the engine says: a refused card play keeps Bob\'s hint, a vetoed drop too; a move clears it');
+  {
+    const card = await bob.evaluate(() => { const r = document.querySelector('.hcard').getBoundingClientRect(); return { x: r.left + Math.min(12, r.width / 2), y: r.top + r.height / 2 }; });
+    const felt = await P.feltPoint(bob, { band: [0.35, 0.75] }), m0 = await mark(bob);
+    await S.gesture(bob, [card, { x: card.x, y: card.y - 30 }, { x: card.x, y: card.y - 60 }, ...S.steps({ x: card.x, y: card.y - 60 }, felt, 8), { ...felt, wait: 150 }], { touch: true, pause: 16 });
+    ok(!!await waitSeen(bob, 'toast', /Not a move in this game/, m0), 'Bob drags a hand card onto the felt: strict refuses the play ("🚫 Not a move in this game")');
+    ok(await P.waitView(bob, 'v.hand.length === 3', null, 8000), 'the card is back in his hand');
+    await hintOn(bob, 'Bob\'s screen after the refused play', [ids0.d4], D4N);
+    const m1 = await mark(bob);
+    await S.dragTo(bob, ids0.d4, sqC('h8'), { touch: true, pause: 16 });
+    ok(!!await waitSeen(bob, 'toast', /h8 is out of bounds/, m1), 'Bob drags the d4 stone to h8: the script\'s handle vetoes it ("🚫 h8 is out of bounds")');
+    ok(await atOn(host, ids0.d4, 'd4') && await atOn(bob, ids0.d4, 'd4'), 'the stone stays on d4');
+    await hintOn(bob, 'Bob\'s screen after the vetoed drop', [ids0.d4], D4N);
+    await S.dragTo(bob, ids0.d4, sqC('d5'), { touch: true, pause: 16 });
+    ok(await atOn(host, ids0.d4, 'd5') && await atOn(bob, ids0.d4, 'd5'), 'Bob drags it to d5: the move is played');
+    ok(await noHint(bob) && (await P.viewOf(bob, 'v.hint')) === null, 'his move cleared his hint: no .hint, no layer, view.hint null');
+  }
+
+  section('Item 9: handle returns true for a drop of the glue stone and leaves it on g2 — the dropping guest sees it back within one patch, not after 1.5 s');
+  /** On page p from now on, every frame for `ms`: the centre (client px) of item `id`'s element, in window.__trace as {at, x, y}. */
+  const traceItem = (p, id, ms) => p.evaluate(([id, ms]) => {
+    const tr = (window.__trace = []), end = performance.now() + ms;
+    const f = () => {
+      const r = document.querySelector(`.item[data-id="${id}"]`)?.getBoundingClientRect();
+      if (r) tr.push({ at: performance.now(), x: r.left + r.width / 2, y: r.top + r.height / 2 });
+      if (performance.now() < end) requestAnimationFrame(f);
+    };
+    requestAnimationFrame(f);
+  }, [id, ms]);
+  for (const [p, who, to] of [[bob, 'Bob (iPhone, upright)', 'g4'], [carol, 'Carol (iPhone, sideways)', 'e2']]) {
+    const glue = ids0.g2, it0 = (await items())[glue], n0 = await nBodies(p), log0 = await P.viewOf(host, 'v.log');
+    const home = await S.screenOf(p, it0.x + 32, it0.y + 32), T = sqC(to), drop = await S.screenOf(p, T.x, T.y), a = await S.centreOf(p, glue);
+    let up = 0;
+    await S.gesture(p, [...S.steps(a, drop, 10), { ...drop, wait: 150 }], { touch: true, pause: 16, mid: async () => { await traceItem(p, glue, 2600); up = await p.evaluate(() => performance.now()); } });
+    await h.sleep(2800);
+    const tr = (await p.evaluate(() => window.__trace)).filter((f) => f.at >= up);
+    const got = await p.evaluate(([n, id]) => window.__rtc.bodies.slice(n).filter((b) => b.body.items && id in b.body.items).map((b) => ({ at: b.at, it: b.body.items[id] })), [n0, glue]);
+    const patch = got.find((b) => b.at >= up), k = tr.findIndex((f, j) => tr.slice(j).every((g) => S.dist(g, home) < 1.5)), back = k >= 0 ? tr[k].at : Infinity;
+    ok(tr.length > 0 && S.dist(tr[0], home) > 20, `${who}: right after the drop the glue stone is drawn where the finger let it go (${tr[0] && S.dist(tr[0], home).toFixed(0)} px from g2)`);
+    ok(!!patch && patch.it.x === it0.x && patch.it.y === it0.y && patch.it.at === 'g2', `${who}: the first patch naming it after the drop (${patch ? `${(patch.at - up).toFixed(0)} ms after it` : 'none'}) has it where the script left it: g2 (${J(patch?.it && { x: patch.it.x, y: patch.it.y, at: patch.it.at })})`);
+    ok(back - up < 1200, `${who}: it is drawn back on g2 ${(back - up).toFixed(0)} ms after the drop — not after the 1.5 s hold`);
+    ok(!!patch && back <= patch.at + 200, `${who}: within one patch: ${(back - (patch?.at ?? 0)).toFixed(0)} ms after that patch arrived`);
+    ok(await atOn(host, glue, 'g2') && (await items())[glue].x === it0.x && (await items())[glue].y === it0.y, `${who}: the host's state never moved it`);
+    const lines = await logAfter(host, log0);
+    ok(lines.some((e) => e.p === 'RULES' && e.txt === `the glue holds, not to ${to}`) && !lines.some((e) => /^moved /.test(e.txt)), `${who}: the log has the script's "the glue holds, not to ${to}" and no "moved" line (${J(lines.map((e) => e.txt))})`);
+  }
+
+  section('Item 6: t.secret — Bob\'s "🔒 For you" card shows his text, as text; nobody else sees it, in any body');
+  const SECRET = 'Zebra-7731: you are the spy.\n<b>Trust</b> <img src=x onerror="window.__pwned=1"> no one.';
+  const sm = { carol: await nBodies(carol), mal: await nMal(), bob: await nBodies(bob) };
+  ok((await run(`t.secret[${J(bob.pid)}] = { text: ${J(SECRET)}, role: 'spy' };`)).ok, '(the script sets t.secret for Bob)');
+  /** Page p's secret card ({head, text, tags: elements inside its text, ws, r, vw, vh}), or null while it is hidden. */
+  const secretCard = (p) => p.evaluate(() => {
+    const el = document.getElementById('secret'), tx = document.getElementById('secret-text');
+    if (!el || el.classList.contains('hidden') || getComputedStyle(el).display === 'none' || !el.getClientRects().length) return null;
+    const r = el.getBoundingClientRect();
+    return { all: el.textContent, text: tx.textContent, tags: el.querySelectorAll('#secret-text *').length, ws: getComputedStyle(tx).whiteSpace, r: { l: r.left, t: r.top, r: r.right, b: r.bottom }, vw: innerWidth, vh: innerHeight, pwned: window.__pwned ?? null };
+  });
+  let sc = null;
+  await L.until(async () => (sc = await secretCard(bob)), 10000, 100);
+  ok(sc && sc.all.includes('🔒 For you') && sc.text === SECRET, `Bob's card shows "🔒 For you" and his text exactly (${J(sc?.text)})`);
+  ok(sc && !sc.tags && sc.ws === 'pre-wrap' && sc.pwned === null, `the markup in it is text (no element made of it, nothing ran), and it keeps its line break (white-space ${sc?.ws})`);
+  ok(sc && sc.r.l >= 0 && sc.r.t >= 0 && sc.r.r <= sc.vw + 0.5 && sc.r.b <= sc.vh + 0.5, `the card is inside his screen (${sc && J(sc.r)})`);
+  await shot(bob, 'p3-play-secret-phone');
+  for (const [p, who] of [[host, 'Alice'], [carol, 'Carol']]) ok(!(await secretCard(p)) && (await P.viewOf(p, 'v.sec')) === null, `${who} has no card and no secret`);
+  await h.sleep(500);
+  ok((await bodiesOf(bob, sm.bob)).some((b) => b.to === bob.pid && J(b.sec || null).includes('Zebra-7731')), '(the scan\'s control: Bob\'s own bodies carry it, as `sec`)');
+  ok(!J(await bodiesOf(carol, sm.carol)).includes('Zebra-7731') && !J(await malBodies(sm.mal)).includes('Zebra-7731'), 'neither Carol\'s bodies nor Mallory\'s ever carry it');
+
+  // Item 4: every ask form, through the panel (§3g's table), on each screen.
+  /** The five forms of spec §3a, for player p (one each, pending together). */
+  const FIVE = (p) => `t.ask(${J(p)}, { id: 'colour', prompt: 'Pick a colour', options: ['Red', { label: 'Blue', value: { c: 'blue', n: 2 } }, 'Green'] });
+    t.ask(${J(p)}, { id: 'which', prompt: 'Which stone?', pick: 'item', among: [${J(ids0.c3)}, ${J(ids0.f6)}] });
+    t.ask(${J(p)}, { id: 'where', prompt: 'Where to?', pick: 'space', among: ['a1', 'h1', 'e4'] });
+    t.ask(${J(p)}, { id: 'pass', prompt: 'Pass two cards', pick: 'hand', count: 2 });
+    t.ask(${J(p)}, { id: 'bid', prompt: 'Your bid?', pick: 'number', min: -3, max: 3 });`;
+  /** Page p's ask panel: null while hidden; else its prompt, all its text, the buttons of its form ({text, off, w, h}) and its number field's value. */
+  const askPanel = (p) => p.evaluate(() => {
+    const el = document.getElementById('ask'), vis = (e) => !!e && getComputedStyle(e).display !== 'none' && e.getClientRects().length > 0;
+    if (!vis(el) || el.classList.contains('hidden')) return null;
+    return { prompt: document.getElementById('ask-prompt').textContent, text: el.textContent, input: el.querySelector('#ask-body input')?.value ?? null,
+      btns: [...el.querySelectorAll('#ask-body button')].filter(vis).map((b) => { const r = b.getBoundingClientRect(); return { text: b.textContent, off: b.disabled, w: r.width, h: r.height }; }) };
+  });
+  const asking = async (p, prompt, ms = 10000) => { let q = null; await L.until(async () => (q = await askPanel(p))?.prompt === prompt, ms, 100); return q?.prompt === prompt ? q : null; };
+  /** Waits until onAnswer recorded player `pid`'s answer to `id` (t.public.ans); its value, or undefined. */
+  async function answer(id, pid, ms = 10000) { let a; await L.until(async () => (a = (await P.viewOf(host, '(v.rules.public.ans || []).find((x) => x.id === a.id && x.p === a.p)', { id, p: pid }))), ms, 100); return a ? a.v : undefined; }
+  const nAns = () => P.viewOf(host, '(v.rules.public.ans || []).length');
+  /** Presses the panel's button whose text is `text` (or matches it) on page p: a click, or a tap on a touch screen. */
+  async function press(p, text, touch) {
+    const k = (await askPanel(p)).btns.findIndex((b) => (text instanceof RegExp ? text.test(b.text) : b.text === text));
+    const b = p.locator('#ask-body button').filter({ visible: true }).nth(k);
+    if (touch) await b.tap(); else await b.click();
+  }
+  /** Presses hand card `k` on page p by its left edge (the part a fanned hand shows). */
+  async function handCard(p, k, touch) {
+    const c = await p.evaluate((k) => { const el = document.querySelector(`#hand .hcard[data-idx="${k}"]`); el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); const r = el.getBoundingClientRect(); return { x: r.left + Math.min(12, r.width / 2), y: r.top + r.height / 2 }; }, k);
+    if (touch) await p.touchscreen.tap(c.x, c.y); else await p.mouse.click(c.x, c.y);
+  }
+  const tapAt = (p, q, touch) => (touch ? p.touchscreen.tap(q.x, q.y) : p.mouse.click(q.x, q.y));
+  const okBtn = async (p) => (await askPanel(p))?.btns.find((b) => /^(Confirm|OK)/.test(b.text)) || null;
+
+  /** Player p (`who`; `touch`: taps) answers the five forms in order, as §3g's table has it, checking each against spec §3c's answer table. */
+  async function fiveForms(p, who, touch, pick) {
+    const pid = p.pid, n = await nAns();
+    let q = await asking(p, 'Pick a colour');
+    ok(q && q.text.includes('1 of 5'), `${who}: the first of five asks shows, "1 of 5"`);
+    ok(q && J(q.btns.map((b) => b.text)) === J(['Red', 'Blue', 'Green']), `${who}: options are buttons with their labels (${J(q?.btns.map((b) => b.text))})`);
+    if (touch) ok(q && q.btns.every((b) => b.h >= 44 && b.w >= 44), `${who}: each option is at least 44 × 44 px on touch (${q?.btns.map((b) => `${Math.round(b.w)}×${Math.round(b.h)}`).join(', ')})`);
+    await press(p, pick.colour, touch);
+    ok(J(await answer('colour', pid)) === J(pick.colour === 'Blue' ? { c: 'blue', n: 2 } : pick.colour), `${who} picks ${pick.colour}: onAnswer gets ${pick.colour === 'Blue' ? 'its value {c: "blue", n: 2}' : 'the label'} (${J(await answer('colour', pid))})`);
+    q = await asking(p, 'Which stone?');
+    ok(q && q.text.includes('1 of 4'), `${who}: then "Which stone?", "1 of 4"`);
+    ok(await L.until(async () => J(await p.evaluate(() => [...document.querySelectorAll('.item.offer')].map((el) => el.dataset.id).sort())) === J([ids0.c3, ids0.f6].sort()), 5000), `${who}: the two stones offered are highlighted while it is open, no other piece`);
+    let m = await mark(p);
+    await P.clickItem(p, ids0.e5, touch);
+    ok(!!await waitSeen(p, 'toast', /Pick one of the highlighted pieces/, m) && (await asking(p, 'Which stone?', 500)) && (await nAns()) === n + 1, `${who} taps the e5 stone (not offered): "Pick one of the highlighted pieces", nothing answered`);
+    await P.clickItem(p, ids0[pick.which], touch);
+    ok(await answer('which', pid) === ids0[pick.which], `${who} taps the ${pick.which} stone: onAnswer gets its id`);
+    q = await asking(p, 'Where to?');
+    ok(!!q, `${who}: then "Where to?"`);
+    const offered = await Promise.all(['a1', 'h1', 'e4'].map((a) => { const c = sqC(a); return S.screenOf(p, c.x, c.y); }));
+    const sh = await hintShown(p);
+    ok(offered.every((o) => sh.at.some((c) => S.dist(c, o) < 2)), `${who}: a1, h1 and e4 are marked while it is open (${sh.n} marks)`);
+    m = await mark(p);
+    const e2 = sqC('e2');
+    await tapAt(p, await S.screenOf(p, e2.x, e2.y), touch);
+    ok(!!await waitSeen(p, 'toast', /Pick one of the highlighted spots/, m) && (await asking(p, 'Where to?', 500)) && (await nAns()) === n + 2, `${who} taps e2 (not offered): told so, nothing answered`);
+    const sp = sqC(pick.where);
+    await tapAt(p, await S.screenOf(p, sp.x + 18, sp.y - 14), touch);
+    ok(await answer('where', pid) === pick.where, `${who} taps near ${pick.where}: onAnswer gets "${pick.where}"`);
+    q = await asking(p, 'Pass two cards');
+    const hand = await P.viewOf(p, 'v.hand');
+    ok(q && (await okBtn(p))?.text === 'Confirm (0/2)' && (await okBtn(p)).off, `${who}: then "Pass two cards", "Confirm (0/2)" disabled`);
+    await handCard(p, pick.pass[0], touch);
+    ok((await okBtn(p))?.text === 'Confirm (1/2)' && (await okBtn(p)).off, `${who} picks a card: "Confirm (1/2)", still disabled`);
+    await handCard(p, pick.pass[1], touch);
+    ok((await okBtn(p))?.text === 'Confirm (2/2)' && !(await okBtn(p)).off, `${who} picks a second: "Confirm (2/2)", enabled`);
+    const third = [0, 1, 2].find((k) => !pick.pass.includes(k));
+    await handCard(p, third, touch);
+    ok((await okBtn(p))?.text === 'Confirm (3/2)' && (await okBtn(p)).off, `${who} picks a third: "Confirm (3/2)", disabled again — only exactly 2 (${(await okBtn(p))?.text})`);
+    await handCard(p, third, touch);
+    ok((await okBtn(p))?.text === 'Confirm (2/2)' && !(await okBtn(p)).off, `${who} lets it go: "Confirm (2/2)"`);
+    await press(p, /^Confirm/, touch);
+    const v = await answer('pass', pid), want = pick.pass.map((k) => ({ d: hand[k].d, i: hand[k].i }));
+    const key = (l) => J((l || []).map((c) => `${c.d}:${c.i}`).sort());
+    ok(key(v) === key(want) && v.every((c) => J(Object.keys(c).sort()) === J(['d', 'i'])), `${who}: onAnswer gets those two cards as {d, i} (${J(v)})`);
+    ok(await P.waitView(p, 'v.hand.length === 3', null, 5000), `${who}: they stay in the hand`);
+    q = await asking(p, 'Your bid?');
+    ok(!!q && q.input !== null && +q.input >= -3 && +q.input <= 3, `${who}: then "Your bid?", a number field within [−3, 3] (${q?.input})`);
+    await press(p, /^[−-]$/, touch);
+    await press(p, /^[−-]$/, touch);
+    await press(p, /^[−-]$/, touch);
+    await press(p, /^[−-]$/, touch);
+    ok((await askPanel(p))?.input === '-3', `${who}: − stops at the min, −3 (${(await askPanel(p))?.input})`);
+    for (let k = 0; k < 7; k++) await press(p, '+', touch);
+    ok((await askPanel(p))?.input === '3', `${who}: + stops at the max, 3 (${(await askPanel(p))?.input})`);
+    await p.fill('#ask-body input', '9');
+    ok((await okBtn(p))?.off === true, `${who} types 9: OK is disabled (out of range, shown before anything is sent)`);
+    await p.fill('#ask-body input', String(pick.bid));
+    ok((await okBtn(p))?.off === false, `${who} types ${pick.bid}: OK is enabled`);
+    await press(p, 'OK', touch);
+    ok(await answer('bid', pid) === pick.bid, `${who}: onAnswer gets the integer ${pick.bid} (${J(await answer('bid', pid))})`);
+    ok(await L.until(async () => !(await askPanel(p)), 5000), `${who}: no ask left — the panel goes`);
+  }
+
+  section('Item 4, desktop: Alice answers every form with the mouse — options, a piece, a spot, two hand cards, a number');
+  ok((await run(FIVE(host.pid))).ok, '(the script asks Alice five questions)');
+  ok(!!await asking(host, 'Pick a colour'), 'Alice\'s panel shows the first');
+  await shot(host, 'p3-play-ask-desk');
+  await fiveForms(host, 'Alice', false, { colour: 'Blue', which: 'f6', where: 'e4', pass: [0, 1], bid: 2 });
+
+  section('Item 4, iPhone 13 upright: Bob answers every form with taps');
+  ok((await run(FIVE(bob.pid))).ok, '(the script asks Bob the same five)');
+  ok(!!await asking(bob, 'Pick a colour'), 'Bob\'s panel shows the first');
+  for (const [p, who] of [[host, 'Alice'], [carol, 'Carol']]) ok(!(await askPanel(p)), `${who}'s screen shows no panel: the asks are Bob's`);
+  await shot(bob, 'p3-play-ask-phone');
+  await fiveForms(bob, 'Bob', true, { colour: 'Green', which: 'c3', where: 'a1', pass: [2, 0], bid: -1 });
+
+  section('Item 4, iPhone 13 sideways: Carol\'s prompt and options carry markup — the panel shows it as text');
+  const HTML = { prompt: 'Who <b>wins</b>? <img src=x onerror="window.__pwned=2">', a: '<b onclick=x>Me</b>', b: '<img src=x onerror=__pwned=4>' };
+  ok((await run(`t.ask(${J(carol.pid)}, { id: 'html', prompt: ${J(HTML.prompt)}, options: [${J(HTML.a)}, ${J(HTML.b)}] });`)).ok, '(the script asks Carol a question written in markup)');
+  {
+    const q = await asking(carol, HTML.prompt);
+    const made = await carol.evaluate(() => ({ els: document.querySelectorAll('#ask img, #ask b, #ask script').length, pwned: window.__pwned ?? null }));
+    ok(!!q && J(q.btns.map((b) => b.text)) === J([HTML.a, HTML.b]), `Carol's panel shows the prompt and both labels as typed (${J(q?.btns.map((b) => b.text))})`);
+    ok(!made.els && made.pwned === null, `no element is made of them, nothing ran (${J(made)})`);
+    await shot(carol, 'p3-play-ask-landscape');
+    await press(carol, HTML.b, true);
+    ok(await answer('html', carol.pid) === HTML.b, 'her tap on the second answers it: its label, as text');
+  }
+
+  section('The panel\'s place: on the desktop, the upright and the sideways iPhone — inside the screen, never over the table, the turn cue, the watchers or a seat label');
+  /** Page p's layout, two frames on (as painted): the panel, its card and option buttons, the turn cue, the watchers' box, the seat labels, the table area, the hand bar and the viewport (client rects). */
+  const layoutOf = (p) => p.evaluate(async () => {
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const vis = (el) => !!el && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden' && el.getClientRects().length > 0 && !el.classList.contains('hidden');
+    const R = (el) => { const r = el.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom }; };
+    const one = (id) => { const el = document.getElementById(id); return vis(el) ? R(el) : null; };
+    return { ask: one('ask'), card: one('ask-card'), opts: [...document.querySelectorAll('#ask-body button')].filter(vis).map(R), cue: one('turn-cue'), watch: [...document.querySelectorAll('#watch-box > *')].filter(vis).map(R),
+      seats: [...document.querySelectorAll('.seat')].filter(vis).map((el) => ({ ...R(el), txt: el.textContent })), table: one('table-wrap'), hand: one('hand-bar'), vw: innerWidth, vh: innerHeight };
+  });
+  ok((await L.act(carol, { t: 'seat', watch: true })).ok && await P.waitView(host, 'v.players[a].seat == null', carol.pid), '(Carol stands up to watch: the watchers\' box shows)');
+  ok((await run(`t.public.turn = [t.hostId, ${J(bob.pid)}, ${J(carol.pid)}]; for (const p of t.public.turn) t.ask(p, { id: 'lay', prompt: 'Ready to go on?', options: ['Yes', 'No'] });`)).ok, '(the script makes it everyone\'s turn, and asks each "Ready to go on?")');
+  for (const [p, who, touch] of [[host, 'Alice, desktop 1280 × 800', false], [bob, 'Bob, iPhone 13 upright', true], [carol, 'Carol, iPhone 13 sideways', true]]) {
+    ok(!!await asking(p, 'Ready to go on?') && await p.waitForFunction(() => !document.getElementById('turn-cue').classList.contains('hidden'), null, { timeout: 5000 }).then(() => true, () => false), `${who}: the ask shows, and the turn cue with it`);
+    const Lo = await layoutOf(p), clash = [];
+    if (Lo.cue && overlap(Lo.ask, Lo.cue)) clash.push('the turn cue');
+    if (Lo.watch.some((w) => overlap(Lo.ask, w))) clash.push('the watchers\' box');
+    for (const s of Lo.seats) if (overlap(Lo.ask, s)) clash.push(`the seat label "${s.txt}"`);
+    ok(!!Lo.ask && Lo.ask.l >= -0.5 && Lo.ask.t >= -0.5 && Lo.ask.r <= Lo.vw + 0.5 && Lo.ask.b <= Lo.vh + 0.5, `${who}: the panel is inside the viewport (${J(Lo.ask)} in ${Lo.vw} × ${Lo.vh})`);
+    ok(!!Lo.cue && Lo.watch.length > 0 && Lo.seats.length >= 2, `${who}: (the turn cue, the watchers' box and ${Lo.seats.length} seat labels are on screen)`);
+    ok(!clash.length, `${who}: it covers ${clash.join(', ') || 'none of them'}`);
+    ok(!!Lo.table && !overlap(Lo.ask, Lo.table), `${who}: it is never over the table: the table area ends above it (${J(Lo.table)})`);
+    if (touch) {
+      ok(!!Lo.hand && Lo.ask.b <= Lo.hand.t + 0.5, `${who}: a bottom sheet above the hand bar (${Lo.ask.b.toFixed(1)} ≤ ${Lo.hand?.t.toFixed(1)})`);
+      ok(Lo.opts.length === 2 && Lo.opts.every((b) => b.b - b.t >= 44 && b.r - b.l >= 44), `${who}: its buttons are at least 44 px (${Lo.opts.map((b) => `${Math.round(b.r - b.l)}×${Math.round(b.b - b.t)}`).join(', ')})`);
+    } else ok(!!Lo.card && Math.abs((Lo.card.l + Lo.card.r) / 2 - Lo.vw / 2) < 2 && Lo.card.r - Lo.card.l <= 720, `${who}: a centred card, at most 720 px wide (${J(Lo.card)})`);
+    await shot(p, `p3-play-layout-${touch ? (p === bob ? 'phone' : 'landscape') : 'desk'}`);
+  }
+  for (const [p, who, touch] of [[host, 'Alice', false], [bob, 'Bob', true], [carol, 'Carol', true]]) { await press(p, 'Yes', touch); ok(await answer('lay', p.pid) === 'Yes', `${who} answers "Yes"`); }
+  ok((await L.act(carol, { t: 'seat', sit: true })).ok && await P.waitView(host, 'v.players[a].seat != null', carol.pid), '(Carol sits down again)');
+  {
+    const mal = partsIn(await malBodies(marks0.mal)), carols = partsIn(await bodiesOf(carol, marks0.carol)), bobs = partsIn(await bodiesOf(bob, marks0.bob));
+    ok(!mal.some((x) => x.k === 'ask') && !/Pick a colour|Ready to go on|Who <b>wins/.test(J(await malBodies(marks0.mal))), 'no ask, and no prompt of anyone\'s, ever reached Mallory\'s bodies');
+    ok(carols.some((x) => x.k === 'ask') && carols.every((x) => x.to === carol.pid) && !J(carols).includes('Pick a colour'), 'Carol\'s bodies carry her own asks alone, bound to her — never Alice\'s or Bob\'s');
+    ok(bobs.filter((x) => x.k === 'ask').every((x) => x.to === bob.pid && !J(x.v).includes('Who <b>wins')), 'Bob\'s carry his own alone');
+  }
+
+  section('Answer validation is the host\'s too: forged answers of every form, an unknown id and Mallory\'s answer to Bob\'s ask are refused, no hook runs, the ask stays');
+  ok((await run(`t.public.turn = null; t.ask(${J(bob.pid)}, { id: 'v-opt', prompt: 'Heads or tails?', options: ['Heads', 'Tails'] });
+    t.ask(${J(bob.pid)}, { id: 'v-item', prompt: 'Which one?', pick: 'item', among: [${J(ids0.c3)}] });
+    t.ask(${J(bob.pid)}, { id: 'v-space', prompt: 'Which spot?', pick: 'space', among: ['a1'] });
+    t.ask(${J(bob.pid)}, { id: 'v-hand', prompt: 'Two cards?', pick: 'hand', count: 2 });
+    t.ask(${J(bob.pid)}, { id: 'v-num', prompt: 'How many?', pick: 'number', min: 1, max: 3 });`)).ok, '(the script asks Bob five more)');
+  ok(!!await asking(bob, 'Heads or tails?'), 'Bob\'s panel shows "Heads or tails?"');
+  {
+    const hand = await P.viewOf(bob, 'v.hand'), c = (k) => ({ idx: k, d: hand[k].d, i: hand[k].i }), n0 = await nAns();
+    const other = Array.from({ length: 52 }, (_, i) => i).find((i) => !hand.some((x) => x.d === hand[1].d && x.i === i)); // (a card of that deck he doesn't hold)
+    const FORGED = [
+      ['v-opt', 2, 'an option index past the end'], ['v-opt', -1, 'a negative index'], ['v-opt', 'Heads', 'a label, not an index'], ['v-opt', 0.5, 'a fraction'],
+      ['v-item', ids0.e5, 'a piece not among those offered'], ['v-item', 'nosuchid', 'no such piece'],
+      ['v-space', 'b2', 'a spot not offered'], ['v-space', 'zz9', 'no such spot'],
+      ['v-hand', [c(0)], 'one card of two'], ['v-hand', [c(0), c(0)], 'the same card twice'], ['v-hand', [c(0), { idx: 1, d: hand[1].d, i: other }], 'a card not in his hand'],
+      ['v-num', 4, 'past the max'], ['v-num', 0, 'under the min'], ['v-num', 2.5, 'a fraction'], ['nope', 0, 'an id no ask has'],
+    ];
+    for (const [id, v, what] of FORGED) {
+      const m = await mark(bob);
+      await L.act(bob, { t: 'answer', id, v });
+      ok(!!await waitSeen(bob, 'toast', /That answer wasn't offered/, m), `Bob's client forges ${id} = ${J(v)} (${what}): "🚫 That answer wasn't offered"`);
+      await h.sleep(250); // (notices: 10, then 5 a second)
+    }
+    const mn = await M.evaluate(() => window.M.got.note.length);
+    await M.act({ t: 'answer', id: 'v-opt', v: 0 });
+    ok(await L.until(async () => (await M.evaluate((n) => window.M.notes().slice(n).map((x) => x.msg || ''), mn)).some((x) => /wasn't offered/.test(x)), 8000), 'Mallory answers Bob\'s v-opt (an ask that isn\'t hers): refused');
+    await h.sleep(500);
+    ok((await nAns()) === n0, `no onAnswer ran for any of them (${(await nAns()) - n0} answers recorded)`);
+    const q = await askPanel(bob);
+    ok(q?.prompt === 'Heads or tails?' && q.text.includes('1 of 5'), `Bob's ask stays, with all five pending ("${q?.prompt}", ${q?.text.match(/1 of \d/)?.[0]})`);
+    await L.act(bob, { t: 'answer', id: 'v-opt', v: 1 });
+    ok(await answer('v-opt', bob.pid) === 'Tails', '(the control: the same path with an offered index, 1, answers "Tails")');
+    ok((await run(`t.cancelAsk(${J(bob.pid)});`)).ok && await L.until(async () => !(await askPanel(bob)), 8000), '(the script withdraws the rest: Bob\'s panel goes)');
+  }
+
+  section('Item 4: a host reload mid-ask brings the prompts back (they persist); Bob\'s hint does not survive it (never saved), his secret does');
+  ok((await run(`t.ask(t.hostId, { id: 'rl-a', prompt: 'Keep or swap?', options: ['Keep', 'Swap'] }); t.ask(${J(bob.pid)}, { id: 'rl-b', prompt: 'How far?', pick: 'number', min: 1, max: 9 });`)).ok, '(the script asks Alice and Bob)');
+  ok(!!await asking(host, 'Keep or swap?') && !!await asking(bob, 'How far?'), 'both prompts show');
+  await bob.tap('#secret-head'); // (folded: on his upright phone the card stands over the board's near rows)
+  const top = await bob.evaluate((id) => { const r = document.querySelector(`.item[data-id="${id}"]`).getBoundingClientRect(); return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest('.item')?.dataset.id === id; }, ids0.e5);
+  ok(top, 'Bob folds his 🔒 card: the e5 stone is what his finger meets');
+  await P.clickItem(bob, ids0.e5, true);
+  await hintOn(bob, 'Bob\'s screen before the reload', [ids0.e5], E5N);
+  const boot0 = await P.viewOf(bob, 'v.boot');
+  await host.reload();
+  ok(await host.waitForFunction(() => window.__ct?.view().seq > 0 && window.__ct.view().rules?.enabled && window.__ct.jobs() === 0, null, { timeout: 30000 }).then(() => true, () => false), 'Alice reloads the host tab: the saved rules run again');
+  await record(host);
+  ok(await P.waitView(bob, 'v.boot !== a && v.seq > 0', boot0, 30000), 'Bob\'s screen has the reloaded host\'s table');
+  ok(!!await asking(host, 'Keep or swap?', 15000), 'Alice\'s prompt is back on her screen');
+  ok(!!await asking(bob, 'How far?', 15000), 'Bob\'s is on his');
+  ok(await noHint(bob) && (await P.viewOf(bob, 'v.hint')) === null, 'Bob\'s hint is gone: hints are never saved (§3a)');
+  ok((await secretCard(bob))?.text === SECRET, 'his 🔒 For you card still holds his secret (it persists)');
+  await press(host, 'Swap', false);
+  ok(await answer('rl-a', host.pid) === 'Swap', 'Alice answers "Swap" after the reload: onAnswer gets it');
+  await bob.fill('#ask-body input', '7');
+  await press(bob, 'OK', true);
+  ok(await answer('rl-b', bob.pid) === 7, 'Bob answers 7: onAnswer gets it');
 
   await env.done();
 })().catch(h.crash);

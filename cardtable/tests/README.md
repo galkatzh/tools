@@ -832,7 +832,8 @@ raw peers import `PROTO` from `core.js` (`h.PROTO`), saves use `STATE_V`.
   dropped at the top of `act`; `prepare` sets the host's `to`, `from` and a
   pull's `pick` (a vetoed pull's draw waits for the bag's next pull: D114).
 - **`t-p3-space.js`** (spec §3l items 1, 2, 7, 8, 10, 11; §3j attacker
-  cases 4 and 7): Alice on a desktop, Bob on an iPhone 13, Carol on an
+  cases 4 and 7; its 3C sections, items 3, 4, 6 and 9, are under "Play on
+  the screens and the terminal"): Alice on a desktop, Bob on an iPhone 13, Carol on an
   iPhone 13 in landscape, Mallory raw; every interaction a real drag or
   tap. Draughts (cells, the snap preview and the chip, the three log
   forms, live drags both ways, a locked piece), backgammon under snapping
@@ -1582,6 +1583,62 @@ Every expectation is the laws of chess (FIDE) or the spec's (§3g "Draws",
   round, K+B v K+B on dark and on light squares) end the game as an
   announced draw with no winner, the next move refused; K+B v K+B on
   opposite colours plays on.
+
+### Play on the screens and the terminal (3C tests)
+
+Written from spec §3g, §3i, §3l and D154–D159 by a test author of their
+own, beside the implementer's `t-p3-ui.js` and `t-p3-cli.js`.
+
+- **`t-p3-space.js`, its 3C sections** (spec §3l t-p3-space items 3, 4, 6
+  and 9), after the 3A ones, with the same players (Alice on a desktop,
+  Bob on an iPhone 13 upright, Carol on one held sideways, Mallory raw):
+  Alice clears the table and enables the strict "Play test" (`PLAY`: an
+  8 × 8 board, five stones, a glue stone on g2, a deck; `onSelect` hints
+  the piece and the squares round it; `handle` keeps the glue stone where
+  it is (`true`) and vetoes a move to h8; `onAnswer` records each answer
+  in `t.public.ans`; a host press of "run" carries the code that makes the
+  asks and the secret) from the 📜 dialog with Reset ticked. Item 3: a
+  tap's `select` (p3-lib's `actTap`), the hint drawn on that screen alone
+  (`hintShown`: the outlined piece, each mark within 2 px of its square's
+  centre by spec §2a's geometry, a layer of its own of `svg`/`circle`
+  with numbers only), every body scanned (`partsIn`: a recursive scan for
+  `hint`, `ask` and `sec`): Mallory's carry her own hint alone, Bob's his,
+  Carol's none; a refused card play and a vetoed drop keep the hint, a
+  played move clears it. Item 9: a drag of the glue stone on each phone,
+  every frame traced (`traceItem`): drawn where the finger let go, then
+  back on g2 with the first patch naming it (≤ 200 ms after it, < 1.2 s
+  after the drop: not the 1.5 s landing hold). Item 6: the 🔒 card's
+  text exactly, markup as text, `pre-wrap`; no other screen, no other body.
+  Item 4: five forms pending at once ("1 of 5"), answered by mouse on the
+  desktop and by taps on the phone (`fiveForms`), each value against
+  §3c's table; markup in a prompt and labels shown as text (sideways); the
+  panel's place on all three screens (`layoutOf`, two frames on: inside
+  the viewport, clear of the table area, the turn cue — shown by a turn
+  given with the ask —, the watchers' box — Carol watching — and every
+  seat label; above the hand bar with 44 px buttons on the phones; a
+  centred card ≤ 720 px on the desktop); fifteen forged answers of every
+  form and Mallory's answer to Bob's ask refused ("🚫 That answer wasn't
+  offered", 250 ms apart: notices are flood-limited), no hook run; a host
+  reload mid-ask: both prompts back, Bob's hint gone (never saved), his
+  secret kept (his card folded first: upright, it stands over the board's
+  near rows). Toasts are recorded with stones-lib's `record`.
+  Screenshots: `shots/p3-play-*.png`.
+- **`t-p3-term.js`** (spec §3i, D158): Bob is a bot on cli.js and Carol a
+  bot on cli.py, each a REPL started with `--as` whose printed URL opens
+  that player's tab (which records what it sends, and whose pushes to the
+  bridge the test reads: `snaps`); both are asked the same questions, so
+  the two REPLs are compared line for line. The snapshot (labels only, a
+  hand pick's count — 1 when left out —, hint, the whole secret, `strict`
+  at the top with `rules` still the name; the rules off: no asks, strict
+  false, the secret kept; on again: the asks back), new asks printed
+  unprompted, `asks`, `answer` in every form and spelling (an option's
+  number or label in any case, an id, a spot in display or qualified
+  form, hand indices, a negative number), every wrong answer said in both
+  with no `answer` leaving the tab (each error found by the ask it names),
+  `select` and its printed hint, the printed secret, no control character
+  on the terminal; then the Bridge API in both languages with the same
+  tabs re-paired (`select`, `answer` with a number, a list, a label and a
+  spot, `place`).
 
 ## Storage and images (Phase 1B)
 
