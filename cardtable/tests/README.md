@@ -944,6 +944,29 @@ next section); core is the same there, in the page and in Node.
   changed: it renumbers); `T.digest()`; `T.guard()` (why the script broke
   the rules between jobs, or ''). With `env.test`, applyStatePatch
   shape-asserts every item first.
+- **`core-p3.test.mjs` (3B sections)**: spec §3l core-p3 items 2, 3, 4
+  and 7, with a fake script whose every hook hands over to a function of
+  the test (`fake(hooks, flags)`, through `globalThis.__p3b`); `rtable`
+  enables it with `T.job`, as a Worker would, on a table whose clock stands
+  still until the test moves it (`T.clk.t`). (2) The journal: each
+  mutation helper rolled back exactly (state, indexes, `T.pub`) and
+  committed onto a twin table; savepoints nest; the StatePatch's shape.
+  (3) Every row of §3f.4's atomicity table (handle and validate fail closed
+  on a throw, an async hook, a Promise or a thenable; the nine hooks after
+  the checkpoint, and buttons(), keep the action and lose their ops;
+  `group` is Phase 4's), strict / allow / seat, the order, `a.handled`, a
+  frozen `a`, the handled drop's refresh, the hint a veto puts back, `this`
+  not journaled. (4) cleanAsk accepted and refused for each form, t.ask /
+  cancelAsk / asks / hint, setRules keeping or resetting the state, the
+  gates on load and at commit. (A) answer, (Sel) select, (I) internal
+  actions, (P) each player's own parts and a host reload mid-ask, (G) the
+  live facade and guard(), (7) three seeded runs of 300 random jobs through
+  a Worker-like mirror (`T.job`) and a host that only applies its
+  structured-cloned patches (`env.test`): the digests equal after every job,
+  the whole tables and logs equal, every effect delivered; applyStatePatch's
+  gates and steps. Two traps for such checks: notices are flood-limited
+  (10, then 5 a second) and the log collapses a repeated line, so a check
+  that expects either again moves the clock, or logs something between.
 - **Existing suites changed for 3B part 1** (mechanism changes, no check
   dropped): `core-p1.test.mjs` (a ruled move serializes `t.data` three
   times — the journal's snapshot as the job begins, after validate, at the

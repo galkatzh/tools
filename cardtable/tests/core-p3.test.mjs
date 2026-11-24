@@ -32,11 +32,14 @@
 //  (D) The drag action in core (§3c): no state, one live fx, the gates, a
 //      group's resulting positions on the table; liveFx.
 //  (B17) A 361-stone go board's snapshot ≤ 70 KB.
+// Phase 3B (the rules engine: the journal, the pipeline, asks, answer,
+// select, internal actions, per-recipient parts, guards, T.digest) has its own
+// sections, after 3A's: see "Phase 3B" below.
 // Every random sequence is seeded and every failure names its seed.
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
-import { APP_ROOT, core, ok, section, report, crash, guard, rng, json, env, HOST, BOB, CAROL } from './node-lib.mjs';
+import { APP_ROOT, core, ok, section, report, crash, guard, rng, json, env, seeds, canon, HOST, BOB, CAROL, DAVE } from './node-lib.mjs';
 
 const grid = await import(pathToFileURL(path.join(APP_ROOT, 'cardtable/grid.js')));
 const pieces = await import(pathToFileURL(path.join(APP_ROOT, 'cardtable/pieces.js')));
@@ -1769,6 +1772,1224 @@ function testReviewGroupRound() {
   }
 }
 
+// =============================================================================
+// Phase 3B: the rules engine in core (spec §3f.4, §3a, §3b, §3c, §3e, §3f.3,
+// §3f.6, §3f.7, §3h, §3j), checked against the spec:
+//  (2)   The journal: begin, then every mutation helper, then rollback (the
+//        table as it was, its indexes too; data, public, asks, secret, hints);
+//        savepoint / rollbackTo nesting; checkpoint; commit's StatePatch.
+//  (3)   The ruled-action pipeline with a fake script: every row of §3f.4's
+//        atomicity table (group: Phase 4), strict with and without allow,
+//        seat under strict, handle before validate, onAction after handled
+//        actions (a.handled), a frozen, thenables fail closed, the handled
+//        drop's refresh touch, the hint a veto puts back.
+//  (4)   Asks: cleanAsk for every form (accepted, refused), plain-string
+//        options, t.ask / cancelAsk / asks; the engine-state gates on load
+//        (asks, secret, _timers, hints) and at commit (secret, _timers).
+//  (A)   answer: only the asked player, a pending id, an offered value (each
+//        form), the right number of hand cards; no hook on a refusal.
+//  (Sel) select: hidden pieces, wants, 5 a second per player; no state
+//        change but what the script does.
+//  (I)   Internal actions: never public; _join, _leave, _tick (due timers),
+//        _rulesOff, _name.
+//  (P)   Per-recipient parts: ask, hint and sec for their player alone; a
+//        peer that is not registered gets none; hints never saved.
+//  (G)   "Hooks must be synchronous": the live facade, guard().
+//  (7)   T.digest equal on a Worker-like mirror and a host that applies its
+//        patches (applyStatePatch), after 300 seeded random jobs; the
+//        patch's own gates.
+// The fake script hands every hook to a function of the test (F, below), so
+// each check states its script's behaviour next to its expectations.
+const { RULES, STRICT_ACTIONS, cleanAsk, scriptHooks, own } = core;
+const EVE = 'e'.repeat(16); // a player id nobody registered
+const F = (globalThis.__p3b = {});
+const HOOK_NAMES = ['setup', 'handle', 'validate', 'onAction', 'onChat', 'onButton', 'onAnswer', 'onSelect', 'onJoin', 'onLeave', 'onTimer', 'buttons'];
+/** The default Go button's hook: runs F.fn (see run()), keeping what it returned or threw. */
+function goButton(t, id, p) {
+  if (!F.fn) return;
+  try { F.ret = F.fn(t, p); } catch (e) { F.err = e; }
+}
+/** A fake script's code: name "Fake", the flags given (strict, allow) as its
+ *  own properties, and one method per hook in `hooks`, each handing over to
+ *  that function (kept in F, with the script as `this`). Unless o.bare, a Go
+ *  button (buttons) and its onButton (run()) come first: `hooks` may replace them. */
+function fake(hooks, flags = {}, o = {}) {
+  const all = o.bare ? hooks : { buttons: () => [{ id: 'go', label: 'Go' }], onButton: goButton, ...hooks };
+  for (const k of Object.keys(F)) delete F[k];
+  Object.assign(F, all);
+  const parts = ["name: 'Fake'", ...Object.entries(flags).map(([k, v]) => `${k}: ${J(v)}`),
+    ...Object.keys(all).filter((h) => HOOK_NAMES.includes(h)).map((h) => `${h}(...args) { return globalThis.__p3b.${h}.apply(this, args); }`)];
+  return `({ ${parts.join(',\n  ')} })`;
+}
+/** A seated table's state (v3: MIGRATE[3] reads every piece's address):
+ *  Alice (the host), Bob and Carol, online; the test box and a standard deck. */
+function state3b(items, hands = {}) {
+  const s = {
+    v: 3, seq: 1, table: { shape: 'rect', w: 5000, h: 3600 }, seats: null, boardSeq: 0, zMax: 0,
+    items: json(items), keys: {}, log: [], rules: null, guestDeckChars: 0,
+    players: { [HOST]: player('Alice', 90), [BOB]: player('Bob', 270), [CAROL]: player('Carol', 0) },
+    decks: { [DK]: core.standardDeck(false) }, boxes: { [BX]: cleanBox(SPACE_BOX) }, boxSrc: {},
+  };
+  for (const [p, hand] of Object.entries(hands)) s.players[p].hand = json(hand);
+  return s;
+}
+/** A host table over state3b(items) whose clock stands still until a test
+ *  moves it (T.clk.t), with the fake script of `hooks` enabled (none: no
+ *  rules) through a job, as a rules Worker runs it. o: {hands, flags, bare, seed}. */
+function rtable(items, hooks, o = {}) {
+  const clk = { t: 1.7e12 };
+  const T = quietly(() => createTable(state3b(items, o.hands), { ...env(o.seed ?? 7), now: () => clk.t })).value;
+  T.clk = clk;
+  if (hooks) {
+    const r = job(T, HOST, { t: 'setRules', enabled: true, code: fake(hooks, o.flags, o) });
+    if (!T.state.rules?.enabled) ok(false, `the fake script is enabled (${T.rulesError || J(r.error)})`);
+  }
+  T.drain();
+  T.takeDirty();
+  return T;
+}
+/** Runs action `a` of player p as a rules Worker does (T.job): its result
+ *  ({patch, out} or {fatal}) plus the effects, the notes ({p, msg}), the log
+ *  lines it added (texts; `rules`: the Rules ones; `entries`: whole) and what
+ *  went to console.warn / console.error. */
+function job(T, p, a) {
+  T.drain();
+  const last = T.state.log.at(-1), q = quietly(() => T.job(p, a)), r = q.value || {};
+  const added = T.state.log.slice(last ? T.state.log.lastIndexOf(last) + 1 : 0), effects = r.out?.effects || [];
+  return {
+    ...r, effects, notes: effects.filter((e) => e.t === 'note'), log: added.map((e) => e.txt), entries: added,
+    rules: added.filter((e) => e.p === RULES).map((e) => e.txt), warn: q.warn, error: q.error,
+  };
+}
+/** Runs fn(t, p) inside a hook (player p presses Go): job()'s result, with ret and err. */
+function run(T, fn, p = HOST) {
+  F.fn = fn;
+  F.ret = F.err = undefined;
+  const r = job(T, p, { t: 'rulesBtn', id: 'go' });
+  F.fn = null;
+  return { ...r, ret: F.ret, err: F.err };
+}
+const noted = (r, p, msg) => r.notes.some((n) => n.p === p && n.msg === msg);
+/** What a rollback puts back (spec §3f.4), as canonical JSON: items, players,
+ *  the rules (data, public, asks, secret, hints included), the table, the
+ *  seats, the log, the catalog's ids and records, the counters. */
+const STATE_KEYS = ['items', 'players', 'rules', 'table', 'seats', 'log', 'boxSrc', 'zMax', 'boardSeq', 'guestDeckChars', 'lastSetup'];
+const stateOf = (T) => canon({ ...Object.fromEntries(STATE_KEYS.map((k) => [k, T.state[k] ?? null])), decks: Object.keys(T.state.decks).sort(), boxes: Object.keys(T.state.boxes).sort() });
+/** What differs between two stateOf() strings, by top-level key (for messages). */
+function stateDiff(a, b) {
+  const A = JSON.parse(a), B = JSON.parse(b);
+  return Object.keys({ ...A, ...B }).filter((k) => J(A[k]) !== J(B[k])).map((k) => (k === 'items' || k === 'players'
+    ? `${k}: ${Object.keys({ ...A[k], ...B[k] }).filter((id) => J(A[k][id]) !== J(B[k][id])).join(', ')}` : k)).join('; ');
+}
+/** The table's indexes (byKind, byType, byOwner, byAt, byZone) and T.pub
+ *  against the items as they are: [] when all agree, else what differs. */
+function indexProblems(T) {
+  const bad = [...containmentProblems(T)], items = Object.entries(T.state.items);
+  const want = (f) => {
+    const m = new Map();
+    for (const [id, it] of items) for (const k of f(it)) (m.get(k) || m.set(k, new Set()).get(k)).add(id);
+    return m;
+  };
+  const cmp = (name, got, w) => {
+    for (const k of new Set([...got.keys(), ...w.keys()])) if (J([...(got.get(k) || [])].sort()) !== J([...(w.get(k) || [])].sort())) bad.push(`${name}[${k}]`);
+  };
+  cmp('byKind', new Map([...T.byKind].filter(([, s]) => s.size)), want((it) => [it.k]));
+  cmp('byType', T.byType, want((it) => ((it.k === 'g' || it.k === 's') && it.t ? [it.t] : [])));
+  cmp('byOwner', T.byOwner, want((it) => (it.owner ? [it.owner] : [])));
+  const pub = T.publicItems(); // (a full recompute)
+  for (const id of new Set([...T.pub.keys(), ...Object.keys(pub)])) if (canon(T.pub.get(id)) !== canon(pub[id])) bad.push(`T.pub[${id}]`);
+  return bad.slice(0, 6);
+}
+const deepFrozen = (o) => Object.isFrozen(o) && Object.values(o).every((v) => v === null || typeof v !== 'object' || deepFrozen(v));
+
+// The pipeline's table: a chess board B (addresses), two men, a die, a card,
+// a pile, a supply, a bag and a hidden piece; Bob holds two cards.
+const PIPE = () => ({
+  B: BRD('chess', 100, 100), m: PC('man', 1500, 300), n: PC('man', 1700, 300), dd: PC('die', 1900, 300), c: CARD(3, 2100, 300),
+  p: PILE([{ d: DK, i: 10, up: false }, { d: DK, i: 11, up: false }], 2300, 300), s: SUP('gem', 2500, 300), bg: BAG(['gem', 'gem'], 2700, 300),
+  h: PC('spy', 2900, 300, { up: false }),
+});
+const HANDS = { [BOB]: [{ d: DK, i: 20 }, { d: DK, i: 21 }] };
+/** Bob's drop of man m on address `at` of board B. */
+const dropOn = (T, at, id = 'm') => ({ t: 'move', id, ...tl(T, 'man', T.api.spot(at)) });
+/** What a failing hook does before it fails: none of it may survive. */
+function partial(t) {
+  t.move('n', 'a1');
+  t.data.k = 1;
+  t.public.k = 1;
+  t.say('partial');
+  t.secret[CAROL] = { text: 'p' };
+  t.hint(CAROL, { items: ['n'] });
+  t.ask(CAROL, { id: 'pk', prompt: 'P?', options: ['x'] });
+  t.spawn(ref('man'), { at: 'h1' });
+  t.newDeck({ name: 'Partial', cards: [{ name: 'x' }] });
+}
+const mark3b = (T) => ({ items: json(T.state.items), decks: Object.keys(T.state.decks).length, log: T.state.log.length });
+/** What partial() left on T since mark3b() took `b`: [] when nothing. */
+function leftovers(T, b) {
+  const bad = [], I = T.state.items, r = T.state.rules || {};
+  if (I.n?.x !== b.items.n.x || I.n?.y !== b.items.n.y || (I.n?.at ?? null) !== (b.items.n.at ?? null)) bad.push('n moved');
+  const extra = Object.keys(I).filter((id) => !(id in b.items));
+  if (extra.length) bad.push(`new items ${J(extra)}`);
+  if (Object.keys(T.state.decks).length !== b.decks) bad.push('a new deck');
+  if ('k' in (r.data || {}) || 'k' in (r.public || {})) bad.push('t.data.k / t.public.k');
+  if (own(r.secret || {}, CAROL) || own(r.hints || {}, CAROL) || own(r.asks || {}, CAROL)) bad.push("Carol's secret, hint or ask");
+  if (T.state.log.slice(b.log).some((e) => e.txt === 'partial')) bad.push('the "partial" line');
+  return bad;
+}
+
+// =============================================================================
+// (2) The journal
+// =============================================================================
+const JOURNAL_ITEMS = () => ({
+  B: BRD('chess', 100, 100), m: PC('man', 1500, 300), n: PC('man', 1700, 300), dd: PC('die', 1900, 300), g1: PC('gem', 2000, 600),
+  c: CARD(3, 2100, 300), c2: CARD(4, 2100, 600), p: PILE([{ d: DK, i: 10, up: false }, { d: DK, i: 11, up: true }, { d: DK, i: 12, up: false }], 2300, 300),
+  q: PILE([{ d: DK, i: 13, up: true }, { d: DK, i: 14, up: true }], 2500, 300), s: SUP('gem', 2500, 700), bg: BAG(['gem', 'tile'], 2700, 300),
+  sp: PC('spy', 2900, 300, { up: false }),
+});
+/** The journal's table over `items` (the makers number z as they go: twins
+ *  share one set): Carol has an ask and a secret, Bob a hint, data and public
+ *  hold something (set up by setup). */
+function journalTable(items = JOURNAL_ITEMS()) {
+  return rtable(items, {
+    setup(t) {
+      t.data.y = 1;
+      t.data.obj = { a: 1 };
+      t.public.score = 5;
+      t.ask(CAROL, { id: 'c1', prompt: 'Carol?', options: ['a', 'b'] });
+      t.secret[CAROL] = { text: 'c' };
+      t.hint(BOB, { items: ['m'], spaces: ['e4'] });
+    },
+  }, { hands: HANDS });
+}
+/** Every mutation helper of §3f.4, through the facade (T.api: the host's plain facade). */
+const MUTATIONS = [
+  ['put (t.spawn)', (t) => t.spawn(ref('man'), { at: 'd4' })],
+  ['put (t.newPile)', (t) => t.newPile([{ d: DK, i: 30, up: true }], { x: 3000, y: 900 })],
+  ['put (t.newBag)', (t) => t.newBag([{ t: ref('gem') }], { at: { x: 3200, y: 900 } })],
+  ['put (t.take from a supply)', (t) => t.take('s', { at: 'c3' })],
+  ['put and touch (t.pull from a bag)', (t) => t.pull('bg', { at: { x: 3300, y: 1300 } })],
+  ['remove (t.remove)', (t) => t.remove('n')],
+  ['touch (t.move to an address)', (t) => t.move('m', 'e4')],
+  ['touch (t.move to x, y)', (t) => t.move('m', 1200, 1400)],
+  ['touch (t.flip)', (t) => t.flip('c')],
+  ['touch (t.rot)', (t) => t.rot('m', 90)],
+  ['touch (t.lock)', (t) => t.lock('m', true)],
+  ['touch (t.setFace)', (t) => t.setFace('g1', 2)],
+  ['touch (t.setCount)', (t) => t.setCount('g1', 3)],
+  ['touch (t.setOwner)', (t) => t.setOwner('m', BOB)],
+  ['touch (t.roll)', (t) => { for (let k = 0; k < 4; k++) t.roll('dd'); }],
+  ['touch (t.shuffle)', (t) => t.shuffle('p')],
+  ['touch and remove (t.merge)', (t) => t.merge('q', 'p')],
+  ['touch and remove (t.toPile)', (t) => t.toPile('c', 'p')],
+  ['put and remove (t.stack)', (t) => t.stack('c', 'c2')],
+  ['touchPlayer (t.deal to a hand)', (t) => t.deal('p', { to: BOB })],
+  ['touchPlayer (t.draw)', (t) => t.draw(CAROL, 'q', 2)],
+  ['touchPlayer (t.toHand)', (t) => t.toHand(CAROL, 'c')],
+  ['touchPlayer and put (t.playFromHand)', (t) => t.playFromHand(BOB, 0, { x: 3000, y: 1200 })],
+  ['touchPlayer and remove (t.takeHand)', (t) => t.takeHand(BOB, 'p')],
+  ['touchPlayer (t.dealToAll)', (t) => t.dealToAll('p', 1, { onlineOnly: false })],
+  ['a catalog add: a deck (t.newDeck)', (t) => t.newDeck({ name: 'Extra', cards: [{ name: 'x' }] })],
+  ['a catalog add: a box, and a standard deck', (t) => { t.newBox({ name: 'Journal box', pieces: [{ id: 'pawn', kind: 'token', faces: ['P'] }] }); t.addStandardDeck({ x: 3600, y: 1600 }); }],
+  ['the table set (t.setTable)', (t) => t.setTable({ shape: 'rect', w: 4400, h: 3000 })],
+  ['the seats set (t.setSeats)', (t) => t.setSeats([{ id: 'north', name: 'North' }, { id: 'south', name: 'South', edge: 'top' }])],
+  ['a hint set (t.hint)', (t) => t.hint(CAROL, { items: ['n'], spaces: ['e4'] })],
+  ['a hint cleared (t.hint null)', (t) => t.hint(BOB, null)],
+  ['log pushes (t.say, t.announce, t.win)', (t) => { t.say('hello'); t.announce('Big news'); t.win(BOB, 'Bob wins'); }],
+  ['t.data written', (t) => { t.data.x = 1; delete t.data.y; t.data.obj.a = 2; }],
+  ['t.public written, then replaced', (t) => { t.public.score = 6; t.public = { other: 1 }; }],
+  ['t.ask and t.cancelAsk', (t) => { t.ask(BOB, { id: 'b1', prompt: 'B?', pick: 'space', among: ['e4', 'd5'] }); t.cancelAsk(CAROL); }],
+  ['t.secret set and deleted', (t) => { t.secret[BOB] = { text: 'b' }; delete t.secret[CAROL]; }],
+  ['a timer (t.schedule)', (t) => t.schedule(3, 'later')],
+  ['a board spawned (boardSeq)', (t) => t.spawn(ref('tray'), { at: { x: 3500, y: 2500 } })],
+  ['t.random and t.random-driven aggregation', (t) => { t.random(); for (let k = 0; k < 5; k++) t.spawn(ref('gem'), { at: { x: 3000 + 90 * k, y: 3000 } }); }],
+];
+
+function testJournal() {
+  section('(2) the journal: begin, a mutation helper, rollback — the table exactly as it was (its indexes and T.pub too), and an empty commit');
+  const T = journalTable();
+  for (const [what, fn] of MUTATIONS) {
+    const before = stateOf(T), d0 = T.digest();
+    T.begin();
+    const q = quietly(() => fn(T.api)), mid = stateOf(T);
+    T.rollback();
+    const after = stateOf(T), P = T.commit(), idx = indexProblems(T);
+    ok(mid !== before && after === before && T.digest() === d0 && !idx.length && !P.items && !P.players && !P.rules && !P.log && !P.decks && !P.boxes && !('table' in P) && !('seats' in P),
+      `${what}: it changed the table (${mid !== before}), and the rollback put back everything (${after === before ? 'yes' : stateDiff(before, after)}); indexes ${idx.length ? J(idx) : 'agree'}; the commit after it is empty (${J(Object.keys(P))})${q.value === false ? ' — the op returned false' : ''}`);
+  }
+
+  section('(2) begin, a mutation helper, commit: the patch makes a twin table the same table (every helper, in turn)');
+  const twins = JOURNAL_ITEMS(), TA = journalTable(twins), TB = journalTable(twins);
+  for (const [what, fn] of MUTATIONS) {
+    TA.begin();
+    quietly(() => fn(TA.api));
+    const P = TA.commit(), q = quietly(() => TB.applyStatePatch(structuredClone(P), { effects: [] })), idx = indexProblems(TB);
+    ok(stateOf(TB) === stateOf(TA) && TB.digest() === TA.digest() && !idx.length && !q.error.length,
+      `${what}: ${stateOf(TB) === stateOf(TA) ? 'the same table' : stateDiff(stateOf(TA), stateOf(TB))}; the twin's indexes ${idx.length ? J(idx) : 'agree'} (patch: ${J(Object.keys(P))})`);
+  }
+
+  section('(2) every mutation helper in one journal, then rollback');
+  const T2 = journalTable(), before = stateOf(T2), d0 = T2.digest();
+  T2.begin();
+  for (const [, fn] of MUTATIONS) quietly(() => fn(T2.api));
+  const mid = stateOf(T2);
+  T2.rollback();
+  const after = stateOf(T2), idx = indexProblems(T2);
+  T2.commit();
+  ok(mid !== before && after === before && T2.digest() === d0 && !idx.length, `all of them at once: rolled back exactly (${after === before ? 'yes' : stateDiff(before, after)}); indexes ${idx.length ? J(idx) : 'agree'}`);
+  const q = quietly(() => T2.apply(BOB, { t: 'rot', id: 'm', rot: 90 }));
+  ok(q.value && T2.state.items.m.rot === 90 && !indexProblems(T2).length, 'the table works on after it (a rot applies)');
+
+  section('(2) savepoint / rollbackTo nest: each undoes only what came after its token, data, public, asks and secret as they were there; checkpoint() too');
+  const T3 = journalTable(), t = T3.api, s0 = stateOf(T3);
+  T3.begin();
+  t.move('m', 'a1');
+  t.data.s1 = 1;
+  t.ask(BOB, { id: 's1', prompt: 'One?', options: ['y'] });
+  t.secret[BOB] = { text: 's1' };
+  const one = stateOf(T3), tok1 = T3.savepoint();
+  t.move('m', 'b2');
+  t.remove('n');
+  t.data.s2 = 2;
+  t.public.s2 = 2;
+  t.ask(BOB, { id: 's2', prompt: 'Two?', options: ['y'] });
+  delete t.secret[BOB];
+  t.hint(CAROL, { items: ['m'] });
+  t.say('two');
+  const two = stateOf(T3), tok2 = T3.savepoint();
+  t.move('m', 'c3');
+  quietly(() => t.newDeck({ name: 'Three', cards: [{ name: 'x' }] }));
+  quietly(() => t.setTable({ shape: 'rect', w: 4600, h: 3200 }));
+  t.data.s3 = 3;
+  t.secret[CAROL] = { text: 'three' };
+  T3.rollbackTo(tok2);
+  ok(stateOf(T3) === two, `rollbackTo(the second token): the third segment is undone, the first two kept (${stateOf(T3) === two ? 'yes' : stateDiff(two, stateOf(T3))})`);
+  t.move('m', 'd4');
+  T3.rollbackTo(tok1);
+  ok(stateOf(T3) === one && !indexProblems(T3).length, `rollbackTo(the first token): only the first segment is left, its data, asks and secret as they were (${stateOf(T3) === one ? 'yes' : stateDiff(one, stateOf(T3))})`);
+  const cp = T3.checkpoint();
+  t.move('m', 'h8');
+  t.data.s4 = 4;
+  T3.rollbackTo(cp);
+  ok(stateOf(T3) === one, 'checkpoint(): a later rollbackTo(it) keeps what came before it');
+  const P = T3.commit();
+  ok(T3.api.where('m') === 'a1' && P.items?.m && J(P.items.m) === J(T3.state.items.m) && !('n' in (P.items || {})) && J(P.rules?.data) === J({ y: 1, obj: { a: 1 }, s1: 1 })
+    && J(P.rules?.asks?.[BOB]?.map((x) => x.id)) === J(['s1']) && P.rules?.secret?.[BOB]?.text === 's1' && !P.decks && !('table' in P) && !('public' in (P.rules || {})),
+  `commit after them: the first segment only (${J({ items: Object.keys(P.items || {}), rules: Object.keys(P.rules || {}), data: P.rules?.data })})`);
+  T3.begin();
+  T3.rollback();
+  T3.commit();
+  ok(s0 !== stateOf(T3), '(the first segment stayed committed)');
+
+  section('(2) commit: the StatePatch of what the job wrote — whole private items (null: removed; sorted ids), players with hands, new catalog entries, the rules fields that changed, seats, log, counters');
+  const twin = JOURNAL_ITEMS(), A = journalTable(twin), Bt = journalTable(twin);
+  ok(A.digest() === Bt.digest() && stateOf(A) === stateOf(Bt), 'two tables built alike are alike (the patch\'s target)');
+  A.begin();
+  const a = A.api;
+  a.move('m', 'e4');
+  a.remove('n');
+  const nid = a.spawn(ref('man'), { at: 'd5' });
+  a.deal('p', { to: BOB });
+  const deckId = a.newDeck({ name: 'Patched', cards: [{ name: 'x' }] });
+  const boxId = a.newBox({ name: 'Patch box', pieces: [{ id: 'pawn', kind: 'token', faces: ['P'] }] });
+  a.data.k = 1;
+  a.ask(BOB, { id: 'pb', prompt: 'Patched?', options: ['y'] });
+  a.say('patched');
+  quietly(() => a.setSeats([{ id: 'north', name: 'North' }, { id: 'south', name: 'South', edge: 'top' }]));
+  const PA = A.commit(), I = A.state.items;
+  const ids = Object.keys(PA.items || {});
+  ok(J(ids) === J([...ids].sort()) && J(PA.items.m) === J(I.m) && PA.items.n === null && J(PA.items[nid]) === J(I[nid]) && J(PA.items.p) === J(I.p) && PA.items.p.cards.every((c) => Number.isInteger(c.i)),
+    `items: sorted, whole and private (a pile's face-down cards with their identities), a removed one null (${J(ids)})`);
+  ok(J(PA.players?.[BOB]?.hand) === J(A.state.players[BOB].hand) && PA.players[BOB].hand.length === 3, 'players: whole, hands included');
+  ok(J(PA.decks?.[deckId]) === J(A.state.decks[deckId]) && PA.boxes?.[boxId]?.src === 'script' && J(PA.boxes[boxId].box) === J(A.state.boxes[boxId]), 'the new deck, and the new box as a catalog record {box, src: script}');
+  ok(J(PA.rules?.data) === J(A.state.rules.data) && J(PA.rules.asks) === J(A.state.rules.asks) && ['public', 'secret', 'code', 'name', 'enabled'].every((k) => !(k in PA.rules)),
+    `rules: only the fields that changed (${J(Object.keys(PA.rules || {}))})`);
+  ok(PA.log?.some((e) => e.txt === 'patched' && e.p === RULES) && J(PA.seats) === J(A.state.seats) && !('table' in PA) && PA.zMax === A.state.zMax, 'the log lines, the seats, zMax; no table (unchanged)');
+  quietly(() => Bt.applyStatePatch(structuredClone(PA), { effects: [] }));
+  ok(Bt.digest() === A.digest() && stateOf(Bt) === stateOf(A) && !indexProblems(Bt).length, `applied to its twin, the patch makes it the same table (${stateOf(Bt) === stateOf(A) ? 'yes' : stateDiff(stateOf(A), stateOf(Bt))})`);
+}
+
+// =============================================================================
+// (3) The ruled-action pipeline with a fake script
+// =============================================================================
+function testPipelineVeto() {
+  section('(3) handle vetoes after doing ops: none of its ops, the veto line, the refresh, the hint restored');
+  const calls = [];
+  const T = rtable(PIPE(), {
+    handle(t, a) { calls.push('handle'); if (a.t === 'move') { partial(t); t.hint(BOB, null); t.move('m', 'h8'); return 'Nope, not there'; } },
+    validate() { calls.push('validate'); },
+    onAction() { calls.push('onAction'); },
+  });
+  run(T, (t) => t.hint(BOB, { items: ['m'], spaces: ['e4'] }));
+  const hint0 = json(T.state.rules.hints[BOB]);
+  T.takeDirty();
+  calls.length = 0;
+  const b = mark3b(T), m0 = J(T.state.items.m), data0 = J(T.state.rules.data), pub0 = J(T.state.rules.public);
+  const r = job(T, BOB, dropOn(T, 'e4'));
+  const left = leftovers(T, b);
+  ok(!left.length && J(T.state.items.m) === m0 && J(T.state.rules.data) === data0 && J(T.state.rules.public) === pub0,
+    `none of handle's ops survive, and the move is not applied (${left.length ? J(left) : 'nothing left'})`);
+  ok(J(r.log) === J(['blocked Bob: Nope, not there']) && J(r.rules) === J(r.log), `the one log line: "blocked Bob: Nope, not there", as Rules (${J(r.log)})`);
+  ok(noted(r, BOB, '🚫 Nope, not there'), 'the actor is told: "🚫 Nope, not there"');
+  ok(r.patch?.refresh?.includes('m') && !r.patch.items, `the refresh: m re-sent unchanged (refresh ${J(r.patch?.refresh)}, items ${J(Object.keys(r.patch?.items || {}))})`);
+  const d = T.takeDirty();
+  ok(J(T.state.rules.hints?.[BOB]) === J(hint0) && !d.hints.has(BOB), `the hint the action cleared (and handle cleared again) is back, so no part is re-sent (${J(T.state.rules.hints?.[BOB])})`);
+  ok(J(calls) === J(['handle']) && T.state.rules.enabled, `no validate, no onAction; the rules stay on (${J(calls)})`);
+}
+
+function testPipelineFailClosed() {
+  section('(3) handle or validate throws, or returns a thenable (an async hook, a Promise): none of its ops, the action not applied, the rules disabled (fail CLOSED)');
+  const VARIANTS = [
+    ['throws', (t) => { partial(t); throw new Error('boom'); }],
+    ['is an async function (that would allow)', async (t) => { partial(t); }],
+    ['is an async function (that would veto)', async (t) => { partial(t); return 'no'; }],
+    ['returns a Promise', (t) => { partial(t); return Promise.resolve(); }],
+    ['returns a thenable object', (t) => { partial(t); return { then() {} }; }],
+  ];
+  for (const hook of ['handle', 'validate']) {
+    for (const [what, fn] of VARIANTS) {
+      const calls = [];
+      const T = rtable(PIPE(), { [hook]: (t, a) => (a.t === 'move' ? fn(t) : undefined), onAction() { calls.push('onAction'); } });
+      const b = mark3b(T), m0 = J(T.state.items.m);
+      const r = job(T, BOB, dropOn(T, 'e4'));
+      const left = leftovers(T, b);
+      ok(!left.length && J(T.state.items.m) === m0 && !calls.length, `${hook} ${what}: none of its ops (${left.length ? J(left) : 'nothing left'}), the move not applied, no onAction`);
+      ok(!T.state.rules.enabled && r.patch?.rules?.enabled === false && r.log.includes(`rules disabled — script error in ${hook}()`) && noted(r, BOB, '🚫 rules script error')
+        && r.out?.error?.hook?.startsWith(hook) && typeof r.out.error.message === 'string' && r.patch.refresh?.includes('m'),
+      `${hook} ${what}: the rules disabled (in the patch); "rules disabled — script error in ${hook}()"; the actor told "🚫 rules script error"; out.error names ${hook}; m re-sent (${J(r.log)}, ${J(r.out?.error)})`);
+    }
+  }
+
+  section('(3) a handle or validate that breaks the engine\'s gates (t.data over 4,000,000 chars) fails closed too (D122)');
+  for (const hook of ['handle', 'validate']) {
+    const T = rtable(PIPE(), { [hook]: (t, a) => { if (a.t === 'move') t.data.big = 'x'.repeat(4e6); } });
+    const m0 = J(T.state.items.m), r = job(T, BOB, dropOn(T, 'e4'));
+    ok(J(T.state.items.m) === m0 && !('big' in T.state.rules.data) && !T.state.rules.enabled && noted(r, BOB, '🚫 rules script error'),
+      `${hook} grows t.data past 4e6 chars: the move not applied, the data dropped, the rules disabled (${J(r.log)})`);
+  }
+}
+
+/** The hooks that run after the checkpoint (§3f.4's third row): each one's
+ *  trigger, and what the action's own default effect leaves, which is kept. */
+const AFTER_HOOKS = {
+  onAction: { act: (T) => job(T, BOB, dropOn(T, 'e4')), kept: (T) => T.api.where('m') === 'e4', what: 'the move' },
+  onChat: { act: (T) => job(T, BOB, { t: 'chat', msg: 'hello there' }), kept: (T, r) => r.entries.some((e) => e.p === BOB && e.txt === 'hello there' && e.c), what: 'the chat line' },
+  onButton: { act: (T) => job(T, BOB, { t: 'rulesBtn', id: 'go' }), kept: () => true, what: '(no effect of its own)' },
+  onAnswer: {
+    prep: (t) => t.ask(BOB, { id: 'q', prompt: 'Q?', options: ['yes'] }),
+    act: (T) => job(T, BOB, { t: 'answer', id: 'q', v: 0 }), kept: (T, r) => !own(T.state.rules.asks || {}, BOB) && r.entries.some((e) => e.p === BOB && e.txt === 'answered'), what: 'the ask removed, "answered"',
+  },
+  onSelect: { act: (T) => job(T, BOB, { t: 'select', id: 'm' }), kept: () => true, what: '(no effect of its own)' },
+  onJoin: { act: (T) => job(T, DAVE, { t: '_join', name: 'Dave' }), kept: (T, r) => T.state.players[DAVE]?.online === true && T.state.players[DAVE].name === 'Dave' && r.entries.some((e) => e.p === DAVE && e.txt === 'joined the table'), what: 'the registration' },
+  onLeave: { act: (T) => job(T, BOB, { t: '_leave' }), kept: (T, r) => T.state.players[BOB].online === false && r.entries.some((e) => e.p === BOB && e.txt === 'left the table'), what: 'Bob offline, "left the table"' },
+  onTimer: { prep: (t) => t.schedule(0, 'now'), act: (T) => job(T, RULES, { t: '_tick' }), kept: (T) => J(T.state.rules.data._timers || []) === '[]', what: 'the timer taken off the list' },
+  setup: {
+    act: (T) => job(T, HOST, { t: 'setRules', enabled: true, code: fake({ setup: F.failing }) }),
+    kept: (T, r) => T.state.rules?.name === 'Fake' && typeof T.state.rules.code === 'string' && r.rules.some((x) => x.startsWith('«Fake» enabled by Alice')), what: 'the rules registered, "«Fake» enabled by Alice"',
+  },
+};
+function testPipelineAfterHooks() {
+  section('(3) onAction, onChat, onButton, onAnswer, onSelect, onJoin, onLeave, onTimer or setup throws, or returns a thenable: the action\'s own effect kept, the hook\'s ops discarded, the rules disabled');
+  const FAILS = [['throws', (t) => { partial(t); throw new Error('after-boom'); }], ['returns a Promise', (t) => { partial(t); return Promise.resolve(); }], ['returns a thenable object', (t) => { partial(t); return { then() {} }; }]];
+  for (const [hook, c] of Object.entries(AFTER_HOOKS)) {
+    for (const [what, failing] of FAILS) {
+      let T;
+      if (hook === 'setup') {
+        T = rtable(PIPE(), null);
+        F.failing = failing;
+      } else {
+        T = rtable(PIPE(), { [hook]: (t, ...args) => (F.armed ? failing(t, ...args) : undefined), setup: (t) => c.prep?.(t) });
+        F.armed = true;
+      }
+      const b = mark3b(T), r = c.act(T), left = leftovers(T, b);
+      ok(c.kept(T, r) && !left.length && T.state.rules && !T.state.rules.enabled && r.log.includes(`rules disabled — script error in ${hook}()`) && r.out?.error?.hook?.startsWith(hook),
+        `${hook} ${what}: ${c.what} kept (${c.kept(T, r)}); its ops discarded (${left.length ? J(left) : 'yes'}); the rules disabled, "script error in ${hook}()" (${J(r.rules)})`);
+    }
+  }
+
+  section('(3) buttons() throws: the action kept, the onAction before it undone too (one checkpoint), public.buttons keeps its last value, the rules disabled');
+  let boom = false;
+  const T = rtable(PIPE(), {
+    buttons: (t) => { if (boom) { partial(t); throw new Error('buttons broke'); } return [{ id: 'go', label: 'Go' }, { id: 'more', label: 'More' }]; },
+    onAction(t) { t.data.fromOnAction = 1; t.move('n', 'b2'); },
+  });
+  const was = J(T.state.rules.public.buttons), b = mark3b(T);
+  boom = true;
+  const r = job(T, BOB, dropOn(T, 'e4'));
+  ok(T.api.where('m') === 'e4' && !('fromOnAction' in T.state.rules.data) && !leftovers(T, b).length && J(T.state.rules.public.buttons) === was && !T.state.rules.enabled && r.log.includes('rules disabled — script error in buttons()'),
+    `the move kept; onAction's and buttons()'s ops gone (${J(leftovers(T, b))}); buttons still ${J(T.state.rules.public.buttons)}; the rules disabled (${J(r.rules)})`);
+
+  section('(3) a hook after the checkpoint that breaks the engine\'s gates is undone back to the checkpoint (D122): the action kept');
+  const T2 = rtable(PIPE(), { onAction(t) { t.move('n', 'b2'); t.data.big = 'x'.repeat(4e6); } });
+  job(T2, BOB, dropOn(T2, 'e4'));
+  ok(T2.api.where('m') === 'e4' && T2.api.where('n') === null && !('big' in T2.state.rules.data) && !T2.state.rules.enabled, 'onAction grows t.data past 4e6: the move stays, n is back, the data gone, the rules off');
+}
+
+function testStrict() {
+  section('(3) strict: every ruled action but seat is refused ("Not a move in this game") unless handle returns true or allow lists it');
+  const SPEC_RULED = ['move', 'rot', 'flip', 'shuffle', 'draw', 'deal', 'play', 'handPile', 'toHand', 'toPile', 'stack', 'merge', 'del', 'addDeck', 'peek',
+    'roll', 'face', 'split', 'join', 'take', 'pull', 'toBag', 'lock', 'owner', 'seat'];
+  ok(sameSet([...RULED_ACTIONS], SPEC_RULED) && sameSet([...STRICT_ACTIONS], SPEC_RULED.filter((t) => t !== 'seat')), 'RULED_ACTIONS is §10.1\'s list; STRICT_ACTIONS is it without seat');
+  const seen = [];
+  const T = rtable(PIPE(), { onAction(t, a) { seen.push(a.t); } }, { flags: { strict: true }, hands: HANDS });
+  ok(T.snapContent().rules?.strict === true && !('wants' in T.snapContent().rules), `the rules view says strict: true (${J(T.snapContent().rules)})`);
+  const payload = { id: 'm', ids: ['dd'], pile: 'p', onto: 'n', bag: 'bg', x: 600, y: 600, rot: 90, f: 1, n: 1, on: true, to: BOB, idx: 0, d: DK, i: 20, up: true, deck: { name: 'X', cards: [{ n: 'a' }] } };
+  for (const t of SPEC_RULED.filter((x) => x !== 'seat')) {
+    // (a second apart, after a line of the host's: notices are flood-limited, and the log collapses a repeated line)
+    T.clk.t += 1000;
+    job(T, HOST, { t: 'chat', msg: `next: ${t}` });
+    const d0 = T.digest(), r = job(T, BOB, { t, ...payload });
+    ok(noted(r, BOB, '🚫 Not a move in this game') && J(r.rules) === J(['blocked Bob: Not a move in this game']) && T.digest() === d0 && T.state.rules.enabled, `strict refuses ${t} (${J(r.log)})`);
+  }
+  const ruledSeen = () => seen.filter((x) => RULED_ACTIONS.has(x));
+  ok(!ruledSeen().length, `no refused action reached onAction (${J(ruledSeen())})`);
+  let r = job(T, BOB, { t: 'seat', watch: true });
+  ok(T.state.players[BOB].seat === null && !noted(r, BOB, '🚫 Not a move in this game') && J(ruledSeen()) === J(['seat']), 'seat is never refused by strict: Bob stands up to watch (and onAction sees it)');
+  r = job(T, BOB, { t: 'seat', sit: true });
+  ok(T.state.players[BOB].seat !== null, 'and sits down again');
+  r = job(T, BOB, { t: 'chat', msg: 'still talking' });
+  const r2 = job(T, BOB, { t: 'name', name: 'Robert' });
+  ok(r.entries.some((e) => e.txt === 'still talking') && T.state.players[BOB].name === 'Robert' && !noted(r, BOB, '🚫 Not a move in this game') && !noted(r2, BOB, '🚫 Not a move in this game'), 'actions that are not ruled (chat, name) are not refused');
+
+  section('(3) strict with allow: the listed types keep their default effect');
+  const T2 = rtable(PIPE(), {}, { flags: { strict: true, allow: ['rot', 'flip'] } });
+  job(T2, BOB, { t: 'rot', id: 'm', rot: 90 });
+  const up0 = T2.state.items.c.up;
+  job(T2, BOB, { t: 'flip', id: 'c' });
+  r = job(T2, BOB, dropOn(T2, 'e4'));
+  ok(T2.state.items.m.rot === 90 && T2.state.items.c.up !== up0 && T2.api.where('m') === null && noted(r, BOB, '🚫 Not a move in this game'), 'allow: [rot, flip] — both apply; a move is still refused');
+
+  section('(3) strict and handle: an action handle takes (true) is not refused; one it leaves (undefined) is');
+  const T3 = rtable(PIPE(), { handle(t, a) { if (a.t === 'move') { t.move(a.id, a.to); return true; } } }, { flags: { strict: true } });
+  r = job(T3, BOB, dropOn(T3, 'e4'));
+  ok(T3.api.where('m') === 'e4' && !noted(r, BOB, '🚫 Not a move in this game'), 'handled: the script moved it to a.to, no refusal');
+  r = job(T3, BOB, { t: 'rot', id: 'm', rot: 90 });
+  ok(T3.state.items.m.rot === 0 && noted(r, BOB, '🚫 Not a move in this game'), 'not handled: refused');
+
+  section('(3) seat under strict: handle and validate may still veto it');
+  const T4 = rtable(PIPE(), { handle(t, a) { if (a.t === 'seat' && a.p === CAROL) return 'Carol stays'; }, validate(t, a) { if (a.t === 'seat' && a.sit) return 'No sitting'; } }, { flags: { strict: true } });
+  r = job(T4, CAROL, { t: 'seat', watch: true });
+  ok(T4.state.players[CAROL].seat !== null && noted(r, CAROL, '🚫 Carol stays'), 'handle vetoes Carol\'s seat change');
+  job(T4, BOB, { t: 'seat', watch: true });
+  r = job(T4, BOB, { t: 'seat', sit: true });
+  ok(T4.state.players[BOB].seat === null && noted(r, BOB, '🚫 No sitting'), 'validate vetoes Bob\'s sit (he stood up; he stays a watcher)');
+}
+
+function testPipelineOrder() {
+  section('(3) handle runs before validate; true skips validate and the default effect; a string vetoes; any other return goes on');
+  const order = [];
+  let hv;
+  const T = rtable(PIPE(), { handle() { order.push('handle'); return hv; }, validate() { order.push('validate'); } });
+  for (const [v, want, applied, what] of [[undefined, ['handle', 'validate'], true, 'undefined'], [true, ['handle'], false, 'true'], ['No', ['handle'], false, 'a string'],
+    [1, ['handle', 'validate'], true, '1'], [false, ['handle', 'validate'], true, 'false'], [null, ['handle', 'validate'], true, 'null'], [{}, ['handle', 'validate'], true, '{}']]) {
+    order.length = 0;
+    hv = v;
+    const rot0 = T.state.items.m.rot;
+    job(T, BOB, { t: 'rot', id: 'm', rot: (rot0 + 90) % 360 });
+    ok(J(order) === J(want) && (T.state.items.m.rot !== rot0) === applied, `handle returns ${what}: ${J(order)}, the rot ${applied ? 'applied' : 'not applied'}`);
+  }
+
+  section('(3) onAction runs after a handled action with a.handled = true (handle\'s ops kept, no default effect), and without it otherwise');
+  const seen = [];
+  const T2 = rtable(PIPE(), { handle(t, a) { if (a.t === 'move') { t.move('n', 'b2'); return true; } }, onAction(t, a) { seen.push({ t: a.t, handled: a.handled, p: a.p, frozen: deepFrozen(a) }); } });
+  const m0 = J(T2.state.items.m);
+  job(T2, BOB, dropOn(T2, 'e4'));
+  ok(J(T2.state.items.m) === m0 && T2.api.where('n') === 'b2' && J(seen) === J([{ t: 'move', handled: true, p: BOB, frozen: true }]), `handled: m stays, n is on b2, onAction saw ${J(seen)}`);
+  job(T2, BOB, { t: 'rot', id: 'm', rot: 90 });
+  ok(seen.length === 2 && seen[1].t === 'rot' && seen[1].handled === undefined && T2.state.items.m.rot === 90, `not handled: onAction saw ${J(seen[1])}`);
+
+  section('(3) hooks run as methods of the script (`this`), whose own properties are not journaled: they survive a veto');
+  const T5 = rtable(PIPE(), { handle(t, a) { this.tries = (this.tries || 0) + 1; F.self = this; t.data.tries = this.tries; return 'no'; } });
+  job(T5, BOB, { t: 'rot', id: 'm', rot: 90 });
+  job(T5, BOB, { t: 'rot', id: 'm', rot: 90 });
+  ok(F.self?.name === 'Fake' && F.self.tries === 2 && !('tries' in T5.state.rules.data), `this is the script; this.tries counted both vetoed tries (${F.self?.tries}), t.data.tries was rolled back`);
+
+  section('(3) onAction also runs after chat and rulesBtn (answer: see (A)); not after a rename');
+  const after = [];
+  const T4 = rtable(PIPE(), { onAction(t, a) { after.push(a.t); } });
+  job(T4, BOB, { t: 'chat', msg: 'hello' });
+  job(T4, BOB, { t: 'rulesBtn', id: 'go' });
+  job(T4, BOB, { t: 'name', name: 'Robert' });
+  ok(J(after) === J(['chat', 'rulesBtn']), `onAction saw ${J(after)}`);
+
+  section('(3) hooks get `a` as a frozen deep copy {…a, p, to?, from?}: a script can never change the action core applies');
+  const probes = {};
+  const probe = (name) => (t, a) => {
+    let threw = false, threwDeep = false;
+    try { a.x = 0; } catch (e) { threw = e instanceof TypeError; }
+    if (a.ids) try { a.ids.push('zz'); } catch (e) { threwDeep = e instanceof TypeError; }
+    (probes[a.t] ||= {})[name] = { frozen: deepFrozen(a), threw, threwDeep: a.ids ? threwDeep : null, p: a.p, to: a.to };
+  };
+  const T3 = rtable(PIPE(), { handle: probe('handle'), validate: probe('validate'), onAction: probe('onAction') });
+  const drop = dropOn(T3, 'e4'), sent = J(drop);
+  job(T3, BOB, drop);
+  job(T3, BOB, { t: 'roll', ids: ['dd'] });
+  const want = (to, deep) => J({ frozen: true, threw: true, threwDeep: deep, p: BOB, to });
+  ok(['handle', 'validate', 'onAction'].every((h) => J(probes.move?.[h]) === want('e4', null)) && T3.api.where('m') === 'e4' && J(drop) === sent,
+    `a move: frozen in handle, validate and onAction, a write throws, p is Bob, to is e4; the move applied as sent, and the payload object untouched (${J(probes.move)})`);
+  ok(['handle', 'validate', 'onAction'].every((h) => J(probes.roll?.[h]) === want(undefined, true)), `a roll: a.ids frozen too (${J(probes.roll)})`);
+}
+
+function testHandledRefresh() {
+  section('(3) an action handle takes (true) without touching what it names refresh-touches it: the patch re-sends those items and hands');
+  const T = rtable(PIPE(), { handle: () => true }, { hands: HANDS });
+  for (const [a, ids, hands] of [
+    [dropOn(T, 'e4'), ['m'], []],
+    [{ t: 'toPile', id: 'c', pile: 'p' }, ['c', 'p'], []],
+    [{ t: 'stack', id: 'c', onto: 'p' }, ['c', 'p'], []],
+    [{ t: 'toBag', id: 'n', bag: 'bg' }, ['n', 'bg'], []],
+    [{ t: 'roll', ids: ['dd'] }, ['dd'], []],
+    [{ t: 'play', idx: 0, d: DK, i: 20, x: 3000, y: 900, up: true }, [], [BOB]],
+    [{ t: 'take', id: 's', x: 3000, y: 900 }, ['s'], []],
+  ]) {
+    const items0 = J(T.state.items), hand0 = J(T.state.players[BOB].hand), r = job(T, BOB, a);
+    ok(J(T.state.items) === items0 && J(T.state.players[BOB].hand) === hand0 && sameSet(r.patch?.refresh || [], ids) && sameSet(r.patch?.refreshHands || [], hands) && !r.patch?.items,
+      `${a.t}: nothing changed; refresh ${J(r.patch?.refresh)}, refreshHands ${J(r.patch?.refreshHands)} (want ${J(ids)}, ${J(hands)})`);
+  }
+}
+
+function testHints() {
+  section('(3) a ruled action clears its player\'s hint as it starts: a vetoed one (validate, handle, strict) puts it back; an applied or handled one leaves it cleared');
+  let mode = null;
+  const hooks = { handle() { if (mode === 'handle-veto') return 'h-no'; if (mode === 'handled') return true; }, validate() { if (mode === 'veto') return 'v-no'; } };
+  const T = rtable(PIPE(), hooks), TS = rtable(PIPE(), hooks, { flags: { strict: true } });
+  for (const [m, kept, Tx] of [['veto', true, T], ['handle-veto', true, T], ['strict', true, TS], ['apply', false, T], ['handled', false, T]]) {
+    run(Tx, (t) => { t.hint(BOB, { items: ['n'] }); t.hint(CAROL, { items: ['m'] }); });
+    Tx.takeDirty();
+    mode = m;
+    job(Tx, BOB, { t: 'rot', id: 'm', rot: (Tx.state.items.m.rot + 90) % 360 });
+    mode = null;
+    const d = Tx.takeDirty(), h = Tx.state.rules.hints || {};
+    ok(!!own(h, BOB) === kept && J(own(h, CAROL)?.items) === J(['m']) && d.hints.has(BOB) === !kept && !d.hints.has(CAROL),
+      `${m}: Bob's hint ${kept ? 'back' : 'cleared'} (${J(own(h, BOB))}); Carol's untouched; only ${kept ? 'nobody' : 'Bob'} gets a hint part`);
+  }
+  run(T, (t) => t.hint(BOB, { items: ['n'] }));
+  job(T, BOB, { t: 'chat', msg: 'hi' });
+  ok(!!own(T.state.rules.hints, BOB), 'an action that is not ruled (chat) leaves the hint');
+}
+
+// =============================================================================
+// (4) Asks, and the engine-state gates
+// =============================================================================
+function testCleanAsk() {
+  section('(4) cleanAsk accepts each form: options (labels or {label, value}), pick item, space, hand, number');
+  const opts = cleanAsk({ id: 'q', prompt: 'Pick', options: ['♕', { label: 'Rook', value: { r: 1 } }] });
+  ok(J(opts.options) === J([{ label: '♕', value: '♕' }, { label: 'Rook', value: { r: 1 } }]) && opts.id === 'q' && opts.prompt === 'Pick', `plain-string options mean {label, value: label} (${J(opts.options)})`);
+  const big = { id: 'Q_9-zZ'.padEnd(24, 'x'), prompt: 'p'.repeat(200), options: range(20).map((k) => `o${k}`.padEnd(30, '.')) };
+  const okForms = [
+    ['24-char id, 200-char prompt, 20 options of 30 chars', big],
+    ['a value of 2,000 chars of JSON', { id: 'v', prompt: '', options: [{ label: 'x', value: 'v'.repeat(1998) }] }],
+    ['pick item with among', { id: 'i', prompt: 'Which?', pick: 'item', among: ['a', 'b'] }],
+    ['pick item with 200 among', { id: 'i', prompt: 'Which?', pick: 'item', among: range(200).map((k) => `id${k}`) }],
+    ['pick space with among', { id: 's', prompt: 'Where?', pick: 'space', among: ['e4', 'map:c3'] }],
+    ['pick hand (count 1 by default)', { id: 'h', prompt: 'Discard', pick: 'hand' }],
+    ['pick hand, count 20', { id: 'h', prompt: 'Discard', pick: 'hand', count: 20 }],
+    ['pick number, 0 to 1,000,000', { id: 'n', prompt: 'Bid', pick: 'number', min: 0, max: 1e6 }],
+    ['pick number, -5 to -5', { id: 'n', prompt: 'Bid', pick: 'number', min: -5, max: -5 }],
+  ];
+  for (const [what, spec] of okForms) {
+    let out, err;
+    try { out = cleanAsk(json(spec)); } catch (e) { err = e; }
+    ok(out && !err && out.id === spec.id && (spec.pick ? out.pick === spec.pick : out.options.length === spec.options.length), `${what}: accepted (${err?.message || 'ok'})`);
+  }
+  section('(4) cleanAsk refuses anything else with a TypeError');
+  const base = { id: 'q', prompt: 'P' };
+  const bad = [
+    ['not an object', 'ask'], ['null', null], ['an array', []],
+    ['no id', { prompt: 'P', options: ['a'] }], ['an empty id', { ...base, id: '', options: ['a'] }], ['an id with a space', { ...base, id: 'a b', options: ['a'] }],
+    ['a 25-char id', { ...base, id: 'x'.repeat(25), options: ['a'] }], ['an id that is a number', { ...base, id: 5, options: ['a'] }],
+    ['no prompt', { id: 'q', options: ['a'] }], ['a 201-char prompt', { ...base, prompt: 'p'.repeat(201), options: ['a'] }], ['a prompt that is a number', { ...base, prompt: 5, options: ['a'] }],
+    ['both options and pick', { ...base, options: ['a'], pick: 'number', min: 0, max: 1 }], ['neither options nor pick', { ...base }],
+    ['no options (empty list)', { ...base, options: [] }], ['21 options', { ...base, options: range(21).map(String) }], ['options that are no list', { ...base, options: 'a' }],
+    ['an empty label', { ...base, options: [''] }], ['a 31-char label', { ...base, options: ['x'.repeat(31)] }], ['an option that is a number', { ...base, options: [5] }],
+    ['an option without a label', { ...base, options: [{ value: 1 }] }], ['a value that is a function', { ...base, options: [{ label: 'a', value: () => 1 }] }],
+    ['a value that is a BigInt', { ...base, options: [{ label: 'a', value: 1n }] }], ['a value of 2,001 chars of JSON', { ...base, options: [{ label: 'a', value: 'v'.repeat(1999) }] }],
+    ['options with among', { ...base, options: ['a'], among: ['x'] }], ['options with count', { ...base, options: ['a'], count: 1 }], ['options with min and max', { ...base, options: ['a'], min: 0, max: 1 }],
+    ['an unknown pick', { ...base, pick: 'card' }], ['pick item without among', { ...base, pick: 'item' }], ['pick space without among', { ...base, pick: 'space' }],
+    ['201 among', { ...base, pick: 'item', among: range(201).map((k) => `id${k}`) }], ['among with a number in it', { ...base, pick: 'item', among: ['a', 5] }], ['among that is no list', { ...base, pick: 'space', among: 'e4' }],
+    ['among with pick hand', { ...base, pick: 'hand', among: ['a'] }], ['among with pick number', { ...base, pick: 'number', min: 0, max: 1, among: ['a'] }],
+    ['count 0', { ...base, pick: 'hand', count: 0 }], ['count 21', { ...base, pick: 'hand', count: 21 }], ['count 1.5', { ...base, pick: 'hand', count: 1.5 }], ['count with pick item', { ...base, pick: 'item', among: ['a'], count: 1 }],
+    ['number with min > max', { ...base, pick: 'number', min: 3, max: 2 }], ['number 1,000,001 apart', { ...base, pick: 'number', min: 0, max: 1e6 + 1 }], ['number with min 0.5', { ...base, pick: 'number', min: 0.5, max: 2 }],
+    ['number without max', { ...base, pick: 'number', min: 0 }], ['min and max with pick item', { ...base, pick: 'item', among: ['a'], min: 0, max: 1 }],
+    ['an unknown field', { ...base, options: ['a'], extra: 1 }],
+  ];
+  for (const [what, spec] of bad) {
+    let err = null;
+    try { cleanAsk(spec); } catch (e) { err = e; }
+    ok(err instanceof TypeError, `${what}: ${err ? `TypeError: ${err.message}` : 'accepted'}`);
+  }
+}
+
+function testAskFacade() {
+  section('(4) t.ask stores a cleaned ask in rules.asks[pid]: TypeErrors name the call; a player at the table; 8 pending at most; the same id replaces; space picks in display forms');
+  const T = rtable(PIPE(), {});
+  let r = run(T, (t) => t.ask(BOB, { id: 'o', prompt: 'Promote to', options: ['♕', '♖'] }));
+  ok(r.ret === undefined && !r.err && J(T.state.rules.asks[BOB]) === J([{ id: 'o', prompt: 'Promote to', options: [{ label: '♕', value: '♕' }, { label: '♖', value: '♖' }] }]),
+    `stored, plain-string options as {label, value} (${J(T.state.rules.asks[BOB])})`);
+  ok(!r.log.length, 'asks are private: no log line');
+  for (const [what, fn] of [['a bad spec', (t) => t.ask(BOB, { id: 'x', prompt: 'P' })], ['a player not at the table', (t) => t.ask(EVE, { id: 'x', prompt: 'P', options: ['a'] })],
+    ['a space no board has', (t) => t.ask(BOB, { id: 'x', prompt: 'P', pick: 'space', among: ['z99'] })]]) {
+    r = run(T, fn);
+    ok(r.err instanceof TypeError && r.err.message.startsWith('t.ask') && T.state.rules.asks[BOB].length === 1, `${what}: a TypeError naming t.ask (${r.err?.message})`);
+  }
+  r = run(T, (t) => { for (let k = 1; k < 8; k++) t.ask(BOB, { id: `k${k}`, prompt: `P${k}`, options: ['a'] }); });
+  ok(T.state.rules.asks[BOB].length === 8, '8 pending');
+  r = run(T, (t) => t.ask(BOB, { id: 'k9', prompt: 'P9', options: ['a'] }));
+  ok(r.err instanceof TypeError && r.err.message.startsWith('t.ask') && T.state.rules.asks[BOB].length === 8, `a 9th: TypeError (${r.err?.message})`);
+  r = run(T, (t) => t.ask(BOB, { id: 'k3', prompt: 'Replaced', pick: 'number', min: 1, max: 2 }));
+  const k3 = T.state.rules.asks[BOB].filter((x) => x.id === 'k3');
+  ok(!r.err && T.state.rules.asks[BOB].length === 8 && k3.length === 1 && k3[0].prompt === 'Replaced' && k3[0].pick === 'number', 'the same id again replaces that ask, even with 8 pending');
+  r = run(T, (t) => t.ask(CAROL, { id: 'sp', prompt: 'Where?', pick: 'space', among: ['E4', 'B:d5'] }));
+  ok(!r.err && J(T.state.rules.asks[CAROL][0].among) === J(['e4', 'd5']), `a space pick's among in display forms (${J(T.state.rules.asks[CAROL]?.[0]?.among)}, ${r.err?.message})`);
+
+  section('(4) t.cancelAsk(pid, id?) and t.asks(pid) (copies)');
+  r = run(T, (t) => [t.cancelAsk(BOB, 'k3'), t.cancelAsk(BOB, 'k3'), t.asks(BOB).length]);
+  ok(J(r.ret) === J([true, false, 7]), `one ask: true, then false (${J(r.ret)})`);
+  r = run(T, (t) => { const l = t.asks(BOB); l[0].prompt = 'mutated'; l.pop(); return t.asks(BOB).length; });
+  ok(r.ret === 7 && T.state.rules.asks[BOB][0].prompt !== 'mutated', 't.asks hands out copies');
+  r = run(T, (t) => [t.cancelAsk(BOB), t.cancelAsk(BOB), t.asks(BOB)]);
+  ok(J(r.ret) === J([true, false, []]) && !own(T.state.rules.asks, BOB), `all of a player's: true, then false; none left (${J(r.ret)})`);
+
+  section('(4) t.hint(pid, {items?, spaces?} | null): at most 500 entries in all; a player at the table; spaces in display form; an item gone is dropped (console.warn); null clears');
+  const ids = range(300).map(() => 'm');
+  r = run(T, (t) => t.hint(BOB, { items: ids, spaces: range(200).map(() => 'B:e4') }));
+  ok(!r.err && T.state.rules.hints[BOB].items.length === 300 && T.state.rules.hints[BOB].spaces.every((s) => s === 'e4'), `500 entries: kept, the spaces as "e4" (${r.err?.message || 'ok'})`);
+  for (const [what, fn] of [['501 entries', (t) => t.hint(BOB, { items: [...ids, 'm'], spaces: range(200).map(() => 'e4') })], ['a player not at the table', (t) => t.hint(EVE, { items: ['m'] })],
+    ['an unknown field', (t) => t.hint(BOB, { pieces: ['m'] })], ['a space no board has', (t) => t.hint(BOB, { spaces: ['z99'] })]]) {
+    r = run(T, fn);
+    ok(r.err instanceof TypeError && r.err.message.startsWith('t.hint') && T.state.rules.hints[BOB].items.length === 300, `${what}: a TypeError naming t.hint, the hint unchanged (${r.err?.message})`);
+  }
+  r = run(T, (t) => t.hint(BOB, { items: ['m', 'gone'] }));
+  ok(J(T.state.rules.hints[BOB].items) === J(['m']) && r.warn.length, 'an item not on the table: dropped, with console.warn');
+  run(T, (t) => t.hint(BOB, null));
+  ok(!own(T.state.rules.hints, BOB), 'null clears it');
+
+  section('(4) setRules: re-enabling the same game keeps data, public, asks and secret (hints start afresh); Reset clears them all; another game starts clean');
+  const T2 = rtable(PIPE(), {});
+  const fill = () => run(T2, (t) => { t.data.x = 1; t.public.y = 2; t.ask(BOB, { id: 'q', prompt: 'Q?', options: ['a'] }); t.secret[BOB] = { text: 's' }; t.hint(BOB, { items: ['m'] }); });
+  fill();
+  r = job(T2, HOST, { t: 'setRules', enabled: false });
+  ok(!T2.state.rules.enabled && r.rules.includes('rules disabled by Alice'), `Disable: "rules disabled by Alice" (${J(r.rules)})`);
+  job(T2, HOST, { t: 'setRules', enabled: true, code: fake({}) });
+  let R2 = T2.state.rules;
+  ok(R2.enabled && R2.data.x === 1 && R2.public.y === 2 && R2.asks[BOB]?.length === 1 && R2.secret[BOB]?.text === 's' && !own(R2.hints || {}, BOB), `re-enabled: the state kept, no hint (${J({ data: R2.data, hints: R2.hints })})`);
+  fill();
+  job(T2, HOST, { t: 'setRules', enabled: true, code: fake({}), reset: true });
+  R2 = T2.state.rules;
+  ok(R2.enabled && !('x' in R2.data) && !('y' in R2.public) && !own(R2.asks, BOB) && !own(R2.secret, BOB) && !own(R2.hints || {}, BOB), `Reset: data, public, asks, secret and hints cleared (${J({ data: R2.data, asks: R2.asks, secret: R2.secret })})`);
+  fill();
+  job(T2, HOST, { t: 'setRules', enabled: true, code: "({ name: 'Another game' })" });
+  R2 = T2.state.rules;
+  ok(R2.name === 'Another game' && !('x' in R2.data) && !own(R2.asks, BOB) && !own(R2.secret, BOB), 'another game: its own clean state');
+}
+
+function testEngineGates() {
+  section('(4) loading a save runs the gates: every ask through cleanAsk (≤ 8 a player, an id once), secret keys PID_RE and own(), ≤ 8,000 chars, _timers {at: finite, tag ≤ 100}, hints dropped');
+  const good = (id) => ({ id, prompt: 'P', options: [{ label: 'a', value: 'a' }] });
+  const s = state3b({ m: PC('man', 1500, 300) });
+  s.v = 4;
+  s.rules = JSON.parse(J({
+    code: "({ name: 'X' })", name: 'X', enabled: true, public: {}, hints: { [BOB]: { items: ['m'] } },
+    data: { _timers: [{ at: 1.7e12, tag: 'ok' }, { at: 'x', tag: 'bad-at' }, { at: null, tag: 'null-at' }, { at: 5, tag: 7 }, { at: 5, tag: 't'.repeat(101) }, { at: 5, tag: 't'.repeat(100) }, null, 'str', { at: 5 }] },
+    asks: { [BOB]: [good('a1'), { id: 'bad id', prompt: 'P', options: ['a'] }, good('a1'), good('a2')], nobody: [good('n1')], [CAROL]: 'nope', [DAVE]: range(9).map((k) => good(`d${k}`)) },
+    secret: { [BOB]: { text: 'ok' }, zzzz: 1, [CAROL]: { text: 'x'.repeat(8000) }, [DAVE]: { text: 'x'.repeat(7989) } },
+  }).replace('"zzzz":1', '"zzzz":1,"__proto__":{"text":"evil"}'));
+  const q = quietly(() => createTable(s, { ...env(9), now: () => 1.7e12 })), T = q.value, r = T.state.rules;
+  ok(J(r.asks[BOB]?.map((x) => x.id)) === J(['a1', 'a2']) && !own(r.asks, 'nobody') && !own(r.asks, CAROL) && r.asks[DAVE]?.length === 8,
+    `asks: the bad one and the second a1 dropped, a non-player's and a non-list dropped, 9 → 8 (${J(Object.fromEntries(Object.entries(r.asks).map(([p, l]) => [p.slice(0, 4), l.length])))})`);
+  ok(J(Object.keys(r.secret).sort()) === J([BOB, DAVE].sort()) && !Object.hasOwn(r.secret, '__proto__') && ({}).text === undefined,
+    `secret: Bob's and Dave's (8,000 chars of JSON) kept; "zzzz", "__proto__" and Carol's 8,011 chars dropped, no prototype touched (${J(Object.keys(r.secret).map((k) => k.slice(0, 4)))})`);
+  ok(J(r.data._timers) === J([{ at: 1.7e12, tag: 'ok' }, { at: 5, tag: 't'.repeat(100) }]), `_timers: only the well-formed entries (${J(r.data._timers).slice(0, 120)})`);
+  ok(!('hints' in r), 'hints are never loaded');
+  ok(q.error.some((e) => /ask/.test(e)) && q.error.some((e) => /secret/.test(e)) && q.error.some((e) => /_timers/.test(e)), `what was dropped is said with console.error (${q.error.length} errors)`);
+  const s2 = state3b({});
+  s2.v = 4;
+  s2.rules = { code: "({ name: 'X' })", name: 'X', enabled: true, public: {}, asks: {}, secret: {}, data: { _timers: range(1001).map((k) => ({ at: k, tag: `t${k}` })) } };
+  const T2 = quietly(() => createTable(s2, env(9))).value;
+  ok(T2.state.rules.data._timers.length === 1000, `1,001 saved timers: 1,000 kept (${T2.state.rules.data._timers.length})`);
+
+  section('(4) the gates at every commit: t.secret keys (attacker case 9: "__proto__", a non-player key), its size, its JSON; t.data._timers');
+  for (const [what, fn] of [
+    ['t.secret["__proto__"] = {} and t.secret.bob = "x"', (t) => { t.secret.__proto__ = { polluted: 1 }; t.secret.bob = 'x'; }],
+    ['a secret of 8,001 chars of JSON', (t) => { t.secret[BOB] = { text: 'x'.repeat(7990) }; }],
+    ['a secret that is a function', (t) => { t.secret[BOB] = () => 1; }],
+    ['a secret that holds a function', (t) => { t.secret[BOB] = { text: 'x', f() {} }; }],
+  ]) {
+    const T3 = rtable(PIPE(), {});
+    const r3 = run(T3, fn), sec = T3.state.rules.secret;
+    ok(!T3.state.rules.enabled && !Object.hasOwn(sec, '__proto__') && !own(sec, 'bob') && !own(sec, BOB) && ({}).polluted === undefined && r3.rules.some((x) => x.startsWith('rules disabled — script error in')),
+      `${what}: the hook fails, the rules disable, nothing of it kept, no prototype touched (${J(r3.rules)})`);
+  }
+  const T4 = rtable(PIPE(), {});
+  let r4 = run(T4, (t) => { t.secret[BOB] = { text: 'x'.repeat(7989) }; t.secret[CAROL] = { text: 'fine' }; });
+  ok(T4.state.rules.enabled && T4.state.rules.secret[BOB].text.length === 7989 && T4.state.rules.secret[CAROL].text === 'fine', 'a secret of exactly 8,000 chars, and a small one: kept');
+  r4 = run(T4, (t) => { t.data._timers = [{ at: 1, tag: 'ok' }, { at: 'x', tag: 'b' }, 'junk']; });
+  ok(J(T4.state.rules.data._timers) === J([{ at: 1, tag: 'ok' }]) && r4.error.length > 0, `a script's junk in t.data._timers is dropped at the commit, with console.error (${J(T4.state.rules.data._timers)})`);
+}
+
+// =============================================================================
+// (A) answer
+// =============================================================================
+function testAnswer() {
+  section('(A) answer: each form\'s offered values accepted (onAnswer gets the value, then onAction runs; the ask goes; the log says only "answered")');
+  const got = [];
+  const T = rtable(PIPE(), {
+    onAnswer(t, p, id, v) { got.push(['onAnswer', p, id, json(v)]); },
+    onAction(t, a) { if (a.t === 'answer') got.push(['onAction', a.p, a.id]); },
+  }, { hands: { [BOB]: [{ d: DK, i: 0 }, { d: DK, i: 1 }, { d: DK, i: 2 }, { t: ref('gem'), f: 1 }] } });
+  const askAll = () => run(T, (t) => {
+    t.ask(BOB, { id: 'opt', prompt: 'Pick one', options: ['♕', { label: 'Rook', value: { piece: 'ROOK-VALUE' } }] });
+    t.ask(BOB, { id: 'it', prompt: 'Which piece?', pick: 'item', among: ['m', 'n'] });
+    t.ask(BOB, { id: 'sp', prompt: 'Where?', pick: 'space', among: ['e4', 'd5'] });
+    t.ask(BOB, { id: 'hd', prompt: 'Two cards', pick: 'hand', count: 2 });
+    t.ask(BOB, { id: 'num', prompt: 'How many?', pick: 'number', min: -3, max: 5 });
+    t.ask(BOB, { id: 'one', prompt: 'One card', pick: 'hand' });
+  });
+  askAll();
+  const refused = (p, a, what) => {
+    T.clk.t += 1000; // (notices are flood-limited: 10, then 5 a second)
+    const asks0 = J(T.state.rules.asks), d0 = T.digest(), n0 = got.length;
+    const r = job(T, p, { t: 'answer', ...a });
+    ok(noted(r, p, "🚫 That answer wasn't offered") && r.warn.length && got.length === n0 && J(T.state.rules.asks) === asks0 && T.digest() === d0 && !r.log.length,
+      `${what}: refused ("🚫 That answer wasn't offered", console.warn), no hook ran, the ask stays, nothing changed`);
+  };
+  let sep = 0;
+  const accepted = (a, want, what) => {
+    run(T, (t) => t.say(`(before answer ${++sep})`)); // (the log collapses repeats: two "answered" in a row would be one line)
+    const n0 = got.length, hand0 = J(T.state.players[BOB].hand), r = job(T, BOB, { t: 'answer', ...a });
+    const asks = own(T.state.rules.asks || {}, BOB) || [];
+    ok(J(got.slice(n0)) === J([['onAnswer', BOB, a.id, want], ['onAction', BOB, a.id]]) && !asks.some((x) => x.id === a.id) && J(r.entries.map((e) => [e.p, e.txt])) === J([[BOB, 'answered']])
+      && J(T.state.players[BOB].hand) === hand0 && !J(r.log).includes('ROOK-VALUE'),
+    `${what}: onAnswer(t, Bob, ${a.id}, ${J(want)}), then onAction; the ask gone; one line, "answered" (${J(got.slice(n0))}, ${J(r.log)})`);
+  };
+  for (const v of [-1, 2, '0', 0.5, true, null, undefined]) refused(BOB, { id: 'opt', v }, `options, v = ${J(v) ?? 'missing'}`);
+  accepted({ id: 'opt', v: 1 }, { piece: 'ROOK-VALUE' }, 'options, v = 1: the option\'s value');
+  for (const v of ['c', 'nope', 7]) refused(BOB, { id: 'it', v }, `pick item, v = ${J(v)} (not among)`);
+  run(T, (t) => t.remove('n'));
+  refused(BOB, { id: 'it', v: 'n' }, 'pick item, v = n (among, but gone)');
+  accepted({ id: 'it', v: 'm' }, 'm', 'pick item, v = m');
+  for (const v of ['a1', 'zz9', 5, 'B:a1']) refused(BOB, { id: 'sp', v }, `pick space, v = ${J(v)} (not among)`);
+  accepted({ id: 'sp', v: 'B:d5' }, 'd5', 'pick space, the qualified B:d5: its display form');
+  const C = (idx, i) => ({ idx, d: DK, i });
+  for (const [v, what] of [[[], 'no card'], [[C(0, 0)], 'one card'], [[C(0, 0), C(1, 1), C(2, 2)], 'three cards'], [[C(0, 0), C(0, 0)], 'one card twice'],
+    [[C(0, 0), C(1, 40)], 'a card not in the hand'], [[C(0, 0), null], 'a null entry'], ['0,1', 'a string'], [0, 'a number']]) refused(BOB, { id: 'hd', v }, `pick hand (count 2), ${what}`);
+  accepted({ id: 'hd', v: [C(0, 0), { idx: 3, t: ref('gem'), f: 1 }] }, [{ d: DK, i: 0 }, { t: ref('gem'), f: 1 }], 'pick hand, a card and a piece ({idx, d, i}, {idx, t, f}): [{d, i}, {t, f}], the cards stay in the hand');
+  refused(BOB, { id: 'one', v: [C(0, 0), C(1, 1)] }, 'pick hand with no count (1), two cards');
+  accepted({ id: 'one', v: [C(7, 2)] }, [{ d: DK, i: 2 }], 'pick hand with no count, one card (its index stale: matched by the card)');
+  for (const v of [-4, 6, 2.5, '3', null, NaN]) refused(BOB, { id: 'num', v }, `pick number [-3, 5], v = ${J(v)}`);
+  accepted({ id: 'num', v: -3 }, -3, 'pick number, v = -3 (the minimum)');
+  run(T, (t) => t.ask(BOB, { id: 'num', prompt: 'Again', pick: 'number', min: -3, max: 5 }));
+  accepted({ id: 'num', v: 5 }, 5, 'pick number, v = 5 (the maximum)');
+  run(T, (t) => t.ask(BOB, { id: 'opt', prompt: 'Again', options: ['♕', '♖'] }));
+  accepted({ id: 'opt', v: 0 }, '♕', 'a plain-string option: its label is its value');
+
+  section('(A) answer: only the asked player, only a pending id; nothing while the rules are off (D121)');
+  askAll();
+  refused(CAROL, { id: 'opt', v: 0 }, 'Carol answers Bob\'s ask');
+  refused(HOST, { id: 'opt', v: 0 }, 'the host answers Bob\'s ask');
+  refused(BOB, { id: 'nope', v: 0 }, 'Bob answers an id nobody asked');
+  refused(BOB, { v: 0 }, 'an answer with no id');
+  accepted({ id: 'opt', v: 0 }, '♕', 'Bob answers his own');
+  refused(BOB, { id: 'opt', v: 0 }, 'Bob answers it again (no longer pending)');
+  job(T, RULES, { t: '_rulesOff', reason: 'test' });
+  T.clk.t += 1000;
+  const n0 = got.length, r = job(T, BOB, { t: 'answer', id: 'it', v: 'm' });
+  ok(noted(r, BOB, "🚫 That answer wasn't offered") && got.length === n0 && T.state.rules.asks[BOB].some((x) => x.id === 'it'), 'with the rules off, an answer is refused and the ask stays');
+}
+
+// =============================================================================
+// (Sel) select
+// =============================================================================
+function testSelect() {
+  section('(Sel) select runs onSelect(t, p, id) and nothing else: no log, no onAction, no state change but what the script does');
+  const sel = [];
+  const T = rtable({ ...PIPE(), hs: SUP('spy', 2600, 900, { up: false }) }, {
+    onSelect(t, p, id) { sel.push([p, id]); if (F.hintOn) t.hint(p, { items: [id] }); },
+    onAction(t, a) { sel.push(['onAction', a.t]); },
+  });
+  ok(J(T.snapContent().rules?.wants) === J(['select']) && !('strict' in T.snapContent().rules), `the rules view says wants: ['select'] (${J(T.snapContent().rules)})`);
+  const look = () => [T.digest(), J(T.state.log), J(T.state.rules), J(T.state.items), J(T.state.players)].join('|');
+  let s0 = look(), r = job(T, BOB, { t: 'select', id: 'm' });
+  ok(J(sel) === J([[BOB, 'm']]) && look() === s0 && !r.log.length, `onSelect(t, Bob, m) ran, alone; nothing changed (${J(sel)})`);
+  F.hintOn = true;
+  r = job(T, BOB, { t: 'select', id: 'n' });
+  ok(J(T.state.rules.hints?.[BOB]?.items) === J(['n']) && !r.log.length, 'with an onSelect that hints, the hint is the one change (the script\'s)');
+  F.hintOn = false;
+  sel.length = 0;
+  for (const [p, id, what] of [[BOB, 'h', 'a hidden piece'], [BOB, 'hs', 'a hidden supply'], [BOB, 'zz', 'an id not on the table'], [EVE, 'm', 'someone not at the table']]) {
+    s0 = look();
+    r = job(T, p, { t: 'select', id });
+    ok(!sel.length && look() === s0 && r.warn.length && !r.notes.length, `${what}: dropped (console.warn, no notice), onSelect not run`);
+  }
+
+  section('(Sel) at most 5 selects a second per player reach onSelect');
+  const T2 = rtable(PIPE(), { onSelect(t, p, id) { sel.push([p, id]); } });
+  sel.length = 0;
+  for (let k = 0; k < 10; k++) job(T2, CAROL, { t: 'select', id: 'm' });
+  ok(sel.length === 5, `10 at once from Carol: 5 run (${sel.length})`);
+  job(T2, BOB, { t: 'select', id: 'm' });
+  ok(sel.length === 6 && sel[5][0] === BOB, 'Bob has his own allowance');
+  T2.clk.t += 1000;
+  for (let k = 0; k < 10; k++) job(T2, CAROL, { t: 'select', id: 'n' });
+  ok(sel.length === 11, `a second later, 10 more from Carol: 5 run (${sel.length - 6})`);
+
+  section('(Sel) no selects while the rules are off, or when the script has no onSelect (no wants)');
+  const T3 = rtable(PIPE(), { onAction() {} });
+  r = job(T3, BOB, { t: 'select', id: 'm' });
+  ok(!T3.snapContent().rules.wants && r.warn.length && !r.log.length, 'no onSelect: no wants in the view, a select is dropped');
+  job(T2, RULES, { t: '_rulesOff', reason: 'test' });
+  sel.length = 0;
+  T2.clk.t += 5000;
+  r = job(T2, BOB, { t: 'select', id: 'm' });
+  ok(!sel.length && r.warn.length && !T2.snapContent().rules.wants, 'rules off: dropped, and the view has no wants');
+}
+
+// =============================================================================
+// (I) Internal actions
+// =============================================================================
+function testInternal() {
+  section('(I) internal actions are never accepted from the wire: no _* name in PUBLIC_ACTIONS (answer and select are there)');
+  ok(![...PUBLIC_ACTIONS].some((t) => t.startsWith('_')) && ['_join', '_leave', '_tick', '_rulesOff', '_name'].every((t) => !PUBLIC_ACTIONS.has(t)), 'no _join, _leave, _tick, _rulesOff, _name, nor any _* name');
+  ok(['answer', 'select', 'drag'].every((t) => PUBLIC_ACTIONS.has(t)), 'answer, select and drag are public');
+
+  section('(I) _tick fires the due timers (by the table\'s clock) in order, each onTimer(t, tag), then buttons(); the others wait');
+  const ev = [];
+  const T = rtable(PIPE(), {
+    setup(t) { t.schedule(0, 'a'); t.schedule(60, 'b'); t.schedule(0, 'a2'); },
+    onTimer(t, tag) { ev.push(['onTimer', tag]); },
+    onJoin(t, p) { ev.push(['onJoin', p]); },
+    onLeave(t, p) { ev.push(['onLeave', p]); },
+    onAction(t, a) { ev.push(['onAction', a.t]); },
+    buttons() { ev.push(['buttons']); return []; },
+  });
+  ev.length = 0;
+  let r = job(T, RULES, { t: '_tick' });
+  ok(J(ev) === J([['onTimer', 'a'], ['onTimer', 'a2'], ['buttons']]) && J(T.state.rules.data._timers.map((x) => x.tag)) === J(['b']), `a and a2 fire, then buttons; b waits (${J(ev)})`);
+  ev.length = 0;
+  const seq0 = T.state.seq;
+  r = job(T, RULES, { t: '_tick' });
+  ok(!ev.length && !r.changed && T.state.seq === seq0, 'nothing due: no hook, no change');
+  T.clk.t += 60e3;
+  r = job(T, RULES, { t: '_tick' });
+  ok(J(ev) === J([['onTimer', 'b'], ['buttons']]) && J(T.state.rules.data._timers) === '[]', `a minute later, b fires (${J(ev)})`);
+
+  section('(I) _join (seated, named, "joined the table" / "is back at the table", onJoin), _leave (offline, "left the table", onLeave); no onAction');
+  ev.length = 0;
+  r = job(T, DAVE, { t: '_join', name: 'Dave' });
+  const dv = T.state.players[DAVE];
+  ok(dv?.online === true && dv.name === 'Dave' && J(r.entries.map((e) => [e.p, e.txt])) === J([[DAVE, 'joined the table']]) && J(ev) === J([['onJoin', DAVE], ['buttons']]), `a new player: ${J(r.log)}, ${J(ev)}`);
+  ev.length = 0;
+  r = job(T, DAVE, { t: '_join', name: 'Dave' });
+  ok(!r.log.length && !ev.length, 'again while online and named: nothing');
+  r = job(T, DAVE, { t: '_leave' });
+  ok(T.state.players[DAVE].online === false && J(r.entries.map((e) => [e.p, e.txt])) === J([[DAVE, 'left the table']]) && J(ev) === J([['onLeave', DAVE], ['buttons']]), `_leave: ${J(r.log)}, ${J(ev)}`);
+  ev.length = 0;
+  r = job(T, DAVE, { t: '_join', name: 'Dave' });
+  ok(T.state.players[DAVE].online && J(r.log) === J(['is back at the table']) && J(ev) === J([['onJoin', DAVE], ['buttons']]), `back: ${J(r.log)}, ${J(ev)}`);
+  ev.length = 0;
+  r = job(T, '__proto__', { t: '_join', name: 'X' });
+  const r2 = job(T, EVE, { t: '_leave' });
+  ok(!Object.hasOwn(T.state.players, '__proto__') && r.error.length && !ev.length && !r2.log.length && !own(T.state.players, EVE), '"__proto__" can\'t join (console.error); a stranger\'s _leave does nothing');
+
+  section('(I) _name is name: renamed, logged under the old name; flood control (5 per 5 s)');
+  r = job(T, BOB, { t: '_name', name: 'Robert' });
+  ok(T.state.players[BOB].name === 'Robert' && r.entries.some((e) => e.p === BOB && e.txt === 'is now known as "Robert"' && e.n === 'Bob'), `"is now known as "Robert"", shown as Bob (${J(r.entries)})`);
+  for (let k = 1; k <= 4; k++) job(T, BOB, { t: '_name', name: `Rob${k}` });
+  r = job(T, BOB, { t: '_name', name: 'Rob5' });
+  ok(T.state.players[BOB].name === 'Rob4' && r.notes.some((n) => n.p === BOB && n.msg.startsWith('🚫 Slow down')), `a 6th rename in 5 s is refused (${T.state.players[BOB].name})`);
+
+  section('(I) _rulesOff {reason}: the rules off, "rules disabled — {reason}" as Rules; once');
+  ev.length = 0;
+  r = job(T, RULES, { t: '_rulesOff', reason: 'the script took longer than 4 s (stopped)' });
+  ok(!T.state.rules.enabled && J(r.rules) === J(['rules disabled — the script took longer than 4 s (stopped)']) && r.patch?.rules?.enabled === false && !ev.length, `${J(r.rules)}`);
+  r = job(T, RULES, { t: '_rulesOff', reason: 'again' });
+  T.clk.t += 3600e3;
+  const r3 = job(T, RULES, { t: '_tick' });
+  ok(!r.log.length && !r3.log.length && !ev.length, 'again: nothing; a _tick with the rules off: nothing');
+}
+
+// =============================================================================
+// (P) Per-recipient parts
+// =============================================================================
+function testParts() {
+  section('(P) a player\'s own parts (ask, hint, sec) go to that player alone; options as labels only; a peer that is not registered gets none');
+  const T = rtable(PIPE(), { onSelect() {} });
+  run(T, (t) => {
+    t.ask(BOB, { id: 'q', prompt: 'SECRET-PROMPT', options: ['a', { label: 'b', value: { v: 'OPTION-VALUE' } }] });
+    t.hint(BOB, { items: ['m'], spaces: ['e4'] });
+    t.secret[BOB] = { text: 'BOB-SECRET' };
+    t.secret[CAROL] = { text: 'CAROL-SECRET' };
+  });
+  const mb = T.mine(BOB), mc = T.mine(CAROL), mh = T.mine(HOST);
+  ok(mb.ask?.length === 1 && mb.ask[0].prompt === 'SECRET-PROMPT' && J(mb.ask[0].options) === J(['a', 'b']) && J(mb.hint?.items) === J(['m']) && J(mb.hint?.spaces) === J(['e4']) && mb.sec?.text === 'BOB-SECRET',
+    `Bob: his ask (options ${J(mb.ask?.[0]?.options)}), his hint, his sec`);
+  ok(!('ask' in mc) && !('hint' in mc) && mc.sec?.text === 'CAROL-SECRET' && !['ask', 'hint', 'sec'].some((k) => k in mh), 'Carol: her sec only; the host: none');
+  ok(J(T.mine(null)) === '{}' && J(T.mine(EVE)) === '{}', 'a peer that is not registered (to null, or a stranger): nothing');
+  const shared = J(T.snapContent()) + J(T.patchContent(T.takeDirty()));
+  ok(!/SECRET-PROMPT|OPTION-VALUE|BOB-SECRET|CAROL-SECRET/.test(shared) && !J(mb).includes('OPTION-VALUE'), 'the shared snapshot and patch carry none of it; an option\'s value never leaves the host');
+
+  section('(P) in a patch, a part is there when it changed for that recipient (null: cleared); nobody else\'s moves (dirty.asks, hints, secret by comparison)');
+  run(T, (t) => t.ask(BOB, { id: 'q2', prompt: 'Another', pick: 'number', min: 1, max: 3 }));
+  let d = T.takeDirty();
+  ok(J([...d.asks]) === J([BOB]) && !d.hints.size && !d.secret.size, `a new ask for Bob: dirty.asks = {Bob} (${J([...d.asks])}, ${J([...d.hints])}, ${J([...d.secret])})`);
+  const pb = T.mine(BOB, d), pc = T.mine(CAROL, d);
+  ok(pb.ask?.length === 2 && !('hint' in pb) && !('sec' in pb) && !['ask', 'hint', 'sec'].some((k) => k in pc) && !J(T.patchContent(d)).includes('Another'), 'Bob\'s patch: ask only; Carol\'s: none; the shared part: none');
+  run(T, (t) => t.ask(BOB, { id: 'q2', prompt: 'Another', pick: 'number', min: 1, max: 3 }));
+  d = T.takeDirty();
+  ok(!d.asks.size, 'the same ask again: nothing to send');
+  run(T, (t) => t.cancelAsk(BOB));
+  d = T.takeDirty();
+  ok(T.mine(BOB, d).ask === null, 'all of Bob\'s asks withdrawn: ask: null');
+  run(T, (t) => { delete t.secret[CAROL]; t.hint(BOB, null); });
+  d = T.takeDirty();
+  ok(J([...d.secret]) === J([CAROL]) && J([...d.hints]) === J([BOB]) && T.mine(CAROL, d).sec === null && T.mine(BOB, d).hint === null && !('sec' in T.mine(BOB, d)), 'Carol\'s secret deleted: sec: null to her; Bob\'s hint cleared: hint: null to him');
+
+  section('(P) with the rules off, asks and hints are not sent (D121), a secret still is; hints are never saved');
+  run(T, (t) => { t.ask(BOB, { id: 'q3', prompt: 'Off?', options: ['y'] }); t.hint(BOB, { items: ['n'] }); });
+  T.takeDirty();
+  const snap = T.snapshot();
+  ok(!('hints' in snap.rules) && snap.rules.asks?.[BOB]?.length === 1 && snap.rules.secret?.[BOB]?.text === 'BOB-SECRET' && T.state.rules.hints?.[BOB], 'the save: asks and secret, no hints (the table keeps them)');
+  job(T, RULES, { t: '_rulesOff', reason: 'test' });
+  d = T.takeDirty();
+  const off = T.mine(BOB), offP = T.mine(BOB, d);
+  ok(!('ask' in off) && !('hint' in off) && off.sec?.text === 'BOB-SECRET' && offP.ask === null && offP.hint === null && !('sec' in offP), `Bob, rules off: sec only (${J(Object.keys(off))}); the patch clears ask and hint`);
+
+  section('(P) a host reload in the middle of an ask (§3h): the save brings back the asks, the secrets and the timers — sent in the next snapshot — not the hints');
+  const T3 = rtable(PIPE(), {});
+  run(T3, (t) => { t.ask(BOB, { id: 'promo', prompt: 'Promote to', options: ['♕', '♘'] }); t.secret[BOB] = { text: 'role' }; t.hint(BOB, { items: ['m'] }); t.schedule(60, 'later'); });
+  const saved = { ...json(T3.snapshot()), decks: json(T3.state.decks), boxes: json(T3.state.boxes), boxSrc: json(T3.state.boxSrc) };
+  const page = { load: () => 'Fake', has: () => false, flag: () => undefined, call() { throw new Error('the host runs no hook'); } }; // (the host's own table: the Worker runs the script)
+  const T4 = quietly(() => createTable(saved, { ...env(21), now: () => 1.7e12, hooks: page })).value;
+  quietly(() => T4.resume('Alice'));
+  const m4 = T4.mine(BOB);
+  ok(T4.state.rules.enabled && m4.ask?.[0]?.id === 'promo' && J(m4.ask[0].options) === J(['♕', '♘']) && m4.sec?.text === 'role' && !('hint' in m4) && !own(T4.state.rules.hints || {}, BOB) && T4.state.rules.data._timers?.[0]?.tag === 'later',
+    `after the reload Bob's snapshot part has his ask and his secret, no hint; the timer waits (${J(m4)})`);
+}
+
+// =============================================================================
+// (G) Hooks must be synchronous
+// =============================================================================
+function testGuards() {
+  section('(G) the live facade: a t.* call from outside a hook throws "t.{name} was called outside a hook — rules hooks must be synchronous", and the next job is fatal');
+  const T = rtable(PIPE(), { onAction() {} });
+  let inside = null;
+  run(T, (t) => { F.saved = t; inside = T.inHook; });
+  ok(inside === true && T.inHook === false, 'T.inHook: true while a hook runs, false after');
+  let e = null;
+  try { F.saved.say('late'); } catch (err) { e = err; }
+  ok(e?.message === 't.say was called outside a hook — rules hooks must be synchronous' && !T.state.log.some((x) => x.txt === 'late'), `it throws, and says nothing (${e?.message})`);
+  let r = job(T, BOB, { t: 'rot', id: 'm', rot: 90 });
+  ok(/^t\.say was called outside a hook/.test(r.fatal || '') && T.state.items.m.rot === 0 && !r.patch, `the next job: {fatal: "${r.fatal}"}, nothing applied`);
+
+  section('(G) guard(): t.data, t.public or t.secret changed outside a hook — "the script changed t.data outside a hook"');
+  for (const [what, fn] of [['t.data', (t) => { t.data.x = 1; }], ['t.public', (t) => { t.public.y = 2; }], ['t.secret', (t) => { t.secret[BOB] = { text: 'late' }; }]]) {
+    const T2 = rtable(PIPE(), { onAction() {} });
+    run(T2, (t) => { F.saved = t; });
+    ok(T2.guard() === '', 'after a clean job: guard() is ""');
+    fn(F.saved);
+    const g = T2.guard();
+    r = job(T2, BOB, { t: 'rot', id: 'm', rot: 90 });
+    ok(/changed t\.data outside a hook/.test(g) && /changed t\.data outside a hook/.test(r.fatal || '') && T2.state.items.m.rot === 0, `${what} written outside a hook: guard() says "${g}", the next job is fatal`);
+  }
+
+  section('(G) on the page (T.apply), a stray call disables the rules with that reason (D125)');
+  const T3 = rtable(PIPE(), { onAction() {} });
+  run(T3, (t) => { F.saved = t; });
+  try { F.saved.move('m', 'e4'); } catch (err) { /* (expected: checked through the table below) */ }
+  const q = quietly(() => T3.apply(BOB, { t: 'rot', id: 'm', rot: 90 }));
+  ok(!T3.state.rules.enabled && T3.state.log.some((x) => x.p === RULES && x.txt === 'rules disabled — t.move was called outside a hook — rules hooks must be synchronous') && q.error.length,
+    'the rules are off: "rules disabled — t.move was called outside a hook — …"');
+}
+
+// =============================================================================
+// (7) T.digest across applyStatePatch
+// =============================================================================
+const MAN = ref('man'), GEM = ref('gem');
+const DIGEST_SCRIPT = `({ name: 'Digest',
+  setup(t) { t.data.n = 0; t.public.score = {}; t.schedule(1, 'tick'); },
+  handle(t, a) {
+    if (a.t === 'rot' && a.rot === 180) { t.data.handled = (t.data.handled || 0) + 1; t.rot(a.id, 90); return true; }
+    if (a.t === 'flip' && t.data.n % 7 === 3) { t.data.lost = 1; return 'not now'; }
+  },
+  validate(t, a) { if (a.t === 'move' && a.x < 300) return 'too far left'; },
+  onAction(t, a) {
+    const n = ++t.data.n;
+    if (n === 25) { t.say('about to fail'); throw new Error('the 25th action since setup'); }
+    t.public.score[a.p] = (t.public.score[a.p] || 0) + 1;
+    if (n % 5 === 0) t.secret[a.p] = { text: 'n=' + n };
+    if (n % 9 === 0) t.ask(a.p, { id: 'q' + (n % 3), prompt: 'Pick', options: ['a', { label: 'b', value: { b: n } }] });
+    if (n % 11 === 0) { const ps = t.find({ kind: 'piece', type: '${MAN}' }); if (ps.length) t.move(ps[n % ps.length].id, 'c3'); }
+    if (n % 13 === 0) t.say('thirteen ' + n);
+    if (n % 17 === 0) t.spawn('${MAN}', { at: 'f6' });
+    if (n % 19 === 0) { const ps = t.find({ kind: 'piece', type: '${MAN}' }); if (ps.length > 4) t.remove(ps[0].id); }
+    if (n % 23 === 0) t.schedule(0, 'soon');
+    if (n % 10 === 4) t.newDeck({ name: 'D' + n, cards: [{ name: 'x' + n }] });
+    if (n % 37 === 0) t.hint(a.p, null);
+    if (n % 41 === 0) t.cancelAsk(a.p);
+    if (n % 6 === 0) { const g = t.find({ type: '${GEM}', kind: 'piece' })[0]; if (g) t.setFace(g.id, n % 3); }
+  },
+  onAnswer(t, p, id, v) { t.data.answers = (t.data.answers || 0) + 1; t.public.last = id; },
+  onSelect(t, p, id) { t.hint(p, { items: [id], spaces: ['e4'] }); },
+  onTimer(t, tag) { t.data.timers = (t.data.timers || 0) + 1; if (tag === 'tick') t.schedule(2, 'tick'); },
+  onJoin(t, p) { t.data.joins = (t.data.joins || 0) + 1; t.secret[p] = { text: 'welcome' }; },
+  onLeave(t, p) { t.data.leaves = (t.data.leaves || 0) + 1; delete t.secret[p]; },
+  onChat(t, msg, p) { if (msg === 'boom') throw new Error('boom'); t.data.chats = (t.data.chats || 0) + 1; },
+  onButton(t, id, p) {
+    const b = t.data.buttons = (t.data.buttons || 0) + 1;
+    if (id === 'deal') { const ps = t.piles(); if (ps.length) t.deal(ps[0].id, { to: p }); }
+    if (id === 'seats' && b % 2) t.setSeats([{ id: 'north', name: 'North' }, { id: 'south', name: 'South', edge: 'top' }, { id: 'east', name: 'East', edge: 'right' }, { id: 'west', name: 'West', edge: 'left' }]);
+    else if (id === 'seats') t.setSeats(null);
+  },
+  buttons(t) { return [{ id: 'deal', label: 'Deal me' }, { id: 'seats', label: 'Seats' }]; } })`;
+/** The host table's runner (app.js pageHooks' part a host needs): it never runs a script. */
+const HOST_HOOKS = { load() { throw new Error('the host never evaluates a rules script'); }, has: () => false, flag: () => undefined, call() { throw new Error('the host never runs a hook'); } };
+const DIGEST_ITEMS = () => {
+  const o = { B: BRD('chess', 100, 100), s: SUP('gem', 2500, 300), bg: BAG(['gem', 'tile', 'man', 'gem'], 2700, 300), d1: PC('die', 1900, 300), d2: PC('die', 1900, 500), hp: PC('spy', 2900, 300, { up: false }),
+    p: PILE(range(12).map((i) => ({ d: DK, i: 30 + i, up: false })), 2300, 300), q: PILE([{ d: DK, i: 50, up: true }], 2300, 600), c1: CARD(1, 2100, 300), c2: CARD(2, 2100, 600, { up: false }) };
+  for (const [k, sq] of ['a1', 'b2', 'c3', 'd4', 'e5', 'f6'].entries()) o[`m${k}`] = PC('man', 110 + 100 * (sq.charCodeAt(0) - 97) + 10, 110 + 100 * (8 - Number(sq[1])) + 10);
+  for (let k = 0; k < 3; k++) o[`g${k}`] = PC('gem', 1500 + 100 * k, 900);
+  return o;
+};
+/** One random job for a seeded run: an actor and an action, valid or not
+ *  (refusals and vetoes make patches too). */
+function randomJob(M, R) {
+  const I = M.state.items, ids = Object.keys(I), players = Object.keys(M.state.players), p = R.pick(players);
+  const of = (f) => ids.filter((id) => f(I[id])), pick = (l) => (l.length ? R.pick(l) : 'gone');
+  const pieces = of((it) => it.k === 'g' && !(it.z < 0)), cards = of((it) => it.k === 'c'), piles = of((it) => it.k === 'p');
+  const xy = () => {
+    if (R() < 0.5) return { x: R.int(4800), y: R.int(3400) };
+    const s = M.api.spot(R.pick(['a1', 'b2', 'c3', 'e4', 'e5', 'h8', 'd4', 'g7']));
+    return { x: s.x - 40, y: s.y - 40 };
+  };
+  const hand = M.state.players[p].hand, asks = own(M.state.rules?.asks || {}, p) || [];
+  switch (R.pick(['move', 'move', 'move', 'rot', 'rot', 'flip', 'deal', 'draw', 'play', 'toHand', 'toPile', 'take', 'pull', 'toBag', 'roll', 'shuffle', 'del', 'chat', 'rulesBtn', 'rulesBtn',
+    'answer', 'answer', 'select', 'select', '_tick', 'join', '_leave', 'seat', 'table', 'board', 'setRules', 'face', 'peek', 'owner', 'lock'])) {
+    case 'move': return [p, { t: 'move', id: pick([...pieces, ...cards, ...piles]), ...xy() }];
+    case 'rot': return [p, { t: 'rot', id: pick(pieces), rot: R.pick([0, 90, 180, 270]) }];
+    case 'flip': return [p, { t: 'flip', id: pick([...cards, ...piles, ...pieces]) }];
+    case 'deal': return [p, { t: 'deal', id: pick(piles), ...xy(), up: R() < 0.5 }];
+    case 'draw': return [p, { t: 'draw', id: pick(piles) }];
+    case 'play': { const k = R.int(hand.length + 1), c = hand[k] || {}; return [p, { t: 'play', idx: k, ...('t' in c ? { type: c.t, f: c.f } : { d: c.d, i: c.i }), ...xy(), up: R() < 0.7 }]; }
+    case 'toHand': return [p, { t: 'toHand', id: pick(cards) }];
+    case 'toPile': return [p, { t: 'toPile', id: pick(cards), pile: pick(piles) }];
+    case 'take': return [p, { t: 'take', id: 's', ...xy() }];
+    case 'pull': return [p, { t: 'pull', id: 'bg', ...xy() }];
+    case 'toBag': return [p, { t: 'toBag', id: pick(pieces), bag: 'bg' }];
+    case 'roll': return [p, { t: 'roll', ids: of((it) => it.k === 'g' && /die$/.test(it.t)) }];
+    case 'shuffle': return [p, { t: 'shuffle', id: pick(piles) }];
+    case 'del': return [p, { t: 'del', id: pick([...cards, ...pieces]) }];
+    case 'chat': return [p, { t: 'chat', msg: R() < 0.4 ? 'boom' : `hi ${R.int(100)}` }];
+    case 'rulesBtn': return [p, { t: 'rulesBtn', id: R.pick(['deal', 'seats', 'nope']) }];
+    case 'answer': return [p, { t: 'answer', id: asks.length ? R.pick(asks).id : 'q0', v: R.int(3) }];
+    case 'select': return [p, { t: 'select', id: pick(ids) }];
+    case '_tick': return [RULES, { t: '_tick' }];
+    case 'join': { const q = R.pick([BOB, CAROL, DAVE]); return [q, { t: '_join', name: q === DAVE ? 'Dave' : 'X' }]; }
+    case '_leave': return [R.pick([BOB, CAROL, DAVE].filter((q) => own(M.state.players, q))), { t: '_leave' }];
+    case 'seat': return [p, R() < 0.5 ? { t: 'seat', watch: true } : { t: 'seat', sit: true }];
+    case 'table': return [HOST, { t: 'table', shape: 'rect', w: R.pick([4800, 5000, 5200]), h: R.pick([3400, 3600]) }];
+    case 'board': return [HOST, { t: 'move', id: 'B', x: 60 + R.int(200), y: 60 + R.int(200) }];
+    case 'setRules': return [HOST, M.state.rules?.enabled && R() < 0.5 ? { t: 'setRules', enabled: false } : { t: 'setRules', enabled: true, code: DIGEST_SCRIPT, reset: R() < 0.3 }];
+    case 'face': return [p, { t: 'face', id: pick(of((it) => it.t === GEM)), f: R.int(3) }];
+    case 'peek': return [p, { t: 'peek', id: pick([...piles, ...cards]) }];
+    case 'owner': return [p, { t: 'owner', id: pick(pieces), to: R() < 0.5 ? p : null }];
+    default: return [HOST, { t: 'lock', id: pick(pieces), on: R() < 0.5 }];
+  }
+}
+/** Everything but the log and seq a host and its mirror must agree on (stateOf, without the log). */
+const sameTable = (T) => { const s = JSON.parse(stateOf(T)); delete s.log; return canon(s); };
+
+function testDigest() {
+  section('(7) T.digest: a Worker-like mirror (the script, T.job) and a host that only applies its patches (structured-cloned, applyStatePatch) agree after 300 seeded random jobs');
+  for (const seed of seeds([11, 12, 13])) {
+    const R = rng(seed), clk = { t: 1.7e12 }, base = state3b(DIGEST_ITEMS(), { [BOB]: [{ d: DK, i: 5 }, { d: DK, i: 6 }], [CAROL]: [{ t: GEM, f: 2 }] });
+    let n = 0;
+    const M = quietly(() => createTable(structuredClone(base), { pid: HOST, now: () => clk.t, random: rng(seed ^ 0x77), uid: () => `m${(++n).toString(16).padStart(7, '0')}`, hooks: scriptHooks() })).value;
+    const H = quietly(() => createTable(structuredClone(base), { pid: HOST, now: () => clk.t, hooks: HOST_HOOKS, test: true })).value;
+    const d0 = H.digest(), same0 = M.digest() === d0;
+    const seen = { items: 0, players: 0, rules: 0, decks: 0, log: 0, refresh: 0, refreshHands: 0, table: 0, seats: 0, error: 0, vetoes: 0 };
+    let first = null, fatal = null, threw = null, lost = null;
+    const own3 = (e) => !['deck', 'box', 'rules'].includes(e.t); // (the effects the patch itself brings: the host makes its own)
+    const step = (k, p, a) => {
+      const q = quietly(() => M.job(p, a)), r = q.value;
+      if (r.fatal) { fatal ||= `job ${k} (${a.t}): ${r.fatal}`; return; }
+      const g = M.guard();
+      if (g) fatal ||= `after job ${k}: ${g}`;
+      for (const key of Object.keys(seen)) if (key in r.patch) seen[key]++;
+      if (r.out.error) seen.error++;
+      if (r.patch.log?.some((e) => e.txt.startsWith('blocked '))) seen.vetoes++;
+      try { quietly(() => H.applyStatePatch(structuredClone(r.patch), structuredClone(r.out))); } catch (e) { threw ||= `job ${k} (${a.t}): ${e.message}`; }
+      const fx = H.drain().filter(own3);
+      if (!lost && J(fx) !== J(r.out.effects.filter(own3))) lost = `job ${k} (${a.t}): the host queued ${J(fx).slice(0, 120)}, the job ${J(r.out.effects.filter(own3)).slice(0, 120)}`;
+      if (!lost && r.out.error && H.rulesError !== `${r.out.error.hook}: ${r.out.error.message}`) lost = `job ${k}: the host's rulesError is "${H.rulesError}"`;
+      H.takeDirty();
+      if (!first && H.digest() !== M.digest()) first = `after job ${k} (${p === RULES ? 'RULES' : p.slice(0, 4)} ${J(a).slice(0, 80)}): ${stateDiff(stateOf(M), stateOf(H))}`;
+    };
+    step(0, HOST, { t: 'setRules', enabled: true, code: DIGEST_SCRIPT });
+    for (let k = 1; k <= 300; k++) {
+      clk.t += R.int(900);
+      const [p, a] = randomJob(M, R);
+      step(k, p, a);
+    }
+    ok(same0 && !fatal && !threw, `seed ${seed}: built alike, no fatal and no throw (${fatal || threw || 'none'})`);
+    ok(!lost, `seed ${seed}: every job's effects (notes, fx, announcements, peeks, toasts) reach the host's queue, and a hook failure its rulesError (${lost || 'yes'})`);
+    ok(!first && H.digest() === M.digest() && H.digest() !== d0, `seed ${seed}: the digests agree after every job, and at the end (${first || `${H.digest()}`}; it moved from ${d0})`);
+    ok(sameTable(H) === sameTable(M) && J(H.state.log) === J(M.state.log), `seed ${seed}: the whole tables agree too — items, players, rules, table, seats, catalog, counters, log (${sameTable(H) === sameTable(M) ? 'yes' : stateDiff(stateOf(M), stateOf(H))})`);
+    ok(seen.items && seen.players && seen.rules && seen.decks && seen.log && seen.refresh && seen.table && seen.seats && seen.error && seen.vetoes, `seed ${seed}: the run covered every kind of patch, hook failures and vetoes (${J(seen)})`);
+  }
+
+  section('(7) applyStatePatch gates what a patch brings: decks (cleanDeck), boxes (cleanBox), "__proto__" keys; in a test build, a malformed item throws');
+  const H = quietly(() => createTable(state3b({ m: PC('man', 1500, 300) }), { pid: HOST, now: () => 1.7e12, hooks: HOST_HOOKS, test: true })).value;
+  const goodBox = cleanBox({ name: 'Good', imgs: [], types: { x: { kind: 'token', name: 'X', faces: ['A'] } } });
+  const P = JSON.parse(`{"decks": {"dk00bad1": {"name": "X", "cards": "nope"}, "dk00good": ${J(core.standardDeck(false))}, "__proto__": {"polluted": 1}},
+    "boxes": {"bx00bad1": {"box": {"name": "B", "types": 5}, "src": "script"}, "bx00good": {"box": ${J(goodBox)}, "src": "script"}, "__proto__": {"box": {}, "src": "x"}},
+    "items": {"__proto__": {"k": "g"}}, "players": {"__proto__": {"name": "x"}}}`);
+  const q = quietly(() => H.applyStatePatch(P, { effects: [] }));
+  ok(!own(H.state.decks, 'dk00bad1') && own(H.state.decks, 'dk00good') && !own(H.state.boxes, 'bx00bad1') && own(H.state.boxes, 'bx00good') && H.state.boxSrc.bx00good?.src === 'script' && q.error.length >= 2,
+    `the bad deck and box are refused (console.error), the good ones join the catalog (${q.error.length} errors)`);
+  ok(({}).polluted === undefined && !Object.hasOwn(H.state.items, '__proto__') && !Object.hasOwn(H.state.players, '__proto__') && !Object.hasOwn(H.state.decks, '__proto__') && !Object.hasOwn(H.state.boxes, '__proto__'),
+    '"__proto__" entries are skipped, no prototype touched');
+  let threw = null;
+  try { quietly(() => H.applyStatePatch({ items: { zz000001: { k: 'g', t: MAN } } }, { effects: [] })); } catch (e) { threw = e; }
+  ok(threw && !own(H.state.items, 'zz000001'), `a test build: an item without x, y, rot, z throws (${threw?.message})`);
+
+  section('(7) applyStatePatch\'s steps (§3f.6): players (hands marked only when they changed), rules (asks, hints, secret per pid; a code change said), refresh touches, seq');
+  const T = rtable(PIPE(), {}, { hands: HANDS });
+  const pl = (o) => ({ ...json(T.state.players[BOB]), ...o });
+  let seq0 = T.state.seq;
+  T.applyStatePatch({}, { effects: [] });
+  let d = T.takeDirty();
+  ok(T.state.seq === seq0 && !d.items.size && !d.players.size, 'an empty patch: no change, no renumbering');
+  T.applyStatePatch(structuredClone({ players: { [BOB]: pl({ name: 'Robert' }) } }), { effects: [] });
+  d = T.takeDirty();
+  ok(T.state.players[BOB].name === 'Robert' && d.players.has(BOB) && !d.hands.has(BOB) && T.state.seq === seq0 + 1, 'a renamed player: re-sent, the hand not (unchanged), renumbered');
+  T.applyStatePatch(structuredClone({ players: { [BOB]: pl({ hand: [{ d: DK, i: 20 }] }) } }), { effects: [] });
+  d = T.takeDirty();
+  ok(d.hands.has(BOB) && T.state.players[BOB].hand.length === 1, 'a changed hand: the hand re-sent');
+  T.applyStatePatch(structuredClone({ rules: { asks: { [BOB]: [{ id: 'q', prompt: 'P', options: [{ label: 'a', value: 'a' }] }] }, secret: { [CAROL]: { text: 's' } } } }), { effects: [] });
+  d = T.takeDirty();
+  ok(J([...d.asks]) === J([BOB]) && J([...d.secret]) === J([CAROL]) && !d.hints.size && T.mine(BOB, d).ask?.[0]?.id === 'q' && T.mine(CAROL, d).sec?.text === 's',
+    `rules fields replaced: Bob's ask and Carol's secret marked for them alone (${J([...d.asks])}, ${J([...d.secret])})`);
+  T.drain();
+  T.applyStatePatch(structuredClone({ rules: { code: "({ name: 'Other' })", name: 'Other' } }), { effects: [] });
+  ok(T.drain().some((e) => e.t === 'rules'), 'a new rules code is said (the rules channel re-sends it)');
+  seq0 = T.state.seq;
+  T.applyStatePatch({ refresh: ['m', 'gone'], refreshHands: [BOB, EVE] }, { effects: [] });
+  d = T.takeDirty();
+  ok(J([...d.items]) === J(['m']) && J([...d.hands]) === J([BOB]) && T.state.seq === seq0 + 1, `refresh touches: m and Bob's hand re-sent unchanged (ids not on the table ignored), renumbered (${J([...d.items])}, ${J([...d.hands])})`);
+
+  section('(7) T.digest is a structural hash of items, players and rules: seq-free and log-free, and it moves with them');
+  const d0 = T.digest();
+  T.state.seq += 7;
+  T.state.log.push({ p: RULES, txt: 'not hashed', ts: 1 });
+  const d1 = T.digest();
+  T.state.items.m.x += 1;
+  const d2 = T.digest();
+  T.state.items.m.x -= 1;
+  T.state.rules.data.z = 1;
+  const d3 = T.digest();
+  ok(d1 === d0 && d2 !== d0 && d3 !== d0, `seq and log: the same digest; an item or t.data: another (${d0}, ${d1}, ${d2}, ${d3})`);
+}
+
 (async () => {
   await guard('(1) grid.js addresses', testGridAddresses);
   await guard('(1) grid.js centres', testGridCentres);
@@ -1803,5 +3024,22 @@ function testReviewGroupRound() {
   await guard('(R) an edge spot across a reload and a resize', testReviewEdgeKept);
   await guard('(R) hex rim', testReviewHexRim);
   await guard('(R) a round table\'s group drag', testReviewGroupRound);
+  await guard('(2) the journal', testJournal);
+  await guard('(3) handle vetoes', testPipelineVeto);
+  await guard('(3) fail closed', testPipelineFailClosed);
+  await guard('(3) hooks after the checkpoint', testPipelineAfterHooks);
+  await guard('(3) strict and allow', testStrict);
+  await guard('(3) order, a.handled, a frozen', testPipelineOrder);
+  await guard('(3) the handled refresh', testHandledRefresh);
+  await guard('(3) hints and vetoes', testHints);
+  await guard('(4) cleanAsk', testCleanAsk);
+  await guard('(4) t.ask', testAskFacade);
+  await guard('(4) the engine-state gates', testEngineGates);
+  await guard('(A) answer', testAnswer);
+  await guard('(Sel) select', testSelect);
+  await guard('(I) internal actions', testInternal);
+  await guard('(P) per-recipient parts', testParts);
+  await guard('(G) hooks must be synchronous', testGuards);
+  await guard('(7) T.digest', testDigest);
   report();
 })().catch(crash);
