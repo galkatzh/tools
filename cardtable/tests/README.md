@@ -1046,6 +1046,50 @@ E2E test:
   Enable), `parse.js` (also parses `rules-worker.js`), `t-p1-bench.js` (B12,
   B14, B15 added; its 1,000-card table's script now runs in a Worker).
 
+**`t-p3-worker.js`** (spec §3l t-p3-worker items 1–12, and t-p3-space item
+5, strict, as a section of its own; Alice hosts, Bob plays, both on a
+desktop; `ONLY=3,5` runs some sections, the fixture always). Section 1
+enables every template from 🎲 on a four-player table (Carol and Dave
+leave after it): turns, dealer, Hold'em to the flop, a Bridge deal (Hold'em
+comes first: a Bridge deal leaves every card in the hands, and Hold'em's
+New hand wants a deck pile), a CAH round (the white and black decks it
+defines are as long as the page's `window.CAH_CARDS`, and the next round
+comes from a timer), blank from the 📜 dialog, and the free table (no
+Worker); each enabled template's `workerDigest()` equals the host's
+`digest()`. Then a cleared table's fixture, made by a script (a deck and
+two face-up cards, A and B, whose ids it puts in `t.public`), serves every
+other section: strict and `allow` (and a strict `handle` returning true);
+atomicity (`handle` throws after `t.move`, `onAction` after `t.flip`); the
+`setTimeout` stub; the async guards (a stray `t.say`; a stray `t.data`
+write, after which the job that let it loose is dropped and the next one
+runs on the free table, and a re-enable keeping the state shows `t.data`
+without it; an async `validate`); the page APIs (`document`, `alert`,
+`localStorage`, `globalThis.setTimeout`, `sessionStorage`, `fetch`); a syntax
+error on Enable (the dialog, "Starting…", a job queued behind a starting
+Worker, Disable); the dialog's errors on an iPhone 13 (Phoebe hosts a room
+of her own: on screen, inside the dialog, wrapped, clear of the buttons;
+`shots/p3-worker-phone-*.png`); 300 seeded actions (200 the host's, 100
+Bob's under flood control) under a script that writes `t.data`, `t.public`,
+`t.secret`, asks, hints and timers, then the digests and the test build's
+own checks; the B14 loop; the watchdog (below); a host reload (one Worker
+start, the timer fires after it, no setup line since the mark); module skew
+(`rules-worker.js` routed to a copy exporting another `MODULE_V`: on
+Enable, then on a host's resume); demotion (a second tab of the host's
+context opens the room while 12 `select` jobs — each a 2.5 s `onSelect`
+that changes nothing — keep the first tab's queue busy and its save as it
+is, so the second resumes one step fresher and wins). Log lines are read
+by their time stamp since a mark (`__ct.log()` entries' `ts`), never by a
+count over the whole log, which keeps only its newest lines.
+**The frozen host page** (item 10): CDP's `Page.setWebLifecycleState
+{state: 'frozen'}` takes no effect on a page headless Chromium keeps
+visible (its timers run on, no `freeze` event), so the suite checks first
+(the page still answers) and then does what a frozen tab does to the page
+— hidden, `freeze`, no task runs for 6 s (its main thread stalled: the
+Worker's `done` waits), `resume`, visible — and prints which it used. It
+also hides the page (visibility only) for 3 s of a 5 s hook, and times a
+genuine loop with the page visible (4–5 s, from a MutationObserver on the
+toast).
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores
