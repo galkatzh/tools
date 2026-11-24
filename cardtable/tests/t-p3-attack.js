@@ -115,7 +115,8 @@ function leakServer() {
  *  (o.needles) in any key or string; an array holding two or more of
  *  o.ids (the hint's item list); a `hint` that isn't null; a `sec` that
  *  isn't null or o.ownSec's; an `ask` that isn't null or a list of o.ownAsks
- *  ids with label-only options; with o.noHand, a `hand` that isn't empty.
+ *  ids with label-only options; with o.noHand, a `hand` that isn't empty;
+ *  a state body carrying any of those parts that isn't bound to o.me (`to`).
  *  `own` counts the bodies carrying the peer's own sec and ask (the positive
  *  controls), `n` the messages scanned. */
 const scanRaw = (page, o) => page.evaluate((o) => {
@@ -147,6 +148,7 @@ const scanRaw = (page, o) => page.evaluate((o) => {
       n++;
       let d;
       try { d = body(m); } catch (err) { hits.push(`${ch}#${k}: unreadable (${err.message})`); return; }
+      if (ch === 'state' && ['ask', 'hint', 'sec'].some((p) => d?.[p] != null) && d.to !== o.me) hits.push(`${ch}#${k}: parts in a body addressed to ${JSON.stringify(d.to)}`);
       walk(d, `${ch}#${k}`);
     });
   }
@@ -625,10 +627,10 @@ const scanRaw = (page, o) => page.evaluate((o) => {
     await knock();
     await h.sleep(1500);
     const others = [MK.bobPrompt, MK.bobLabel, MK.bobValue, MK.bobSecret, MK.alicePrompt, MK.aliceSecret, MK.malValue, 'qzhintmap:'];
-    const m = await scanRaw(M, { needles: others, ids: HINTED, ownSec: MK.malSecret, ownAsks: ['mopt', 'mspace', 'mhand', 'mitem', 'mnum'] });
-    ok(m.n > 100 && !m.hits.length, `5: Mallory: ${m.n} messages on every channel — no prompt, label, value or secret of anyone else's, no hint, no hinted ids together (${m.hits.slice(0, 4).join(' | ') || 'none'})`);
+    const m = await scanRaw(M, { me: MPID, needles: others, ids: HINTED, ownSec: MK.malSecret, ownAsks: ['mopt', 'mspace', 'mhand', 'mitem', 'mnum'] });
+    ok(m.n > 100 && !m.hits.length, `5: Mallory: ${m.n} messages on every channel — no prompt, label, value or secret of anyone else's, no hint, no hinted ids together, her own parts only in bodies bound to her (${m.hits.slice(0, 4).join(' | ') || 'none'})`);
     ok(m.own.sec > 0 && m.own.ask > 0, `5: … while her own secret (${m.own.sec} bodies) and her own asks (${m.own.ask}) did reach her: the scan sees the parts`);
-    const e = await scanRaw(Eve, { needles: [...others, MK.malSecret], ids: HINTED, ownSec: null, ownAsks: [], noHand: true });
+    const e = await scanRaw(Eve, { me: null, needles: [...others, MK.malSecret], ids: HINTED, ownSec: null, ownAsks: [], noHand: true });
     ok(e.n > 2 && !e.hits.length, `5: Eve (never registered): ${e.n} messages, no ask, hint, secret or hand of anyone's (${e.hits.slice(0, 4).join(' | ') || 'none'})`);
     const b = await bob.evaluate((o) => {
       const text = window.__rtc.bodies.map((x) => JSON.stringify(x.body));
