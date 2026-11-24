@@ -39,7 +39,8 @@
 //  • A rules Worker (spec §3f) runs a whole table on a mirror of the state:
 //    T.job(p, a) runs one job there and returns its StatePatch (what it
 //    changed) and effects, which the host's table takes with
-//    T.applyStatePatch(patch, out); T.digest() tells that both agree.
+//    T.applyStatePatch(patch, out, job) — checking them again, in its own
+//    realm, against who acted; T.digest() tells that both agree.
 //  • Delta sync (TABLETOP.md §3): every write records what it
 //    changed in the dirty sets, and the app's broadcast tick takes them once
 //    (T.takeDirty()) to build one patch for everyone (T.patchContent()) or a
@@ -228,6 +229,8 @@ export const deckOverBudget = (used, cost) => (used + cost > GUEST_DECK_CHARS
 // CTRL_NL spares the newline, for multi-line card texts.
 export const CTRL = /[\u0000-\u001f\u007f-\u009f]/g, CTRL_NL = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g;
 export const str = (v, n, strip = CTRL) => (typeof v === 'string' && v ? v.replace(strip, '').slice(0, n) : undefined);
+/** A chat message `msg` (a peer's) as its log line reads ('' for none). */
+const chatLine = (msg) => peerText(msg).replace(CTRL, ' ').trim().slice(0, 300);
 
 /** A deck's name and cards, cleaned for either shape: `img(s)` tells a
  *  usable image reference (in `imgs`, and on a v1 card as `img`). Keeps only
@@ -1176,21 +1179,33 @@ export function cleanAsk(spec) {
  *  as an absent one), and so do functions and symbols with `uncloned`
  *  (t.data and t.public: a value a Worker can't post at all fails as D129
  *  says, keeping the JSON part). Run on a value JSON.stringify took, so it
- *  has no cycle. */
+ *  has no cycle. The gates run it on every job (valueProblem), so the walk
+ *  names the bad value's path only once it found one. */
 export function notJSON(v, path, uncloned = false) {
-  if (v === null || v === undefined || typeof v === 'string' || typeof v === 'boolean') return '';
-  if (typeof v === 'number') return Number.isFinite(v) ? '' : `${path} is ${v}, not JSON`;
-  if (uncloned && (typeof v === 'function' || typeof v === 'symbol')) return '';
-  if (typeof v !== 'object') return `${path} is a ${typeof v}, not JSON`;
-  const arr = Array.isArray(v), proto = Object.getPrototypeOf(v);
-  if (arr ? proto !== Array.prototype : proto !== Object.prototype && proto !== null) {
-    return `${path} is a ${String(proto?.constructor?.name || 'class instance').slice(0, 30)}, not JSON — keep it to plain objects, arrays, strings, numbers, true, false and null`;
-  }
-  for (const k of Object.keys(v)) {
-    const why = notJSON(v[k], arr ? `${path}[${k}]` : /^[A-Za-z_$][\w$]*$/.test(k) ? `${path}.${k}` : `${path}[${JSON.stringify(k.slice(0, 30))}]`, uncloned);
-    if (why) return why;
-  }
-  return '';
+  const trail = []; // the keys down to the value looked at (a number: an array index)
+  const walk = (v) => {
+    switch (typeof v) {
+      case 'string': case 'boolean': case 'undefined': return '';
+      case 'number': return Number.isFinite(v) ? '' : `is ${v}, not JSON`;
+      case 'function': case 'symbol': return uncloned ? '' : `is a ${typeof v}, not JSON`;
+      case 'object': break;
+      default: return `is a ${typeof v}, not JSON`;
+    }
+    if (v === null) return '';
+    const arr = Array.isArray(v), proto = Object.getPrototypeOf(v);
+    if (arr ? proto !== Array.prototype : proto !== Object.prototype && proto !== null) {
+      return `is a ${String(proto?.constructor?.name || 'class instance').slice(0, 30)}, not JSON — keep it to plain objects, arrays, strings, numbers, true, false and null`;
+    }
+    for (const k of arr ? v.keys() : Object.keys(v)) {
+      trail.push(k);
+      const why = walk(v[k]);
+      if (why) return why;
+      trail.pop();
+    }
+    return '';
+  };
+  const why = walk(v);
+  return why && `${path}${trail.map((k) => (typeof k === 'number' ? `[${k}]` : /^[A-Za-z_$][\w$]*$/.test(k) ? `.${k}` : `[${JSON.stringify(k.slice(0, 30))}]`)).join('')} ${why}`;
 }
 /** Why `v` can't be player p's t.secret entry ('' when it can): p must be a
  *  player id (PID_RE: never "__proto__"), v plain JSON (notJSON) of at most
@@ -1199,7 +1214,7 @@ function secretProblem(p, v) {
   if (!PID_RE.test(p)) return `t.secret: ${JSON.stringify(p.slice(0, 30))} is not a player id`;
   let j;
   try { j = JSON.stringify(v); } catch (err) { return `t.secret[${p}] is not JSON (${err.message})`; }
-  if (j === undefined) return `t.secret[${p}] is not JSON`;
+  if (j === undefined) return notJSON(v, `t.secret[${p}]`) || `t.secret[${p}] is not JSON`;
   if (j.length > SECRET_MAX_CHARS) return `t.secret[${p}] is too large (${j.length.toLocaleString('en-US')} chars, max ${SECRET_MAX_CHARS.toLocaleString('en-US')})`;
   return notJSON(v, `t.secret[${p}]`);
 }
@@ -3412,7 +3427,7 @@ export function createTable(host, env = {}) {
       case 'loadBox': if (hostOnly(p, a)) loadBox(p, a.box, { setup: a.setup === true, clear: a.clear === true }); break;
       case 'clear': if (hostOnly(p, a)) clearTable(p); break;
       case 'chat': {
-        const msg = peerText(a.msg).replace(CTRL, ' ').trim().slice(0, 300);
+        const msg = chatLine(a.msg);
         if (pl && msg) logEvent(p, msg, true);
         then.push(['onChat', peerText(a.msg), p], ['onAction', A()]);
         break;
@@ -3670,22 +3685,31 @@ export function createTable(host, env = {}) {
     return bump();
   }
   /** Why the rules' state `json` (rulesJSON) fails the engine's gates (spec
-   *  §3a), or '': t.data at most DATA_MAX_CHARS; t.data and t.public — when
-   *  their JSON changed since `was` — plain JSON (notJSON: a typed array, a
-   *  Map or a Date would come back from a rollback or a save as something
-   *  else; a function is D129's, as a Worker can't post it); t.secret keyed
-   *  by player ids only, with no prototype of its own, each entry plain
-   *  JSON of at most SECRET_MAX_CHARS — every entry, every time (a function
-   *  JSON skips leaves the JSON as it was); the asks (only written by
-   *  t.ask) through cleanAsk again when they changed. */
+   *  §3a), or '': t.data at most DATA_MAX_CHARS; the values in t.data,
+   *  t.public and t.secret (VALUE_FIELDS, valueProblem); the asks (only
+   *  written by t.ask) through cleanAsk again when they changed since `was`. */
   function gateProblem(json, was) {
     const n = json.data.length;
     if (n > DATA_MAX_CHARS) return `t.data is too large (${n.toLocaleString('en-US')} chars, max ${DATA_MAX_CHARS.toLocaleString('en-US')})`;
-    const r = host.rules;
-    for (const k of ['data', 'public']) if (json[k] !== was?.[k]) { const why = notJSON(r[k], `t.${k}`, true); if (why) return why; }
-    if (!isObj(r.secret) || Object.getPrototypeOf(r.secret) !== null) return 't.secret was replaced or given a prototype — set and delete its entries instead';
-    for (const p of Object.keys(r.secret)) { const why = secretProblem(p, r.secret[p]); if (why) return why; }
-    if (json.asks !== was?.asks) { const why = asksProblem(r.asks); if (why) return `t.ask: ${why}`; }
+    for (const k of VALUE_FIELDS) { const why = valueProblem(k); if (why) return why; }
+    if (json.asks !== was?.asks) { const why = asksProblem(host.rules.asks); if (why) return `t.ask: ${why}`; }
+    return '';
+  }
+  /** The rules' fields a script writes to directly, as objects. */
+  const VALUE_FIELDS = ['data', 'public', 'secret'];
+  /** Why rules field `k` (VALUE_FIELDS) holds what JSON would not keep as
+   *  it is, or '' — checked on every job, every entry (D133, D144): a JSON
+   *  comparison can't see a Date over its own ISO string, a Map over {}, NaN
+   *  over null, or a function JSON skips, yet a rollback, a save or a patch
+   *  would turn each into something else. t.data and t.public: plain JSON
+   *  (notJSON; a function there is D129's: a Worker can't post it, and the
+   *  rules go off keeping the JSON part); t.secret: no prototype of its own,
+   *  keyed by player ids, each entry plain JSON of at most SECRET_MAX_CHARS. */
+  function valueProblem(k) {
+    const v = host.rules[k];
+    if (k !== 'secret') return notJSON(v, `t.${k}`, true);
+    if (!isObj(v) || Object.getPrototypeOf(v) !== null) return 't.secret was replaced or given a prototype — set and delete its entries instead';
+    for (const p of Object.keys(v)) { const why = secretProblem(p, v[p]); if (why) return why; }
     return '';
   }
   /** A job's final gates while the rules are on (spec §3f.4): the timers
@@ -4461,8 +4485,36 @@ export function createTable(host, env = {}) {
       if (!isObj(r.data)) return 't.data is not an object';
       const t = r.data._timers;
       if (t !== undefined && (!Array.isArray(t) || t.length > MAX_TIMERS || !t.every((x) => isObj(x) && Number.isFinite(x.at) && typeof x.tag === 'string' && x.tag.length <= TIMER_TAG_MAX))) return 't.data._timers is malformed';
-      if (JSON.stringify(r.data).length > DATA_MAX_CHARS) return 't.data is too large';
     }
+    for (const k of ['data', 'public']) {
+      if (!(k in r)) continue;
+      let n; // (a structured clone keeps a Map, a Date — and a cycle, which JSON can't write)
+      try { n = JSON.stringify(r[k])?.length; } catch (err) { return `t.${k} is not JSON (${String(err.message).split('\n')[0]})`; }
+      if (k === 'data' && n > DATA_MAX_CHARS) return 't.data is too large';
+      const why = notJSON(r[k], `t.${k}`);
+      if (why) return why;
+    }
+    return '';
+  }
+  /** Why a rules Worker's patch `s`, with its effects `out`, for player p's
+   *  job `a` speaks for someone it shouldn't, or '' (D144) — checked here,
+   *  in the host's realm: the engine in the Worker shares its realm with the
+   *  script, which can rewrite what the engine writes there (a hooked
+   *  Array.prototype.push or Function.prototype.call, an Object.prototype
+   *  setter). Every log line and every name bulb (fx) is p's or the rules';
+   *  a chat line is p's own message, once, in p's chat; a frozen name (`n`)
+   *  only on p's rename, the name p had. What the job's other lines say is
+   *  the Worker's word — a script may announce anything as the rules. */
+  function speakerProblem(s, out, p, a) {
+    const whose = (q) => (q === RULES ? "the rules'" : `${own(host.players, q)?.name || 'an unknown player'}'s`);
+    let chats = 0;
+    for (const e of Array.isArray(s.log) ? s.log : []) {
+      if (!isObj(e) || typeof e.txt !== 'string') return "the script's log lines are malformed";
+      if (e.p !== p && e.p !== RULES) return `the script put a line in ${whose(e.p)} name into ${whose(p)} ${a.t}`;
+      if (e.c && (a.t !== 'chat' || e.p !== p || chats++ || e.txt !== chatLine(a.msg))) return `the script put words in ${whose(e.p)} chat`;
+      if (e.n !== undefined && ((a.t !== 'name' && a.t !== '_name') || e.p !== p || e.n !== own(host.players, p)?.name)) return `the script renamed a line of ${whose(e.p)} to "${String(e.n).slice(0, 30)}"`;
+    }
+    for (const e of out?.effects || []) if (e?.t === 'fx' && e.f?.p !== p && e.f?.p !== RULES) return `the script put ${whose(e.f?.p)} name bulb into ${whose(p)} ${a.t}`;
     return '';
   }
   /** Applies a rules Worker's StatePatch (spec §3f.6) to this table — the
@@ -4479,11 +4531,16 @@ export function createTable(host, env = {}) {
    *  derives an address of its own while a Worker runs. `out` (T.job's):
    *  the job's effects, queued here as if this table had run it (decks,
    *  boxes and the rules code apart: the patch brings those), and its hook
-   *  failure as T.rulesError. True when anything changed (renumbered). */
-  function applyStatePatch(s, out) {
+   *  failure as T.rulesError. `job` ({p, a}: the job the patch answers; the
+   *  app always says) has what the patch says checked against who acted
+   *  (speakerProblem); without it, a test's hand-made patch, it isn't.
+   *  True when anything changed (renumbered). */
+  function applyStatePatch(s, out, job) {
     if (J) throw new Error('applyStatePatch: a journal is open');
     const why = s.rules ? patchRulesProblem(s.rules) : '';
     if (why) throw new Error(`the script's state fails the engine's gates: ${why}`);
+    const said = job ? speakerProblem(s, out, job.p, job.a) : '';
+    if (said) throw new Error(said);
     const items = Object.entries(s.items || {}).filter(([id]) => id !== '__proto__');
     if (env.test) for (const [id, it] of items) { const why = it === null ? '' : itemProblem(it); if (why) throw new Error(`a patched item (${id}) is malformed: ${why}`); }
     for (const [id, deck] of Object.entries(s.decks || {})) {
@@ -4541,8 +4598,11 @@ export function createTable(host, env = {}) {
   /** Whether the rules' state changed outside a hook since the last commit
    *  (spec §3f.7: a stray async continuation wrote t.data, or called the
    *  facade): why, or '' (then the next job starts from the JSON taken here).
-   *  A Worker runs it before each job, and again once the microtasks its
-   *  last job queued have run (drain). */
+   *  Its JSON must be as committed, and so must its values: a write JSON
+   *  can't see (a function into t.secret, a Date over its own ISO string)
+   *  is named here, not by the gate of whichever job comes next (D144). A
+   *  Worker runs it before each job, and again once the microtasks its last
+   *  job queued have run (drain). */
   function guard() {
     const stray = hooks.stray?.();
     guardJSON = null;
@@ -4551,6 +4611,7 @@ export function createTable(host, env = {}) {
     let json;
     try { json = rulesJSON(); } catch (err) { return `the script left its state unserializable outside a hook (${err.message})`; }
     if (['data', 'public', 'asks', 'secret'].some((k) => json[k] !== lastJSON[k])) return 'the script changed t.data outside a hook';
+    for (const k of VALUE_FIELDS) { const why = valueProblem(k); if (why) return `the script changed t.${k} outside a hook (${why})`; }
     guardJSON = json;
     return '';
   }

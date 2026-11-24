@@ -172,9 +172,13 @@ they are off, no Worker exists.
      must be synchronous", and the rules disable;
   3. once an action's hooks are done, the Worker lets every pending
      promise callback run, then checks that `t.data`, `t.public`, the asks
-     and `t.secret` are exactly as the action left them: a callback that
-     wrote one disables the rules ("the script changed t.data outside a
-     hook") before the next action, and nothing it wrote reaches the table.
+     and `t.secret` are exactly as the action left them — their JSON, and
+     every value in them, so a function slipped into `t.secret` or a
+     `Date` written over its own text is seen too: a callback that wrote
+     one disables the rules ("the script changed t.data outside a hook",
+     "the script changed t.secret outside a hook (…)") before the next
+     action, which is not blamed for it, and nothing it wrote reaches the
+     table.
 
   `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`,
   `queueMicrotask` and `requestAnimationFrame` throw "setTimeout is not
@@ -191,8 +195,19 @@ they are off, no Worker exists.
   `postMessage`, and `close` (which throws: it would end the Worker
   silently): calling one fails ("fetch is not defined"). The Worker reads
   only the host's own messages — one a script makes and dispatches to its
-  Worker ends the rules — and a script can't hook the promises or events
-  the Worker's own code relies on (their prototypes are frozen). That is
+  Worker ends the rules — and reads each with what it kept before the
+  script ran (the promises and events it relies on have frozen
+  prototypes). The engine in the Worker, though, shares its built-ins with
+  the script, which could replace one (`Array.prototype.push`, say) and so
+  rewrite what the engine writes there. So the host checks every action's
+  changes again on its own page, where the script can't reach: the rules'
+  state through the engine's gates, and who each log line and name bulb
+  speaks for — the action's player or the rules, a chat line only that
+  player's own words, in their own chat. A change that fails ends the
+  rules ("rules disabled — the host could not apply the script's changes")
+  and never reaches the table: a script can't sign Bob's name to someone
+  else's action, nor put words in anyone's chat. (What the other lines of
+  an action say is the Worker's account, as the rules' own lines are.) That is
   defence in depth, not a sandbox — a script sees every hidden card and can
   tell it in game (`t.tell`), so enabling one is an act of trust, and
   dynamic `import()` can't be taken away (README, honest limits). `Date`,
@@ -207,9 +222,11 @@ they are off, no Worker exists.
   strings, finite numbers, `true`, `false`, `null`: a rollback or a save
   would hand back something else. A hook that leaves a typed array, a
   `Map`, a `Set`, a `Date`, `NaN` or an object of a class in one fails
-  ("onAction(): t.data.board is a Uint8Array, not JSON — …"), as does a
-  function in `t.secret`; a function in `t.data` or `t.public` disables
-  the rules when its action is sent to the host, keeping their JSON part.
+  ("onAction(): t.data.board is a Uint8Array, not JSON — …") — every
+  action, even one whose JSON is unchanged (a `Date` over its own text) —
+  as does a function in `t.secret`; a function in `t.data` or `t.public`
+  disables the rules when its action is sent to the host, keeping their
+  JSON part.
 - **A host reload** starts a new Worker over the saved table: the rules go
   on where they were — `t.data`, `t.public`, the asks, `t.secret` and the
   pending timers are saved — without running `setup` again. A saved script

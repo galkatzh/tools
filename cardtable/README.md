@@ -591,7 +591,12 @@ refuse the `https → http://127.0.0.1` fetch.
   buckets, Web Locks, other Workers and channels (ENGINE.md lists them) —
   and reads only the host's own messages, as defence in depth rather than
   a sandbox: dynamic `import()` can't be removed without headers GitHub Pages
-  can't set, so a script could still load code or reach a server. A
+  can't set, so a script could still load code or reach a server. The
+  engine in the Worker shares the script's built-ins, so the host's page
+  checks each action's changes again where the script can't reach: the
+  rules' state through the engine's gates, and that every log line and
+  chat line speaks only for the player whose action it was (or for the
+  rules). A
   runaway loop no longer freezes the host's tab (the watchdog stops it
   within about 5 s). A script sees every hidden card and
   piece, so what it tells one player (`t.tell`, a hint, `t.secret`) may

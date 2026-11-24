@@ -553,11 +553,14 @@ function toWorker({ p, a, resolve }) {
 /** A job's watchdog budget (spec §3f.5): RULES_TIMEOUT_MS, and 10 ms more per item a box's setup lays out. */
 const budget = (a) => RULES_TIMEOUT_MS + (a.t === 'loadBox' && a.setup === true && Array.isArray(a.box?.setup) ? 10 * countSetup(a.box.setup, Object.keys(T.state.players).length || 1) : 0);
 /** The running Worker's `done` {id, patch, out, ms} for the job in flight:
- *  the host's table takes the patch (applyStatePatch), carries out its
- *  effects, broadcasts and saves (commit). A job that disabled the rules (a
- *  hook failed) ends the Worker. A done for any other job — none the host
- *  posted, or one it posted before — means the Worker ran what the host
- *  never asked of it: its mirror can't be trusted, and the rules end. */
+ *  the host's table takes the patch (applyStatePatch, which checks it
+ *  against the job: who acted), carries out its effects, broadcasts and
+ *  saves (commit). A job that disabled the rules (a hook failed) ends the
+ *  Worker. A done for any other job — none the host posted, or one it
+ *  posted before — means the Worker ran what the host never asked of it:
+ *  its mirror can't be trusted, and the rules end. So do they when the
+ *  table refuses the patch: the job is then dropped, or run again with the
+ *  rules off, as rulesDown says. */
 function done(m) {
   const job = current;
   if (job?.id !== m.id) {
@@ -565,19 +568,22 @@ function done(m) {
     rulesDown('the script crashed: its Worker ran a job the host never sent', 'Rules disabled — the script crashed: its Worker ran a job the host never sent');
     return;
   }
-  watchStop();
-  current = null;
   perf.lastRulesWorkerMs = m.ms;
-  let changed = true, error;
+  let changed, error;
   try {
-    changed = T.applyStatePatch(m.patch, m.out);
-    error = commit(changed, job.p);
-  } catch (err) { // (a patch that fails the engine's gates, or a bug: the two states may now differ, so the rules go)
+    changed = T.applyStatePatch(m.patch, m.out, job);
+  } catch (err) { // (a patch that fails the engine's gates, or a bug: the two states may differ, so the rules go — with the job still in flight)
     console.error('applying a rules patch failed', err);
-    commit(changed);
-    job.resolve({ ok: false, error: err.message });
     rulesDown('the host could not apply the script\'s changes', `Rules disabled — ${err.message}`, err.message);
     return;
+  }
+  watchStop();
+  current = null;
+  try {
+    error = commit(changed, job.p);
+  } catch (err) { // (carrying out the job's effects failed: a bug — the table took the patch, so the rules may run on)
+    console.error('a rules job\'s effects failed', err);
+    toast(`Error: ${err.message}`);
   }
   perf.lastRulesRoundtripMs = performance.now() - job.t0;
   if (m.out.error) lastRulesError = T.rulesError;
@@ -591,8 +597,9 @@ function done(m) {
  *  registration, a departure or a rename is kept, as when onJoin or onLeave
  *  fails — they run again on the host's table, where the rules are off. */
 const KEPT_JOBS = new Set(['_join', '_leave', '_name']);
-/** The running rules stop (spec §3f.5): the watchdog fired, or the Worker
- *  crashed. `reason`: what the log says, publicly; `msg`: the host's toast;
+/** The running rules stop (spec §3f.5): the watchdog fired, the Worker
+ *  crashed, or the host's table refused its patch (done: the job is still
+ *  in flight). `reason`: what the log says, publicly; `msg`: the host's toast;
  *  `detail`: what only the host is told beyond `reason` (in the 📜 dialog:
  *  the words of an error the script threw). The Worker goes, and the host's
  *  table switches the rules off (_rulesOff). A job in flight is dropped —

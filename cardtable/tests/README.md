@@ -1159,6 +1159,29 @@ reload that meets a skewed `rules-worker.js` (the rules stay on in the
 save, and the next reload runs them); an explicit address under a newer
 board kept across a new felt.
 
+**The second 3B review's regressions** (SPEC D144; each fails on the app
+before it): `core-p3.test.mjs` (RF2) — a `-Infinity`, a `Date`, a `Map` or
+a `Uint8Array` whose JSON equals what `t.data` held fails its hook, and the
+mirror keeps what the host keeps; `guard()` names a write outside a hook
+that JSON can't see (a function into `t.secret`, a `Date` over its text,
+`NaN` over `null`) before the next job, which is not blamed; a job's patch,
+forged as a script that replaced a built-in could forge it (a line
+re-signed by Bob, a chat line moved or reworded or added, a frozen name, a
+name bulb of Bob's, a line that isn't one), is refused whole by
+`applyStatePatch(patch, out, job)`, while real rots, chats, renames and
+departures go in; a patch's `t.data` / `t.public` holding a `Map`, a
+`Date`, `NaN` or a cycle throws. The seeded 300-job digest runs (7) and
+`lifecycle()` now pass the job too, as app.js does, so every real patch of
+those runs passes the speaker check. `t-p3-attack.js`, the protocol
+section: a script that replaces `Function.prototype.call` (the host's own
+rot still applies as hers, the mirror equal) and one that replaces
+`Array.prototype.push` to re-sign the host's chat as Bob's (the host
+refuses the patch, the rules go off, nobody's log has the line).
+`t-p3b-review.js` section 10: an `onLeave` whose patch the host refuses
+(the script defeats its own gate with `RegExp.prototype.test`) ends the
+rules and keeps the departure; a rot whose patch is refused is dropped,
+its player told, the pile as it was on both screens.
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores

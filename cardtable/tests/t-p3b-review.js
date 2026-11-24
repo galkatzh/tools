@@ -1,5 +1,5 @@
 // The Phase 3B fix-up's regressions on real screens (the reviews of 3B: spec
-// §3f, SPEC D132–D143). Alice hosts on a desktop; Bob and Carol play; Mallory
+// §3f, SPEC D132–D144). Alice hosts on a desktop; Bob and Carol play; Mallory
 // is a raw peer (final-lib). Every check reads what a person would see — the
 // views, the log, the toasts — and the host's __ct (digest(),
 // workerDigest(), jobs(), lastRulesError, perf).
@@ -22,6 +22,9 @@
 //     on in the save: the reload the toast asks for runs them (D138).
 //  9. An explicit address under a newer board, then a new felt: the host keeps
 //     the Worker's address (D132).
+// 10. A patch the host refuses (its gates, in the host's realm: D142) ends the
+//     rules with the job still in flight: a departure in it is kept, a
+//     player's move dropped aloud and re-sent (D134, D144).
 // The other fixes are checked where they belong: core-p3.test.mjs (RF), and
 // t-p3-attack.js (the script's own messages, the APIs taken away, close(): D140).
 'use strict';
@@ -230,6 +233,33 @@ const idle = (host, ms = 20000) => until(host, () => window.__ct.jobs() === 0, n
     ok(await host.evaluate((id) => window.__ct.view().items[id]?.at === 'e5', man) && await until(bob, (id) => window.__ct.view().items[id]?.at === 'e5', man),
       'the man is still on e5, on both screens (the host read nothing by containment)');
     await sameDigests('after the new felt');
+  }
+
+  section('10. A patch the host refuses ends the rules: a departure in it is kept, a player\'s move dropped aloud (D134, D144)');
+  {
+    // (the script defeats its own gate in the Worker — RegExp.prototype.test is its to replace — which the host checks again, D142)
+    const REGATE = (hook) => `({ name: 'Regate', ${hook}(t, x) { if (typeof x === 'string' || x.t === 'rot') { RegExp.prototype.test = () => true; t.secret['not a player'] = { text: 'x' }; } } })`;
+    const dave = await S.join(env, 'Dave', invite);
+    ok((await enable(REGATE('onLeave'))).ok, 'a script whose onLeave writes t.secret["not a player"], past its own gate');
+    await watchToasts(host);
+    const t0 = await mark(host);
+    await dave.context().close();
+    ok(await until(host, () => !window.__ct.view().rules?.enabled, null, 40000), 'Dave leaves: the rules go off');
+    const err = await lastErr(host);
+    ok(/^the host could not apply the script's changes: the script's state fails the engine's gates: t\.secret: "not a player" is not a player id$/.test(err), `the 📜 dialog's error says why ("${err}")`);
+    ok(await until(host, (p) => window.__ct.view().players[p]?.online === false, dave.pid, 5000), 'Dave, gone, is offline on the host — his departure was kept, not dropped with the patch');
+    const lines = await since(host, t0);
+    ok(lines.includes("rules disabled — the host could not apply the script's changes") && lines.at(-1) === 'left the table', `the log: the rules off, then his departure (${J(lines)})`);
+    ok(!(await toasts(host)).some((t) => /your action was not applied/.test(t)), 'and nobody is told an action of theirs was dropped');
+
+    ok((await enable(REGATE('onAction'))).ok, 'the same, in onAction after a rot');
+    await watchToasts(bob);
+    const rot0 = await host.evaluate((id) => window.__ct.view().items[id].rot, pile);
+    const r = await act(bob, { t: 'rot', id: pile, rot: (rot0 + 90) % 360 });
+    ok(r.ok && await until(host, () => !window.__ct.view().rules?.enabled), 'Bob rotates the pile: the rules go off');
+    ok(await until(bob, () => (window.__toasts || []).some((t) => t.includes('The rules stopped responding — your action was not applied'))), 'Bob is told his move was not applied');
+    ok(await until(bob, ([id, rot]) => window.__ct.view().items[id].rot === rot, [pile, rot0]) && await host.evaluate(([id, rot]) => window.__ct.view().items[id].rot === rot, [pile, rot0]),
+      `and the pile is as it was, on both screens (${rot0}°)`);
   }
 
   await env.done();

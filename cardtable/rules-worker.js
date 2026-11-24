@@ -33,11 +33,17 @@ import { MODULE_V as CORE_V, PROTO, createTable, scriptHooks } from './core.js?v
 export const MODULE_V = 1;
 
 // What the Worker keeps for itself, taken before anything is removed or
-// evaluated: a script shares this realm, and may redefine what it can reach.
+// evaluated: a script shares this realm, and may redefine what it can reach
+// (a built-in's method, Function.prototype.call, a getter). A message's data
+// is read with the getter and the call taken here, never through a method a
+// script could have replaced. The engine itself (core.js) still runs on this
+// realm's built-ins, so what it writes is checked again on the host, in the
+// host's realm (applyStatePatch: the gates, and who each line speaks for).
 const post = self.postMessage.bind(self);
 const later = self.setTimeout.bind(self); // drain()'s real timer
 const clock = performance.now.bind(performance);
-const dataOf = Object.getOwnPropertyDescriptor(MessageEvent.prototype, 'data').get; // (a script could redefine MessageEvent's `data`)
+const call = Reflect.apply;
+const dataOf = Object.getOwnPropertyDescriptor(MessageEvent.prototype, 'data').get;
 const Prom = Promise;
 
 /** Reports a failure outside the job protocol to the host, which disables
@@ -63,7 +69,7 @@ self.addEventListener('messageerror', () => fatal('a message from the host could
 let chain = Prom.resolve();
 self.addEventListener('message', (e) => {
   if (!e.isTrusted) { fatal('the script dispatched a message to its own Worker', true); return; }
-  const m = dataOf.call(e);
+  const m = call(dataOf, e, []);
   chain = chain.then(() => handle(m)).catch((err) => fatal(msgOf(err), false, err));
 }, true);
 

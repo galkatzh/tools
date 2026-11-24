@@ -599,6 +599,40 @@ const scanRaw = (page, o) => page.evaluate((o) => {
     const d = await disabled(ts0);
     ok(d.off && /^the script crashed/.test(d.err), `a fake 'init' the script dispatches crashes its Worker, loudly ("${d.err}")`);
     ok(await enableProbe(), 'the host enables the probe again');
+
+    // The script shares its realm with the Worker's code and the engine: it can replace the built-ins they call
+    // (the second 3B review, D144). Function.prototype.call: the Worker reads each host message with what it
+    // took before any script ran, so the host's own move still reaches the engine as hers.
+    await run(`const apply = Reflect.apply;
+      Function.prototype.call = function (thisArg, ...args) {
+        const v = apply(this, thisArg, args);
+        if (thisArg instanceof MessageEvent && v && v.type === 'act' && v.a && v.a.t === 'rot') { v.p = ${J(BOB)}; v.a.rot = 135; }
+        return v;
+      };`);
+    const rot4 = ((await P.viewOf(host, 'v.items[a].rot', ids.S1)) + 90) % 360;
+    ts0 = await hostNow();
+    const r4 = await host.evaluate(([id, rot]) => window.__ct.act({ t: 'rot', id, rot }), [ids.S1, rot4]);
+    const lines4 = (await logSince(ts0)).map((e) => [e.p === ALICE ? 'Alice' : e.p === BOB ? 'Bob' : e.p, e.txt]);
+    ok(r4.ok && (await P.viewOf(host, 'v.items[a].rot', ids.S1)) === rot4 && lines4.some(([p]) => p === 'Alice') && !lines4.some(([p]) => p === 'Bob') && await rulesOn(),
+      `Function.prototype.call replaced: the host's own rot applies as hers, at ${rot4}° (${J(lines4)}), the rules on`);
+    await mirrorEqual('with Function.prototype.call replaced');
+    // Array.prototype.push: the engine's log line is the script's to rewrite in the Worker — the host, in its own
+    // realm, refuses a patch whose line speaks for anyone but the job's player or the rules.
+    await run(`const push = Array.prototype.push, apply = Reflect.apply;
+      Array.prototype.push = function (...xs) {
+        for (const e of xs) if (e && typeof e === 'object' && e.p === ${J(ALICE)} && e.txt === 'qz hello') e.p = ${J(BOB)};
+        return apply(push, this, xs);
+      };`);
+    ts0 = await hostNow();
+    const r5 = await host.evaluate(() => window.__ct.act({ t: 'chat', msg: 'qz hello' }));
+    const d5 = await disabled(ts0);
+    ok(d5.off && !r5.ok && d5.err === "the host could not apply the script's changes: the script put a line in Bob's name into Alice's chat",
+      `Array.prototype.push replaced, the host's chat re-signed by Bob: the host refuses the patch, the rules go off ("${d5.err}"; ${J(r5)})`);
+    ok(d5.line === "rules disabled — the host could not apply the script's changes", `the public log says only that ("${d5.line}")`);
+    await h.sleep(500);
+    const said = await bob.evaluate((ts) => window.__ct.log().filter((l) => l.ts >= ts && l.txt === 'qz hello').length, ts0);
+    ok(!(await logSince(ts0)).some((e) => e.txt === 'qz hello') && said === 0, 'nobody\'s log has the line, as Bob\'s or anyone\'s: the patch was not applied');
+    ok(await enableProbe(), 'the host enables the probe again');
   }
 
   section('Escapes: a Worker kept from answering — it goes on, or the watchdog ends it loudly; never a silent hang');

@@ -2917,7 +2917,7 @@ function testDigest() {
       for (const key of Object.keys(seen)) if (key in r.patch) seen[key]++;
       if (r.out.error) seen.error++;
       if (r.patch.log?.some((e) => e.txt.startsWith('blocked '))) seen.vetoes++;
-      try { quietly(() => H.applyStatePatch(structuredClone(r.patch), structuredClone(r.out))); } catch (e) { threw ||= `job ${k} (${a.t}): ${e.message}`; }
+      try { quietly(() => H.applyStatePatch(structuredClone(r.patch), structuredClone(r.out), { p, a })); } catch (e) { threw ||= `job ${k} (${a.t}): ${e.message}`; } // (the job: who acted, as app.js says)
       const fx = H.drain().filter(own3);
       if (!lost && J(fx) !== J(r.out.effects.filter(own3))) lost = `job ${k} (${a.t}): the host queued ${J(fx).slice(0, 120)}, the job ${J(r.out.effects.filter(own3)).slice(0, 120)}`;
       if (!lost && r.out.error && H.rulesError !== `${r.out.error.hook}: ${r.out.error.message}`) lost = `job ${k}: the host's rulesError is "${H.rulesError}"`;
@@ -3018,7 +3018,7 @@ function lifecycle(items, o = {}) {
   L.job = (p, a, read = true) => {
     const r = quietly(() => L.M.job(p, a)).value;
     if (r.fatal) throw new Error(`fatal: ${r.fatal}`);
-    quietly(() => H.applyStatePatch(structuredClone(r.patch), structuredClone(r.out)));
+    quietly(() => H.applyStatePatch(structuredClone(r.patch), structuredClone(r.out), { p, a }));
     H.drain();
     L.M.drain();
     if (read) H.takeDirty();
@@ -3127,6 +3127,94 @@ function testReviewFixups() {
   ok(H.state.rules.secret[BOB]?.text === 'ok' && Object.getPrototypeOf(H.state.rules.secret) === null && H.state.rules.asks[BOB]?.length === 1, 'a good secret and ask go in (the secret map with no prototype, as §3a has it)');
 }
 
+// =============================================================================
+// (RF2) The second review of 3B (SPEC D144)
+// =============================================================================
+function testSecondReview() {
+  section('(RF2) A non-JSON value whose JSON equals what was there fails the hook too (every job: D144) — the mirror never keeps what the host can\'t');
+  for (const [what, json, value, re] of [
+    ['-Infinity over null', null, () => Math.max(), /t\.data\.v is -Infinity, not JSON/],
+    ['a Date over its own ISO string', '2026-01-01T00:00:00.000Z', () => new Date('2026-01-01T00:00:00.000Z'), /t\.data\.v is a Date, not JSON/],
+    ['a Map over {}', {}, () => new Map([[1, 'x']]), /t\.data\.v is a Map, not JSON/],
+    ['a Uint8Array over {"0":0,"1":0}', { 0: 0, 1: 0 }, () => new Uint8Array(2), /t\.data\.v is a Uint8Array, not JSON/],
+  ]) {
+    const L = lifecycle(PIPE());
+    L.enable(fake({}));
+    F.fn = (t) => { t.data.v = json; };
+    L.job(HOST, { t: 'rulesBtn', id: 'go' });
+    F.fn = (t) => { t.data.v = value(); };
+    const r = L.job(HOST, { t: 'rulesBtn', id: 'go' });
+    const m = L.M.state.rules, hr = L.H.state.rules;
+    ok(re.test(r.out.error?.message || '') && !m.enabled && !hr.enabled, `${what}: the hook fails, naming it ("${r.out.error?.message}"), the rules off on both sides`);
+    ok(J(m.data.v) === J(json) && Object.getPrototypeOf(m.data.v ?? {}) === Object.getPrototypeOf(hr.data.v ?? {}) && L.same(), `${what}: the mirror holds what the host holds (${J(m.data.v)}), the digests agree`);
+  }
+
+  section('(RF2) guard(): a write outside a hook that JSON can\'t see — a function into t.secret, a Date over its ISO string — is named at once, not blamed on the next job (D144)');
+  for (const [what, fn, re] of [
+    ['a function into t.secret[Bob]', (t) => { t.secret[BOB] = () => 1; }, /^the script changed t\.secret outside a hook \(t\.secret\[b{16}\] is a function, not JSON\)$/],
+    ['a Date over t.data.when\'s ISO string', (t) => { t.data.when = new Date('2026-01-01T00:00:00.000Z'); }, /^the script changed t\.data outside a hook \(t\.data\.when is a Date, not JSON/],
+    ['NaN over null in t.public', (t) => { t.public.best = 0 / 0; }, /^the script changed t\.public outside a hook \(t\.public\.best is NaN, not JSON\)$/],
+  ]) {
+    const T = rtable(PIPE(), {});
+    run(T, (t) => { t.data.when = '2026-01-01T00:00:00.000Z'; t.public.best = null; F.saved = t; F.data = t.data; F.pub = t.public; F.sec = t.secret; });
+    ok(T.guard() === '', `${what}: after a clean job, guard() is ""`);
+    fn({ data: F.data, public: F.pub, secret: F.sec }); // (kept references, written from a stray continuation: no facade call)
+    const g = T.guard(), r = job(T, BOB, { t: 'rot', id: 'm', rot: 90 });
+    ok(re.test(g) && r.fatal === g && T.state.items.m.rot === 0 && !r.patch, `${what}: guard() says "${g}"; Bob's next move is that fatal, not his fault, and nothing of it applied`);
+  }
+
+  section('(RF2) applyStatePatch(patch, out, job): every log line and name bulb is the job\'s player\'s or the rules\'; a chat line is theirs, as sent; a frozen name only on their rename (D144)');
+  {
+    const L = lifecycle(PIPE());
+    L.enable(fake({ onAction(t, a) { if (a.t === 'rot') t.say('turned'); } }));
+    /** Job (p, a) on the mirror, then its patch, forged by `forge`, to a host that must refuse it whole. */
+    const refused = (what, p, a, forge, re) => {
+      const r = quietly(() => L.M.job(p, a)).value, P = structuredClone(r.patch), O = structuredClone(r.out);
+      forge(P, O);
+      const before = stateOf(L.H);
+      let threw = null;
+      try { quietly(() => L.H.applyStatePatch(P, O, { p, a })); } catch (e) { threw = e; }
+      ok(threw && re.test(threw.message) && stateOf(L.H) === before, `${what}: refused (${threw?.message}), the table as it was`);
+      L.start(L.H.state.rules.code); // (a fresh mirror from the host's table: the refused job never happened there)
+    };
+    const line = (P, f) => P.log.find(f);
+    refused('Alice\'s rot, its line re-signed by Bob', HOST, { t: 'rot', id: 'm', rot: 90 }, (P) => { line(P, (e) => e.p === HOST).p = BOB; },
+      /^the script put a line in Bob's name into Alice's rot$/);
+    refused('Alice\'s chat, put in Bob\'s mouth', HOST, { t: 'chat', msg: 'hello' }, (P) => { line(P, (e) => e.c).p = BOB; }, /^the script put a line in Bob's name into Alice's chat$/);
+    refused('Alice\'s chat, its words changed', HOST, { t: 'chat', msg: 'hello' }, (P) => { line(P, (e) => e.c).txt = 'I resign'; }, /^the script put words in Alice's chat$/);
+    refused('a chat line of Alice\'s in her rot', HOST, { t: 'rot', id: 'm', rot: 90 }, (P) => { P.log.push({ p: HOST, txt: 'I resign', ts: 1, c: 1 }); }, /^the script put words in Alice's chat$/);
+    refused('a chat line of the rules\'', HOST, { t: 'chat', msg: 'hello' }, (P) => { P.log.push({ p: RULES, txt: 'psst', ts: 1, c: 1 }); }, /^the script put words in the rules' chat$/);
+    refused('a frozen name on Alice\'s rot line', HOST, { t: 'rot', id: 'm', rot: 90 }, (P) => { line(P, (e) => e.p === HOST).n = 'Bob'; }, /^the script renamed a line of Alice's to "Bob"$/);
+    refused('Bob\'s rename, under another old name', BOB, { t: 'name', name: 'Robert' }, (P) => { line(P, (e) => e.n).n = 'Carol'; }, /^the script renamed a line of Bob's to "Carol"$/);
+    refused('a name bulb of Bob\'s in Alice\'s rot', HOST, { t: 'rot', id: 'm', rot: 90 }, (P, O) => { O.effects.find((e) => e.t === 'fx').f.p = BOB; }, /^the script put Bob's name bulb into Alice's rot$/);
+    refused('a log line that isn\'t one', HOST, { t: 'rot', id: 'm', rot: 90 }, (P) => { P.log.push('rotated'); }, /^the script's log lines are malformed$/);
+    // the real ones go in: a rot (with the rules' own line), a chat, a rename, a departure
+    for (const [p, a] of [[HOST, { t: 'rot', id: 'm', rot: 90 }], [BOB, { t: 'chat', msg: '  hi\u0007 there ' }], [BOB, { t: 'name', name: 'Robert' }], [CAROL, { t: '_leave' }]]) {
+      const r = L.job(p, a);
+      ok(r.patch.log?.length && L.same(), `${a.t} of ${p.slice(0, 4)}: applied (${J(r.patch.log.map((e) => [e.p.slice(0, 4), e.txt, e.n ?? null]))}), the digests agree`);
+    }
+  }
+
+  section('(RF2) applyStatePatch: t.data and t.public in a patch are plain JSON (a structured clone keeps a Map, a Date, a cycle) — checked in the host\'s realm (D144)');
+  {
+    const H = quietly(() => createTable(state3b(PIPE()), { pid: HOST, now: () => 1.7e12, hooks: HOST_HOOKS, test: true })).value;
+    quietly(() => H.applyStatePatch(structuredClone({ rules: { code: '({})', name: 'X', enabled: true, data: {}, public: {}, asks: {}, secret: {} } }), { effects: [] }));
+    const cyc = { a: 1 };
+    cyc.self = cyc;
+    for (const [what, rules, re] of [
+      ['a Map in t.data', { data: { seen: new Map([[1, 2]]) } }, /t\.data\.seen is a Map, not JSON/],
+      ['a Date in t.public', { public: { when: new Date(0) } }, /t\.public\.when is a Date, not JSON/],
+      ['NaN in t.public', { public: { n: NaN } }, /t\.public\.n is NaN, not JSON/],
+      ['a cycle in t.data', { data: cyc }, /^the script's state fails the engine's gates: t\.data is not JSON \(Converting circular structure to JSON\)$/],
+    ]) {
+      const before = stateOf(H);
+      let threw = null;
+      try { quietly(() => H.applyStatePatch(structuredClone({ rules }), { effects: [] })); } catch (e) { threw = e; }
+      ok(threw && re.test(threw.message) && stateOf(H) === before, `${what}: throws (${threw?.message}), the table as it was`);
+    }
+  }
+}
+
 (async () => {
   await guard('(1) grid.js addresses', testGridAddresses);
   await guard('(1) grid.js centres', testGridCentres);
@@ -3179,5 +3267,6 @@ function testReviewFixups() {
   await guard('(G) hooks must be synchronous', testGuards);
   await guard('(7) T.digest', testDigest);
   await guard('(RF) the 3B review fix-ups', testReviewFixups);
+  await guard('(RF2) the second 3B review', testSecondReview);
   report();
 })().catch(crash);

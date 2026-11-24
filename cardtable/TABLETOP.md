@@ -651,6 +651,17 @@ sync and rendering, and the Worker together with `handle`.
        alone. Enable evaluates a script once. Saved rules a reload can't
        start because the page and the files disagree stay on in the save,
        so the reload the toast asks for brings them back.
+     - After its second review: a script shares the Worker's built-ins with
+       the engine, so it could rewrite what the engine writes there. The
+       host, on its own page, refuses any action's changes that speak for
+       someone else — a log line or a name bubble of anyone but the acting
+       player or the rules, a chat line that isn't their own words — so a
+       script can't sign another player's name. The script's state is
+       checked value by value on every action (a `Date` written over its
+       own text fails too), and a change made outside a hook is named when
+       it happens, not blamed on the next player's move. A change the host
+       refuses ends the rules like a crash: a departure in it is kept, a
+       player's move dropped with a notice.
 4. **Game boxes.**
    - `game.json` plus `.zip` upload, declarative setup and reset.
    - Export with the current position.
