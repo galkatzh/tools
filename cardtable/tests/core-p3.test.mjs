@@ -35,7 +35,8 @@
 // Phase 3B (the rules engine: the journal, the pipeline, asks, answer,
 // select, internal actions, per-recipient parts, guards, T.digest) has its own
 // sections, after 3A's: see "Phase 3B" below; Phase 3C (a view's asks, the
-// hint layer, the demos' box fields `upright` and a face's `name`) closes it.
+// hint layer, the demos' box fields `upright` and a face's `name`, and item
+// (11), chess's automatic draws played on the template) closes it.
 // Every random sequence is seeded and every failure names its seed.
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -3576,6 +3577,199 @@ function testDemoBoxFields() {
   ok(!/Dark disc/.test(view({ k: 'g', t: 'B/disc', f: 0, x: 0, y: 0, rot: 0 })), 'a face\'s name is never drawn');
 }
 
+// =============================================================================
+// (11) Chess logic in Node, against the template (spec §3g "Draws", §3l
+// core-p3 item 11): the draws the rules make automatic end the game with an
+// announcement and no winner — threefold repetition (the position: the
+// pieces, the side to move, the castling and en-passant rights; FIDE 9.2.2),
+// fifty moves with no capture or pawn move, and each insufficient-material
+// case of §3g — while K+B v K+B on opposite colours plays on. The expectations
+// are the laws of chess; the template is only driven.
+// =============================================================================
+/** The chess template, wrapped so that a host press of "plant" lays out a
+ *  position from inside a hook (globalThis.__chessPlant, the test's): the
+ *  template's own hooks, as a pasted script runs them. */
+const CHESS_PLANTED = `(() => { const r = ${templates.RULES_TEMPLATES.chess};
+  return { ...r, buttons: (t) => [...r.buttons(t), { id: 'plant', label: 'Plant', pid: t.hostId }],
+    onButton(t, id, p) { return id === 'plant' ? globalThis.__chessPlant(t) : r.onButton(t, id, p); } }; })()`;
+/** A chess game: the script on a Worker-like mirror M (T.job, guard()
+ *  included) and a host H that only applies M's patches, as app.js does
+ *  (structured-cloned, checked against the job). Alice and Bob sit; the
+ *  rules seat them. {M, H, W, B (the pids of White and Black), anns (every
+ *  announcement so far), job, on, move, play, plant, over, winners, same}. */
+function chessGame() {
+  const clk = { t: 1.7e12 };
+  const base = { v: 3, seq: 1, table: { shape: 'rect', w: 3000, h: 2000 }, seats: null, boardSeq: 0, zMax: 0, items: {}, keys: {}, log: [], rules: null,
+    guestDeckChars: 0, players: { [HOST]: player('Alice', 0), [BOB]: player('Bob', 180) }, decks: {}, boxes: {}, boxSrc: {} };
+  const M = quietly(() => createTable(json(base), { ...env(11), now: () => (clk.t += 250) })).value;
+  const pageHooks = { load: () => '', has: (k) => k === 'onSelect', flag: (k) => (k === 'strict' ? true : undefined), call(k) { throw new Error(`${k}() ran on the host`); } };
+  const H = quietly(() => createTable(json(base), { pid: HOST, now: () => clk.t, hooks: pageHooks })).value;
+  const G = { M, H, anns: [] };
+  /** Player p's action a, run as a rules Worker runs it, its patch applied on the host: {notes (texts to p), anns}. */
+  G.job = (p, a) => {
+    const r = quietly(() => M.job(p, a)).value;
+    if (r.fatal || !r.patch) throw new Error(`the job failed: ${r.fatal || J(r)}`);
+    quietly(() => H.applyStatePatch(structuredClone(r.patch), structuredClone(r.out), { p, a })); // (throws on a patch it refuses)
+    M.drain();
+    H.drain();
+    const fx = r.out?.effects || [], anns = fx.filter((e) => e.t === 'ann').map((e) => e.msg);
+    G.anns.push(...anns);
+    return { notes: fx.filter((e) => e.t === 'note' && e.p === p).map((e) => e.msg), anns };
+  };
+  G.job(HOST, { t: 'setRules', enabled: true, code: CHESS_PLANTED });
+  const seat = (id) => Object.keys(M.state.players).find((p) => M.state.players[p].seatId === id);
+  [G.W, G.B] = [seat('white'), seat('black')];
+  /** The piece on square `sq` (its item id), or undefined. */
+  G.on = (sq) => M.api.at(sq)[0]?.id;
+  /** The side to move's player drags the piece on `from` so that it lands centred on `to`. */
+  G.move = (from, to, p = M.state.rules.data.turn === 'w' ? G.W : G.B) => {
+    const id = G.on(from);
+    if (!id) throw new Error(`no piece on ${from}`);
+    const ty = M.api.type(M.state.items[id].t), c = M.api.spot(to);
+    return G.job(p, { t: 'move', id, x: c.x - ty.w / 2, y: c.y - ty.h / 2 });
+  };
+  /** Plays moves "g1f3 g8f6 …" in turn; each must be legal (no refusal). */
+  G.play = (moves) => {
+    for (const m of moves.split(' ').filter(Boolean)) {
+      const r = G.move(m.slice(0, 2), m.slice(2, 4));
+      if (r.notes.length) throw new Error(`${m} was refused: ${r.notes.join('; ')}`);
+    }
+  };
+  /** Lays out `pos` ({square: 'wK', …}: every chess piece else removed), `turn` ('w' | 'b') to move, no castling rights. */
+  G.plant = (pos, turn = 'w') => {
+    globalThis.__chessPlant = (t) => {
+      const box = t.data.box;
+      for (const it of t.find({ kind: 'token' })) if (it.t.startsWith(`${box}/`)) t.remove(it.id);
+      for (const [sq, ty] of Object.entries(pos)) t.spawn(`${box}/${ty}`, { at: sq, owner: `seat:${ty[0] === 'w' ? 'white' : 'black'}` });
+      Object.assign(t.data, { turn, castle: '', ep: null, half: 0, seen: {}, over: null, offer: null, promo: null });
+    };
+    G.job(HOST, { t: 'rulesBtn', id: 'plant' });
+    globalThis.__chessPlant = null;
+  };
+  /** Whether the game is over: the result the rules keep, or null. */
+  G.over = () => M.state.rules.data.over ?? null;
+  G.winners = () => M.state.rules.public.winners || [];
+  G.same = () => H.digest() === M.digest();
+  return G;
+}
+/** The side to move in game G: 'w' or 'b'. */
+const toMove = (G) => G.M.state.rules.data.turn;
+const DRAWN = { three: 'The same position for the third time — a draw', fifty: 'Fifty moves without a capture or a pawn move — a draw', dead: 'Neither side can checkmate any more — a draw' };
+/** Checks that game G just ended as the draw `why` (DRAWN): announced, no
+ *  winner, and over — the next player's move is refused. */
+function drawn(G, why, what) {
+  ok(G.over() === why && G.anns.at(-1) === why, `${what}: the game ends, announced: "${G.anns.at(-1)}" (over: ${J(G.over())})`);
+  ok(!G.winners().length, `${what}: a draw has no winner (${J(G.winners())})`);
+  const side = toMove(G), piece = Object.keys(G.M.state.items).find((id) => G.M.state.items[id].t?.endsWith(`/${side}K`)), from = G.M.api.where(piece);
+  const to = [...'abcdefgh'].flatMap((f) => [1, 2, 3, 4, 5, 6, 7, 8].map((r) => f + r)).find((s) => !G.on(s));
+  const r = G.move(from, to, side === 'w' ? G.W : G.B);
+  ok(r.notes.length === 1 && /over/.test(r.notes[0]) && G.M.api.where(piece) === from, `${what}: a move after it is refused, the game being over (${J(r.notes)}), the king still on ${from}`);
+  ok(G.same(), `${what}: the host, applying every patch, holds the mirror's table (digests equal)`);
+}
+/** One chess scenario: its section, then fn — a throw (a move refused that
+ *  should have been played) is a failed check, and the next scenario runs. */
+function scenario(what, fn) {
+  section(what);
+  try { fn(); } catch (e) { ok(false, `${what.slice(0, 60)}…: ${e.message}`); }
+}
+
+function testChessDraws() {
+  scenario('(11) chess: threefold repetition — the knights out and back twice: the start position for the third time, after the 8th half-move, and not before', () => {
+    const G = chessGame();
+    ok(G.W && G.B && G.W !== G.B && [G.W, G.B].every((p) => [HOST, BOB].includes(p)), `the two players sit as White and Black (${J({ W: G.W, B: G.B })})`);
+    ok(Object.keys(G.M.state.items).length === 33 && G.on('e1') && G.on('e8'), 'the board and the 32 pieces are laid out');
+    G.play('g1f3 g8f6 f3g1 f6g8 g1f3 g8f6 f3g1');
+    ok(G.over() === null && !G.anns.length, `after 7 half-moves nothing has repeated three times: the game goes on (${J(G.over())})`);
+    G.play('f6g8');
+    drawn(G, DRAWN.three, 'the 8th half-move, the start position the third time');
+  });
+
+  scenario('(11) chess: threefold repetition — the same pieces with other castling rights are another position (a rook out and back loses its right)', () => {
+    const G = chessGame();
+    // Nf3 Nf6, White to move: with every right at hm 2, without any at hm 6, 10 and 14
+    G.play('g1f3 g8f6 h1g1 h8g8 g1h1 g8h8 f3g1 f6g8 g1f3 g8f6 f3g1 f6g8 g1f3');
+    ok(G.over() === null, `13 half-moves: the start's pieces three times (hm 0, 8, 12) and Nf3 Nf6 three times (hm 2, 6, 10) — but the castling rights differ, so no position has come three times (${J(G.over())})`);
+    G.play('g8f6');
+    drawn(G, DRAWN.three, 'the 14th half-move, Nf3 Nf6 without rights for the third time (hm 6, 10, 14)');
+  });
+
+  scenario('(11) chess: threefold repetition — a position where an en-passant capture is possible is not the same as those pieces without it', () => {
+    const G = chessGame();
+    // 1.e4 Nf6 2.e5 d5: White may take en passant (exd6). The same pieces, White to move, come again at hm 8 and 12 without it.
+    G.play('e2e4 g8f6 e4e5 d7d5 g1f3 f6g8 f3g1 g8f6 g1f3 f6g8 f3g1 g8f6');
+    ok(G.over() === null, `12 half-moves: the pieces of 2…d5 three times (hm 4, 8, 12), but at hm 4 exd6 en passant was possible — not a repetition (${J(G.over())})`);
+    G.play('g1f3');
+    drawn(G, DRAWN.three, 'the 13th half-move, the position after 3.Nf3 for the third time (hm 5, 9, 13)');
+  });
+
+  scenario('(11) chess: threefold repetition — a double step no pawn can take en passant changes nothing (FIDE 9.2.2: the same possible moves)', () => {
+    const G = chessGame();
+    // 1.e4: no black pawn stands by e4, so the position (Black to move) is the one after 3.Ng1 and 5.Ng1.
+    G.play('e2e4 g8f6 g1f3 f6g8 f3g1 g8f6 g1f3 f6g8');
+    ok(G.over() === null, `8 half-moves: nothing three times yet (${J(G.over())})`);
+    G.play('f3g1');
+    drawn(G, DRAWN.three, 'the 9th half-move, the position after 1.e4 for the third time (hm 1, 5, 9)');
+  });
+
+  // A walk with no capture and no pawn move that never repeats a position:
+  // the kings go round cycles of 7 and 8 squares (lcm 56 full moves), the
+  // a-pawns blocked, the c-pawns free.
+  const WK = ['e1', 'f1', 'g1', 'h2', 'g3', 'f3', 'e2'], BK = ['e8', 'f8', 'g8', 'h8', 'h7', 'g6', 'f6', 'e7'];
+  const FIFTY = { e1: 'wK', a4: 'wP', c2: 'wP', e8: 'bK', a5: 'bP', c7: 'bP' };
+  /** n half-moves of the walk, the kings stepping on from where they stand. */
+  const walk = (G, n) => {
+    for (let k = 0; k < n; k++) {
+      const w = toMove(G) === 'w', cyc = w ? WK : BK, at = cyc.find((s) => G.M.api.at(s)[0]?.t.endsWith(w ? '/wK' : '/bK'));
+      const r = G.move(at, cyc[(cyc.indexOf(at) + 1) % cyc.length]);
+      if (r.notes.length || G.over()) return k + 1;
+    }
+    return n;
+  };
+  scenario('(11) chess: the fifty-move rule — 100 half-moves with no capture and no pawn move end the game as a draw, the 100th and not the 99th', () => {
+    const G = chessGame();
+    G.plant(FIFTY);
+    ok(walk(G, 99) === 99 && G.over() === null, `99 half-moves of king walks: the game goes on (${J(G.over())})`);
+    walk(G, 1);
+    drawn(G, DRAWN.fifty, 'the 100th half-move');
+  });
+  scenario('(11) chess: the fifty-move rule — a pawn move starts the count again', () => {
+    const G = chessGame();
+    G.plant(FIFTY);
+    walk(G, 98);
+    G.play('c2c3');
+    ok(walk(G, 99) === 99 && G.over() === null, `98 king moves, a pawn move, 99 more: the game goes on (${J(G.over())})`);
+    walk(G, 1);
+    drawn(G, DRAWN.fifty, 'the 100th half-move after the pawn move');
+  });
+
+  for (const [what, pos, turn, mv] of [
+    ['K v K', { e1: 'wK', e8: 'bK', d2: 'bN' }, 'w', 'e1d2'],
+    ['K+B v K', { e1: 'wK', c1: 'wB', e8: 'bK', d2: 'bN' }, 'w', 'e1d2'],
+    ['K v K+B', { e1: 'wK', d7: 'wN', e8: 'bK', f8: 'bB' }, 'b', 'e8d7'],
+    ['K+N v K', { e1: 'wK', b1: 'wN', e8: 'bK', d2: 'bN' }, 'w', 'e1d2'],
+    ['K v K+N', { e1: 'wK', d7: 'wB', e8: 'bK', g8: 'bN' }, 'b', 'e8d7'],
+    ['K+B v K+B, both bishops on dark squares (c1, f8)', { e1: 'wK', c1: 'wB', e8: 'bK', f8: 'bB', d2: 'bN' }, 'w', 'e1d2'],
+    ['K+B v K+B, both on light squares (f1, c8)', { e1: 'wK', f1: 'wB', e8: 'bK', c8: 'bB', d2: 'bN' }, 'w', 'e1d2'],
+  ]) {
+    scenario(`(11) chess: insufficient material, ${what} — reached by a capture, a dead position (§3g): the game ends as a draw`, () => {
+      const G = chessGame();
+      G.plant(pos, turn);
+      ok(G.over() === null, `${what}: planted with one more piece, the game is on`);
+      G.play(mv);
+      drawn(G, DRAWN.dead, `${what} (after ${mv.slice(0, 2)}x${mv.slice(2)})`);
+    });
+  }
+
+  scenario('(11) chess: K+B v K+B with the bishops on opposite colours is no draw (a mate can still happen): the game plays on', () => {
+    const G = chessGame();
+    G.plant({ e1: 'wK', f1: 'wB', e8: 'bK', f8: 'bB', d2: 'bN' }); // f1 light, f8 dark
+    G.play('e1d2');
+    ok(G.over() === null && !G.anns.length && toMove(G) === 'b', `after Kxd2 the game goes on, Black to move, nothing announced (${J({ over: G.over(), anns: G.anns })})`);
+    G.play('e8e7 d2e3');
+    ok(G.over() === null && G.on('e3') && G.same(), 'both sides move on; the host holds the same table');
+  });
+}
+
 (async () => {
   await guard('(1) grid.js addresses', testGridAddresses);
   await guard('(1) grid.js centres', testGridCentres);
@@ -3633,5 +3827,6 @@ function testDemoBoxFields() {
   await guard('(RF4) the fourth 3B review', testFourthReview);
   await guard('(3C) a view\'s asks and the hint layer', testViewAsks);
   await guard('(3C) the demos\' box fields', testDemoBoxFields);
+  await guard('(11) chess: the draws', testChessDraws);
   report();
 })().catch(crash);
