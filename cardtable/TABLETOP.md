@@ -599,6 +599,11 @@ sync and rendering, and the Worker together with `handle`.
        too; a piece off a spot's centre is drawn where it lies; a guest's
        drop shows where the preview did; a client's `to`, `from`, `pick`
        and `handled` never reach a script.
+     - After its second review: a piece on a board's edge spot stays
+       centred on it across a host's reload and a table change (a new felt
+       moves nothing); a press on a piece drawn off its spot's centre takes
+       that piece, and once a piece is put on such a spot, the spot fans
+       them all, so none is drawn over another.
 4. **Game boxes.**
    - `game.json` plus `.zip` upload, declarative setup and reset.
    - Export with the current position.

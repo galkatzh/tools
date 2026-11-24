@@ -142,7 +142,9 @@ Playing on the free table:
   crowd takes the top piece you may move — with a checker of each colour
   on the bar, each player takes their own. A piece left off a spot's
   centre (a board moved under it, a table saved before snapping) is drawn
-  where it lies, and counted.
+  where it lies, and counted, and a press on it takes that very piece —
+  until a piece is put on that spot: then the spot fans them all, so none
+  hides another.
 - **Live drags.** While someone drags a piece, everyone sees it glide; the
   table itself only changes when they let go (the drop is the one move, so
   a rules script judges only the drop).

@@ -263,7 +263,10 @@ setups. `{x, y, free: true}` skips it.
   — the next action's `a.from`, a log line, `t.item(id).at` in the same
   hook: the spot under its centre, if one is in reach, else none. An
   address you gave (`t.move(id, 'map:c3')`, under a board lying on top)
-  stands until a board under the piece changes.
+  stands until a board under the piece changes. A table resize (or the
+  host's resume) pulls stray items back onto the felt, but a piece that
+  sits centred on its spot stays centred on it — on a board's edge spot
+  too, past the playing area's margin; a new felt alone moves nothing.
 - **Reads**: `t.where(id)` → the piece's address, or `null` (`false`: no
   such item); `t.at(addr)` → the pieces there, copied, bottom to top;
   `t.find({…, at, zone})` (`zone`: a zone id on any board, or

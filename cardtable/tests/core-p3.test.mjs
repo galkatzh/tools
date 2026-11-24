@@ -1704,6 +1704,39 @@ function testReviewOneRule() {
   ok(T.state.items.m.x === it.x && T.byAt.get('B:9,9')?.has('m') && !containmentProblems(T).length, `the board turned: the man stays, and containment reads it on 9,9 (${T.state.items.m.at})`);
 }
 
+function testReviewEdgeKept() {
+  section('(R) a piece centred on a spot past the playing area\'s margin (D112) stays there across a reload, a new felt and a resize (D119)');
+  const BB = cleanBox({ name: 'Big board', imgs: [], types: { b11: { kind: 'board', name: 'B11', w: 1120, board: { grid: { type: 'square', cols: 11, rows: 11, cell: 100, x: 10, y: 10 } } }, man: SPACE_BOX.types.man } });
+  const T = table({ B: { k: 'g', t: 'bx000003/b11', f: 0, x: 90, y: 90, rot: 0, z: BOARD_Z0 + 1 }, m: { k: 'g', t: 'bx000003/man', f: 0, x: 610, y: 610, rot: 0, z: 1 },
+    n: { k: 'g', t: 'bx000003/man', f: 0, x: 600, y: 600, rot: 0, z: 2 } }, { boxes: { bx000003: BB }, table: { shape: 'round', w: 1300, h: 1300 } });
+  act(T, BOB, { t: 'move', id: 'm', x: 200, y: 200 });
+  const at = (U, id) => [U.state.items[id].x, U.state.items[id].y, U.state.items[id].at];
+  const was = at(T, 'm');
+  ok(J(was) === J([210, 210, 'B:1,1']), `dropped toward cell 1,1: centred on it, past the margin (${J(was)})`);
+  // a reload: the save, a fresh table from it, the host resumes
+  const R = quietly(() => createTable({ ...json(T.snapshot()), boxes: json(T.state.boxes), decks: json(T.state.decks), boxSrc: {} }, env(3))).value;
+  const q = quietly(() => R.resume('Alice')), fx = R.drain();
+  ok(J(at(R, 'm')) === J(was) && !containmentProblems(R).length && !q.error.length, `after a reload (snapshot → createTable → resume) it is where it was, with its address (${J(at(R, 'm'))}) ${J(q.error)}`);
+  ok(!fx.some((e) => e.t === 'note' || e.t === 'toast'), 'and nothing was said about it');
+  // a new felt moves nothing at all
+  T.takeDirty();
+  const felt = act(T, HOST, { t: 'table', shape: 'round', w: 1300, felt: '#224466' }), d = T.takeDirty();
+  ok(J(at(T, 'm')) === J(was) && T.state.table.felt === '#224466' && !d.items.size, `a new felt: nothing moves, nothing is re-sent (${J(at(T, 'm'))}, ${d.items.size} re-sent; ${J(felt.log)})`);
+  // a resize: everything shifts alike — the man still centred on its spot, the board as well
+  act(T, HOST, { t: 'table', shape: 'round', w: 1800 });
+  ok(J(at(T, 'm')) === J([460, 460, 'B:1,1']) && T.state.items.B.x === 340 && !containmentProblems(T).length, `round 1800: the board and the man shifted by 250 together (${J(at(T, 'm'))})`);
+  act(T, HOST, { t: 'table', shape: 'round', w: 1300 });
+  ok(J(at(T, 'm')) === J(was) && !containmentProblems(T).length, `round 1300 again: back where it was, still on 1,1 (${J(at(T, 'm'))})`);
+  // a piece past the margin that is NOT centred on its spot is clamped as before
+  const n0 = at(T, 'n'), n = T.state.items.n;
+  n.x = 150; n.y = 150; // (off its spot's centre and past the margin, as a v3 save may leave it)
+  const R2 = quietly(() => createTable({ ...json(T.snapshot()), boxes: json(T.state.boxes), decks: json(T.state.decks), boxSrc: {} }, env(3))).value;
+  quietly(() => R2.resume('Alice'));
+  const q2 = clampToTable(T.state.table, 150, 150, 80, 80);
+  ok(near(R2.state.items.n.x, q2.x) && near(R2.state.items.n.y, q2.y) && J(at(R2, 'm')) === J(was) && !containmentProblems(R2).length,
+    `an off-centre piece past the margin is clamped on resume, the centred one beside it is not (${J(at(R2, 'n'))}, was ${J(n0)})`);
+}
+
 function testReviewHexRim() {
   section('(R) hexes at the grid\'s rim: the nearest centre within R, even when the hex holding the point is off the grid (§3a)');
   for (const [hex, pt] of [['pointy', [7, 44.64]], ['flat', [44.64, 7]]]) {
@@ -1767,6 +1800,7 @@ function testReviewGroupRound() {
   await guard('(R) dice', testReviewDice);
   await guard('(R) explicit addresses', testReviewExplicit);
   await guard('(R) one snapping rule', testReviewOneRule);
+  await guard('(R) an edge spot across a reload and a resize', testReviewEdgeKept);
   await guard('(R) hex rim', testReviewHexRim);
   await guard('(R) a round table\'s group drag', testReviewGroupRound);
   report();

@@ -818,7 +818,8 @@ raw peers import `PROTO` from `core.js` (`h.PROTO`), saves use `STATE_V`.
   (`--view`), like `.count`. Fanned members' `style.left/top` are their
   drawn places (the state keeps them centred on the spot), laid out from
   the spot's centre; a member off the centre (a board moved under it, a v3
-  save) is drawn where it lies and only counted (D116). A live drag is the
+  save) is drawn where it lies and only counted (D116), until a member
+  centred there joins it: then the spot fans all of them (D120). A live drag is the
   element's `style.translate`; when it ends, its left/top jump to the new
   place and the translation alone runs out (endLive).
 - **The wire**: a guest's drag sends `{t: 'drag', id, x, y}` every 60 ms
@@ -858,11 +859,17 @@ raw peers import `PROTO` from `core.js` (`h.PROTO`), saves use `STATE_V`.
   the load gates on items that never snap, dice, an explicit address kept
   until a board under it changes, one snapping rule past the playing
   area's margin, hexes at the grid's rim (brute force), a round table's
-  group drag. Its reference `snapper` leaves dice out (D112).
+  group drag; from the second review, a piece on an edge spot past the
+  margin unmoved by a reload (snapshot → createTable → resume), a new felt
+  and a resize there and back (D119). Its reference `snapper` leaves dice
+  out (D112).
 - **`t-p3-review.js`** (the fix-up's regressions on real screens; Alice on
   a desktop, Bob on an iPhone 13, Carol on one in landscape with motion
   on): a v3 backgammon save resumed (`h.plantSave`) draws every checker
-  where it lies, on its point; a checker of each colour on the bar (both
+  where it lies, on its point; a checker put back on one of them makes
+  that point fan all five (where Phase 2 spread them), a press on an
+  off-centre checker takes that checker, and one brought to a point with a
+  bare base closes its fan up, none drawn over another (D120); a checker of each colour on the bar (both
   show; each player's press takes their own); a guest's drop drawn at the
   preview's slot in every frame from the release; a live glide's end on a
   watcher (no step back; left/top stand still: translate alone); a die
@@ -878,7 +885,10 @@ raw peers import `PROTO` from `core.js` (`h.PROTO`), saves use `STATE_V`.
   (a lone checker on the bar is drawn at the bar's top end: the bar fans,
   D115), `t-fun-motion.js` (a remote move's glide may be a `translate`
   transition: a live drag's end, D116) and `t-p3-space.js` (its bar check
-  reads the bar's fan, `fanned`). `core-p2-bench.mjs` is as Phase 2 left
+  reads the bar's fan, `fanned`); in the second fix-up, `t-bridge.js`
+  (`dragItem` waits until the card is drawn where the state has it: another
+  player's refused drop shows at its live spot until the host's next tick,
+  and a press measured there landed on the felt). `core-p2-bench.mjs` is as Phase 2 left
   it: dice never snap (D112), so B9's roll of 20 dice on the board is back
   under 3 KB.
 

@@ -1,11 +1,12 @@
 // The Phase 3A fix-up's regressions on real screens (the reviews of 3A;
-// spec §3g, D112–D116), on backgammon: Alice hosts on a desktop, Bob plays on
+// spec §3g, D112–D120), on backgammon: Alice hosts on a desktop, Bob plays on
 // an iPhone 13 in portrait, Carol watches on one in landscape, with motion on.
 //  1. A Phase 2 (v3) save, its checkers spread up their points as Phase 2's
 //     setup left them, resumes with every checker drawn where it lies, on its
 //     point: a piece off its spot's centre is counted in the ×k, not fanned
-//     (fanned from its own place, it was drawn off the board, D116); one
-//     moved there joins the fan.
+//     (fanned from its own place, it was drawn off the board, D116), and a
+//     press on it takes it; once a piece centred there joins them, the spot
+//     fans them all, none drawn over another (D120).
 //  2. A checker of each colour on the bar: both show (the bar fans down,
 //     D115), and a press on the crowd takes the presser's own, whichever is
 //     on top — Bob on his phone, Alice with the mouse.
@@ -104,13 +105,34 @@ const MAN = 80, BH = 1000;
     const badges = await Promise.all(tops.map(({ id }) => host.evaluate((id) => document.querySelector(`.item[data-id="${id}"] > .fanb`)?.textContent ?? null, id)));
     ok(tops.every((m, k) => badges[k] === (m.k > 1 ? `×${m.k}` : null)), `each point's top checker carries its "×k" all the same (${badges.join(' ')})`);
     await shot(host, 'p3r-v3-resumed-desk');
-    // One checker moved off p6 and back is centred on it: the fan takes it in, at the base.
+    /** The checkers of point `at` drawn over one another on Alice's screen (pairs of ids). */
+    const overlaps = async (at) => {
+      const ds = await Promise.all((await crowd(host, at)).map(async (id) => [id, await drawn(host, id)])), out = [];
+      ds.forEach(([a, p], k) => ds.slice(k + 1).forEach(([b, q]) => { if (Math.abs(p.x - q.x) < MAN - 0.01 && Math.abs(p.y - q.y) < MAN - 0.01) out.push([a, b]); }));
+      return out;
+    };
+    // One checker moved off p6 and back is centred on it: the spot fans them all (D120) —
+    // the four others in the fan's first slots, which are where Phase 2 spread them.
     const p6 = f.filter((m) => m.at === 'p6'), id = p6.at(-1).id, c = { x: b.x + SP.p6.x, y: b.y + SP.p6.y };
     await S.dragTo(host, id, { x: c.x, y: c.y + 100 });
     await P.waitView(host, 'v.items[a.id].x === a.x && v.items[a.id].y === a.y', { id, x: c.x - MAN / 2, y: c.y - MAN / 2 });
     await h.sleep(300);
-    const d = await drawn(host, id), w = slot(b, SP.p6, 0, 1);
-    ok(Math.abs(d.x - w.x) < 0.01 && Math.abs(d.y - w.y) < 0.01, `a checker dropped back on p6 is centred on it, and drawn in its fan: at its base (${JSON.stringify(d)})`);
+    const ds = await Promise.all(p6.map(async (m) => [m.id, await drawn(host, m.id)])), far = ds.filter(([, d], j) => { const w = slot(b, SP.p6, j, 5); return Math.abs(d.x - w.x) > 0.01 || Math.abs(d.y - w.y) > 0.01; });
+    ok(!far.length && ds.slice(0, 4).every(([k, d]) => Math.abs(d.y - its[k].y) < 0.01), `a checker dropped back on p6 is centred on it: p6 fans all five, the four others where they lay, it on top (${far.length} elsewhere${far.length ? `: ${JSON.stringify(far[0])}` : ''})`);
+    ok(!(await overlaps('p6')).length, 'none of them drawn over another');
+    // A press on a checker drawn where it lies (off its point's centre, no fan) takes that very checker (D120).
+    const p8 = await crowd(host, 'p8'), low = p8[0];
+    await S.dragTo(host, low, { x: b.x + SP.p7.x, y: b.y + SP.p7.y });
+    ok(await atOn(host, low, 'p7'), 'Alice presses p8\'s lowest checker, at its base, and drags it to p7: that checker goes');
+    ok(JSON.stringify(await crowd(host, 'p8')) === JSON.stringify(p8.slice(1)), 'the others stay on p8, the top one too');
+    // One brought onto a point whose base is now bare: the fan closes up under it, nothing drawn over another.
+    const from = (await crowd(host, 'p13')).at(-1);
+    await S.dragTo(host, from, { x: b.x + SP.p8.x, y: b.y + SP.p8.y });
+    ok(await atOn(host, from, 'p8'), 'Alice brings a checker from p13 to p8');
+    await h.sleep(300);
+    const p8d = await Promise.all((await crowd(host, 'p8')).map((k) => drawn(host, k)));
+    ok(p8d.every((d, j) => Math.abs(d.y - slot(b, SP.p8, j, 3).y) < 0.01) && !(await overlaps('p8')).length, `p8 fans its three from the base, none drawn over another (${JSON.stringify(p8d.map((d) => d.y))})`);
+    await shot(host, 'p3r-fans-desk');
   }
 
   // ===========================================================================
@@ -119,6 +141,9 @@ const MAN = 80, BH = 1000;
   bob.touch = true;
   const carol = await S.join(env, 'Carol', host.url(), { ctx: { ...h.playwright.devices['iPhone 13 landscape'], reducedMotion: 'no-preference' } });
   for (const p of [bob, carol]) await P.waitView(p, bgOn, null, 30000);
+  await h.sleep(600);
+  await shot(bob, 'p3r-fans-phone');
+  await shot(carol, 'p3r-fans-landscape');
   ok(await P.waitView(host, `v.players[me].seatId === 'light' && v.players[a].seatId === 'dark'`, bob.pid), 'Alice sits Light, Bob Dark; Carol watches');
   const bg = await boardOf(host), pt = (s) => ({ x: bg.x + SP[s].x, y: bg.y + SP[s].y });
   const ownerAt = async (at) => (await items())[(await crowd(host, at))[0]]?.owner;

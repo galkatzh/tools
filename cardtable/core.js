@@ -1785,21 +1785,37 @@ export function createTable(host, env = {}) {
       if (ids.length) logEvent(actor, `released ${ids.length} ${ids.length === 1 ? 'item' : 'items'} of ${s.name}: that seat is gone`);
     }
   }
+  /** Shifts every item by (dx, dy) and pulls it back onto the table as it
+   *  now is (setTable, resume): the boards first, then the rest, each clamped
+   *  (clampToTable) — but a piece that would then sit centred on its own
+   *  spot stays there, as snapping put it (snapTo, even past the playing
+   *  area's margin: D112, D119). Nothing moves more than that: a piece whose
+   *  board was pulled in harder is only clamped, and every address is read
+   *  again by containment (syncSpots). Each item that moved is re-sent. */
+  function pullOn(dx, dy) {
+    for (const id of [...boardIds, ...Object.keys(host.items).filter((id) => !boardIds.has(id))]) {
+      const it = host.items[id], { w, h } = size(it), x = it.x + dx, y = it.y + dy;
+      let p = clampToTable(host.table, x, y, w, h);
+      if (it.at && (p.x !== x || p.y !== y)) {
+        const s = snapTo(tb(), host.table, w, h, x, y, { at: it.at }); // (where its spot is now: the boards are in place)
+        if (Math.abs(s.x - x) < 1e-6 && Math.abs(s.y - y) < 1e-6) p = s; // (1e-6: a turned board's spot centre carries float crumbs)
+      }
+      if (p.x === it.x && p.y === it.y) continue;
+      touch(id);
+      [it.x, it.y] = [p.x, p.y];
+      respot = true; // (the addresses are read again, syncSpots)
+    }
+  }
   /** The table becomes `tb` (cleanTable's): items shift to keep their place
-   *  relative to the centre, then are clamped onto it; seat angles stay, and
-   *  named seats are placed anew. False when nothing changed. */
+   *  relative to the centre, then are pulled back onto it (pullOn) — a new
+   *  felt alone moves nothing; seat angles stay, and named seats are placed
+   *  anew. False when nothing changed. */
   function setTable(actor, tb) {
     const old = host.table;
     if (canon(old) === canon(tb)) return false;
-    const dx = (tb.w - old.w) / 2, dy = (tb.h - old.h) / 2;
     host.table = tb;
     dirty.table = true;
-    for (const [id, it] of Object.entries(host.items)) {
-      const { w, h } = size(it);
-      ({ x: it.x, y: it.y } = clampToTable(tb, it.x + dx, it.y + dy, w, h));
-      touch(id);
-    }
-    respot = true; // (moving nothing more: the addresses are read again, syncSpots)
+    if (tb.shape !== old.shape || tb.w !== old.w || tb.h !== old.h) pullOn((tb.w - old.w) / 2, (tb.h - old.h) / 2);
     if (host.seats) {
       for (const [q, pl] of Object.entries(host.players)) if (pl.seatId) { pl.seat = namedAngle(pl.seatId); touchPlayer(q); }
     }
@@ -3033,14 +3049,10 @@ export function createTable(host, env = {}) {
       if (pl.seat === undefined) pl.seat = assignSeat();
       touchPlayer(p);
     }
-    for (const [id, it] of Object.entries(host.items)) {
-      const { w, h } = size(it), { x, y } = clampToTable(host.table, it.x, it.y, w, h);
-      if (x !== it.x || y !== it.y) respot = true; // (one pulled back: the addresses are read again, syncSpots)
-      [it.x, it.y] = [x, y];
-      touch(id);
-    }
-    tbSig = null; // (the boxes are fresh copies: the boards' structures too)
+    for (const id of Object.keys(host.items)) touch(id); // (all re-read: the boxes are fresh copies — the boards' structures too)
+    tbSig = null;
     tbVer++;
+    pullOn(0, 0);
     ensurePlayer(pid, name);
     logEvent(pid, 'resumed the table');
     bump();

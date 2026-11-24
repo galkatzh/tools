@@ -29,8 +29,15 @@ async function expectToast(page, txt, fn) {
   await fn();
   await h.toastHas(page, txt);
 }
-/** Drags table item `id` (grabbed at a visible, unoccluded point) to a fraction of the table's box. */
+/** Drags table item `id` (grabbed at a visible, unoccluded point) to a fraction of the table's box.
+ *  It waits first for the item to be drawn where the state has it: someone
+ *  else's live drag of it (Phase 3A: a refused one too) shows until the
+ *  host's next tick, and a press measured on its live spot would land on felt. */
 async function dragItem(page, id, fx, fy) {
+  await page.waitForFunction((id) => {
+    const el = document.querySelector(`.item[data-id="${id}"]`);
+    return el && !window.__ct.lives()[id] && getComputedStyle(el).translate === 'none';
+  }, id, { timeout: 10000 });
   const pt = await page.evaluate((id) => {
     const el = document.querySelector(`.item[data-id="${id}"]`), r = el.getBoundingClientRect();
     for (let i = 1; i < 8; i++) for (let j = 1; j < 8; j++) {

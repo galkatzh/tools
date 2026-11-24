@@ -1567,7 +1567,8 @@ function redrawLanded() {
 // it is hit-tested too; the top one carries a "×k" badge (.fanb). A piece
 // whose address was read by containment while it lies off the spot's centre
 // (a board moved under it, a Phase 2 save: D106) is drawn where it lies and
-// only counted (D116).
+// only counted (D116), and a press on it takes it — until a piece centred
+// there joins it: then the spot fans them all (D120).
 const fanAt = new Map();  // display address → the ids of the pieces there
 const atOf = new Map();   // piece id → its display address
 const fanPos = new Map(); // piece id → where it is drawn (top-left), when fanned
@@ -1593,9 +1594,11 @@ function spotOn(at) {
   const r = resolveAddr(boardsNow(), at);
   return r?.b ? { r, sp: r.b.B.spaces?.find((x) => x.id === r.local) } : null;
 }
-/** The members of spot S (spotOn) among `ids` that lie centred on it: the ones its fan lays out. */
-const centredOn = (S, ids) => ids.filter((id) => { const it = view.items[id], { w, h } = sizeOf(it, boxes); return Math.abs(it.x + w / 2 - S.r.x) < 0.5 && Math.abs(it.y + h / 2 - S.r.y) < 0.5; });
-/** Where pieces of sizes `sizes` ([{w, h}], bottom first) centred on spot S
+/** Whether spot S (spotOn) fans its members `ids`: when one of them lies
+ *  centred on it — then all of them, an off-centre one too (D120), so none
+ *  is drawn over another; else each is drawn where it lies (D116). */
+const fans = (S, ids) => !!S && ids.some((id) => { const it = view.items[id], { w, h } = sizeOf(it, boxes); return Math.abs(it.x + w / 2 - S.r.x) < 0.5 && Math.abs(it.y + h / 2 - S.r.y) < 0.5; });
+/** Where pieces of sizes `sizes` ([{w, h}], bottom first) fanned on spot S
  *  (spotOn) are drawn: their top-lefts on the table, laid out from its
  *  centre (fanOffsets, turned with its board) — or null when there is
  *  nothing to fan (one piece, on a spot with no `dir`). */
@@ -1608,10 +1611,9 @@ function fanSlots(S, sizes) {
 function layoutFans() {
   if (!viewTB) for (const at of fanAt.keys()) fanDirty.add(at);
   for (const at of fanDirty) {
-    const ids = spotMembers(at), S = spotOn(at), fan = S ? centredOn(S, ids) : [], slots = fanSlots(S, fan.map((id) => sizeOf(view.items[id], boxes)));
+    const ids = spotMembers(at), S = spotOn(at), slots = fans(S, ids) ? fanSlots(S, ids.map((id) => sizeOf(view.items[id], boxes))) : null;
     ids.forEach((id, j) => {
-      const k = fan.indexOf(id);
-      if (slots && k >= 0) fanPos.set(id, slots[k]);
+      if (slots) fanPos.set(id, slots[j]);
       else fanPos.delete(id);
       fanBadge(id, j === ids.length - 1 && ids.length > 1 ? ids.length : 0);
       placeEl(id);
@@ -1627,12 +1629,14 @@ function fanBadge(id, k) {
   if (!b) { b = document.createElement('span'); b.className = 'fanb'; el.appendChild(b); }
   b.textContent = `×${k}`;
 }
-/** The piece a press on item `id` means (spec §3g, D115): on a crowded
- *  spot, its topmost piece this player may move (one of each colour on
- *  backgammon's bar: each player takes their own), else its top one. */
+/** The piece a press on item `id` means (spec §3g, D115, D120): in a spot's fan,
+ *  the fan's topmost piece this player may move (one of each colour on
+ *  backgammon's bar: each player takes their own), else its top one; a
+ *  piece drawn where it lies — off its spot's centre (D116), or alone —
+ *  is the one pressed. */
 function topOf(id) {
-  const ids = atOf.has(id) ? spotMembers(atOf.get(id)) : [];
-  if (ids.length < 2) return id;
+  if (!fanPos.has(id)) return id;
+  const ids = spotMembers(atOf.get(id));
   return ids.findLast((m) => mayTouch(view.items[m]) && !view.items[m].lock) ?? ids.at(-1);
 }
 /** Puts item `id`'s element where it is drawn — its fanned place, or its
@@ -2652,7 +2656,8 @@ function previewSnap() {
   ghostEl.classList.toggle('hidden', !drag.spot);
   chipEl.classList.toggle('hidden', !drag.spot);
   if (!drag.spot) return;
-  const S = spotOn(drag.spot.to), others = S ? centredOn(S, spotMembers(drag.spot.to).filter((id) => id !== drag.id)) : [];
+  const S = spotOn(drag.spot.to), others = S ? spotMembers(drag.spot.to).filter((id) => id !== drag.id) : [];
+  // (centred there, it fans them all, D120 — and goes on top of them)
   drag.spot.slot = fanSlots(S, [...others.map((id) => sizeOf(view.items[id], boxes)), P])?.[others.length] || { x: s.x, y: s.y };
   Object.assign(ghostEl.style, { width: `${P.w}px`, height: `${P.h}px`, translate: `${drag.spot.slot.x}px ${drag.spot.slot.y}px`, rotate: `${P.rot}deg` });
   ghostEl.classList.toggle('round', P.shape === 'round' || P.shape === 'disc');
