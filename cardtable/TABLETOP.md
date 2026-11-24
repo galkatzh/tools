@@ -328,15 +328,21 @@ onAnswer(t, pid, id, value) { … }   // value checked against what was offered,
 
 - `pick` can be `'item' | 'space' | 'hand' | 'number'`. The player sees a
   prompt and the offered targets highlighted on their screen only.
+- The question shows in a panel of its own, above the hand bar: it takes its
+  room from the table, so it never covers a piece, a seat label or the turn
+  cue, and it folds to a chip but can't be dismissed.
 - The engine refuses any answer that wasn't offered, the way `rulesBtn`
   refuses a button that wasn't shown.
-- Pending asks live in `t.data`, so a host reload resumes them.
+- Pending asks live in the engine's own state (never `t.data`, which a script
+  could corrupt), so a host reload resumes them.
 
 ### Private UI: hints and per-player data
 
 - `t.hint(pid, { items, spaces })`: highlights legal moves for one player.
   It is typically called from **`onSelect(t, pid, id)`**, which fires when a
-  player picks up or selects a piece (a cheap new action).
+  player picks up or selects a piece (a cheap new action): a tap, or the start
+  of a drag. In a strict game that tap shows no action bar — its moves are
+  drags, asks and buttons.
 - `t.secret[pid] = {…}`: script UI data sent **only** to that player, such as
   a secret objective, their own score breakdown or an option list. It is the
   private counterpart of `t.public`.
@@ -756,3 +762,9 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
   (§2).
 - **Worker:** rules move into a Web Worker together with `handle` (phase 3),
   so the one change to how scripts run happens once, early (§5).
+- **Questions take their own room:** a rules' ask is a panel between the table
+  and the hand bar, never a card over the table — where a pick must be tapped
+  (§5).
+- **A tap is a selection in a strict game:** with rules that want selections,
+  it asks them for a hint and shows no action bar, whose buttons they would
+  refuse (§5).

@@ -194,14 +194,28 @@ body.nohand #hand-bar { display: none; }
   #announce { font-size: 16px; padding: 8px 14px; max-width: 92%; }
 }
 
-/* scripted rules: button row + toolbar state */
+/* scripted rules: the button row (and this player's secret card above it) + toolbar state */
 /* moved up (translate) by placeSeats() so the row sits above your own seat label */
+#rules-row {
+  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 9500;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  width: max-content; max-width: calc(100% - 8px); pointer-events: none;
+}
+#rules-row > * { pointer-events: auto; max-width: 100%; }
 #rules-btns {
-  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
-  display: flex; gap: 8px; z-index: 9500;
-  width: max-content; max-width: calc(100% - 8px); flex-wrap: wrap; justify-content: center;
+  display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
   background: #0f172ad9; padding: 7px; border-radius: 12px; box-shadow: 0 2px 10px #000a;
 }
+/* t.secret (app.js renderSecret, spec §3g): what the rules tell this player
+   alone, as text (textContent, pre-wrap); a tap on its head folds it away */
+#secret {
+  width: max-content; max-width: min(360px, 100%); max-height: 34vh; overflow-y: auto;
+  background: #1e1b4bf2; border: 1.5px solid #a78bfa; border-radius: 12px; box-shadow: 0 2px 10px #000a;
+}
+#secret-head { display: block; width: 100%; background: none; color: #ddd6fe; font-weight: 700; text-align: left; padding: 6px 12px; }
+#secret-text { padding: 0 12px 10px; font-size: 14px; line-height: 1.35; color: #ede9fe; white-space: pre-wrap; overflow-wrap: anywhere; }
+#secret.shut #secret-text { display: none; }
+#secret.shut #secret-head::after { content: ' ▸'; color: #a78bfa; }
 #rules-btns button { background: #7c3aed; }
 /* short screens (phone landscape): a compact row, one line even for Hold'em's
    seven buttons, clear of the side seats' labels and the board */
@@ -212,7 +226,7 @@ body.nohand #hand-bar { display: none; }
 /* a phone in landscape (.gutters, set by placeSeats): the round felt leaves
    wide margins — the notices go in the left one, the button row in the right */
 .gutters #notices { right: auto; width: var(--gutter); }
-.gutters #rules-btns { left: auto; right: 8px; transform: none; max-width: calc(var(--gutter) - 16px); }
+.gutters #rules-row { left: auto; right: 8px; transform: none; max-width: calc(var(--gutter) - 16px); align-items: flex-end; }
 #main.gutters #turn-cue { right: auto; left: 12px; } /* the button row owns the right margin */
 #rules-btns button:hover { background: #8b5cf6; }
 #rules-btn.on { background: #7c3aed; }
@@ -368,6 +382,23 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 .shape-pawn .pface { clip-path: polygon(40% 0, 60% 0, 70% 14%, 64% 32%, 57% 42%, 74% 84%, 90% 100%, 10% 100%, 26% 84%, 43% 42%, 36% 32%, 30% 14%); }
 /* a clip-path cuts its own shadow off: the item casts it instead */
 .item.shape-hex, .item.shape-meeple, .item.shape-pawn { filter: drop-shadow(0 2px 3px #0009); }
+/* Hints (app.js renderHints, spec §3g), this player's alone: a dashed cyan
+   outline on a hinted item, and on a board's hint layer (in #table, above
+   the pieces, never taking the pointer: pieces.js hintSVG) a translucent
+   disc on each hinted cell or space — a ring around a piece that sits there.
+   Violet: what an open ask offers to pick. In table units, grown like the
+   selection rings below (--bz: the view sheet's rule 0), which win over them. */
+.item.hint, .item.offer { --u: calc(1px * var(--bz, 1)); }
+.item.hint .cardbox, .item.hint .pface, .item.hint .bagbox { outline: calc(3 * var(--u)) dashed #22d3ee; outline-offset: calc(2 * var(--u)); }
+.item.offer .cardbox, .item.offer .pface, .item.offer .bagbox { outline: calc(3 * var(--u)) dashed #c084fc; outline-offset: calc(2 * var(--u)); }
+.item.hint.shape-hex, .item.hint.shape-meeple, .item.hint.shape-pawn { filter: drop-shadow(0 0 calc(3 * var(--u)) #22d3ee) drop-shadow(0 0 calc(2 * var(--u)) #22d3ee); }
+.item.offer.shape-hex, .item.offer.shape-meeple, .item.offer.shape-pawn { filter: drop-shadow(0 0 calc(3 * var(--u)) #c084fc) drop-shadow(0 0 calc(2 * var(--u)) #c084fc); }
+.hint-layer { position: absolute; pointer-events: none; z-index: 99998; }
+.hint-layer svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.hint-layer .hd { fill: #22d3ee; fill-opacity: 0.55; }
+.hint-layer .hr { fill: none; stroke: #22d3ee; stroke-opacity: 0.85; }
+.hint-layer .hd.o { fill: #c084fc; fill-opacity: 0.6; }
+.hint-layer .hr.o { stroke: #c084fc; }
 /* Selection rings, in table units: they grow with the badges (--bz, set on a
    selected item by the view sheet), so a phone's fit still shows them. */
 .item.selected { --u: calc(1px * var(--bz, 1)); }
@@ -494,6 +525,44 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 .hcard .face.txt .tn, #ghost .face.txt .tn { font-size: calc(var(--hch) * 0.1); }
 .hcard .face.txt .tt, #ghost .face.txt .tt { font-size: calc(var(--hch) * 0.075); }
 #hand:empty::after { content: "Your hand is empty"; color: #64748b; align-self: center; font-size: 14px; }
+/* a hand ask (pick 'hand'): the cards are toggles, the picked ones ringed
+   inside their edge (#hand scrolls, so it clips what stands past it: app.js markHandPicks) */
+#hand.picking .hcard { cursor: pointer; }
+.hcard.picked { outline: 4px solid #c084fc; outline-offset: -4px; }
+
+/* --- the rules' question to this player (app.js renderAsk, spec §3g) ---
+   A sheet of its own between the table and the hand bar (a centred card on a
+   wide screen): it takes its room from the table, which refits above it, so
+   it covers no piece, seat label, turn cue or watcher. Folded (▾), a chip. */
+#ask {
+  flex: none; display: flex; justify-content: center; align-items: center;
+  padding: 6px 10px; background: #1a1433; border-top: 2px solid #7c3aed; z-index: 10;
+}
+#ask-card { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; width: min(720px, 100%); }
+#ask-head { flex: 1 1 12em; min-width: 0; display: flex; align-items: center; gap: 8px; }
+#ask-prompt { font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+#ask-prompt::before { content: "❓ "; }
+#ask-of { flex: none; color: #c4b5fd; font-size: 12px; }
+#ask-body { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+#ask button { min-height: 36px; }
+#ask-body button { background: #6d28d9; padding: 6px 14px; font-size: 16px; }
+#ask-body button:hover { background: #7c3aed; }
+#ask-body button:disabled { opacity: 0.45; cursor: default; }
+#ask .how { color: #c4b5fd; font-size: 14px; }
+#ask-v {
+  width: 5.5em; font-size: 16px; text-align: center;
+  background: #0f172a; color: #e2e8f0; border: 1px solid #475569; border-radius: 8px; padding: 6px 4px;
+}
+#ask-v:invalid { border-color: #f87171; }
+#ask-min, #ask-chip { background: none; color: #c4b5fd; }
+#ask-min { margin-left: auto; } /* (last: the card's far right, on the options' row when it wraps) */
+#ask-body.glyphs button { font-size: 26px; line-height: 1; min-width: 52px; } /* one-glyph options (♕ ♖ ♗ ♘) read at a glance */
+#ask-chip { font-weight: 600; }
+#ask.min #ask-card, #ask:not(.min) #ask-chip { display: none; }
+#ask.sent #ask-body { opacity: 0.6; }
+#ask.min { padding-block: 0; }
+@media (pointer: coarse) { #ask button { min-height: 44px; min-width: 44px; } }
+@media (max-height: 500px) { #ask { padding: 2px 8px; } #ask-prompt { font-size: 14px; } }
 
 /* ghost card that follows the pointer while dragging out of the hand */
 #ghost {

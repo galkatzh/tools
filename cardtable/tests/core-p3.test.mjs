@@ -3514,6 +3514,44 @@ function testFourthReview() {
   }
 }
 
+// =============================================================================
+// Phase 3C: what a guest's view takes of its asks (D157), the hint layer (D156)
+// =============================================================================
+/** A view's asks pass viewAsk: each well-formed ask as the host sends it,
+ *  unchanged; anything else dropped loudly. pieces.hintSVG writes numbers only. */
+function testViewAsks() {
+  const { viewFromSnap, applyViewPatch } = core;
+  const good = [
+    { id: 'promo', prompt: 'Promote to', options: ['♕', '♖', '♗', '♘'] },
+    { id: 'which', prompt: 'Which?', pick: 'item', among: ['a1b2c3d4'] },
+    { id: 'where', prompt: 'Where?', pick: 'space', among: ['e4', 'map:c3'] },
+    { id: 'two', prompt: 'Two cards', pick: 'hand', count: 2 },
+    { id: 'one', prompt: 'A card', pick: 'hand' },
+    { id: 'num', prompt: 'How many?', pick: 'number', min: 1, max: 6 },
+  ];
+  const bad = [null, 7, 'x', [], { id: 'no id!', prompt: 'p', options: ['a'] }, { id: 'p', prompt: 5, options: ['a'] }, { id: 'p', prompt: 'p' },
+    { id: 'p', prompt: 'p', options: [] }, { id: 'p', prompt: 'p', options: ['a', 7] }, { id: 'p', prompt: 'p', options: ['a'], pick: 'item', among: [] },
+    { id: 'p', prompt: 'p', pick: 'item' }, { id: 'p', prompt: 'p', pick: 'space', among: 'e4' }, { id: 'p', prompt: 'p', pick: 'hand', count: 0 },
+    { id: 'p', prompt: 'p', pick: 'hand', count: 1.5 }, { id: 'p', prompt: 'p', pick: 'number', min: 3, max: 1 }, { id: 'p', prompt: 'p', pick: 'number', min: 1 },
+    { id: 'p', prompt: 'p', pick: 'dice' }, { id: 'p', prompt: 'p', pick: 'item', among: ['x'], count: 2 }, { id: '__proto__', prompt: 'p', options: ['a'] },
+    { id: 'p', prompt: 'p', options: Array.from({ length: 21 }, (_, k) => String(k)) }];
+  const snap = quietly(() => viewFromSnap({ seq: 1, boot: 1, ask: [...good, ...bad] }));
+  ok(J(snap.value.ask) === J(good), `viewFromSnap keeps the ${good.length} well-formed asks as sent, in order (${J(snap.value.ask).slice(0, 100)}…)`);
+  ok(snap.error.length === bad.length - 3 && snap.error.every((e) => e.startsWith('dropped a malformed ask from the host')),
+    `and drops the ${bad.length} others, loudly (${snap.error.length} console.error; null, a number and a string are no entries at all)`);
+  const V = viewFromSnap({ seq: 1, boot: 1 });
+  const patch = quietly(() => applyViewPatch(V, { seq: 2, ask: [good[0], { id: 'p', prompt: 'p', pick: 'hand', count: -1 }] }));
+  ok(J(V.ask) === J([good[0]]) && patch.error.length === 1, 'a patch\'s asks pass the same gate');
+  applyViewPatch(V, { seq: 3, ask: null });
+  ok(J(V.ask) === '[]', 'a patch\'s null clears them');
+  const svg = pieces.hintSVG(372, 372, [{ x: 54.5, y: 120, size: 44, ring: false, offer: false }, { x: 98, y: 76, size: 44, ring: true, offer: true }]);
+  ok(svg === '<svg viewBox="0 0 372 372" aria-hidden="true"><circle class="hd" cx="54.5" cy="120" r="10.56"/><circle class="hr o" cx="98" cy="76" r="20.68" stroke-width="3.08"/></svg>',
+    `hintSVG: a disc (0.24 × the size) and a violet ring (0.47 ×, its stroke 0.07 ×), numbers only (${svg})`);
+  const odd = pieces.hintSVG(100, 100, [{ x: 'x"><script>', y: NaN, size: '1e9', ring: '"', offer: 0 }]);
+  const SHAPE = /^<svg viewBox="[\d. ]+" aria-hidden="true">(<circle class="h[dr]( o)?" cx="-?[\d.]+" cy="-?[\d.]+" r="-?[\d.]+"( stroke-width="-?[\d.]+")?\/>)*<\/svg>$/;
+  ok(SHAPE.test(svg) && SHAPE.test(odd), `whatever it is handed, only numbers reach it (${odd})`);
+}
+
 (async () => {
   await guard('(1) grid.js addresses', testGridAddresses);
   await guard('(1) grid.js centres', testGridCentres);
@@ -3569,5 +3607,6 @@ function testFourthReview() {
   await guard('(RF2) the second 3B review', testSecondReview);
   await guard('(RF3) the third 3B review', testThirdReview);
   await guard('(RF4) the fourth 3B review', testFourthReview);
+  await guard('(3C) a view\'s asks and the hint layer', testViewAsks);
   report();
 })().catch(crash);

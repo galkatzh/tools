@@ -32,7 +32,7 @@
       <div id="table"></div>
       <div id="table-hint" class="hidden"></div>
       <div id="action-bar" class="hidden"></div>
-      <div id="rules-btns" class="hidden"></div>
+      <div id="rules-row"><div id="secret" class="hidden"><button id="secret-head" title="Only you see this — tap to fold it away">🔒 For you</button><div id="secret-text"></div></div><div id="rules-btns" class="hidden"></div></div>
       <div id="seat-menu" class="hidden"></div>
       <div id="watch-box"><div id="watchers" class="hidden"></div><div id="watch-me" class="hidden"><span id="watch-me-text"></span><button id="sit-btn" class="hidden">Sit down</button></div></div>
       <div id="turn-cue" class="hidden">⏳ Your turn</div>
@@ -49,6 +49,12 @@
     <!-- click-through top-centre column: the banner, then a toast below it -->
     <div id="notices"><div id="announce" class="hidden"></div><div id="toast" class="hidden"></div></div>
   </main>
+
+  <!-- the rules' question to this player (app.js renderAsk): a sheet of its own, above the hand bar -->
+  <section id="ask" class="hidden" aria-live="polite">
+    <div id="ask-card"><div id="ask-head"><span id="ask-prompt"></span><span id="ask-of"></span></div><div id="ask-body"></div><button id="ask-min" title="Fold the question away (it stays until you answer)">▾</button></div>
+    <button id="ask-chip">❓ Rules ask</button>
+  </section>
 
   <footer id="hand-bar">
     <div id="hand-resize" title="Drag to resize your hand cards"></div>
@@ -144,6 +150,7 @@
       <li>The <b>host</b> can enlarge the table (Table: small / medium / large) when more players join.</li>
       <li><b>🎲 Games</b>: the host starts Hold'em, Cards Against Humanity, Bridge and more in one click (or goes back to a free table).</li>
       <li><b>📜 Rules</b>: the host can write a script that enforces rules (turn order, legal moves) and automates play (auto-dealing, a poker dealer). Everyone can read the active script; everything it does appears in the log as "📜 Rules". It runs beside the host's page, never on it: a script that hangs is stopped after a few seconds and the table goes on without rules.</li>
+      <li>The rules may <b>ask you</b> something: the question shows above your hand (❓) — tap an option, one of the <b>highlighted</b> pieces or spots, the cards in your hand it wants, or set a number; <b>▾</b> folds it away until you're ready. They may <b>highlight</b> where a piece you tap can go (cyan), and tell you something meant for you alone (<b>🔒 For you</b>, by the rules buttons). A <b>strict</b> game (📜 says so) allows only the moves its rules know.</li>
       <li>Drag from your hand to the table to play it, or onto a pile to put it on top — toggle <b>🂠 face-down</b> to play cards face down; <b>⇅ sort</b> orders your hand by suit and rank (on your screen only).</li>
       <li><b>Custom decks</b>: upload one image per card — each card is named after its file ("dragon_rider.png" → "dragon rider"). Include a <code>deck.json</code> in the same upload for full control:
         <pre>{ "name": "My Game", "back": "back.png",

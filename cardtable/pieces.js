@@ -172,6 +172,18 @@ export function fanOffsets(sp, sizes) {
   return sizes.map((_, j) => { const o = start + sign * j * step; return v ? { x: 0, y: o } : { x: o, y: 0 }; });
 }
 
+/** A board's hint layer (spec §3g): an SVG over its w × h face, board-local,
+ *  with a translucent disc on each of `spots` ([{x, y, size, ring, offer}]:
+ *  a spot's centre, its size — a cell's, or a space's smaller side — and
+ *  whether a piece sits there, for a ring around it instead), cyan for a
+ *  hint, violet (`offer`) for what an ask offers. Numbers and fixed class
+ *  names only: no text a script wrote ever reaches it. */
+export function hintSVG(w, h, spots) {
+  const marks = spots.map(({ x, y, size, ring, offer }) => `<circle class="${ring ? 'hr' : 'hd'}${offer ? ' o' : ''}" cx="${n2(x)}" cy="${n2(y)}" r="${n2(size * (ring ? 0.47 : 0.24))}"${
+    ring ? ` stroke-width="${n2(size * 0.07)}"` : ''}/>`);
+  return `<svg viewBox="0 0 ${n2(w)} ${n2(h)}" aria-hidden="true">${marks.join('')}</svg>`;
+}
+
 /** Plays the dice tumble (spec §2g: a roll, on every screen) on item element
  *  `el`: the .tumble class for 450 ms, which CSS turns into a spin and a
  *  pulse — or into nothing with reduced motion, where the face just changes. */

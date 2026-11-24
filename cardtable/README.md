@@ -409,7 +409,17 @@ from their hand, a number — answered through `onAnswer`, checked against
 what was offered, and asked again after a host reload), highlight legal
 moves for one player when they pick up a piece (`onSelect` → `t.hint`), and
 keep private per-player data (`t.secret[pid]`). Each of these reaches only
-its player, as a hand does.
+its player, as a hand does. On their screen a question shows in a panel of
+its own above the hand bar — option buttons, the pieces or spots it offers
+outlined in violet on the table, the hand's cards as toggles with "Confirm
+(k/n)", a number stepper — which never covers the table (it takes its room
+from it) and folds to a "❓ Rules ask" chip (▾) but can't be dismissed; a
+hint is a cyan outline on items and translucent discs on squares (a ring
+round a piece standing there); a secret's text shows on a "🔒 For you" card
+by the rules' buttons. While a script wants selections, tapping a piece (or
+starting to drag it) tells it; in a strict game that tap shows no action
+bar, whose buttons it would refuse, and the 📜 button's tooltip says
+"strict".
 
 Scripts run **on the host only** — guests receive data, never code — and
 everyone can read the exact script being enforced (read-only view in the
@@ -508,6 +518,13 @@ Game pieces have their own commands (both REPLs; `help` lists them):
 | `lock <id>` / `unlock <id>` | locks an item in place, or frees it |
 | `claim <id>` / `release <id>` | makes an item yours, or nobody's |
 | `seat <id>` / `seat -` / `seat +` | sits in a named seat; stands up to watch; sits down again |
+| `asks` | lists the rules' questions waiting for you: `❓ promo: Promote to [0] ♕ [1] ♖ [2] ♗ [3] ♘`, and for a pick what to answer (an item, a spot, hand cards, a number) |
+| `answer <id> <value>` | answers one: an option's number or its label (any case), an offered item's id, an offered spot (`g7`), hand indices (`0,3`), a number. The tab checks it first: what wasn't offered is said, and nothing is sent |
+| `select <id>` | selects a piece, as a tap does: rules that want it answer with a hint |
+
+New questions, a new hint (`💡 hint: e3, e4`) and a new `t.secret`
+(`🔒 for you: …`) print as they arrive, the same text in both REPLs (the
+tab writes it).
 
 `table` lists pieces too, one per line in the same `  [id] … @x,y` frame,
 a piece's spot (`at:e4`), the owner and 🔒 after it when present:
@@ -522,8 +539,14 @@ as `[light]`, and a watcher as `(watching)`.
 Scripting: `require('./cli.js')` / `from cli import Bridge` exposes the
 bridge as a small API — the same in both languages: `state`, `send`,
 `wait`, `on`, plus `chat`, `play`, `draw`, `btn`, `roll(*ids)`,
-`take(supply, x, y, hand)`, `place(ref, addr)` and `seat(id)` (`'-'`
-stands up, `'+'` sits down again). The state also carries the table (`shape`, `w`, `h`), the
+`take(supply, x, y, hand)`, `place(ref, addr)`, `seat(id)` (`'-'`
+stands up, `'+'` sits down again), `answer(id, value)` (a value as the
+`answer` command takes it, or a list of hand indices) and `select(id)`.
+The state also carries your own parts of the rules: `asks` (`[{id, prompt,
+options: [labels]} | {id, prompt, pick, among?, count?, min?, max?}]`),
+`hint` (`{items, spaces}` or null), `secret` (your whole `t.secret` entry,
+or null) and `strict` (whether the running rules are strict; `rules` stays
+the script's name). It also carries the table (`shape`, `w`, `h`), the
 named `seats` (each with its `player`, or null), `me` (your `seat` angle
 and `seatId`), and the pieces (`kind`, `type`, `typeRef`, `face`, `label`,
 `at` when on a board's spot, …; a hidden one only `kind: "hidden"`). `play()` names the card
@@ -633,4 +656,9 @@ refusal, the public view, seats; `core-p2-bench.mjs` times a 20-dice roll),
 `t-p2-hidden.js` (a raw attacker peer finds no hidden piece in anything the
 host sends), `t-p2-cli.js` (the terminal bridges' piece commands), and the
 browser suites for the free-table gestures, rectangular tables, named seats
-and the two demos; the benchmarks also run on a 1,000-piece table.
+and the two demos; the benchmarks also run on a 1,000-piece table. Space and
+the rules Worker have `core-p3.test.mjs`, `t-p3-space.js` (snapping and
+addresses), `t-p3-worker.js` and `t-p3-attack.js` (the Worker, its watchdog
+and hardening, and an attacker's tries), `t-p3-ui.js` (asks, hints and the
+secret card on a desktop and on phones held upright and sideways) and
+`t-p3-cli.js` (the terminal's `asks`, `answer` and `select`).

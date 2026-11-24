@@ -22,9 +22,9 @@ import {
   CARD_W, CARD_H, RANKS, RULES, playR, clampToTable, seatAt, seatAngles, sizeOf, flagsOf, typeAt, PID_RE, ASSET_RE, rand, clamp, own, num, peerText,
   cleanDeck, cleanDeckV1, cleanBox, isBuiltin, deckOverBudget, assetRefs, cleanName, standardDeck, cardName, pieceName, faceLabel, createTable,
   MODULE_V as CORE_V, PROTO, PUBLIC_ACTIONS, HOST_ACTIONS, MAX_ROLL, MAX_N, MAX_BAG, MAX_HAND, MAX_PILE, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch, roundTable, FELT,
-  tableBoards, snapTo, snaps, displayAddr, resolveAddr, liveFx, countSetup,
+  tableBoards, snapTo, snapAt, snaps, displayAddr, resolveAddr, liveFx, countSetup,
 } from './core.js?v=1';
-import { MODULE_V as GRID_V, turn } from './grid.js?v=1';
+import { MODULE_V as GRID_V, turn, spotOf } from './grid.js?v=1';
 import * as pieces from './pieces.js?v=1';
 import { RULES_TEMPLATES, GAMES, BOXES, MODULE_V as TEMPLATES_V } from './templates.js?v=1';
 import * as store from './store.js?v=1';
@@ -386,7 +386,7 @@ function act(a) {
   if (!room) { console.warn('action before the room is up', a); return Promise.resolve({ ok: false, error: 'not connected yet' }); }
   const target = hostPeer && room.getPeers()[hostPeer] ? hostPeer : null;
   if (!target) {
-    if (a.t !== 'hello' && a.t !== 'snap' && a.t !== 'need' && a.t !== 'drag') { // (an image request times out and asks again; a live drag is gone with its moment)
+    if (!['hello', 'snap', 'need', 'drag', 'select'].includes(a.t)) { // (an image request times out and asks again; a live drag and a selection are gone with their moment)
       pendingActs.push({ a, at: Date.now() });
       if (pendingActs.length > 30) pendingActs.shift();
       note('Reconnecting to the host — your move will be sent when it\'s back');
@@ -432,6 +432,12 @@ const RULES_TIMEOUT_MS = 4000, RULES_INIT_MS = 10000;
 const WORKER_GLOBALS = ['CAH_CARDS'];
 let worker = null; // the running rules' Worker: {w, ready: {name, wants, strict}}
 let lastRulesError = ''; // the host's last rules error, for the 📜 dialog ('' after a good Enable)
+/** Keeps `msg` as the host's last rules error — shown at once when the 📜
+ *  dialog is open: the rules failed while the host was reading it. */
+function rulesError(msg) {
+  lastRulesError = msg;
+  if ($('rules-dialog').open) updateRulesDialog();
+}
 // The saved rules couldn't start on a resume for a reason that isn't the
 // script's (this page and the deployed files disagree, the Worker didn't
 // load): they are off on this page, yet saved as on — the reload the toast
@@ -532,7 +538,7 @@ function started(w, m) {
   if (w) { w.terminate(); perf.workerStops++; }
   const msg = String(m.message), skew = msg.startsWith('version mismatch');
   console.error('rules: the script did not start —', msg);
-  lastRulesError = msg;
+  rulesError(msg);
   if (job.a) { // an Enable: whatever ran keeps running
     toast(skew ? 'Card Table was updated — reload this page to run rules' : `Rules error: ${msg}${worker ? ' — the running rules are unchanged' : ''}`);
     job.resolve({ ok: false, error: msg });
@@ -597,7 +603,7 @@ function done(m) {
     toast(`Error: ${err.message}`);
     error = err.message;
   }
-  if (m.out?.error) lastRulesError = T.rulesError;
+  if (m.out?.error) rulesError(T.rulesError);
   if (!T.state.rules?.enabled) stopWorker();
   job.resolve(error ? { ok: false, error } : { ok: changed });
   pump();
@@ -632,7 +638,7 @@ function rulesDown(reason, msg, detail = '') {
     }
   }
   current = null;
-  lastRulesError = error;
+  rulesError(error);
   toast(msg);
   let changed = T.apply(RULES, { t: '_rulesOff', reason });
   if (job && KEPT_JOBS.has(job.a.t)) {
@@ -2264,14 +2270,14 @@ function placeSeats() {
   if (spots === seatSpots) return;
   seatSpots = spots;
   // Moved by `translate` from their CSS spots, for the same reason.
-  $('rules-btns').style.translate = `0 ${12 - rowBottom}px`;
+  $('rules-row').style.translate = `0 ${12 - rowBottom}px`;
   $('notices').style.translate = `0 ${noticeTop - 10}px`;
   $('watch-box').style.translate = `0 ${watchTop - 8}px`;
   $('main').classList.toggle('gutters', gutters);
   // (on the three boxes that use it: on #main, an inherited property, it
   // would restyle every element of the table at each frame of a zoom or of
   // a rectangle's turn, whose fit changes as it turns)
-  for (const id of ['notices', 'rules-btns', 'watch-box']) $(id).style.setProperty('--gutter', `${gutter | 0}px`);
+  for (const id of ['notices', 'rules-row', 'watch-box']) $(id).style.setProperty('--gutter', `${gutter | 0}px`);
 }
 
 // --- the seat menu (spec §2g) and the watchers -----------------------------------
@@ -2325,7 +2331,7 @@ seatMenuEl.addEventListener('click', (e) => {
 // the table — read off the event's path, which keeps a bar button that the
 // click just redrew away (Give ▸ over a label must not open its menu).
 wrapEl.addEventListener('click', (e) => {
-  if (e.composedPath().some((n) => n.matches?.('#seat-menu, #action-bar, #rules-btns, #game-strip, #watch-box')) || e.timeStamp - dragEndAt < 300) return;
+  if (e.composedPath().some((n) => n.matches?.('#seat-menu, #action-bar, #rules-row, #game-strip, #watch-box')) || e.timeStamp - dragEndAt < 300) return;
   const s = seatTap(e);
   if (s) openSeatMenu(s);
   else closeSeatMenu();
@@ -2388,9 +2394,10 @@ function handOrder() {
   return sortHand ? order.sort((a, b) => key(view.hand[a]) - key(view.hand[b]) || a - b) : order;
 }
 function renderHand() {
-  const sig = JSON.stringify(view.hand) + sortHand;
+  const hand = JSON.stringify(view.hand), sig = hand + sortHand;
   if (sig === handSig) return;
   handSig = sig;
+  if (hand !== pickOf) { pickOf = hand; handPick.clear(); askState(); } // (a hand ask's picks were indices of the hand before)
   handEl.innerHTML = '';
   $('sort-toggle').classList.toggle('on', sortHand);
   for (const idx of handOrder()) {
@@ -2400,6 +2407,7 @@ function renderHand() {
     el.innerHTML = handFace(view.hand[idx]);
     handEl.appendChild(el);
   }
+  markHandPicks();
   fitHand();
 }
 /** A hand entry's face: a card {d, i}, or a piece {t, f, up?} (its holder sees it). */
@@ -2464,22 +2472,262 @@ function renderLog() {
 }
 
 let rbSig = '';
+/** Whether the running rules are strict (spec §3b: the rules view says so
+ *  while they are on): only the moves the script handles, or allows, go. */
+const strictRules = () => !!(view.rules?.enabled && view.rules.strict);
+/** Draws the rules' buttons for this player, and the 📜 button's state and
+ *  title ("strict" when the rules are). */
 function renderRulesBtns() {
   const rules = role === 'host' ? T?.state.rules : view.rules;
   const btns = (rules?.enabled && (rules.public?.buttons || []).filter((b) => !b.pid || b.pid === pid)) || [];
-  const sig = JSON.stringify(btns) + (rules?.enabled ? rules.name : '');
+  const sig = JSON.stringify(btns) + (rules?.enabled ? rules.name : '') + strictRules();
   if (sig === rbSig) return;
   rbSig = sig;
   const row = $('rules-btns');
   row.classList.toggle('hidden', !btns.length);
   row.innerHTML = btns.map((b) => `<button data-rbtn="${esc(b.id)}">${esc(b.label)}</button>`).join('');
   $('rules-btn').classList.toggle('on', !!rules?.enabled);
-  $('rules-btn').title = rules?.enabled ? `Rules active: ${rules.name}` : 'Game rules script';
+  $('rules-btn').title = !rules?.enabled ? 'Game rules script'
+    : `Rules active: ${rules.name}${strictRules() ? ' — strict: only the moves the rules allow' : ''}`;
 }
 $('rules-btns').addEventListener('click', (e) => {
   const id = e.target.dataset.rbtn;
   if (id) act({ t: 'rulesBtn', id });
 });
+
+// --- what the rules show this player alone: hints, asks, the secret (spec §3g) --
+// All three come in this player's own parts of the host's bodies (view.hint,
+// view.ask, view.sec: spec §3b), never in anyone else's. A script's words (a
+// prompt, an option's label, a secret) are untrusted text: they reach the
+// page through esc() or textContent, and the hint layer is numbers only.
+const askEl = $('ask');
+const marked = { hint: new Set(), offer: new Set() }; // the item ids carrying .hint / .offer
+let hintSig = '', hintLayers = []; // what the hint layers show; their elements (one per board)
+let askMin = false, askSig = '', askId = null, askSent = null; // the ask panel folded to its chip; what it shows; its ask's id; {id, at}: an answer on its way
+const ASK_WAIT_MS = 3000; // how long an answer's buttons wait for the host before they work again (a refusal)
+const handPick = new Set(); // the hand indices a hand ask has picked (of the hand `pickOf`: another hand has other indices)
+let pickOf = '';
+/** The ask the panel shows while it is open (not folded), or null: its
+ *  picks on the table (items, spaces) and in the hand are live only then. */
+const askOpen = () => (!askMin && view.ask[0]) || null;
+
+/** The size of spot `r` (resolveAddr's) a mark is drawn to and a tap
+ *  reaches: its grid's cell, or its space's smaller side. */
+function spotSize(r) {
+  const sp = r.b.B.spaces?.find((x) => x.id === r.local);
+  return sp ? Math.min(sp.w ?? 2 * sp.r, sp.h ?? 2 * sp.r) : r.b.B.grid.cell;
+}
+/** Gives the items `ids` the class `cls` (hint, offer), and takes it from
+ *  those that had it — on every redraw: an element made since gets it too. */
+function markItems(cls, ids) {
+  const now = new Set(ids);
+  for (const id of marked[cls]) if (!now.has(id)) itemEls.get(id)?.classList.remove(cls);
+  for (const id of now) itemEls.get(id)?.classList.add(cls);
+  marked[cls] = now;
+}
+/** Draws this player's hint (view.hint: items get .hint; cells and spaces a
+ *  translucent disc, or a ring around a piece there, on their board's hint
+ *  layer — a layer per board, above the pieces, drawn from numbers) and what
+ *  the open ask offers on the table (pick 'item': .offer; 'space': violet
+ *  marks). Gone when the hint is null and no ask is open. */
+function renderHints() {
+  const h = view.hint, q = askOpen();
+  markItems('hint', h?.items || []);
+  markItems('offer', q?.pick === 'item' ? q.among : []);
+  const spots = [...(h?.spaces || []).map((s) => [s, 0]), ...(q?.pick === 'space' ? q.among.map((s) => [s, 1]) : [])];
+  const TB = spots.length ? boardsNow() : null;
+  const sig = TB ? `${JSON.stringify(spots)}|${spots.map(([s]) => +fanAt.has(s)).join('')}|${TB.list.map((b) => `${b.id},${b.x},${b.y},${b.rot}`).join(';')}` : '';
+  if (sig === hintSig) return;
+  hintSig = sig;
+  for (const el of hintLayers) el.remove();
+  hintLayers = [];
+  const per = new Map(); // board → its marks
+  for (const [s, offer] of spots) {
+    const r = resolveAddr(TB, s);
+    if (!r?.b) continue; // (an address no board shows now: a board gone or turned over)
+    const l = spotOf(r.b.B, r.local);
+    (per.get(r.b) || per.set(r.b, []).get(r.b)).push({ x: l.x, y: l.y, size: spotSize(r), ring: fanAt.has(s), offer: !!offer });
+  }
+  for (const [b, marks] of per) {
+    const el = document.createElement('div');
+    el.className = 'hint-layer';
+    Object.assign(el.style, { left: `${b.x}px`, top: `${b.y}px`, width: `${b.w}px`, height: `${b.h}px`, transform: `rotate(${b.rot}deg)` });
+    el.innerHTML = pieces.hintSVG(b.w, b.h, marks);
+    tableEl.appendChild(el);
+    hintLayers.push(el);
+  }
+}
+
+/** The `v` an answer to ask `q` (this player's) sends for `x` (spec §3c,
+ *  §3i) — the panel's typed values and the terminal's text alike: an
+ *  option's index (a number, or a label in any case), an offered item's id,
+ *  an offered address (any form), hand indices ([0, 3] or "0,3": those
+ *  cards, as the host matches them), a whole number in [min, max]. {v}, or
+ *  {why} saying what is offered: the host checks again, and refuses
+ *  whatever wasn't (its "🚫 That answer wasn't offered"). */
+function answerV(q, x) {
+  const s = String(x ?? '').trim(), why = (w) => ({ why: `${q.id}: ${w}` });
+  if (q.options) {
+    const k = /^\d+$/.test(s) ? +s : q.options.findIndex((l) => l.toLowerCase() === s.toLowerCase());
+    return k >= 0 && k < q.options.length ? { v: k } : why(`answer ${q.options.map((l, j) => `[${j}] ${l}`).join(' ')}`);
+  }
+  switch (q.pick) {
+    case 'item': return q.among.includes(s) && view.items[s] ? { v: s } : why(`answer one of the items ${q.among.join(', ')}`);
+    case 'space': {
+      const TB = boardsNow(), at = resolveAddr(TB, s)?.at, a = at && q.among.find((m) => resolveAddr(TB, m)?.at === at);
+      return a ? { v: a } : why(`answer one of the spots ${q.among.join(', ')}`);
+    }
+    case 'hand': {
+      const n = q.count ?? 1, ks = (Array.isArray(x) ? x : s.split(/[\s,]+/).filter(Boolean)).map(Number);
+      const ok = ks.length === n && new Set(ks).size === n && ks.every((k) => Number.isInteger(k) && view.hand[k]);
+      return ok ? { v: ks.map((k) => { const c = view.hand[k]; return 't' in c ? { idx: k, t: c.t, f: c.f } : { idx: k, d: c.d, i: c.i }; }) }
+        : why(`answer ${n} different card${n > 1 ? 's' : ''} of your hand, by index (as "0,3")`);
+    }
+    default: return /^-?\d+$/.test(s) && +s >= q.min && +s <= q.max ? { v: +s } : why(`answer a whole number from ${q.min} to ${q.max}`); // ('number')
+  }
+}
+/** Answers ask `q` with `x` (answerV): sent, the panel waits ASK_WAIT_MS for the host. */
+function answerAsk(q, x) {
+  const r = answerV(q, x);
+  if ('why' in r) { console.warn('not an answer the ask offers', r.why); toast(r.why); return; }
+  askSent = { id: q.id, at: Date.now() };
+  act({ t: 'answer', id: q.id, v: r.v });
+  askState();
+  setTimeout(askState, ASK_WAIT_MS + 50);
+}
+/** Draws the ask panel (#ask, spec §3g): this player's first pending ask,
+ *  "1 of N" when more wait, its form — option buttons, a pick on the table
+ *  or in the hand, a stepper — or, folded (▾), the "❓ Rules ask" chip (until
+ *  another question comes first). No close button: an ask goes when it is
+ *  answered, or the script cancels it. */
+function renderAsk() {
+  const q = view.ask[0];
+  if (q?.id !== askId) { handPick.clear(); askSent = null; askMin = false; askId = q?.id ?? null; } // (another question: shown, unfolded)
+  const sig = q ? `${askMin}|${JSON.stringify(view.ask)}` : '';
+  if (sig === askSig) return;
+  askSig = sig;
+  askEl.classList.toggle('hidden', !q);
+  askEl.classList.toggle('min', askMin);
+  handEl.classList.toggle('picking', q?.pick === 'hand' && !askMin);
+  markHandPicks();
+  if (!q) return;
+  const n = view.ask.length, count = q.count ?? 1;
+  $('ask-chip').textContent = `❓ Rules ask${n > 1 ? ` (${n})` : ''}`;
+  $('ask-prompt').textContent = q.prompt;
+  $('ask-of').textContent = n > 1 ? `1 of ${n}` : '';
+  $('ask-body').classList.toggle('glyphs', !!q.options?.every((l) => [...l].length <= 2));
+  $('ask-body').innerHTML = q.options ? q.options.map((l, k) => `<button data-k="${k}">${esc(l)}</button>`).join('')
+    : q.pick === 'item' ? '<span class="how">Tap one of the highlighted pieces</span>'
+      : q.pick === 'space' ? '<span class="how">Tap one of the highlighted spots</span>'
+        : q.pick === 'hand' ? `<span class="how">Tap ${count > 1 ? `${count} cards` : 'a card'} in your hand</span><button id="ask-ok">Confirm</button>`
+          : `<button data-step="-1" aria-label="Less">−</button><input id="ask-v" type="number" inputmode="numeric" step="1" min="${num(q.min)}" max="${num(q.max)}" value="${num(q.min)}"><button data-step="1" aria-label="More">+</button><button id="ask-ok">OK</button>`;
+  askState();
+}
+/** The panel's controls as they now stand: waiting on an answer just sent
+ *  (askSent, ASK_WAIT_MS), and Confirm / OK only for a valid answer — "k of
+ *  count" hand cards picked, a number in range — shown before it is sent. */
+function askState() {
+  const q = view.ask[0];
+  if (!q || q.id !== askId) return; // (an ask the panel doesn't show yet: renderAsk draws it, then comes here)
+  const sent = askSent?.id === q.id && Date.now() - askSent.at < ASK_WAIT_MS, okb = $('ask-ok');
+  askEl.classList.toggle('sent', sent);
+  for (const b of askEl.querySelectorAll('#ask-body button')) b.disabled = sent;
+  if (!okb) return;
+  if (q.pick === 'hand') okb.textContent = `Confirm (${handPick.size}/${q.count ?? 1})`;
+  okb.disabled = sent || 'why' in answerV(q, q.pick === 'hand' ? [...handPick] : $('ask-v')?.value);
+}
+/** Shows which hand cards a hand ask has picked (.picked). */
+function markHandPicks() {
+  for (const el of handEl.children) el.classList.toggle('picked', handPick.has(+el.dataset.idx));
+}
+/** Folds the panel to its chip, or opens it again: the table's picks and
+ *  highlights go and come with it (renderHints). */
+function foldAsk(min) {
+  askMin = min;
+  renderAsk();
+  renderHints();
+}
+askEl.addEventListener('click', (e) => {
+  const q = view.ask[0], b = e.target.closest('button');
+  if (!q || !b || b.disabled) return;
+  if (b.id === 'ask-min' || b.id === 'ask-chip') foldAsk(b.id === 'ask-min');
+  else if (b.dataset.k != null) answerAsk(q, +b.dataset.k);
+  else if (b.dataset.step) {
+    const inp = $('ask-v');
+    inp.value = clamp((parseInt(inp.value, 10) || 0) + +b.dataset.step, q.min, q.max);
+    askState();
+  } else if (b.id === 'ask-ok') answerAsk(q, q.pick === 'hand' ? [...handPick] : $('ask-v').value);
+});
+askEl.addEventListener('input', askState); // (a number typed in)
+askEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'ask-v') { e.preventDefault(); $('ask-ok').click(); } });
+/** A tap on the table (pointer event `e`; `id`: the item a press there
+ *  takes, if any) while an open ask picks there: an offered item or spot
+ *  answers it, anything else says what to pick. True when the ask took the
+ *  tap (it selects nothing then). */
+function askTap(e, id) {
+  const q = askOpen();
+  if (q?.pick === 'item') {
+    const hit = [e.target.closest?.('.item')?.dataset.id, id].find((x) => x && q.among.includes(x));
+    if (hit) answerAsk(q, hit);
+    else toast('Pick one of the highlighted pieces');
+    return true;
+  }
+  if (q?.pick !== 'space') return false;
+  const at = spaceAt(q, toTable(e));
+  if (at) answerAsk(q, at);
+  else toast('Pick one of the highlighted spots');
+  return true;
+}
+/** The offered address of space ask `q` a tap at table point p means: the
+ *  spot snapping finds there when it is offered, else the nearest offered
+ *  one within reach (three quarters of its size) — or null. */
+function spaceAt(q, p) {
+  const TB = boardsNow(), s = snapAt(TB, p.x, p.y), hit = s && q.among.find((a) => resolveAddr(TB, a)?.at === s.at);
+  if (hit) return hit;
+  let best = null, bd = Infinity;
+  for (const a of q.among) {
+    const r = resolveAddr(TB, a), d = r?.b ? Math.hypot(r.x - p.x, r.y - p.y) : Infinity;
+    if (d < bd && d <= 0.75 * spotSize(r)) [best, bd] = [a, d];
+  }
+  return best;
+}
+/** A hand card tapped (index idx) while a hand ask is open: picked or let go. True when the ask took the tap. */
+function askHandTap(idx) {
+  const q = askOpen();
+  if (q?.pick !== 'hand') return false;
+  if (!handPick.delete(idx)) handPick.add(idx);
+  markHandPicks();
+  askState();
+  return true;
+}
+
+/** Draws this player's t.secret (view.sec, spec §3g) on the 🔒 For you card
+ *  by the rules' buttons: its `text`, at most 1,000 characters, as text —
+ *  or no card. A new text opens a folded card again. */
+let secText = '';
+function renderSecret() {
+  const t = typeof view.sec?.text === 'string' ? view.sec.text.slice(0, 1000) : '';
+  if (t === secText) return;
+  secText = t;
+  $('secret').classList.toggle('hidden', !t);
+  $('secret').classList.remove('shut');
+  $('secret-text').textContent = t;
+}
+$('secret-head').addEventListener('click', () => $('secret').classList.toggle('shut'));
+
+/** A tap selects item `id` (null: nothing). When the running rules want
+ *  selections (view.rules.wants: an onSelect, which typically hints where it
+ *  may go), it is sent too — never for a piece hidden from this player,
+ *  which the host would drop (spec §3c). */
+function tapSelect(id) {
+  select(id);
+  wantSelect(id);
+}
+/** Sends `select` of item `id` when the rules want it (tapSelect; a drag's start too). */
+function wantSelect(id) {
+  const it = id && view.items[id], hidden = it && (it.k === 'g' || it.k === 's') && !('t' in it); // (a hidden piece shows only its back: spec §2d)
+  if (it && !hidden && view.rules?.enabled && view.rules.wants?.includes('select')) act({ t: 'select', id });
+}
 
 // --- table cues: your-turn alert (UX-I2) and win celebration (UX-I4) --------
 // Generic: any script that sets public.turn / public.winners gets them.
@@ -2550,10 +2798,14 @@ function renderAll(prev = new Map(), prevPlayers) {
   renderHand();
   renderLog();
   renderRulesBtns();
+  renderAsk();
+  renderHints(); // (after the items and the ask: it marks their elements)
+  renderSecret();
   renderFacedown();
   renderCues();
   syncBar(prev);
   updateNet();
+  cliParts();
 }
 
 // --- viewport: fit + per-player view (rotate / zoom / pan) ------------------
@@ -2583,8 +2835,8 @@ function rotv(x, y, a) {
 // turn on a desktop, 16 ms on the B4 phone, with a labelled board of 51
 // texts); a rule restyles what it matches alone.
 //   0  --bz, the badges' growth (style.css). Badges (×N, a spot's ×k, ∞, a
-//      pile's count and name, an owner's dot, 🔒), selection rings and the
-//      snap preview's outline are drawn in table units, so on a table drawn
+//      pile's count and name, an owner's dot, 🔒), selection and hint rings
+//      and the snap preview's outline are drawn in table units, so on a table drawn
 //      small (a phone's fit) they'd be a few pixels: they grow back toward a
 //      readable size, by at most BADGE_MAX×; a board's coordinates too, by
 //      at most what fits their margin (its --lmax, pieces.js gridSVG).
@@ -2611,7 +2863,7 @@ function rotv(x, y, a) {
 // more task of 50–90 ms). D102 has the measures; B4's rested pinch, the
 // budget.
 const viewSheet = new CSSStyleSheet(), BADGE_MAX = 3, BZ_STEP = 1.25, PINCH_REST_MS = 300;
-viewSheet.replaceSync('#table .item > .count, #table .item > .fanb, #table .item > .odot, #table .item > .lockb, #table .pile > .pname, #table .item.selected, #table .blabels text, #table .snap-ghost {} '
+viewSheet.replaceSync('#table .item > .count, #table .item > .fanb, #table .item > .odot, #table .item > .lockb, #table .pile > .pname, #table .item.selected, #table .item.hint, #table .item.offer, #table .blabels text, #table .snap-ghost {} '
   + '#table .psvg text {} #table .item > .count, #table .item > .fanb, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb {}');
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, viewSheet];
 let badgeZ = '', textAngle = 0, badgeAngle = 0, feltW = 0;
@@ -2713,14 +2965,22 @@ function select(id) {
   for (const [i, el] of itemEls) el.classList.toggle('selected', i === sel);
   renderBar();
 }
+/** The selected item's bar as it should now be: barFor's markup — none
+ *  while a tap only selects for the rules: strict rules that want
+ *  selections (spec §3g, D154), whose game moves by drags, asks and
+ *  buttons, and whose pieces' bar would offer what they refuse, over the
+ *  very squares their hint marks. */
+function barNow() {
+  const it = sel && view.items[sel];
+  return it && !(strictRules() && view.rules.wants?.includes('select')) ? barFor(sel, it) : '';
+}
 /** Builds the selected item's action bar (hidden when it offers nothing) and
  *  places it. An armed ✥ Move shows how much of its time is left (style.css). */
 function renderBar() {
-  const it = sel && view.items[sel];
-  barEl.innerHTML = barHTML = it ? barFor(sel, it) : '';
+  barEl.innerHTML = barHTML = barNow();
   barEl.classList.toggle('hidden', !barHTML);
   barEl.querySelector('.on[data-cmd="all"]')?.style.setProperty('animation-delay', `${moveAll.at - Date.now()}ms`);
-  if (it) placeBar();
+  if (barHTML) placeBar();
 }
 /** Keeps the open bar true to the view after a redraw (`prev`: the items
  *  it redrew, null: all): redrawn when what it offers changed — its item,
@@ -2731,8 +2991,8 @@ function renderBar() {
 function syncBar(prev) {
   const it = sel && view.items[sel];
   if (sel && !it) select(null);
-  else if (it && barFor(sel, it) !== barHTML) renderBar();
-  else if (it && (!prev || prev.has(sel))) placeBar();
+  else if (it && barNow() !== barHTML) renderBar();
+  else if (barHTML && (!prev || prev.has(sel))) placeBar();
 }
 /** The buttons of public item `it`'s bar (spec §2g), built from the public
  *  view alone (a hidden piece's flags are its back's: flagsOf), and only
@@ -3222,6 +3482,7 @@ window.addEventListener('pointermove', (e) => {
     drag.el.classList.add('dragging');
     drag.el.style.zIndex = 100000; // visually on top; the host assigns the real z on move
     select(null);
+    wantSelect(drag.id); // (a piece dragged without a tap first: the rules' hint shows where it may go while it is carried)
   }
   const { w, h } = sizeOf(view.items[drag.id], boxes);
   ({ x: drag.x, y: drag.y } = clampToTable(TABLE, p.x - drag.dx, p.y - drag.dy, w, h));
@@ -3273,8 +3534,9 @@ window.addEventListener('pointerup', (e) => {
     feltDrag = null;
     // A plain click on empty felt deselects; on an item that can't be
     // dragged, (de)selects it — a board only when nothing else is selected:
-    // a tap beside a selected piece mostly lands on the board, and only puts its bar away.
-    if (!moved && !seatTap(e)) select(tap && sel !== tap && !(sel && isBoard(view.items[tap] || {})) ? tap : null);
+    // a tap beside a selected piece mostly lands on the board, and only puts
+    // its bar away. An open ask that picks on the table takes the tap instead.
+    if (!moved && !seatTap(e) && !askTap(e, tap)) tapSelect(tap && sel !== tap && !(sel && isBoard(view.items[tap] || {})) ? tap : null);
     return;
   }
   if (!drag) return;
@@ -3283,7 +3545,7 @@ window.addEventListener('pointerup', (e) => {
   const it = view.items[d.id];
   if (!it || !d.moved) {
     dropEl(d);
-    if (it && !seatTap(e)) select(sel === d.id ? null : d.id);
+    if (it && !seatTap(e) && !askTap(e, d.id)) tapSelect(sel === d.id ? null : d.id);
     return;
   }
   // The drop target: hit-test BEFORE the dragged element takes the pointer
@@ -3342,11 +3604,12 @@ handEl.addEventListener('pointerdown', (e) => {
   handDrag = { idx, card: view.hand[idx], sx: e.clientX, sy: e.clientY, moved: false, touch: e.pointerType !== 'mouse' };
 });
 // The zoom opens on click, not pointerup: a tap's click would otherwise land on
-// the overlay that just opened under the finger and close it at once.
+// the overlay that just opened under the finger and close it at once. While
+// a hand ask is open, a click picks the card for it instead.
 handEl.addEventListener('click', (e) => {
   const el = e.target.closest('.hcard');
   const c = el && view.hand[+el.dataset.idx];
-  if (c && !handDragged) showZoom(c); // a drag dropped back on its card isn't a click
+  if (c && !handDragged && !askHandTap(+el.dataset.idx)) showZoom(c); // a drag dropped back on its card isn't a click
 });
 // A mouse wheel scrolls the hand sideways (it has no vertical scroll).
 handEl.addEventListener('wheel', (e) => {
@@ -3534,7 +3797,7 @@ $('game-strip-ask').addEventListener('click', () => $('games-btn').click());
 function updateRulesDialog() {
   const isHost = role === 'host';
   const meta = isHost ? T?.state.rules : view.rules;
-  $('rules-status').textContent = meta?.enabled ? `active: ${meta.name}` : 'inactive';
+  $('rules-status').textContent = meta?.enabled ? `active: ${meta.name}${strictRules() ? ' · strict' : ''}` : 'inactive';
   $('rules-tpl').classList.toggle('hidden', !isHost);
   $('rules-enable').classList.toggle('hidden', !isHost);
   $('rules-reset-lbl').classList.toggle('hidden', !isHost);
@@ -3863,7 +4126,11 @@ function cliSnapshot() {
     items: Object.entries(view.items).map(([id, it]) => cliItemInfo(id, it)),
     buttons: ((rules?.enabled && rules.public?.buttons) || [])
       .filter((b) => !b.pid || b.pid === pid).map((b) => ({ id: b.id, label: b.label })),
-    rules: rules?.enabled ? rules.name : null,
+    // this player's own parts (spec §3i): the rules' questions (an option's label only), hint and t.secret
+    asks: view.ask.map((q) => (q.pick === 'hand' ? { ...q, count: q.count ?? 1 } : q)),
+    hint: view.hint, secret: view.sec,
+    rules: rules?.enabled ? rules.name : null, // (a name, as ever: cah-bot.py compares it; strict is its own field)
+    strict: strictRules(),
     // rules: true marks script lines — a player can NAME itself "📜 Rules", but can't fake this
     log: view.log.slice(-40).map((e) => ({
       who: typeof e.n === 'string' ? e.n : actorInfo(e.p).name, text: e.txt,
@@ -3906,6 +4173,29 @@ function cliHandIdx(c) {
   const idx = c.key ? view.hand.findIndex((e) => ('t' in e ? `t:${e.t}:${e.f}` : `${e.d}:${e.i}`) === c.key) : +c.idx;
   if (!view.hand[idx]) throw new Error(`no hand card ${c.key || `#${c.idx}`}`);
   return idx;
+}
+
+/** An ask as the terminal says it (spec §3i): "❓ promo: Promote to [0] ♕
+ *  [1] ♖ [2] ♗ [3] ♘", and for a pick what to answer — the one text both
+ *  REPLs print, as the tab writes it. */
+function cliAsk(q) {
+  const n = q.count ?? 1, how = q.options ? q.options.map((l, k) => `[${k}] ${l}`).join(' ')
+    : { item: () => `(an item: ${q.among.join(', ')})`, space: () => `(a spot: ${q.among.join(', ')})`,
+      hand: () => `(${n} of your hand cards, by index${n > 1 ? ', comma-separated' : ''})`,
+      number: () => `(a number from ${q.min} to ${q.max})` }[q.pick]();
+  return `❓ ${q.id}: ${q.prompt} ${how}`;
+}
+let cliSeen = { asks: new Set(), hint: 'null', sec: 'null' }; // what the terminal was told of this player's own parts
+/** Tells the terminal what reached this player alone (spec §3i: the REPLs
+ *  print new asks as they come): each new ask (cliAsk), a new hint, a new
+ *  t.secret — as messages, like a notice. (a bridged tab only) */
+function cliParts() {
+  if (!CLI) return;
+  const asks = new Set(view.ask.map((q) => JSON.stringify(q))), hint = JSON.stringify(view.hint), sec = JSON.stringify(view.sec);
+  view.ask.forEach((q) => { if (!cliSeen.asks.has(JSON.stringify(q))) cliMsgs.push(cliAsk(q)); });
+  if (hint !== cliSeen.hint && view.hint) cliMsgs.push(`💡 hint: ${[...view.hint.spaces, ...view.hint.items].join(', ') || 'nothing'}`);
+  if (sec !== cliSeen.sec && view.sec != null) cliMsgs.push(`🔒 for you: ${typeof view.sec.text === 'string' ? view.sec.text : sec}`);
+  cliSeen = { asks, hint, sec };
 }
 
 function cliExec(c) {
@@ -3961,6 +4251,16 @@ function cliExec(c) {
       case 'lock': act({ t: 'lock', id: cliItem(c.id), on: c.on !== false }); break;
       case 'owner': act({ t: 'owner', id: cliItem(c.id), to: c.to ?? null }); break;
       case 'seat': act(c.watch ? { t: 'seat', watch: true } : c.sit ? { t: 'seat', sit: true } : { t: 'seat', id: String(c.id) }); break;
+      case 'answer': { // the rules' question `id`, answered with `v` as typed (answerV converts it: spec §3i)
+        const q = view.ask.find((x) => x.id === String(c.id ?? ''));
+        if (!q) throw new Error(`no question "${c.id}" waits for you — see "asks"`);
+        const r = answerV(q, c.v);
+        if ('why' in r) throw new Error(r.why);
+        act({ t: 'answer', id: q.id, v: r.v });
+        break;
+      }
+      case 'select': act({ t: 'select', id: cliItem(c.id) }); break; // (the rules' hint comes back in the next state)
+      case 'asks': for (const line of view.ask.length ? view.ask.map(cliAsk) : ['❓ no questions wait for you']) cliMsgs.push(line); break;
       case 'place': { // onto a board's spot (spec §3i): an item moves there, centred; a supply (id or type name) hands one out there
         const B = boardsNow(), r = resolveAddr(B, String(c.at ?? ''));
         if (r?.ambiguous) throw new Error(`🚫 Which board? Say '${r.ambiguous[0]}'`);

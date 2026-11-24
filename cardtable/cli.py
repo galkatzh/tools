@@ -183,6 +183,17 @@ class Bridge:
         there."""
         self.send(t='place', id=ref, at=addr)
 
+    def answer(self, aid, value):
+        """Answers the rules' question `aid` (see state['asks']) with `value`:
+        an option's index or label, an item id, an address, hand indices
+        ([0, 3] or '0,3'), a number — the tab turns it into the answer the
+        host checks."""
+        self.send(t='answer', id=aid, v=value)
+
+    def select(self, iid):
+        """Selects item `iid`: rules that want it may answer with a hint (state['hint'])."""
+        self.send(t='select', id=iid)
+
     def seat(self, sid):
         """Sits in named seat `sid`; '-' stands up to watch, '+' sits down
         again (automatic seating)."""
@@ -222,6 +233,9 @@ HELP = """commands:
   claim|release <id>      make an item yours, or nobody's
   seat <id> | seat - | seat +   sit in a named seat; - stand up to watch; + sit down again
   btn <id>                press a rules button (see "buttons")
+  asks                    the rules' questions waiting for you (new ones print as they come)
+  answer <id> <value>     answer one: an option's number or label, an item id, a spot, hand indices (0,3), a number
+  select <id>             select a piece: the rules may hint where it can go
   chat <msg>              say something (also "!commands" for rules scripts)
   quit"""
 
@@ -410,6 +424,15 @@ def run_cmd(bridge, line):
     elif cmd == 'seat':
         need(args, 1, 'seat <id> | seat - | seat +')
         bridge.seat(args[0])
+    elif cmd == 'asks':
+        bridge.send(t='asks')  # (the tab writes the text: the same in both REPLs)
+    elif cmd == 'answer':
+        if len(args) < 2:
+            raise ValueError('answer <id> <value>')
+        bridge.answer(args[0], ' '.join(args[1:]))
+    elif cmd == 'select':
+        need(args, 1, 'select <id>')
+        bridge.select(args[0])
     elif cmd == 'chat':
         bridge.chat(' '.join(args))
     else:

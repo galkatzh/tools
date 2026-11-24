@@ -632,10 +632,45 @@ with the table), so nobody can fill the host's browser storage.
   require…") — for secret plays such as CAH submissions; unset, the
   toggle is the player's own. It is a client-side hint: `validate` still
   has to reject a face-up play.
+- **What a player sees of their own asks, hint and secret** (Phase 3):
+  - **Asks** show in a panel of their own between the table and the hand
+    bar (a centred card on a wide screen): it takes its room from the
+    table, which refits above it, so it never covers a piece, a seat
+    label, the turn cue or the watchers. The first pending ask shows ("1
+    of N" when more wait); ▾ folds it to a "❓ Rules ask" chip until that
+    player opens it again or another question comes first — there is no
+    close button: an ask goes when it is answered or the script cancels
+    it, and a host reload brings it back. `options` are buttons (one-glyph
+    labels such as ♕ ♖ ♗ ♘ drawn large); `pick: 'item'` outlines the
+    offered items in violet and a tap on one answers (a tap elsewhere says
+    "Pick one of the highlighted pieces"); `pick: 'space'` marks the
+    offered spots in violet and a tap answers with the offered spot under
+    it, or the nearest within reach; `pick: 'hand'` turns the hand's cards
+    into toggles and "Confirm (k/n)" works at exactly `count`; `pick:
+    'number'` is a stepper and a field with OK, which work only for a
+    number in range. The page sends only what was offered; the engine
+    checks again. The prompt and the labels are shown as text.
+  - **Hints**: while the rules want selections (`onSelect`), a tap on an
+    item — or the start of a drag — sends `select` (never for a piece
+    hidden from that player). Hinted items get a dashed cyan outline;
+    hinted cells and spaces a translucent cyan disc on their board, or a
+    ring round a piece standing there — on that player's screen alone.
+    Strict rules that want selections show no action bar on a tap: their
+    game moves by drags, asks and buttons, and the bar would offer what
+    they refuse, over the very squares the hint marks.
+  - **`t.secret`**: its `text` shows on a "🔒 For you" card above the
+    rules' buttons (a tap on its head folds it), as text, line breaks kept.
+  - The 📜 button's tooltip says "strict" while the rules are; the
+    terminal bridge has `asks`, `answer <id> <value>` and `select <id>`,
+    and prints each new ask, hint and secret as it arrives (README,
+    "Terminal bridge").
 - Host UI: a "📜 Rules" toolbar button → dialog with a monospace
   `<textarea>` editor (the game's name is the script's `name`), an
   examples dropdown, Enable / Disable, a *Reset game state* checkbox and a
-  live error line. Guests: the same dialog, read-only. "🎲 Games" (host only, and
+  live error line (an Enable says "Starting…" until the Worker has
+  started the script and run its setup; the dialog then closes, or stays
+  open with the error — and a failure while it is open shows at once).
+  Guests: the same dialog, read-only. "🎲 Games" (host only, and
   as a strip on a brand-new table) enables a shipped template in one click
   through the same `setRules` action — its catalog (emoji, title, pitch,
   player count) is `GAMES`, next to `RULES_TEMPLATES` — or disables the
@@ -763,9 +798,15 @@ the default.
   `note`, `rulesBtn` and `setRules` messages; the rules' public part
   carried in the snapshots and patches, and saved; the timer tick (a
   `_tick` job); the rules dialog and game picker; turn indicator in
-  `renderPlayers`; scripted-buttons row.
+  `renderPlayers`; scripted-buttons row; each player's own parts — the
+  ask panel (`renderAsk`, `answerV`: one conversion for the panel and the
+  terminal), the hints (`renderHints`), the secret card (`renderSecret`),
+  `select` on a tap (`tapSelect`) — and the terminal's `answer`, `select`
+  and `asks`.
+- `cardtable/pieces.js`: the hint layer's SVG (`hintSVG`, numbers only).
 - `cardtable/index.html` / `style.css`: Rules button + dialog (editor,
-  examples select, enable/disable, error line), buttons row, seat glow.
+  examples select, enable/disable, error line), buttons row, seat glow,
+  the ask panel (`#ask`), the secret card (`#secret`), the hint styles.
 - `cardtable/README.md`: "Scriptable rules" section including trust notes.
 - `cardtable/tests/`: Playwright suites, and Node suites that run the
   templates on a real `core.js` table (see its README).

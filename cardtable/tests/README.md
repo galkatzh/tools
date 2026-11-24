@@ -1266,6 +1266,80 @@ strips a control character; the lying Worker adds a name bulb with no item
 (refused) and one with a live drag's fields hung on it (taken as the
 engine writes it: Bob's screen follows both turns).
 
+## Phase 3 (3C: play — the UI and the terminal of asks, hints and secrets)
+
+What a player sees of their own parts (spec §3g, §3i; D154 onward), and
+how a test reads it:
+
+- **The ask panel** is `#ask`, a sheet between `#main` and `#hand-bar`
+  (not over the table: the table refits above it). `#ask-prompt` is the
+  first ask's prompt (textContent), `#ask-of` "1 of N" (empty for one),
+  `#ask-body` its form — `button[data-k]` per option (`.glyphs` when every
+  label is one or two characters), `.how` text for a table or hand pick,
+  `#ask-ok` (Confirm (k/n) / OK, disabled until the answer is valid),
+  `#ask-v` and `button[data-step]` for a number — `#ask-min` (▾) folds it
+  (`#ask.min`, the card hidden) to `#ask-chip` ("❓ Rules ask (N)"); a new
+  first ask unfolds it. Hidden (`#ask.hidden`) with no ask. An answer
+  sent disables the buttons (`#ask.sent`) for `ASK_WAIT_MS` (3 s) or until
+  the asks change. A hand pick: `#hand.picking`, picked cards `.hcard.picked`.
+- **Picks on the table**: offered items carry `.item.offer`; offered spots
+  are violet marks (`circle.o`) on the hint layer. A tap (not a drag) on
+  the table while a table pick is open answers, or toasts "Pick one of
+  the highlighted pieces" / "… spots" and selects nothing.
+- **Hints**: `.item.hint` (dashed cyan), and per board a
+  `#table > .hint-layer` (table units, rotated with its board, `z-index`
+  99998, `pointer-events: none`) holding an SVG of `circle.hd` (a disc on
+  an empty spot) and `circle.hr` (a ring round a piece there) — numbers
+  only, no text node. Gone when the hint is null and no pick is open.
+- **Select**: with `view.rules.wants` holding `'select'`, a tap on an item
+  and the start of a drag each send `{t: 'select', id}` (never for a
+  piece whose public view is its back). Strict rules that want selections
+  show no action bar on a tap (`#action-bar.hidden`; the item is still
+  `.selected`).
+- **`#secret`** ("🔒 For you", `#secret-head` toggles `.shut`) in
+  `#rules-row`, the column that now holds it above `#rules-btns`
+  (`placeSeats` moves the column: `#rules-row`'s `translate`); its text
+  is `#secret-text` (pre-wrap, at most 1,000 characters).
+- **The 📜 button's title** ends "— strict: only the moves the rules
+  allow" while they are; the dialog's `#rules-status` ends "· strict". An
+  error while the dialog is open shows in `#rules-err` at once.
+- **The terminal**: the snapshot gains `asks` (a hand pick's `count`
+  given, 1 by default), `hint`, `secret` and a top-level `strict`; the tab
+  pushes `❓ …` (each new ask, as `cliAsk` writes it), `💡 hint: …` and
+  `🔒 for you: …` into `msgs`, which both REPLs print with "✉"; `asks` is
+  a tab command (the same text in both REPLs); `answer <id> <value>` sends
+  `{t: 'answer', id, v: '<text>'}` and the tab converts it (`answerV`, the
+  panel's own); errors come back as `error: <id>: answer …`.
+- **`t-p3-ui.js`** (spec §3l t-p3-space items 3, 4 and 6 on the screens):
+  Alice hosts on a desktop, Bob plays on an iPhone 13 upright, Carol
+  watches on one sideways; a strict "UI probe" with `allow`, whose host
+  press of "run" carries code its `onAction` runs (asks, secrets). Enable's
+  "Starting…" (a top level of 600 ms), the strict titles, a tap's hint
+  (discs, rings, where the eye sees them: `__ct.resolve` and p3-lib's
+  `screenOf`), a drag's hint mid-drag, every ask form by real taps and
+  clicks, a forged unoffered answer, the panel's place on all three
+  screens (`askLayout`: two frames on, as painted — inside the viewport,
+  above the hand bar, finger-sized buttons, clear of the seat labels, the
+  turn cue, the watchers and the pieces asked about; a centred card on the
+  desktop), a host reload mid-ask, the secret card, the rules going off
+  (asks gone, secret kept) and an error shown in the open dialog.
+  Screenshots: `shots/p3-ui-*.png`.
+- **`t-p3-cli.js`** (spec §3i): the REPLs' `asks`, `answer` and `select`
+  against a fake tab and the Bridge API's `answer` / `select` in both
+  languages; then real tabs (Alice on cli.js hosting, Bob on cli.py) under a
+  strict probe: the snapshot's parts, the printed hint, asks and secret,
+  every answer form through both REPLs, and what isn't offered said with
+  nothing sent.
+- **`core-p3.test.mjs` (3C)**: a view's asks pass `viewAsk` (each
+  well-formed form kept as sent, twenty malformed ones dropped loudly, in a
+  snapshot and in a patch), and `pieces.hintSVG` writes numbers and fixed
+  classes only, whatever it is handed.
+- **`cli-lib.js`**: the bridge suites' helpers (a REPL or a Bridge API
+  driver as a child process, playing the tab over HTTP: `repl`, `type`,
+  `push`, `sent`, `api`, `viaApi`, `killAll`), moved out of `t-p2-cli.js`.
+- **Existing suites changed for 3C part 1** (mechanism changes, no check
+  dropped): `t-p2-cli.js` takes its helpers from `cli-lib.js`.
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores

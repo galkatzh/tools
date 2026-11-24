@@ -1647,6 +1647,24 @@ const entries = (l) => (Array.isArray(l) ? l.filter((e) => e && typeof e === 'ob
 const texts = (l) => (Array.isArray(l) ? l.filter((s) => typeof s === 'string') : []);
 /** A hint from the wire: {items, spaces} (strings only), or null. */
 const viewHint = (h) => (isObj(h) ? { items: texts(h.items), spaces: texts(h.spaces) } : null);
+/** An ask from the wire, shaped as the host sends one (cleanAsk's, its
+ *  options as their labels): {id, prompt, options} or {id, prompt, pick,
+ *  among?, count?, min?, max?} — else null, dropped loudly: the ask panel
+ *  and the terminal show only what passes. */
+function viewAsk(q) {
+  const strs = (l, max) => Array.isArray(l) && l.length <= max && l.every((s) => typeof s === 'string');
+  const { id, prompt, options, pick, among, count, min, max } = isObj(q) ? q : {};
+  const named = pick === 'item' || pick === 'space';
+  const ok = isId(id) && typeof prompt === 'string' && (options !== undefined
+    ? pick === undefined && strs(options, ASK_OPTIONS) && options.length > 0
+    : ASK_PICKS.includes(pick) && (named ? strs(among, ASK_AMONG) : among === undefined)
+      && (count === undefined || (pick === 'hand' && Number.isInteger(count) && count >= 1))
+      && (pick === 'number' ? Number.isInteger(min) && Number.isInteger(max) && min <= max : min === undefined && max === undefined));
+  if (!ok) { console.error('dropped a malformed ask from the host', q); return null; }
+  return options ? { id, prompt, options: [...options] } : { id, prompt, pick, ...(named && { among: [...among] }), ...(count !== undefined && { count }), ...(pick === 'number' && { min, max }) };
+}
+/** This player's asks from the wire (viewAsk's, the malformed dropped). */
+const viewAsks = (l) => entries(l).map(viewAsk).filter(Boolean);
 /** A table definition from the wire, checked (cleanTable); a bad one is
  *  logged and shown as the default round table. */
 function viewTable(t) {
@@ -1668,7 +1686,7 @@ export function viewFromSnap(d) {
   return {
     seq: d.seq, boot: d.boot, host: d.host, table: d.table ? viewTable(d.table) : roundTable(), seats: viewSeats(d.seats), handy: !!d.handy,
     rules: d.rules ?? null, items: dict(d.items), players: dict(d.players), log: trimLog(entries(d.log)), hand: Array.isArray(d.hand) ? d.hand : [],
-    ask: entries(d.ask), hint: viewHint(d.hint), sec: d.sec ?? null,
+    ask: viewAsks(d.ask), hint: viewHint(d.hint), sec: d.sec ?? null,
   };
 }
 /** Folds a patch body into view V, in place: items and players are replaced
@@ -1690,7 +1708,7 @@ export function applyViewPatch(V, d) {
   if ('handy' in d) V.handy = !!d.handy;
   if (Array.isArray(d.log)) V.log = trimLog(V.log.concat(entries(d.log)));
   if (Array.isArray(d.hand)) V.hand = d.hand;
-  if ('ask' in d) V.ask = entries(d.ask);
+  if ('ask' in d) V.ask = viewAsks(d.ask);
   if ('hint' in d) V.hint = viewHint(d.hint);
   if ('sec' in d) V.sec = d.sec ?? null;
   V.seq = d.seq;

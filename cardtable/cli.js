@@ -78,6 +78,12 @@ class Bridge {
   take(supply, x = null, y = null, hand = false) { this.send({ t: 'take', id: supply, x, y, hand }); }
   /** Puts item `ref` on a board's spot `addr` ('e4', 'bar', 'map:c3'): an item id moves there; a supply (id or type name) hands out a piece there. */
   place(ref, addr) { this.send({ t: 'place', id: ref, at: addr }); }
+  /** Answers the rules' question `id` (see state.asks) with `value`: an
+   *  option's index or label, an item id, an address, hand indices ([0, 3] or
+   *  '0,3'), a number — the tab turns it into the answer the host checks. */
+  answer(id, value) { this.send({ t: 'answer', id, v: value }); }
+  /** Selects item `id`: rules that want it may answer with a hint (state.hint). */
+  select(id) { this.send({ t: 'select', id }); }
   /** Sits in named seat `id`; '-' stands up to watch, '+' sits down again (automatic seating). */
   seat(id) { this.send(id === '-' ? { t: 'seat', watch: true } : id === '+' ? { t: 'seat', sit: true } : { t: 'seat', id }); }
   route(req, res) {
@@ -170,6 +176,9 @@ const HELP = `commands:
   claim|release <id>      make an item yours, or nobody's
   seat <id> | seat - | seat +   sit in a named seat; - stand up to watch; + sit down again
   btn <id>                press a rules button (see "buttons")
+  asks                    the rules' questions waiting for you (new ones print as they come)
+  answer <id> <value>     answer one: an option's number or label, an item id, a spot, hand indices (0,3), a number
+  select <id>             select a piece: the rules may hint where it can go
   chat <msg>              say something (also "!commands" for rules scripts)
   quit`;
 
@@ -306,6 +315,13 @@ function runCmd(bridge, line) {
     case 'seat':
       need(args, 1, 'seat <id> | seat - | seat +');
       return bridge.seat(args[0]);
+    case 'asks': return bridge.send({ t: 'asks' }); // (the tab writes the text: the same in both REPLs)
+    case 'answer':
+      if (args.length < 2) throw new Error('answer <id> <value>');
+      return bridge.answer(args[0], args.slice(1).join(' '));
+    case 'select':
+      need(args, 1, 'select <id>');
+      return bridge.select(args[0]);
     case 'chat': return bridge.send({ t: 'chat', msg: args.join(' ') });
     default: throw new Error(`unknown command "${cmd}" — try "help"`);
   }
