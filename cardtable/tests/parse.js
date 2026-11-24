@@ -1,14 +1,15 @@
 // Parse-checks the app's ES modules as real modules (catches what a Function()
-// check misses, e.g. a stray `await` or a duplicate export): app.js and every
-// local module it imports, recursively, so a new module is checked as soon as
-// it is imported.
-// Usage: node --experimental-vm-modules parse.js [entry.js ...]   (default: cardtable/app.js)
+// check misses, e.g. a stray `await` or a duplicate export): app.js, the
+// rules Worker (rules-worker.js: app.js starts it by URL, never imports it)
+// and every local module they import, recursively, so a new module is
+// checked as soon as it is imported.
+// Usage: node --experimental-vm-modules parse.js [entry.js ...]   (default: cardtable/app.js and rules-worker.js)
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
 const APP = path.join(process.env.APP_ROOT || path.join(__dirname, '../..'), 'cardtable');
-const todo = process.argv.length > 2 ? process.argv.slice(2).map((f) => path.resolve(f)) : [path.join(APP, 'app.js')];
+const todo = process.argv.length > 2 ? process.argv.slice(2).map((f) => path.resolve(f)) : ['app.js', 'rules-worker.js'].map((f) => path.join(APP, f));
 const seen = new Set();
 let bad = 0;
 while (todo.length) {

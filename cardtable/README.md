@@ -182,8 +182,10 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   `store.js` is storage (IndexedDB) and image checking; `grid.js` is board
   geometry (cells, hexes, addresses like `e4`); `pieces.js` draws pieces,
   bags and boards (a board's structure is one SVG built from numbers only);
-  `app.js` is the network, rendering and input around them, and
-  `templates.js` holds the shipped rules scripts and game boxes.
+  `app.js` is the network, rendering and input around them,
+  `templates.js` holds the shipped rules scripts and game boxes, and
+  `rules-worker.js` is the Web Worker a rules script runs in (on a copy of
+  the table built by the same `core.js`).
 
 - **Transport**: Trystero WebRTC, signaling over public Nostr relays — no
   server, no accounts. The room id + password live in the invite link's hash
@@ -223,7 +225,8 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   it; a peer on another version of Card Table is refused with a "reload this
   page" notice instead of misreading the table. Every module import carries
   the code version (`core.js?v=1`), and the page stops with a "reload" banner
-  if a cached module of another version slipped in.
+  if a cached module of another version slipped in; a rules Worker of
+  another version refuses to start ("reload this page to run rules").
 - **Identity**: players get a persistent random id in `localStorage`, so a
   reloaded guest reclaims their hand (WebRTC peer ids change per page load).
   Every guest action carries that id + nickname, and the host registers the
@@ -408,12 +411,25 @@ its player, as a hand does.
 
 Scripts run **on the host only** — guests receive data, never code — and
 everyone can read the exact script being enforced (read-only view in the
-Rules dialog). A script error disables the rules loudly rather than wedging
+Rules dialog). On the host a script never runs on the page: Enable starts a
+**Web Worker** that holds a copy of the table, runs the script and every
+action on it, one at a time, and sends back what each changed (Enable says
+"Starting…" for that moment). A **watchdog** gives each action 4 s of the
+host tab's visible time (a phone that hides the tab stops the clock): a
+script stuck in a loop is stopped, the action dropped, and the rules
+disabled, while the host's page stays responsive throughout. Hooks must be
+synchronous — an `async` hook fails, and so does `t` used from a promise
+callback — and `t.schedule` is the only timer. Live drags are not
+validated, only the drop. A script error disables the rules loudly rather than wedging
 the game (an action whose `validate` crashed is blocked, not waved through);
 rules, their state, and pending timers survive host reloads — and
 re-enabling the same game after a fix or a Disable keeps its state (chips,
 scores) unless the host ticks *Reset game state*. Switching to another game
 discards the old one's state (the 🎲 picker asks first, and the log says so).
+A script saved before Phase 3 that touches the page — `document`, `alert`,
+`localStorage`, `setTimeout` — now disables the rules with a message saying
+so: use `t.say` / `t.tell` for messages, `t.data` for storage and
+`t.schedule` for timers (ENGINE.md, "Running in a Worker").
 Templates ship for turn order (skipping anyone offline), full **no-limit Hold'em with chips** (stacks
 on the seat labels, automatic blinds with a rotating button, turn-enforced
 betting via buttons — Check/Call, Fold, and quick bets *Min raise*, *½ pot*,
@@ -562,10 +578,14 @@ refuse the `https → http://127.0.0.1` fetch.
   pan are per-player remedies, not persisted between reloads.
 - The image cache can be probed: a guest asks the host only for the images
   it doesn't hold, so a host can tell whether a guest has seen a deck before.
-- Rules scripts are trusted code on the host's machine: a runaway loop can
-  freeze the host's tab (refresh recovers via the save), and a dishonest
+- Rules scripts are trusted code on the host's machine, and a dishonest
   host could run different code than displayed — the same trust tier as the
-  host already holding all hands. A script sees every hidden card and
+  host already holding all hands. The rules Worker takes the network and
+  storage APIs away from a script, as defence in depth rather than a
+  sandbox: dynamic `import()` can't be removed without headers GitHub Pages
+  can't set, so a script could still load code or reach a server. A
+  runaway loop no longer freezes the host's tab (the watchdog stops it
+  within about 5 s). A script sees every hidden card and
   piece, so what it tells one player (`t.tell`, a hint, `t.secret`) may
   reveal it: the engine refuses a selection of a piece hidden from the
   player selecting it, but beyond that, what a script reveals is its

@@ -41,6 +41,17 @@
 //        drawing the pieces, never "?" placeholders), and a snapshot asked for after a
 //        lost patch (the boxes already here)
 //   B11  boardSVG of a 64 × 64 grid: ≤ 30 ms, then cached (in the page)
+// Phase 3 (§3k) adds three on the 1,000-card table, whose rules run in a Worker:
+//   B12  the Worker round trip of a host's move under a `validate` script
+//        (__ct.perf.lastRulesRoundtripMs: from the post to its patch applied):
+//        ≤ 3 ms median, ≤ 8 ms p95, over 50 moves after 10 not measured, each
+//        from a settled page (60 ms after the last, past a frame: the last
+//        move's broadcast and drawing, otherwise in the window, are B3's and B5's)
+//   B14  an infinite loop in onAction: the rules are off within 4 s + 1 s, and
+//        during the hang a host click (opening the log panel) is handled —
+//        its event's timeStamp to the panel's change — in < 100 ms
+//   B15  a Worker starting over the table and the CAH decks (__ct.perf.lastRulesInitMs:
+//        spawn to `ready`): ≤ 300 ms, at each of three Enables
 const h = require('./h');
 const L = require('./p1-lib');
 const A = require('./assets-lib');
@@ -48,6 +59,7 @@ const P = require('./p2t-lib');
 const { ok, section } = h;
 
 const B1_MAX = 1.5 * 1024, B3_MAX = 4, B4_LONG = 50, B4_SETTLE = 150, B4_FLOOR = 20, B6_MAX = 8, B10_DESK = 400, B10_PHONE = 1500, B11_MAX = 30;
+const B12_MEDIAN = 3, B12_P95 = 8, B14_MS = 5000, B14_CLICK = 100, B15_MAX = 300;
 const PAN_MS = 3000, GESTURE_MS = 3000, HESITATE_MS = 200; // (a pause of the fingers shorter than a rest: PINCH_REST_MS)
 
 /** The throwaway script that builds the table (spec §1k): 20 standard decks,
@@ -484,6 +496,22 @@ function placeholderWatch() {
   ok(built, `the guests hold 1,000 cards (${counts.cards} cards, ${counts.dom} elements on the phone)`);
   await h.sleep(2000);
 
+  section('§3k B12: the rules Worker round trip of a host move under validate, at 1,000 cards');
+  const VALIDATE = "({ name: 'Bench rules', validate(t, a) { if (a.t === 'move' && !t.item(a.id)) return 'no such card'; } })";
+  ok((await L.act(host, { t: 'setRules', code: VALIDATE, enabled: true })).ok, 'the host enables a script with validate');
+  const ids12 = await host.evaluate(() => { const v = window.__ct.view(); return Object.keys(v.items).filter((id) => v.items[id].k === 'c').slice(0, 60); });
+  const rt = [];
+  for (let k = 0; k < 60; k++) { // (each move from a settled page: the last one's broadcast sent, its frame drawn — 16 moves a second)
+    const r = await host.evaluate(async ([id, x, y]) => {
+      await new Promise((res) => setTimeout(() => requestAnimationFrame(() => setTimeout(res, 0)), 60));
+      return { ok: (await window.__ct.act({ t: 'move', id, x, y })).ok, ms: window.__ct.perf.lastRulesRoundtripMs, worker: window.__ct.perf.lastRulesWorkerMs };
+    }, [ids12[k], 700 + (k % 10) * 30, 1500 + (k % 7) * 20]);
+    if (k >= 10 && r.ok) rt.push(r);
+  }
+  const rtMs = rt.map((r) => r.ms), med = L.pct(rtMs, 50), p95 = L.pct(rtMs, 95);
+  console.log(`  round trips: median ${med.toFixed(2)} ms, p95 ${p95.toFixed(2)} ms, max ${Math.max(...rtMs).toFixed(2)} ms; in the Worker: median ${L.pct(rt.map((r) => r.worker), 50).toFixed(2)} ms`);
+  ok(rt.length === 50 && med <= B12_MEDIAN && p95 <= B12_P95, `B12: ${rt.length} moves' Worker round trips: median ${med.toFixed(2)} ms (≤ ${B12_MEDIAN}), p95 ${p95.toFixed(2)} ms (≤ ${B12_P95})`);
+
   section("B1' and B3: 50 moves by one guest, as the other guest receives them");
   const cards = await mover.evaluate(() => { const v = window.__ct.view(); return Object.keys(v.items).filter((id) => v.items[id].k === 'c').sort(); });
   await movesB1B3(cards, 1150, 1130, 320, 320);
@@ -498,6 +526,35 @@ function placeholderWatch() {
   const deck = await A.addDeck(host, A.imgDeck('Forty', A.tinyPngs(40, 8)), 1150, 1130);
   ok(deck.ok && deck.pile, 'the host adds the deck of 40 images again (Bob pulled them on the piece table)');
   await rejoinB8(deck, 700, 700, false);
+
+  section('§3k B15: a rules Worker starting over the 1,000 cards and the CAH decks');
+  await h.enableRules(host, { tpl: 'cah' }); // (its setup registers the three CAH decks: the Enables below start over them)
+  ok(await host.evaluate(() => window.__ct.view().rules?.name === 'Cards Against Humanity' && !window.__ct.lastRulesError), 'CAH runs, its decks in the catalog');
+  const inits = [];
+  for (let k = 0; k < 3; k++) {
+    await h.enableRules(host, { tpl: 'cah' });
+    inits.push(await host.evaluate(() => ({ ms: window.__ct.perf.lastRulesInitMs, items: Object.keys(window.__ct.view().items).length, err: window.__ct.lastRulesError })));
+  }
+  console.log(`  Worker starts: ${inits.map((r) => `${r.ms.toFixed(1)} ms (${r.items} items)`).join(', ')}`);
+  ok(inits.every((r) => !r.err && r.items >= 1000 && r.ms > 0 && r.ms <= B15_MAX), `B15: each start, spawn to ready, ≤ ${B15_MAX} ms (${inits.map((r) => r.ms.toFixed(1)).join(', ')} ms)`);
+
+  section('§3k B14: an infinite loop in onAction — the watchdog, and the host page during the hang');
+  ok((await L.act(host, { t: 'setRules', enabled: true, code: "({ name: 'Hang', onAction(t, a) { if (a.t === 'rot') for (;;); } })" })).ok, 'the host enables a script that hangs on a turn');
+  await host.evaluate(() => {
+    const b = (window.__b14 = {});
+    document.getElementById('log-btn').addEventListener('click', (e) => { b.click = e.timeStamp; }, { capture: true, once: true });
+    new MutationObserver((_, o) => { b.dom = performance.now(); o.disconnect(); }).observe(document.getElementById('side'), { attributes: true });
+  });
+  const t14 = Date.now(), hung = L.act(host, { t: 'rot', id: cards[0], rot: 90 });
+  await h.sleep(1500);
+  await host.click('#log-btn');
+  const r14 = await hung, took = Date.now() - t14;
+  await host.waitForFunction(() => !window.__ct.view().rules.enabled, null, { timeout: 5000 }).catch(() => {});
+  const b14 = await host.evaluate(() => ({ ...window.__b14, off: !window.__ct.view().rules.enabled, err: window.__ct.lastRulesError }));
+  await host.click('#log-btn'); // (the panel closes again)
+  ok(!r14.ok && b14.off && /longer than 4 s/.test(b14.err), `the rules stopped, the turn not applied (${b14.err})`);
+  ok(took <= B14_MS, `B14: the rules are off ${took} ms after the action (≤ ${B14_MS})`);
+  ok(b14.dom > b14.click && b14.dom - b14.click < B14_CLICK, `B14: a host click during the hang opens the log panel in ${(b14.dom - b14.click).toFixed(1)} ms (< ${B14_CLICK})`);
 
   section('§2k B11: boardSVG of a 64 × 64 grid ≤ 30 ms, cached afterwards (in the page)');
   const b11 = await host.evaluate(async (v) => {

@@ -49,7 +49,8 @@ node t-smoke.js         # one suite, output on the terminal
   other into flaky timeouts, so a second run waits for the first.
 - Each suite's log is kept in `out/<suite>.log` until the next run; failing
   checks are listed with the log's path.
-- `parse.js` parse-checks `app.js` and every local module it imports as real
+- `parse.js` parse-checks `app.js`, `rules-worker.js` (a Worker app.js
+  starts by URL, never imports) and every local module they import as real
   ES modules (a stray `await` or a duplicate export fails there, not in a
   browser). Local imports carry the code version (`./core.js?v=1`, see
   `MODULE_V` in `core.js`); the check, like the test server, ignores it.
@@ -892,11 +893,11 @@ raw peers import `PROTO` from `core.js` (`h.PROTO`), saves use `STATE_V`.
   it: dice never snap (D112), so B9's roll of 20 dice on the board is back
   under 3 KB.
 
-## Phase 3 (3B: the engine; the Worker comes in its part 2)
+## Phase 3 (3B: the engine and the rules Worker)
 
 What the 3B suites drive in core (spec §3c–§3f, §3h, §3j; decisions D121
-onward). Rules still run on the host's page until 3B's second part moves
-them into `rules-worker.js`; core is the same in both.
+onward). On a page, rules run in the rules Worker (`../rules-worker.js`,
+next section); core is the same there, in the page and in Node.
 
 - **The journal** (on a table): `T.begin()`, `T.savepoint()` → a token,
   `T.rollbackTo(token)`, `T.rollback()` (to the begin), `T.checkpoint()`
@@ -949,6 +950,78 @@ them into `rules-worker.js`; core is the same in both.
   end — where it was two), `core-p2.test.mjs` (`answer` and `select` in
   `PUBLIC_ACTIONS`, and no `_` name), `t-engine.js` (its probe of the timer
   loop reads core's `_tick` job, which replaced `runTimers`'s body).
+
+### The rules Worker (3B part 2)
+
+A host page never runs a rules script: Enable starts a module Worker
+(`rules-worker.js`) over a copy of the host's state (no seat keys) — it
+evaluates the script and runs every queued job on its mirror (`T.job`),
+and the host applies each job's patch (`T.applyStatePatch`). So, in an
+E2E test:
+
+- **Enable is asynchronous.** `__ct.act({t: 'setRules', code, enabled:
+  true})` resolves once the Worker is ready AND the setRules job (setup
+  included) is applied: `{ok: true}`, or `{ok: false, error}` when the
+  code didn't evaluate (the running rules unchanged). The 📜 dialog's
+  Enable says "Starting…" until then; `h.enableRules(page, {tpl | code})`
+  waits until the dialog closes or shows an error. Every queued action
+  waits while a Worker starts (an Enable, a host reload with the rules on).
+- **A script can't see the page.** Its `window` is the Worker's global
+  scope (`window.CAH_CARDS` is copied in, `WORKER_GLOBALS` in app.js), so a
+  test can't hand a script a page function (`window.TEST`): it sends what
+  the script needs inside an action (t-engine's probe reads `a.code` from
+  a `rulesBtn` press), and reads what it did from the log, the view or
+  `__ct.lastRulesError`. A script's `console.log` shows as the page's
+  console (Playwright reports Worker console messages on the page).
+- **`__ct` (host)**: `workerDigest()` → a Promise of the running Worker's
+  `T.digest()` of its mirror, taken after the jobs posted before it (null
+  with no Worker); `digest()` the host table's — equal once those jobs are
+  applied (`await` the actions, or `jobs() === 0`); `lastRulesError` (a
+  getter) the 📜 dialog's error: a hook's failure ("onAction(): …"), the
+  watchdog's "the script took longer than 4 s (stopped)", "the script
+  crashed: …" (a fatal: "… outside a hook", "the script changed t.data
+  outside a hook"), or an Enable's evaluation error ('' after a good
+  Enable); `jobs()` how many jobs wait in the host's queue or are in flight
+  (a Worker starting counts).
+- **`__ct.perf` (host)**: `workerStarts`, `workerStops` (every Worker ended:
+  replaced, disabled, crashed, stopped by the watchdog, or by a demotion),
+  `workerJobs` (jobs the Worker ran), `lastRulesRoundtripMs` (B12: the host
+  posting a job to its patch applied), `lastRulesWorkerMs` (that job's time
+  in the Worker, `done.ms`), `lastRulesInitMs` (B15: spawn to `ready`),
+  `digestChecks` / `digestMismatches` (a test build compares the host's
+  digest with the Worker's every 50 jobs; a mismatch is also a
+  console.error), `saves` (saves that reached IndexedDB: a demoted tab's
+  count stops).
+- **The one-writer rule** (CARDTABLE_TEST): while a Worker runs, the host
+  table's `T.apply` throws (only the Worker's patches change the table);
+  `_rulesOff` and a Disable run on the host table after the Worker is gone.
+  The host table's script runner (`pageHooks`) throws if a hook is called.
+- **The watchdog** counts the host page's visible time: 4 s per job (+10 ms
+  per item a box setup lays out), 10 s for a Worker to start; hidden or
+  frozen (`visibilitychange`, `freeze`/`resume`: CDP
+  `Page.setWebLifecycleState`), the clock stops, and it restarts with a 1 s
+  grace; a timer that fires over 1 s late gives one more second. A job it
+  stops is dropped (the actor's notice "🚫 The rules stopped responding —
+  your action was not applied", what it named re-sent), the rules go off
+  ("rules disabled — the script took longer than 4 s (stopped)", a toast),
+  and the queue goes on.
+- **The wire**: a guest's actions beyond `MAX_QUEUE` (500) waiting jobs
+  are refused ("🚫 The table is busy — try again"); `_join` is queued (the
+  seat key binds at once, on receipt); `hello`, `snap` and `need` never
+  reach the queue; `answer` and `select` do (to the Worker while the rules
+  are on).
+- **Version skew**: the Worker compares `init.proto` / `init.mv` with its
+  own `PROTO`, `MODULE_V` and core's; a mismatch is an `evalError`
+  "version mismatch — reload this page", and the host toasts "Card Table
+  was updated — reload this page to run rules" (a test can route
+  `rules-worker.js` to a copy exporting another `MODULE_V`).
+- **The benches** (t-p1-bench, on the 1,000-card table): B12, B14, B15.
+- **Existing suites changed for 3B part 2** (mechanism changes, no check
+  dropped): `t-engine.js` (its Probe ran `window.TEST(t)`, a page function,
+  from `onButton`; now a press of "run" carries the code, which `onAction`
+  runs in the Worker), `h.js` (`enableRules` waits for the asynchronous
+  Enable), `parse.js` (also parses `rules-worker.js`), `t-p1-bench.js` (B12,
+  B14, B15 added; its 1,000-card table's script now runs in a Worker).
 
 ## Storage and images (Phase 1B)
 

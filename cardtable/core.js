@@ -803,7 +803,7 @@ function cleanSetup(list, types, seats) {
   return list.map((e, k) => entry(e, `setup[${k}]`, false));
 }
 /** How many items setup `list` (cleaned) spawns, with `perSeat` seats for each forEachSeat. */
-const countSetup = (list, perSeat) => list.reduce((n, e) => n + (e.forEachSeat ? perSeat * countSetup(e.forEachSeat, perSeat)
+export const countSetup = (list, perSeat) => list.reduce((n, e) => n + (e.forEachSeat ? perSeat * countSetup(e.forEachSeat, perSeat)
   : e.group ? countSetup(e.group, perSeat) : e.count ?? 1), 0);
 
 /** The gate every game box passes (built in, saved, from the wire, and in
@@ -3013,6 +3013,7 @@ export function createTable(host, env = {}) {
       changed = act(p, a, base);
       if (J && host.rules?.enabled) json = settle();
       if (json === null) changed = bump();
+      syncSpots(); // (the addresses a board's change moved, read now: a Worker's patch carries them)
       noteDraws();
       flushRuns();
     } catch (err) {

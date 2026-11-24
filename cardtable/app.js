@@ -22,7 +22,7 @@ import {
   CARD_W, CARD_H, RANKS, RULES, playR, clampToTable, seatAt, seatAngles, sizeOf, flagsOf, typeAt, PID_RE, ASSET_RE, rand, clamp, own, num, peerText,
   cleanDeck, cleanDeckV1, cleanBox, isBuiltin, deckOverBudget, assetRefs, cleanName, standardDeck, cardName, pieceName, faceLabel, createTable,
   MODULE_V as CORE_V, PROTO, PUBLIC_ACTIONS, HOST_ACTIONS, MAX_ROLL, MAX_N, MAX_BAG, MAX_HAND, MAX_PILE, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch, roundTable, FELT,
-  tableBoards, snapTo, snaps, displayAddr, resolveAddr, liveFx,
+  tableBoards, snapTo, snaps, displayAddr, resolveAddr, liveFx, countSetup,
 } from './core.js?v=1';
 import { MODULE_V as GRID_V, turn } from './grid.js?v=1';
 import * as pieces from './pieces.js?v=1';
@@ -204,40 +204,76 @@ let peerPid = {};    // host only: Trystero peerId -> stable player id
 let hostPeer = null; // guest only: peerId currently acting as host
 const early = new Map(), EARLY_MAX = 16; // guest: peer → its catalog messages held until it shows it hosts (see fromHost)
 /** Counters and the last durations, for the tests and benchmarks (window.__ct). */
-const perf = { snaps: 0, patches: 0, gaps: 0, snapRequests: 0, lastApplyMs: 0, lastRenderMs: 0, lastSnapRenderMs: 0, drawn: 0, lastTickMs: 0, lastSaveSyncMs: 0 };
+const perf = {
+  snaps: 0, patches: 0, gaps: 0, snapRequests: 0, lastApplyMs: 0, lastRenderMs: 0, lastSnapRenderMs: 0, drawn: 0, lastTickMs: 0, lastSaveSyncMs: 0, saves: 0,
+  // the rules Worker: Workers started and ended, jobs it ran, the last job's round trip (host: post to done applied),
+  // its time in the Worker, the last start (spawn to ready), and the digest checks of test builds (checkDigest)
+  workerStarts: 0, workerStops: 0, workerJobs: 0, lastRulesRoundtripMs: 0, lastRulesWorkerMs: 0, lastRulesInitMs: 0, digestChecks: 0, digestMismatches: 0,
+};
 
 // --- the host's action queue ------------------------------------------------
-// Every state change on the host runs through one FIFO, in arrival order: a
-// player's action; core's internal jobs (spec §3c: `_leave`, a player's last
-// connection closed; `_tick`, the rules' timers that are due; `_name`, the
-// rename a new connection brings); and the app's own (JOBS): `_refuse` (an
-// action turned away before it ran: re-send what it named) and `_unsaveable`
-// (the save couldn't copy the rules' state). Jobs are synchronous today, so a job
-// on an empty queue runs at once, in the caller's task, and the host's own
-// clicks feel instant. Asynchronous preprocessing (deck ingestion) runs
-// before a job enters the queue (submit), and a rules Worker would make a
-// job asynchronous.
+// Every state change on the host runs through one FIFO, in arrival order
+// (spec §3f.5): a player's action; core's internal jobs (spec §3c: `_join`, a
+// player's first action while not online; `_leave`, their last connection
+// closed; `_tick`, the rules' timers that are due; `_name`, the rename a new
+// connection brings; `_rulesOff`); and the app's own (JOBS): `_refuse` (an
+// action turned away before it ran: re-send what it named). With the rules
+// off, a job runs on the host's table, synchronously: one on an empty queue
+// runs at once, in the caller's task, and the host's own clicks feel
+// instant. With the rules on, the rules Worker runs every job (below), one at
+// a time: the queue waits for its `done` — or for a Worker that is starting
+// (`current`). Asynchronous preprocessing (deck ingestion) runs before a job
+// enters the queue (submit).
+const MAX_QUEUE = 500;
 const queue = [];
-let running = false;
+let current = null; // the job the queue waits for: {p, a, resolve, id (posted to the Worker) | start (the Worker starting for it)}
+let pumping = false;
 /** Host: queues player p's action `a`. Resolves {ok: true} once it changed
  *  the table, {ok: false} when it changed nothing, and {ok: false, error}
- *  with the notice that refused it (a veto, flood control, a bad deck). */
+ *  with the notice that refused it (a veto, flood control, a bad deck). A
+ *  guest's action finding MAX_QUEUE jobs waiting is refused, and what it
+ *  named re-sent; internal jobs (bounded by the peers and the timer) and
+ *  the host's own always wait their turn. */
 function enqueue(p, a) {
+  if (queue.length >= MAX_QUEUE && p !== pid && a.t[0] !== '_') {
+    console.warn(`the queue holds ${MAX_QUEUE} jobs: refused`, a.t, 'from', p);
+    tell(p, '🚫 The table is busy — try again');
+    enqueue(p, { t: '_refuse', a }); // (their optimistic move snaps back)
+    return Promise.resolve({ ok: false, error: 'the table is busy' });
+  }
   return new Promise((resolve) => {
     queue.push({ p, a, resolve });
-    if (running) return;
-    running = true;
-    try {
-      while (queue.length && role === 'host') runJob(queue.shift());
-    } finally { running = false; }
+    pump();
   });
 }
+/** Runs the queued jobs in order while none is in flight. */
+function pump() {
+  if (pumping) return;
+  pumping = true;
+  try {
+    while (!current && queue.length && role === 'host') runJob(queue.shift());
+  } finally { pumping = false; }
+}
+/** Whether a `t` job of player p waits in the queue or is in flight. */
+const waiting = (p, t) => (current?.p === p && current.a?.t === t) || queue.some((j) => j.p === p && j.a.t === t);
 /** The host's internal jobs, by type (never from the wire: PUBLIC_ACTIONS). */
 const JOBS = {
   _refuse: (p, a) => T.refreshFor(p, a.a),
-  _unsaveable: (p, a) => T.unsaveable(a.why),
 };
-function runJob({ p, a, resolve }) {
+/** Hands job `job` to whoever runs it: the rules Worker while the rules are
+ *  on (an Enable starts a new one; a Disable ends it, then the host's table
+ *  takes it), else the host's table. */
+function runJob(job) {
+  const { p, a } = job;
+  if (a.t === 'setRules' && p === pid && a.enabled) { startWorker(a.code, job); return; }
+  if (worker && !own(JOBS, a.t)) {
+    if (a.t !== 'setRules' || p !== pid) { toWorker(job); return; }
+    stopWorker(); // Disable: no Worker, and the host's table switches the rules off
+  }
+  hostJob(job);
+}
+/** Runs job {p, a, resolve} on the host's table, at once. */
+function hostJob({ p, a, resolve }) {
   let changed = true; // a job that threw may have changed something: broadcast and save it
   try {
     changed = own(JOBS, a.t) ? JOBS[a.t](p, a) : T.apply(p, a);
@@ -368,14 +404,261 @@ function flushPending() {
   for (const { a } of fresh) act(a);
 }
 
-// --- rules engine (see ENGINE.md; it runs in core.js) -------------------------
+// --- the rules Worker (spec §3f; ENGINE.md, "Running in a Worker") ------------
+// A rules script never runs on the page. Enabling one starts a module Worker
+// (rules-worker.js) over a copy of the host's state, keys excepted: it
+// evaluates the script there, and from then on runs every job of the queue
+// on its copy (the mirror), sending back what the job changed (a StatePatch,
+// `done`), which the host's table takes as it is (applyStatePatch): while
+// the rules are on, every change to the host's state comes from the Worker,
+// and while they are off, no Worker exists. A job has RULES_TIMEOUT_MS of
+// the page's VISIBLE time to come back (the watchdog below: a phone may
+// freeze a hidden tab, which must never kill healthy rules); one that
+// doesn't, or a Worker that crashes, ends the rules: the Worker goes, the
+// host's table switches the rules off (_rulesOff), and the job in flight is
+// dropped — the table stays as it was, and the queue goes on.
+const RULES_TIMEOUT_MS = 4000, RULES_INIT_MS = 10000;
+/** The page globals a shipped template reads (window.CAH_CARDS), copied into each Worker. */
+const WORKER_GLOBALS = ['CAH_CARDS'];
+let worker = null; // the running rules' Worker: {w, ready: {name, wants, strict}}
+let lastRulesError = ''; // the host's last rules error, for the 📜 dialog ('' after a good Enable)
+let jobSeq = 0; // ids of the messages the host posts to Workers
+const digests = new Map(); // id → the resolve of a digest asked of the Worker
 let rulesCodeDirty = false; // code changed -> resend on next broadcast
 let guestRules = { code: '', name: '' }; // guests: the script text, for reading
+
+/** The host table's rules runner (core.js env.hooks): no script runs on the
+ *  page, so it answers only what the rules view says of the script (wants,
+ *  strict), from its Worker's `ready`. A hook called here would break the
+ *  one-writer rule: it fails loudly. */
+const pageHooks = {
+  load() { // (resume() asks, before T is set: the Worker evaluates the saved script)
+    if (T) throw new Error('rules scripts run in a Worker, never on the page');
+    return '';
+  },
+  has: (hook) => hook === 'onSelect' && !!worker?.ready.wants.includes('select'),
+  flag: (k) => (k === 'strict' ? worker?.ready.strict : undefined),
+  call(hook) { throw new Error(`${hook}() was called on the page: rules scripts run in a Worker`); },
+};
+
+/** Starts a rules Worker running `code` over the table as it now is (spec
+ *  §3f.8). The queue waits for it (`current`). Ready, it replaces the
+ *  running one and takes `job` (the host's setRules: its core logs the
+ *  enable and runs setup); with no job (a host resuming its table), it just
+ *  runs. A script that fails to start (evalError, a crash, RULES_INIT_MS
+ *  gone by) changes nothing on an Enable — the running rules keep running —
+ *  and switches the saved rules off on a resume. */
+function startWorker(code, job) {
+  let w;
+  try {
+    w = new Worker(new URL(`./rules-worker.js?v=${MODULE_V}`, import.meta.url), { type: 'module' });
+  } catch (err) {
+    console.error('could not start a rules Worker', err);
+    current = { ...job };
+    started(null, { type: 'evalError', message: "this browser can't run rules scripts (module workers unsupported)" });
+    return;
+  }
+  perf.workerStarts++;
+  current = { ...job, start: w, t0: performance.now() };
+  listen(w);
+  const { keys, decks, boxes, boxSrc, ...state } = T.state; // (the seat keys never leave the page)
+  w.postMessage({
+    type: 'init', proto: PROTO, mv: MODULE_V, hostId: pid, code, globals: Object.fromEntries(WORKER_GLOBALS.map((k) => [k, window[k]])),
+    state, decks, boxes, boxSrc, now: Date.now(),
+  });
+  watchStart(RULES_INIT_MS, () => started(w, { type: 'evalError', message: `the script didn't start within ${RULES_INIT_MS / 1000} seconds` }));
+}
+/** Worker `w`'s messages and failures, routed by what it is to the queue:
+ *  starting, the running one, or gone (a terminated Worker's last messages
+ *  are dropped: nothing it posts after that is applied). */
+function listen(w) {
+  const fail = (message) => {
+    if (current?.start === w) started(w, { type: 'evalError', message });
+    else if (worker?.w === w) rulesDown(`the script crashed: ${message}`, `Rules disabled — the script crashed: ${message}`);
+  };
+  w.onmessage = ({ data: m }) => {
+    if (current?.start === w) { started(w, m.type === 'fatal' ? { type: 'evalError', message: m.message } : m); return; }
+    if (worker?.w !== w) return;
+    if (m.type === 'done') done(m);
+    else if (m.type === 'digest') { digests.get(m.id)?.(m.digest); digests.delete(m.id); } else fail(m.type === 'fatal' ? m.message : `an unexpected ${m.type} message`);
+  };
+  w.onerror = (e) => { e.preventDefault(); console.error('rules Worker error', e); fail(e.message || 'the rules Worker failed to load'); };
+  w.onmessageerror = () => { console.error('a rules Worker message could not be read'); fail('a message could not be read'); };
+}
+/** How Worker `w` (null: none could be made) answered its `init`: `ready`
+ *  ({name, wants, strict}), or an evalError {message} (the code didn't
+ *  evaluate, a version mismatch, a crash or a timeout while starting). */
+function started(w, m) {
+  watchStop();
+  const job = current;
+  current = null;
+  if (m.type === 'ready') {
+    stopWorker(); // (the rules it replaces: the new script's setRules takes over)
+    worker = { w, ready: m };
+    perf.lastRulesInitMs = performance.now() - job.t0;
+    if (job.a) { lastRulesError = ''; toWorker(job); } else scheduleBroadcast(); // (a resume: the rules view says wants and strict now)
+    pump();
+    return;
+  }
+  if (w) { w.terminate(); perf.workerStops++; }
+  const msg = String(m.message), skew = msg.startsWith('version mismatch');
+  console.error('rules: the script did not start —', msg);
+  lastRulesError = msg;
+  if (job.a) { // an Enable: whatever ran keeps running
+    toast(skew ? 'Card Table was updated — reload this page to run rules' : `Rules error: ${msg}${worker ? ' — the running rules are unchanged' : ''}`);
+    job.resolve({ ok: false, error: msg });
+  } else { // a resume: the saved rules go off, loudly
+    toast(skew ? 'Card Table was updated — reload this page to run rules' : `Saved rules failed to load: ${msg}`);
+    commit(T.apply(RULES, { t: '_rulesOff', reason: `the saved script failed to load: ${msg}` }));
+  }
+  pump();
+}
+/** Posts job {p, a, resolve} to the running Worker, under the watchdog. */
+function toWorker({ p, a, resolve }) {
+  const id = ++jobSeq, job = { p, a, resolve };
+  current = { ...job, id, t0: performance.now() };
+  try {
+    worker.w.postMessage({ type: 'act', id, p: job.p, a: job.a, now: Date.now() });
+  } catch (err) { // (an action that can't be copied: a bug, never a peer's — they come as JSON)
+    console.error('could not post a job to the rules Worker', job.a, err);
+    rulesDown(`a job could not be sent: ${err.message}`, `Rules disabled — ${err.message}`);
+    return;
+  }
+  watchStart(budget(job.a), () => rulesDown('the script took longer than 4 s (stopped)', "Rules stopped — the script didn't answer within 4 seconds"));
+}
+/** A job's watchdog budget (spec §3f.5): RULES_TIMEOUT_MS, and 10 ms more per item a box's setup lays out. */
+const budget = (a) => RULES_TIMEOUT_MS + (a.t === 'loadBox' && a.setup === true && Array.isArray(a.box?.setup) ? 10 * countSetup(a.box.setup, Object.keys(T.state.players).length || 1) : 0);
+/** The running Worker's `done` {id, patch, out, ms} for the job in flight:
+ *  the host's table takes the patch (applyStatePatch), carries out its
+ *  effects, broadcasts and saves (commit). A job that disabled the rules (a
+ *  hook failed) ends the Worker. */
+function done(m) {
+  const job = current;
+  if (job?.id !== m.id) { console.error('a rules Worker answered a job not in flight', m.id, job?.id); return; }
+  watchStop();
+  current = null;
+  perf.lastRulesWorkerMs = m.ms;
+  let changed = true, error;
+  try {
+    changed = T.applyStatePatch(m.patch, m.out);
+    error = commit(changed, job.p);
+  } catch (err) { // (a bug, or a malformed patch in a test build: the two states may now differ, so the rules go)
+    console.error('applying a rules patch failed', err);
+    commit(changed);
+    job.resolve({ ok: false, error: err.message });
+    rulesDown(`the host could not apply the script's changes: ${err.message}`, `Rules disabled — ${err.message}`);
+    return;
+  }
+  perf.lastRulesRoundtripMs = performance.now() - job.t0;
+  if (m.out.error) lastRulesError = T.rulesError;
+  if (!T.state.rules?.enabled) stopWorker();
+  if (job.p === pid) flush(); // (the host's own move shows at once)
+  job.resolve(error ? { ok: false, error } : { ok: changed });
+  checkDigest();
+  pump();
+}
+/** The running rules stop (spec §3f.5): the watchdog fired (`reason`, the
+ *  log's; `msg`, the host's toast), or the Worker crashed. The Worker goes,
+ *  and the host's table switches the rules off (_rulesOff); a job in flight
+ *  is dropped — fail closed: its actor is told, and what it named re-sent.
+ *  The queue goes on, on the free table. */
+function rulesDown(reason, msg) {
+  console.error(`rules: ${reason}`);
+  stopWorker();
+  watchStop();
+  const job = current?.id ? current : null;
+  if (job) {
+    current = null;
+    tell(job.p, '🚫 The rules stopped responding — your action was not applied');
+    job.resolve({ ok: false, error: reason });
+  }
+  lastRulesError = reason;
+  toast(msg);
+  let changed = T.apply(RULES, { t: '_rulesOff', reason });
+  if (job) changed = T.refreshFor(job.p, job.a) || changed;
+  commit(changed);
+  pump();
+}
+/** Ends the running rules' Worker, if any: nothing it may still post is applied. */
+function stopWorker() {
+  if (!worker) return;
+  worker.w.terminate();
+  worker = null;
+  perf.workerStops++;
+  for (const res of digests.values()) res(null);
+  digests.clear();
+}
+/** The running Worker's T.digest() (spec §3f.3), taken after the jobs it
+ *  was given before this call (it handles its messages in order) — the
+ *  host's equals it once those are applied; null when no Worker runs. */
+function workerDigest() {
+  if (!worker) return Promise.resolve(null);
+  const id = ++jobSeq;
+  return new Promise((res) => { digests.set(id, res); worker.w.postMessage({ type: 'digest', id }); });
+}
+/** Test builds: every 50th Worker job, the host's digest is compared with
+ *  the Worker's at the same point (the next job isn't posted yet): a
+ *  mismatch is a loud console.error (perf.digestMismatches). */
+function checkDigest() {
+  if (!window.CARDTABLE_TEST || !worker || ++perf.workerJobs % 50) return;
+  const host = T.digest();
+  workerDigest().then((d) => {
+    perf.digestChecks++;
+    if (d !== null && d !== host) { perf.digestMismatches++; console.error(`the rules Worker's state and the host's differ (digest ${d} ≠ ${host})`); }
+  });
+}
+
+// --- the watchdog: a job's budget counts the page's VISIBLE, on-time waiting --
+// (spec §3f.5) Hidden (or frozen), the page stops the clock; visible again
+// (or resumed), it gives the rest of the budget plus 1 s of grace. A timer
+// that fires over 1 s late (the page or the machine stalled: a `done` may be
+// waiting behind it) gives one more second first.
+const WD = { left: 0, from: 0, timer: 0, fire: null, late: false };
+/** Arms the watchdog: `fire` runs after `ms` of visible, on-time waiting. */
+function watchStart(ms, fire) {
+  watchStop();
+  Object.assign(WD, { left: ms, fire, late: false });
+  if (!document.hidden) watchRun(0);
+}
+function watchStop() {
+  clearTimeout(WD.timer);
+  WD.timer = 0;
+  WD.fire = null;
+}
+/** Runs the clock again, for what is left plus `grace` ms. */
+function watchRun(grace) {
+  WD.left += grace;
+  WD.from = performance.now();
+  WD.timer = setTimeout(watchFired, WD.left);
+}
+/** Stops the clock (the page hidden or frozen), keeping what is left. */
+function watchPause() {
+  if (!WD.timer) return;
+  clearTimeout(WD.timer);
+  WD.timer = 0;
+  WD.left = Math.max(0, WD.left - (performance.now() - WD.from));
+}
+function watchFired() {
+  WD.timer = 0;
+  if (performance.now() - WD.from - WD.left > 1000 && !WD.late) { // (late: one more second)
+    WD.late = true;
+    WD.left = 0;
+    watchRun(1000);
+    return;
+  }
+  const fire = WD.fire;
+  WD.fire = null;
+  fire?.();
+}
+const watchOn = () => { if (WD.fire && !WD.timer && !document.hidden) watchRun(1000); };
+document.addEventListener('visibilitychange', () => (document.hidden ? watchPause() : watchOn()));
+document.addEventListener('freeze', watchPause);
+document.addEventListener('resume', watchOn);
 
 // Fire the script's timers (t.schedule) once due: a `_tick` job, unless one waits in the queue already.
 setInterval(() => {
   const timers = role === 'host' && T.state.rules?.enabled && T.state.rules.data?._timers;
-  if (Array.isArray(timers) && timers.some((x) => x.at <= Date.now()) && !queue.some((j) => j.a.t === '_tick')) enqueue(RULES, { t: '_tick' });
+  if (Array.isArray(timers) && timers.some((x) => x.at <= Date.now()) && !waiting(RULES, '_tick')) enqueue(RULES, { t: '_tick' });
 }, 700);
 
 // --- host <-> guest sync (TABLETOP.md §3) -------------------------------------
@@ -546,8 +829,8 @@ function newEpoch() {
 }
 
 /** Host → guest: another host holds fresher state. Stops being the authority
- *  — no more broadcasts, saves or queued jobs — and takes the next snapshot,
- *  of whichever epoch. */
+ *  — no more broadcasts, saves, rules Worker or queued jobs (spec §3f.1) —
+ *  and takes the next snapshot, of whichever epoch. */
 function demote() {
   console.warn('another host is active — demoting to guest');
   toast('This table is open in another tab — this one is now a viewer');
@@ -558,7 +841,11 @@ function demote() {
   clearTimeout(bcastT);
   clearTimeout(persistT);
   bcastT = persistT = 0;
-  for (const job of queue.splice(0)) job.resolve({ ok: false, error: 'this tab is no longer the host' });
+  stopWorker();
+  watchStop();
+  if (current?.start) { current.start.terminate(); perf.workerStops++; }
+  for (const job of [...(current ? [current] : []), ...queue.splice(0)]) job.resolve?.({ ok: false, error: 'this tab is no longer the host' });
+  current = null;
   for (const box of outbox.values()) clearTimeout(box.wait);
   outbox.clear();
   T = null;
@@ -1090,13 +1377,16 @@ function connect() {
       return;
     }
     // Register/refresh the sender on EVERY action, not just hello — if the
-    // keyed hello was lost, the first real action still registers the player
-    // (and binds the seat key; onJoin runs if they are new or back). The next
-    // tick sends a newly registered peer a snapshot with its hand.
-    const newConn = peerPid[peer] !== p;
+    // keyed hello was lost, the first real action still registers the player.
+    // The seat key binds at once, here (two claims of one seat can't both
+    // pass; keys never reach a rules Worker); the registration — seated,
+    // named, "joined the table", onJoin — is a job (_join) when they are new,
+    // back or nameless, ahead of their action. The tick after it commits
+    // sends a newly registered peer a snapshot with its hand.
+    const newConn = peerPid[peer] !== p, known = own(T.state.players, p);
     peerPid[peer] = p;
-    const { known, changed } = T.join(p, name, key);
-    if (changed) commit(true);
+    if (T.bindKey(p, key)) persist();
+    if ((!known?.online || !known.name) && !waiting(p, '_join')) enqueue(p, { t: '_join', name });
     else if (newConn) scheduleBroadcast(); // a second tab of a seated player: its first snapshot
     // (the catalog went out with this connection's first snapshot: sendCatalog)
     // Every action carries the sender's current name: a rename the host
@@ -1107,8 +1397,8 @@ function connect() {
     // A keyed hello comes only from a guest that hasn't had a state addressed
     // to it (introduce): one that answers it may be lost, so it asks for one too.
     if (action.t === 'snap' || action.t === 'hello') wantSnap(peer);
-    if (action.t === 'need') serveImages(peer, action.a);
-    if (action.t === 'drag') relay(p, action);
+    else if (action.t === 'need') serveImages(peer, action.a);
+    else if (action.t === 'drag') relay(p, action);
     else submit(p, action);
   };
 
@@ -1288,9 +1578,9 @@ function resumePaused() {
 // replaces the save, so a reload never quietly rewinds to stale state — it
 // resets the table loudly (and this browser stays the host instead of
 // waiting in its own room), or resumes, as loudly, the pre-Phase 1 save
-// whose migration couldn't be written (store.js loadSave). A state that
-// can't be stored at all (a rules script left a function in t.data) costs
-// the rules, not the save (_unsaveable).
+// whose migration couldn't be written (store.js loadSave). (A rules script
+// can't leave a function in t.data for a save to choke on: its Worker never
+// sends one — rules-worker.js send.)
 // A tab that goes away (pagehide), or is hidden (visibilitychange: a phone
 // may suspend, then discard it, with no pagehide), saves at once (flushSave).
 // An IndexedDB write started then may never commit, so it also leaves the
@@ -1301,7 +1591,6 @@ const SAVE_DEFER_MS = 250;
 let persistT = 0, lastSave = 0, again = false, persistWarned = false;
 let savedSeq = -1; // host: the seq of the last save that committed
 let savingSeq = -1; // host: a save is in flight (-1: none), holding this seq at least (it may take a later state: store.js saveTable)
-let cloneFixed = false; // host: since the last good save, the rules' state was cut down to JSON (_unsaveable) once
 let noSave = ''; // host: why this tab never writes its room's save ('' = it does)
 const savedCatalog = new Set(); // host: the deck and box ids this room's catalog holds
 const pendingKey = () => `ct-pending-${roomId}`;
@@ -1320,17 +1609,13 @@ async function doSave(leaving) {
     savedSeq = state.seq;
     for (const c of catalog) savedCatalog.add(c.id);
     if (pruned) toast(`Browser storage was full — deleted ${pruned} old table save${pruned > 1 ? 's' : ''} to keep this one`);
-    persistWarned = cloneFixed = false;
+    persistWarned = false;
+    perf.saves++;
     if (+localStorage.getItem(pendingKey()) <= state.seq) localStorage.removeItem(pendingKey());
   } catch (err) {
     console.error('failed to persist game', err);
-    if (err.name === 'DataCloneError' && !cloneFixed) { // the last save stands; the next one follows
-      cloneFixed = true;
-      enqueue(RULES, { t: '_unsaveable', why: err.message });
-    } else {
-      savedCatalog.clear(); // the save is a lost marker now: the next one that fits writes every deck again
-      if (role === 'host' && !persistWarned) { persistWarned = true; toast(`Can't save this table (${err.message}) — reloading the host tab would reset it`); }
-    }
+    savedCatalog.clear(); // the save is a lost marker now: the next one that fits writes every deck again
+    if (role === 'host' && !persistWarned) { persistWarned = true; toast(`Can't save this table (${err.message}) — reloading the host tab would reset it`); }
   } finally {
     savingSeq = -1;
     if (again) { again = false; doSave(); }
@@ -3183,7 +3468,7 @@ function updateRulesDialog() {
   $('rules-reset-lbl').classList.toggle('hidden', !isHost);
   $('rules-disable').classList.toggle('hidden', !isHost || !meta?.enabled);
   $('rules-code').readOnly = !isHost;
-  $('rules-err').textContent = T?.rulesError || ''; // the host's last script error
+  $('rules-err').textContent = isHost ? lastRulesError : ''; // the host's last script error
 }
 
 $('rules-btn').addEventListener('click', () => {
@@ -3204,12 +3489,24 @@ $('rules-tpl').addEventListener('change', () => {
   $('rules-tpl').value = '';
 });
 
-$('rules-form').addEventListener('submit', (e) => {
+// Enable starts a rules Worker, then runs the script's setup there: "Starting…"
+// until it is done; the dialog then closes, or stays open showing what went
+// wrong (the code didn't evaluate, setup threw), the running rules unchanged.
+$('rules-form').addEventListener('submit', async (e) => {
   if (e.submitter?.id !== 'rules-enable') return; // Close button
   e.preventDefault();
-  act({ t: 'setRules', code: $('rules-code').value, enabled: true, reset: $('rules-reset').checked });
-  if (!T?.rulesError) $('rules-dialog').close(); // (the host applied it at once: setRules set or cleared the error)
-  else updateRulesDialog(); // keep it open and show the error
+  const btn = $('rules-enable');
+  btn.disabled = true;
+  btn.textContent = 'Starting…';
+  $('rules-err').textContent = '';
+  const r = await act({ t: 'setRules', code: $('rules-code').value, enabled: true, reset: $('rules-reset').checked });
+  btn.disabled = false;
+  btn.textContent = 'Enable';
+  if (r.ok && !lastRulesError) $('rules-dialog').close();
+  else {
+    updateRulesDialog();
+    if (!lastRulesError) $('rules-err').textContent = r.error || 'The rules did not start';
+  }
 });
 
 $('rules-disable').addEventListener('click', () => {
@@ -3396,9 +3693,13 @@ function becomeHost(saved, unsaved) {
     console.error("this table's last save could not be resumed:", saved.behind);
     toast(`Couldn't resume this table's last save (${saved.behind}) — resumed an older one`);
   }
-  const t = createTable(saved ? { ...saved.state, decks: saved.decks, boxes: saved.boxes, boxSrc: saved.boxSrc } : {}, { pid, test: !!window.CARDTABLE_TEST });
-  if (saved) t.resume(myName); // re-sanitizes the decks and boxes, reloads the rules, everyone else waits offline
+  const t = createTable(saved ? { ...saved.state, decks: saved.decks, boxes: saved.boxes, boxSrc: saved.boxSrc } : {}, { pid, test: !!window.CARDTABLE_TEST, hooks: pageHooks });
+  if (saved) t.resume(myName); // re-sanitizes the decks and boxes, everyone else waits offline
   else t.open(myName); // the host's seat and a standard deck
+  if (window.CARDTABLE_TEST) { // the one-writer rule (spec §3f.1), asserted: with a rules Worker running, only its patches change the table
+    const apply = t.apply;
+    t.apply = (p, a) => { if (worker) throw new Error(`the one-writer rule broken: ${a.t} ran on the page while a rules Worker runs`); return apply(p, a); };
+  }
   T = t;
   role = 'host';
   hostBoot = Date.now();
@@ -3408,6 +3709,7 @@ function becomeHost(saved, unsaved) {
   $('size-sel').classList.remove('hidden'); // table size is the host's call
   commit(true);
   flush(); // this screen's first snapshot
+  if (T.state.rules?.enabled) startWorker(T.state.rules.code, null); // (the saved rules run again — setup doesn't — once their Worker is ready; the queue waits)
   // The images this table shows must be in this browser's storage: say at
   // once if some are gone (their cards show as missing, never as loading forever).
   store.lacking([...T.assetRefs()]).then((lack) => { if (lack.length) giveUp(lack, `${lack.length} card images of this table are missing from this browser's storage`); }, (err) => {
@@ -3754,9 +4056,16 @@ async function boot() {
 // preview's spot ({x, y, to} or null), `snap(id, x, y)` where a move of
 // item `id` to top-left (x, y) lands as this view sees it ({x, y, at}: on
 // the board's spot it snaps to, else where it is clamped, at null).
+// Phase 3B (the rules Worker, host only): `workerDigest()` the running
+// Worker's T.digest() of its mirror (a Promise; null with no Worker: see
+// workerDigest), `digest()` the host table's, `lastRulesError` the 📜
+// dialog's error, `jobs()` how many jobs wait in the queue or are in flight
+// (a Worker starting counts); perf adds the Worker's counters.
 if (window.CARDTABLE_TEST) {
   window.__ct = {
     act, view: () => view, hand: () => view.hand, log: () => view.log, boxes: () => boxes, perf,
+    workerDigest, digest: () => T?.digest() ?? null, jobs: () => queue.length + !!current,
+    get lastRulesError() { return lastRulesError; },
     resolve: (a) => { const r = resolveAddr(boardsNow(), a); return r && (r.ambiguous ? { ambiguous: r.ambiguous } : { at: displayAddr(boardsNow(), r.at), local: r.local, x: r.x, y: r.y }); },
     drawn(id) {
       const el = itemEls.get(id), [tx = 0, ty = 0] = (el?.style.translate || '').split(' ').map(parseFloat);

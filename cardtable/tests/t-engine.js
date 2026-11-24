@@ -1,7 +1,9 @@
 // E2E: rules-engine core — hook semantics, the t facade, lifecycle, and the
 // engine-side UI hints. "Eve" is a raw Trystero peer (no app code) with her
 // own seat, sending hand-crafted actions. The "Probe" script exposes the t
-// facade to the test: its "run" button calls window.TEST(t) on the host.
+// facade to the test: a press of its "run" button that carries code (the
+// host's __ct.act) has onAction run that code with `t`, in the rules Worker
+// (Phase 3: scripts never run on the page, so a page global can't reach them).
 const fs = require('fs');
 const path = require('path');
 const h = require('./h');
@@ -10,10 +12,13 @@ const { ok, section, logHas, toastHas } = h;
 const PROBE = `({ name: 'Probe',
   setup(t) { t.data.n = (t.data.n || 0) + 1; t.say('setup n=' + t.data.n); },
   validate(t, a) { if (a.t === 'draw' && a.boom) return a.boom.x.y; },
-  onAction(t, a) { if (a.t === 'play') t.say('onAction play ' + t.cardName(a)); },
+  onAction(t, a) {
+    if (a.t === 'play') t.say('onAction play ' + t.cardName(a));
+    if (a.t === 'rulesBtn' && a.id === 'run') new Function('t', a.code)(t);
+  },
   onChat(t, msg) { if (msg === 'ping') t.say('pong ' + Date.now()); },
   buttons: () => [{ id: 'run', label: 'Run' }],
-  onButton(t) { window.TEST(t); },
+  onButton() {},
   onTimer(t, tag) { t.say('timer ' + tag); },
 })`;
 const EPID = 'eeeeeeeeeeeeeeee', EKEY = 'e'.repeat(32);
@@ -57,10 +62,10 @@ const eveHand = async (E) => (await eveView(E)).hand.length;
   const env = await h.start();
   const { host, guest } = await h.hostAndGuest(env);
   const invite = await host.evaluate(() => location.href);
-  /** Runs `body` (JS, `t` in scope) inside the Probe script's onButton on the host. */
+  /** Runs `body` (JS, `t` in scope) inside the Probe script's onAction, after the host's press of "run". */
   const run = async (body) => {
-    await host.evaluate((b) => { window.TEST = new Function('t', b); }, body);
-    await host.click('#rules-btns [data-rbtn="run"]');
+    await host.waitForSelector('#rules-btns [data-rbtn="run"]');
+    await host.evaluate((b) => window.__ct.act({ t: 'rulesBtn', id: 'run', code: b }), body);
   };
   /** A log round-trip: everything Eve/Bob sent before this has been applied. */
   const reprobe = async () => {

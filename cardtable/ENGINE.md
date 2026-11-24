@@ -11,7 +11,8 @@ which documents the networking design space this app builds on).
 every player action already flows through one function — `apply(p, a)`
 (in `app.js` when this was written, now in the state core `core.js`). A
 rules engine is a plugin at exactly that choke point.
-**Why this is safe:** scripts run on the host only. Guests receive data
+**Why this is safe:** scripts run on the host only (in a Web Worker beside
+the host's page: "Running in a Worker" below). Guests receive data
 (state, decks, log) and never code, so there is no remote-code-execution
 surface for guests; the host executing code they themselves typed is the
 same trust tier as opening devtools.
@@ -111,7 +112,7 @@ Hook semantics worth knowing:
 - **The facade is live only while a hook runs** (Phase 3). A call from
   anywhere else — the continuation of an `async` hook, a promise callback —
   throws "t.say was called outside a hook — rules hooks must be
-  synchronous", and the rules disable as the next action starts.
+  synchronous", and the rules disable ("Running in a Worker" below).
 - **`onJoin` also fires on reconnect after a host reload**, without a
   preceding `onLeave`: a resumed host marks everyone offline, and each
   player's first message after the resume is a (re)join. A script that
@@ -125,9 +126,92 @@ rules). A script that fails
 to evaluate on Enable changes nothing — the running rules keep running
 and the error shows in the dialog. Any hook that throws: `console.error`
 + toast + log line + **auto-disable the rules** (fail loudly, never wedge
-the game). Scripts still run on the host's page for now — an infinite
-loop can freeze the host tab — until the Worker part of Phase 3 moves
-them into a Web Worker with a watchdog.
+the game).
+
+### Running in a Worker
+
+A rules script never runs on the host's page. Enabling one starts a Web
+Worker (`rules-worker.js`) holding a copy of the whole table — every hand
+and hidden card, but no seat keys — that evaluates the script and, from
+then on, runs every action on its copy: each player's, the host's own and
+the timers', one at a time, in the order they arrived. What an action
+changed goes back to the host's page, which takes it as it is and syncs
+the players. While the rules are on, nothing else changes the table; while
+they are off, no Worker exists.
+
+- **Enable is asynchronous.** The 📜 dialog's button says "Starting…"
+  until the Worker is up and `setup` has run (a few milliseconds, a few
+  hundred on a big table); actions that arrive meanwhile wait their turn.
+  A script that doesn't evaluate changes nothing: the running rules keep
+  running, and the dialog shows why.
+- **Hooks are atomic** (§1): a veto, or a hook that throws, leaves none of
+  its own ops behind.
+- **The watchdog.** Each action has 4 seconds of the host page's
+  **visible** time (more for a box setup that lays out many items): a
+  phone that hides or freezes the host's tab stops that clock, so a
+  backgrounded host never loses healthy rules. A script that doesn't
+  answer in time — an infinite loop — is stopped: its Worker ends, the
+  rules disable ("rules disabled — the script took longer than 4 s
+  (stopped)", the dialog's error line, a toast), the action is dropped
+  (its player gets "🚫 The rules stopped responding — your action was not
+  applied"), and the table goes on without rules. The host's page never
+  freezes: the loop runs in the Worker. A Worker that crashes is handled
+  the same way ("the script crashed: …"). Enabling again starts a fresh
+  Worker from the table as it now is.
+- **No async code.** Hooks must be synchronous, and three guards make that
+  a rule rather than advice:
+  1. a hook that returns a Promise or any thenable (an `async` hook) counts
+     as throwing, so `handle` and `validate` fail closed;
+  2. `t` works only while one of the script's hooks runs: a call from a
+     promise callback throws "t.say was called outside a hook — rules hooks
+     must be synchronous", and the rules disable;
+  3. once an action's hooks are done, the Worker lets every pending
+     promise callback run, then checks that `t.data`, `t.public`, the asks
+     and `t.secret` are exactly as the action left them: a callback that
+     wrote one disables the rules ("the script changed t.data outside a
+     hook") before the next action, and nothing it wrote reaches the table.
+
+  `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`,
+  `queueMicrotask` and `requestAnimationFrame` throw "setTimeout is not
+  available to rules scripts — use t.schedule(seconds, tag)": `t.schedule`
+  and `onTimer` are the script's clock (and survive a host reload).
+- **What a script can reach.** Before it evaluates the script, the Worker
+  removes the network (`fetch`, `XMLHttpRequest`, `WebSocket`,
+  `EventSource`, `WebTransport`), storage (`indexedDB`, `caches`), other
+  Workers and channels (`Worker`, `SharedWorker`, `BroadcastChannel`,
+  `MessageChannel`, `importScripts`) and its own `postMessage`: calling one
+  fails ("fetch is not defined"). That is defence in depth, not a sandbox
+  — a script sees every hidden card and can tell it in game (`t.tell`), so
+  enabling one is an act of trust, and dynamic `import()` can't be taken
+  away (README, honest limits). `Date`, `Math`, `JSON`, `crypto` and
+  `console` are there (`console.log` goes to the Worker's console in
+  devtools); `window` is the Worker's global scope, with the page globals a
+  template needs copied in — today `window.CAH_CARDS`, the CAH card texts
+  (`WORKER_GLOBALS` in `app.js`).
+- **State on `this` is not journaled**: `this.x = …` survives a rollback,
+  and is lost on a host reload or a new Worker (every Enable starts one).
+  Keep game state in `t.data`, which is journaled and saved. `t.data` and
+  `t.public` must stay JSON: one left holding a function disables the
+  rules, keeping its JSON part.
+- **A host reload** starts a new Worker over the saved table: the rules go
+  on where they were — `t.data`, `t.public`, the asks, `t.secret` and the
+  pending timers are saved — without running `setup` again. A saved script
+  that no longer loads disables the rules loudly ("Saved rules failed to
+  load: …"), and one saved by another version of Card Table asks for a
+  reload.
+- **Live drags are not validated** — only the drop is. While a guest drags
+  a piece, the others see it glide, and nothing changes until the drop:
+  the `move` the rules see.
+
+**Migrating a script written for the page.** Before Phase 3 a script ran on
+the host's page, so it could touch it; in the Worker, `document`, `alert`,
+`localStorage` and `sessionStorage` throw "document is not available:
+rules now run in a Worker, away from the page (see ENGINE.md, 'Running in
+a Worker')", `setTimeout` throws as above, and the rules disable with that
+message in the 📜 dialog. Use `t.say` / `t.tell` (or `t.announce`) instead
+of `alert`, `t.data` instead of `localStorage`, and `t.schedule(seconds,
+tag)` with `onTimer` instead of `setTimeout`. A hook that threw halfway
+used to leave its first ops on the table; now it leaves none.
 
 ## 2. The `t` facade (script API)
 
@@ -556,9 +640,8 @@ the default.
 - A malicious host could run different code than displayed — the same trust
   tier as the host already holding all hands (see README's honest-limits
   section).
-- No loop protection yet (the Worker part of Phase 3 brings it): a
-  runaway script freezes the host's own tab; a refresh recovers the game
-  via the existing save/resume.
+- No sandbox beyond the Worker's: a script is trusted code that sees every
+  hidden card ("Running in a Worker").
 
 ## Implementation map
 
@@ -581,8 +664,8 @@ the default.
   `T.job(p, a)` per action, and the host applies what each job changed
   (its state patch, `T.applyStatePatch()`) and its effects; `T.digest()`
   proves both agree, and `T.guard()` catches a script that changed its
-  state between jobs. Until the Worker part of Phase 3 lands, the host's
-  own table runs the script on the page. Time, randomness and new ids
+  state between jobs. The host's own table never runs the script (its
+  runner only answers what the rules view says of it). Time, randomness and new ids
   are injectable too (`env.now`, `env.random`, `env.uid`), so a seeded
   table replays exactly. What used to touch the screen or the network
   (action markers, banners, private notes and peeks, new decks, the host's
@@ -596,11 +679,17 @@ the default.
   display forms) and the `byAt` / `byZone` indexes.
 - `cardtable/templates.js`: the example scripts (`RULES_TEMPLATES`) and
   the 🎲 picker's catalog (`GAMES`).
-- `cardtable/app.js`: the `note`, `rulesBtn` and `setRules` messages; the
-  rules' public part carried in the snapshots and patches, and saved; the
-  timer tick (a `_tick` job on the host's action queue); the rules
-  dialog and game picker; turn indicator in `renderPlayers`;
-  scripted-buttons row.
+- `cardtable/rules-worker.js`: the Worker — the version check, the
+  hardening (the APIs it takes away, the throwing timers and page APIs),
+  the script's evaluation, the mirror table and its jobs, `drain()` and
+  `T.guard()` after each, and the error forwarding (`fatal`).
+- `cardtable/app.js`: the host's action queue (one FIFO; with the rules on,
+  one job at a time through the Worker: `startWorker`, `toWorker`, `done`),
+  the visible-time watchdog and what ends the rules (`rulesDown`), the
+  `note`, `rulesBtn` and `setRules` messages; the rules' public part
+  carried in the snapshots and patches, and saved; the timer tick (a
+  `_tick` job); the rules dialog and game picker; turn indicator in
+  `renderPlayers`; scripted-buttons row.
 - `cardtable/index.html` / `style.css`: Rules button + dialog (editor,
   examples select, enable/disable, error line), buttons row, seat glow.
 - `cardtable/README.md`: "Scriptable rules" section including trust notes.
@@ -631,3 +720,5 @@ Nostr relay):
 7. A script with a syntax error → loud toast, the error shows in the
    dialog, the running rules (if any) are untouched, the game is
    unaffected. Existing suites pass as regression.
+8. A hook with an infinite loop → the host's page stays responsive, the
+   rules stop within 5 s, and the table goes on without them.

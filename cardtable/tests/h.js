@@ -236,13 +236,16 @@ async function playFromHand(page, idx, fx, fy) {
   await page.mouse.move(tbl.x + tbl.width * fx, tbl.y + tbl.height * fy, { steps: 12 });
   await page.mouse.up();
 }
-/** Opens the rules dialog, loads a template (or code) and enables it. */
+/** Opens the rules dialog, loads a template (or code) and enables it. Enable
+ *  starts a rules Worker (Phase 3): this waits until the dialog closes, or
+ *  shows an error (it stays open then). */
 async function enableRules(page, { tpl, code }) {
   await page.click('#rules-btn');
   await page.waitForSelector('#rules-dialog[open]');
   if (tpl) await page.selectOption('#rules-tpl', tpl);
   if (code) await page.fill('#rules-code', code);
   await page.click('#rules-enable');
+  await page.waitForFunction(() => !document.querySelector('#rules-dialog[open]') || document.getElementById('rules-err').textContent, null, { timeout: 15000 });
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** The bodies of raw `state` messages a test peer recorded: snapshots and

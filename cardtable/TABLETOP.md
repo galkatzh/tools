@@ -370,8 +370,9 @@ the host's own tab (ENGINE.md's honest limit). So **rules run in a Web Worker**,
 introduced together with `handle`. That way the one change to how scripts run
 happens once, early:
 - The Worker keeps a **mirror** of the host's state. It is the shared DOM-free
-  `core.js` code, kept current with the same patches that sync the guests
-  (§3).
+  `core.js` code, kept current because, while the rules are on, it makes
+  every change itself (the guests' patches are public views, which could
+  not keep a private mirror current).
 - A ruled action is processed in the Worker: `handle` or `validate`, then the
   default effect through the same core ops, then `onAction`. The Worker
   returns the resulting **patch**, plus its log lines, notices and banners.
@@ -563,8 +564,9 @@ sync and rendering, and the Worker together with `handle`.
      dice and boards", ENGINE.md "Addresses and the spatial helpers"):
      snapping, addresses, the spatial helpers, components from code, the
      snap preview, fanned spots and live drags; state v4, wire version 4.
-     Rules still run on the page until the Worker part. The decisions taken
-     on the way:
+     The Worker is built too (README "Scriptable rules", ENGINE.md "Running
+     in a Worker"): a rules script runs away from the host's page, under a
+     watchdog. The decisions taken on the way:
      - A space reaches as far as its drawn rectangle, not only a circle
        round its centre: a checker dropped on the far end of the tall bar
        lands on the bar, not on the point whose centre is nearer.
@@ -604,8 +606,7 @@ sync and rendering, and the Worker together with `handle`.
        moves nothing); a press on a piece drawn off its spot's centre takes
        that piece, and once a piece is put on such a spot, the spot fans
        them all, so none is drawn over another.
-     - The engine for full-rules scripts is built (the Worker itself is
-       next; until then scripts still run on the page): a script can take
+     - The engine for full-rules scripts is built: a script can take
        an action over (`handle`), refuse whatever it didn't take over
        (`strict`, but for the actions it `allow`s; sitting down always
        works), ask one player a question (`t.ask`), highlight moves for
@@ -619,8 +620,22 @@ sync and rendering, and the Worker together with `handle`.
      - A question and a hint show only while the rules run; a player's
        secret shows even while they are off, like their hand.
      - A script that touches the table from outside its hooks (an
-       `async` hook's continuation) turns the rules off at the next
+       `async` hook's continuation) turns the rules off before the next
        action: hooks must be synchronous, and now they are made to be.
+     - Rules run in a Worker that holds a copy of the table and makes
+       every change while they are on; the host's page applies what each
+       action changed. A script stuck in a loop is stopped after 4 s of the
+       host's visible time (a phone that hides the tab stops the clock), its
+       action dropped and the rules turned off — the host's page never
+       freezes. A script written for the page (`alert`, `localStorage`,
+       `setTimeout`) turns the rules off saying why, and what to use
+       instead.
+     - Enable is asynchronous: the dialog says "Starting…", and a script
+       that doesn't start leaves the running rules as they were. A host
+       reload starts the saved rules again without re-running their setup.
+     - A function left in `t.data` costs the rules, not the game: they go
+       off, keeping the data's plain part, as a save that couldn't copy it
+       did before.
 4. **Game boxes.**
    - `game.json` plus `.zip` upload, declarative setup and reset.
    - Export with the current position.
