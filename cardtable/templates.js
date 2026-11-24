@@ -1175,10 +1175,13 @@ function backgammon() {
     const k = j + 1;
     return { id: `p${k}`, x: colX(k), y: top(k) ? 220 : 780, r: 200, mark: 'tri', w: 100, h: 420, dir: top(k) ? 'down' : 'up', color: k % 2 ? '#b91c1c' : '#f1e4c3' };
   });
+  // The bar and the trays fan their checkers too: on the bar, from its top
+  // end down, so a checker of each colour sent there shows (and a press takes
+  // the player's own, D115); in a tray, from its outer end toward the middle.
   spaces.push(
-    { id: 'bar', x: 650, y: 500, r: 200, mark: 'rect', w: 80, h: 980, color: '#2b1a0c' },
-    { id: 'off-dark', x: 1345, y: 250, r: 120, mark: 'rect', w: 90, h: 480, color: '#2b1a0c' },
-    { id: 'off-light', x: 1345, y: 750, r: 120, mark: 'rect', w: 90, h: 480, color: '#2b1a0c' },
+    { id: 'bar', x: 650, y: 500, r: 200, mark: 'rect', w: 80, h: 980, dir: 'down', color: '#2b1a0c' },
+    { id: 'off-dark', x: 1345, y: 250, r: 120, mark: 'rect', w: 90, h: 480, dir: 'down', color: '#2b1a0c' },
+    { id: 'off-light', x: 1345, y: 750, r: 120, mark: 'rect', w: 90, h: 480, dir: 'up', color: '#2b1a0c' },
   );
   /** n checkers of `side` on point k, from its base toward the board's middle. */
   const point = (k, n, side) => ({

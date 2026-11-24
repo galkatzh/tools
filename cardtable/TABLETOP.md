@@ -589,6 +589,16 @@ sync and rendering, and the Worker together with `handle`.
        the first spots.
      - A script's box with text decks is found again by content, decks
        included: a reset that runs the same setup adds nothing.
+     - After its review: dice never snap (a die set down on a point joined
+       the checkers' fan and took every press there); snapping, its
+       preview and the terminal's `place` follow one rule, the host's; a
+       piece's address is read again only when a board under it changes,
+       and before anything reads one; a pull a script refuses keeps its
+       draw for the bag's next pull, so refusing can't fish a bag; a press
+       on a crowd takes your own piece, and backgammon's bar and trays fan
+       too; a piece off a spot's centre is drawn where it lies; a guest's
+       drop shows where the preview did; a client's `to`, `from`, `pick`
+       and `handled` never reach a script.
 4. **Game boxes.**
    - `game.json` plus `.zip` upload, declarative setup and reset.
    - Export with the current position.

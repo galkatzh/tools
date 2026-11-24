@@ -220,8 +220,8 @@ function refAt(T, boardId, local) {
 }
 /** A piece-like item's size: its type's w × h (its back's, the same size by §2a, when hidden). */
 const sizeIn = (T, it) => { const ty = typeIn(T.state.boxes, it.t); return { w: ty.w, h: ty.h }; };
-/** Whether host item `it` is a piece that snaps (a piece, not a board). */
-const snapper = (T, it) => it.k === 'g' && !(it.z < 0) && typeIn(T.state.boxes, it.t)?.kind !== 'board';
+/** Whether host item `it` is a piece that snaps (a piece, neither a board nor — D112 — a die). */
+const snapper = (T, it) => it.k === 'g' && !(it.z < 0) && !['board', 'die'].includes(typeIn(T.state.boxes, it.t)?.kind);
 
 /** Checks every piece's `at`, T.byAt and T.byZone against §3a's containment
  *  rule (the reference model): [] when all agree, else what differs. Reads
@@ -1555,6 +1555,187 @@ function testMoreSpots() {
     `the four hidden spies lie on a8, d6, f3 and h1, each addressed where it lies (${J(spies.map(([id]) => T3.pub.get(id).at))}) ${J(containmentProblems(T3))}`);
 }
 
+// =============================================================================
+// (R) The 3A fix-up's regressions (the reviews of a001685; D112–D116)
+// =============================================================================
+function testReviewPull() {
+  section('(R) a veto keeps a pull\'s draw (D114): a guest aiming pulls where only one size snaps can\'t fish the bag');
+  // 10 Big (180 wide) and 40 Man (80) in one bag; validate vetoes a pull that
+  // lands on no spot. Aimed at (640, 700), a Big's centre (730, 790) is on the
+  // chess board's a2, a Man's (680, 740) left of the board: on no spot.
+  const of = [...range(10).map(() => 'big'), ...range(40).map(() => 'man')];
+  const T = table({ CB: BRD('chess', 700, 100), bg: BAG(of, 3000, 3000) });
+  const seen = [];
+  G.validate = (t, a) => { if (a.t !== 'pull') return undefined; seen.push({ pick: a.pick, t: t.item(a.id).of[a.pick].t, to: a.to }); return a.to ? undefined : 'Pull it onto the board'; };
+  const got = [];
+  let vetoAt = -1;
+  for (let k = 0; k < 300; k++) {
+    const ids = Object.keys(T.state.items), r = act(T, BOB, { t: 'pull', id: 'bg', x: 640, y: 700 }), nid = newIds(T, ids)[0];
+    if (nid) got.push(T.state.items[nid].t);
+    else if (vetoAt < 0 && r.notes.length) vetoAt = k;
+  }
+  const after = seen.slice(vetoAt), first = after[0];
+  ok(vetoAt >= 0 && after.every((s) => s.pick === first.pick && s.t === first.t && s.t === ref('man')),
+    `once vetoed (pull #${vetoAt + 1}: a Man would land on no spot), every later pull draws that same member again (${after.length} pulls, all index ${first?.pick}, a Man)`);
+  ok(got.length === vetoAt && got.every((t) => t === ref('big')) && T.state.items.bg.of.filter((m) => m.t === ref('big')).length === 10 - got.length,
+    `Bob got only the Bigs drawn before the first veto (${got.length}), and the bag keeps the other ${10 - got.length} Bigs: 300 aimed pulls fished nothing`);
+  delete G.validate;
+  const ids = Object.keys(T.state.items);
+  act(T, CAROL, { t: 'pull', id: 'bg' });
+  const nid = newIds(T, ids)[0];
+  ok(T.state.items[nid]?.t === ref('man') && T.state.items.bg.of.length === 50 - got.length - 1, `the pending Man is what the next pull (Carol's, not vetoed) takes (${T.state.items[nid]?.t}): the draw was never discarded`);
+}
+
+function testReviewHostFields() {
+  section('(R) only the host sets a.to, a.from, a.pick and a.handled, on every action (§3c); a deal from a piece pile is prepared');
+  const T = table({ CB: BRD('chess', 700, 100), pp: PILE([{ t: ref('tile'), f: 0, up: false }, { t: ref('tile'), f: 1, up: false }], 3000, 3000), m: PC('man', 100, 3000), n: PC('man', 300, 3000), c: CARD(1, 500, 3000, { up: false }) });
+  const seen = [];
+  G.validate = (t, a) => { seen.push({ hook: 'validate', ...json(a) }); };
+  G.onAction = (t, a) => { seen.push({ hook: 'onAction', ...json(a) }); };
+  const lie = { to: 'h8', from: 'a1', pick: 0, handled: true };
+  const d4 = tl(T, 'tile', refAt(T, 'CB', 'd4'));
+  for (const a of [
+    { t: 'deal', id: 'pp', x: d4.x + 12, y: d4.y - 9 }, { t: 'stack', id: 'm', onto: 'n' }, { t: 'rot', id: 'm', rot: 90 },
+    { t: 'flip', id: 'c' }, { t: 'toHand', id: 'c' }, { t: 'del', id: 'n' },
+  ]) {
+    seen.length = 0;
+    act(T, BOB, { ...a, ...lie });
+    const v = seen.filter((s) => s.hook === 'validate'), want = a.t === 'deal' ? 'd4' : undefined;
+    ok(v.length && seen.every((s) => s.to === want && s.from === undefined && s.pick === undefined && s.handled === undefined),
+      `${a.t}: the payload's to/from/pick/handled never reach a hook (${J(seen.map((s) => [s.hook, s.to, s.from, s.pick, s.handled]))})${want ? '; a.to is where the dealt tile lands' : ''}`);
+  }
+  const dealt = Object.values(T.state.items).find((it) => it.t === ref('tile') && it.k === 'g');
+  ok(dealt?.at === 'CB:d4', `the tile dealt face down landed on d4 (${dealt?.at})`);
+  seen.length = 0;
+  act(T, BOB, { t: 'owner', id: 'm', to: BOB, from: 'x', pick: 1, handled: true });
+  ok(T.state.items.m.owner === BOB && seen.some((s) => s.to === BOB && s.from === undefined && s.pick === undefined && s.handled === undefined), `owner keeps its own \`to\` (the new owner, §2c) and loses the rest (${J(seen.map((s) => s.to))})`);
+}
+
+function testReviewNewBox() {
+  section('(R) t.newBox: at most MAX_BOX_DECKS decks, no "__proto__" ids, the whole box through cleanBox before anything is sent');
+  const T = table();
+  const deck = (k) => ({ name: `D${k}`, cards: [{ name: 'A', text: 'a' }] });
+  const pieces = [{ id: 'man', kind: 'token', w: 80, faces: [{ color: '#eeeeee' }] }];
+  for (const [what, def] of [
+    ['51 decks', { pieces, decks: range(core.MAX_BOX_DECKS + 1).map(deck) }],
+    ['a piece id "__proto__"', { pieces: [...pieces, { id: '__proto__', kind: 'token', faces: [{ color: '#111111' }] }] }],
+    ['a back id "__proto__"', { pieces, backs: [{ id: '__proto__', color: '#222222' }] }],
+    ['a deck named "__proto__"', { pieces, decks: [{ name: '__proto__', cards: [{ name: 'A' }] }] }],
+  ]) {
+    const decks0 = Object.keys(T.state.decks).length, boxes0 = Object.keys(T.state.boxes).length;
+    const r = typeErr(T, 't.newBox', (t) => t.newBox(def), what);
+    ok(Object.keys(T.state.decks).length === decks0 && Object.keys(T.state.boxes).length === boxes0 && !r.fx.some((e) => e.t === 'deck' || e.t === 'box'), `${what}: no deck or box registered or sent`);
+  }
+  const r1 = script(T, (t) => t.newBox({ name: 'Fifty', pieces, decks: range(core.MAX_BOX_DECKS).map(deck) }));
+  const box = T.state.boxes[r1.ret];
+  ok(box && Object.keys(box.decks).length === 50 && core.canon(cleanBox(json(box))) === core.canon(box), `50 decks: registered, and the box passes cleanBox as a guest's copy and a resume will (${r1.err?.message || 'ok'})`);
+  const decks1 = Object.keys(T.state.decks).length, r2 = script(T, (t) => t.newBox({ name: 'Fifty', pieces, decks: range(core.MAX_BOX_DECKS).map(deck) }));
+  ok(r2.ret === r1.ret && Object.keys(T.state.decks).length === decks1 && !r2.log.length, 'the same again (a reset re-running setup): the same box, no deck minted, nothing logged');
+}
+
+function testReviewLoadGates() {
+  section('(R) a save can\'t plant an address on an item that never snaps (§3h)');
+  const T0 = table({ CB: BRD('chess', 700, 100) }, { rules: false });
+  const e4 = refAt(T0, 'CB', 'e4');
+  const items = {
+    CB: { ...BRD('chess', 700, 100), at: {} }, s: SUP('man', 100, 3000, { at: 5 }), s2: SUP('man', 200, 3000, { at: 'zz:<img src=x onerror=alert(1)>' }),
+    d: PC('die', e4.x - 32, e4.y - 32, { at: 'CB:e4' }), c: CARD(1, 300, 3000, { at: 'CB:a1' }), m: PC('man', e4.x - 40, e4.y - 40, { at: 'CB:e4' }),
+  };
+  const s = {
+    v: STATE_V, seq: 1, table: { shape: 'rect', w: 5000, h: 3600 }, seats: null, boardSeq: 1, zMax: 100, items: json(items), keys: {}, log: [], rules: null, guestDeckChars: 0,
+    players: { [HOST]: player('Alice', 90) }, decks: { [DK]: core.standardDeck(false) }, boxes: { [BX]: cleanBox(SPACE_BOX) }, boxSrc: {},
+  };
+  const q = quietly(() => createTable(s, env(3))), T = q.value;
+  ok(['CB', 's', 's2', 'd', 'c'].every((id) => !('at' in T.state.items[id]) && !('at' in T.pub.get(id))) && T.state.items.m.at === 'CB:e4' && T.pub.get('m').at === 'e4',
+    `the board's, the supplies', the die's and the card's addresses are dropped; the man's stands (${J(Object.fromEntries(Object.entries(T.state.items).map(([id, it]) => [id, it.at])))})`);
+  ok(q.error.filter((e) => /never snaps/.test(e)).length === 5, `each said with console.error (${q.error.filter((e) => /never snaps/.test(e)).length} of 5)`);
+  const d = quietly(() => T.takeDirty());
+  ok(!d.error.length, 'the table broadcasts again: takeDirty does not throw');
+  const v3 = { v: 3, items: json(items), boxes: { [BX]: cleanBox(SPACE_BOX) }, table: { shape: 'rect', w: 5000, h: 3600 }, rules: null };
+  const m = quietly(() => MIGRATE[3](v3));
+  ok(['CB', 's', 's2', 'd', 'c'].every((id) => !('at' in v3.items[id])) && v3.items.m.at === 'CB:e4' && m.error.length === 5, `MIGRATE[3] drops them too, loudly (${m.error.length}), and reads the man's by containment`);
+}
+
+function testReviewDice() {
+  section('(R) dice never snap (D112): a die dropped on a spot keeps where it was put, and no address');
+  const T = table({ CB: BRD('chess', 700, 100), d: PC('die', 100, 3000), m: PC('man', 300, 3000) });
+  const e4 = refAt(T, 'CB', 'e4'), dw = typeIn(T.state.boxes, ref('die')).w, q = { x: e4.x - dw / 2 + 11, y: e4.y - dw / 2 - 7 };
+  act(T, BOB, { t: 'move', id: 'd', ...q });
+  ok(T.state.items.d.x === q.x && T.state.items.d.y === q.y && T.state.items.d.at === undefined && T.pub.get('d').at === undefined, `a die dropped on e4: exactly there, no address (${why(T, 'd')})`);
+  moveNear(T, BOB, 'm', 'man', e4);
+  const r = script(T, (t) => [t.spawn(ref('die'), { at: 'e4' }), t.at('e4').map((x) => x.id), t.where('d')]);
+  const nd = T.state.items[r.ret?.[0]];
+  ok(nd && near(nd.x + dw / 2, e4.x) && near(nd.y + dw / 2, e4.y) && nd.at === undefined && J(r.ret.slice(1)) === J([['m'], null]),
+    `t.spawn(die, {at: 'e4'}) centres it there with no address; e4 holds only the man (${J(r.ret)})`);
+  ok(!containmentProblems(T).length, `the table agrees with containment, dice left out (D112) ${J(containmentProblems(T))}`);
+}
+
+function testReviewExplicit() {
+  section('(R) an explicit address under a newer board stands until a board under it changes (D105, D113)');
+  // the map (the oldest grid: primary), the rack (zones only) over its top
+  // rows (c9 among them), the chess board elsewhere
+  const T = table({ MP: BRD('map', 100, 100), RK: BRD('rack', 100, 100), CB: BRD('chess', 2000, 100), M: PC('man', 100, 3000), n: PC('man', 300, 3000) });
+  moveNear(T, BOB, 'n', 'man', refAt(T, 'CB', 'e4'));
+  let r = script(T, (t) => [t.move('M', 'map:c9'), t.where('M')]);
+  ok(J(r.ret) === J([true, 'c9']) && onRect(refBoards(T.state.items, T.state.boxes).byId.get('RK'), centre(T, 'M').x, centre(T, 'M').y), `t.move(M, "map:c9") under the rack: centred there, with that address (${J(r.ret)})`);
+  act(T, HOST, { t: 'rot', id: 'CB', rot: 90 });
+  r = script(T, (t) => [t.where('M'), t.where('n')]);
+  const RB = refBoards(T.state.items, T.state.boxes), cn = centre(T, 'n'), sn = refSnap(RB, cn.x, cn.y);
+  ok(r.ret[0] === 'c9' && sn && r.ret[1] === refDisplay(RB, sn.at) && r.ret[1] !== 'chess:e4', `the chess board turned across the table: M keeps "c9"; n, on the board that turned, is read by containment (${J(r.ret)})`);
+  act(T, HOST, { t: 'move', id: 'RK', x: 100, y: 2000 });
+  r = script(T, (t) => t.where('M'));
+  ok(r.ret === 'c9' && !containmentProblems(T).length, `the rack moved off it: M is read again, by containment — the map's c9 (${r.ret}) ${J(containmentProblems(T))}`);
+  act(T, HOST, { t: 'move', id: 'RK', x: 100, y: 100 });
+  r = script(T, (t) => t.where('M'));
+  ok(r.ret === null && !containmentProblems(T).length, `the rack moved back over it: read again, the topmost board (the rack) has no spot there: null (${r.ret})`);
+}
+
+function testReviewOneRule() {
+  section('(R) one snapping rule for the host, the preview and containment (D112): a spot past the playing area\'s margin');
+  // a round 1300 table (playR 540) and an 11 × 11 board of cell 100 in its middle: cell (1, 1)'s centre is 566 from the table's
+  const BB = cleanBox({ name: 'Big board', imgs: [], types: { b11: { kind: 'board', name: 'B11', w: 1120, board: { grid: { type: 'square', cols: 11, rows: 11, cell: 100, x: 10, y: 10 } } }, man: SPACE_BOX.types.man } });
+  const T = table({ B: { k: 'g', t: 'bx000003/b11', f: 0, x: 90, y: 90, rot: 0, z: BOARD_Z0 + 1 }, m: { k: 'g', t: 'bx000003/man', f: 0, x: 610, y: 610, rot: 0, z: 1 } }, { boxes: { bx000003: BB }, table: { shape: 'round', w: 1300, h: 1300 } });
+  const view = core.tableBoards([...T.pub], T.state.boxes), want = core.snapTo(view, T.state.table, 80, 80, 200, 200);
+  act(T, BOB, { t: 'move', id: 'm', x: 200, y: 200 });
+  const it = T.state.items.m;
+  ok(it.at === 'B:1,1' && near(it.x, 210) && near(it.y, 210) && want.at === 'B:1,1' && near(want.x, it.x) && near(want.y, it.y),
+    `a man dropped toward cell 1,1 is centred on it, past the margin, with its address — as the page's preview (core.snapTo on the public view) says (host ${why(T, 'm')}, preview ${J(want)})`);
+  act(T, HOST, { t: 'rot', id: 'B', rot: 180 });
+  ok(T.state.items.m.x === it.x && T.byAt.get('B:9,9')?.has('m') && !containmentProblems(T).length, `the board turned: the man stays, and containment reads it on 9,9 (${T.state.items.m.at})`);
+}
+
+function testReviewHexRim() {
+  section('(R) hexes at the grid\'s rim: the nearest centre within R, even when the hex holding the point is off the grid (§3a)');
+  for (const [hex, pt] of [['pointy', [7, 44.64]], ['flat', [44.64, 7]]]) {
+    const s = grid.gridSpot(hexG(hex), ...pt);
+    ok(J(s) === J({ c: 0, r: 0 }), `${hex}: [${pt}] lies 33 from (0, 0)'s centre (R 34.64), in the off-grid hex beside it: snaps to (0, 0) (${J(s)})`);
+  }
+  const r = rng(77);
+  for (const hex of ['pointy', 'flat']) {
+    const g = hexG(hex), R = g.cell / Math.sqrt(3), cells = range(g.cols).flatMap((c) => range(g.rows).map((rr) => [c, rr, specCenter(g, c, rr)]));
+    const xs = cells.map(([, , p]) => p.x), ys = cells.map(([, , p]) => p.y);
+    let bad = '';
+    for (let k = 0; k < 3000 && !bad; k++) {
+      const x = Math.min(...xs) - R + r() * (Math.max(...xs) - Math.min(...xs) + 2 * R), y = Math.min(...ys) - R + r() * (Math.max(...ys) - Math.min(...ys) + 2 * R);
+      const best = cells.map(([c, rr, p]) => [c, rr, Math.hypot(p.x - x, p.y - y)]).sort((a, b) => a[2] - b[2])[0];
+      const want = best[2] <= R - 1e-9 ? { c: best[0], r: best[1] } : best[2] > R + 1e-9 ? null : undefined, got = grid.gridSpot(g, x, y);
+      if (want !== undefined && J(got) !== J(want)) bad = `(${x.toFixed(2)}, ${y.toFixed(2)}): ${J(got)}, the nearest centre within R is ${J(want)}`;
+    }
+    ok(!bad, `${hex}: 3,000 random points around the whole grid (rim included) match a brute-force "nearest centre within R" ${bad}`);
+  }
+}
+
+function testReviewGroupRound() {
+  section('(R) a group drag on a round table: the shift is shortened until every member stays within playR (§3c)');
+  const T = table({ a: PC('man', 610, 610), b: PC('man', 900, 610) }, { table: { shape: 'round', w: 1300, h: 1300 } });
+  for (const [dx, dy] of [[1e5, 0], [-3000, 2500], [0, 0]]) {
+    const r = act(T, BOB, { t: 'drag', ids: ['a', 'b'], dx, dy }), f = r.fx.find((e) => e.t === 'fx' && e.f.live)?.f;
+    const off = f ? f.ids.filter((id) => { const it = T.state.items[id], x = it.x + f.dx + 40 - 650, y = it.y + f.dy + 40 - 650; return Math.hypot(x, y) > 540 + 1e-6; }) : ['no fx'];
+    const along = !f || (dx === 0 && dy === 0) || Math.abs(f.dx * dy - f.dy * dx) < 1e-6 * Math.hypot(dx, dy) * Math.hypot(f.dx, f.dy) + 1e-9;
+    ok(!off.length && along, `dx ${dx}, dy ${dy}: relayed (${f && J([+f.dx.toFixed(2), +f.dy.toFixed(2)])}), along the same direction, every member within playR ${off.length ? J(off) : ''}`);
+  }
+}
+
 (async () => {
   await guard('(1) grid.js addresses', testGridAddresses);
   await guard('(1) grid.js centres', testGridCentres);
@@ -1579,5 +1760,14 @@ function testMoreSpots() {
   await guard('(D) a group drag stays on the table', testGroupDragClamp);
   await guard('(§3g) the fan', testFan);
   await guard('(B17) 361 stones', testB17);
+  await guard('(R) pulls and vetoes', testReviewPull);
+  await guard('(R) host-set action fields', testReviewHostFields);
+  await guard('(R) t.newBox gates', testReviewNewBox);
+  await guard('(R) load gates', testReviewLoadGates);
+  await guard('(R) dice', testReviewDice);
+  await guard('(R) explicit addresses', testReviewExplicit);
+  await guard('(R) one snapping rule', testReviewOneRule);
+  await guard('(R) hex rim', testReviewHexRim);
+  await guard('(R) a round table\'s group drag', testReviewGroupRound);
   report();
 })().catch(crash);

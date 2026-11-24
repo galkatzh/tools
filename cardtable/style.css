@@ -233,8 +233,8 @@ body.nohand #hand-bar { display: none; }
   position: absolute; width: var(--cw); height: var(--ch);
   cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
   -webkit-touch-callout: none; /* iOS: a long-press zooms the card, no image callout */
-  /* remote moves glide (UX-I1); a live drag moves by translate (app.js placeEl): one
-     timing for both, so a drop that lands where the glide was shows no jump */
+  /* remote moves glide (UX-I1); a live drag moves by translate (app.js placeEl),
+     and its end runs out on translate alone (endLive: FLIP) */
   transition: left 0.18s ease-out, top 0.18s ease-out, translate 0.18s ease-out;
   contain: layout style; /* a redrawn card never re-lays out the table (not paint: it would clip the outline and shadows) */
 }
@@ -400,15 +400,16 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 .item.board .lockb { bottom: 8px; }
 /* The snap preview (app.js previewSnap, spec §3g): the spot a dragged piece
    would land on (an outline in table units, grown on a table drawn small),
-   and its address in a chip by the finger (screen space). Both move by
-   translate; neither takes the pointer. */
+   and its address in a chip by the finger (screen space: above the other
+   players' name bulbs, .fx-bulb, which an act nearby brings over it). Both
+   move by translate; neither takes the pointer. */
 .snap-ghost {
   position: absolute; left: 0; top: 0; pointer-events: none; z-index: 99999; border-radius: 10%;
   outline: calc(3px * var(--bz, 1)) dashed #fbbf24; outline-offset: calc(2px * var(--bz, 1)); background: #fbbf2433;
 }
 .snap-ghost.round { border-radius: 50%; }
 .snap-chip {
-  position: absolute; left: 0; top: 0; pointer-events: none; z-index: 9900;
+  position: absolute; left: 0; top: 0; pointer-events: none; z-index: 96000;
   font: 700 15px/1 system-ui, sans-serif; color: #1c1917; background: #fbbf24; border-radius: 999px;
   padding: 5px 10px; box-shadow: 0 2px 8px #000a; white-space: nowrap;
 }

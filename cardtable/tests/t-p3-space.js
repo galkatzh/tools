@@ -475,7 +475,9 @@ const SPACE = `({ name: 'Space test',
       ok(await logOn(p, `moved Dark checker ${from} → bar`, bob.pid), `${who}'s log: "moved Dark checker ${from} → bar"`);
     }
     ok(await P.waitView(host, 'v.items[a.id].x === a.x && v.items[a.id].y === a.y', { id: top, x: bg.x + bar.x - 40, y: bg.y + bar.y - 40 }), 'centred on the bar');
-    ok(await settledAt(host, top), 'Alice\'s screen draws it there (alone on a space without dir: not fanned)');
+    // (the bar fans its checkers from its top end down since the 3A fix-up, D115:
+    // a lone one is drawn at its base, as on a point)
+    for (const [p, who] of [[host, 'Alice'], [bob, 'Bob']]) await fanned(p, who, 'bar');
     await shot(bob, 'p3-bg-bar-phone');
   }
 

@@ -286,7 +286,8 @@ const CONFIRM = (title) => `Clear the table and set up ${title}? The current gam
   await settled(from);
   const on = (await items())[from], ccx = on.x + 40 - bg.x, ccy = on.y + 40 - bg.y;
   ok(Math.abs(ccx - barSp.x) <= barSp.w / 2 && Math.abs(ccy - barSp.y) <= barSp.h / 2, `Bob drags a dark checker onto the bar on his phone (its centre at ${ccx.toFixed(0)}, ${ccy.toFixed(0)} on the board)`);
-  ok(await host.waitForFunction(([id, x, y]) => { const el = document.querySelector(`.item[data-id="${id}"]`); return !!el && Math.abs(parseFloat(el.style.left) - x) < 0.01 && Math.abs(parseFloat(el.style.top) - y) < 0.01; }, [from, on.x, on.y], { timeout: 10000 }).then(() => true, () => false),
+  // (Phase 3: the bar fans its checkers from its top end down, §3g and D115 — a lone one is drawn there, centred across the bar)
+  ok(await host.waitForFunction(([id, x, y]) => { const el = document.querySelector(`.item[data-id="${id}"]`); return !!el && Math.abs(parseFloat(el.style.left) - x) < 0.01 && Math.abs(parseFloat(el.style.top) - y) < 0.01; }, [from, bg.x + barSp.x - 40, bg.y + barSp.y - barSp.h / 2], { timeout: 10000 }).then(() => true, () => false),
     'Alice\'s screen draws it there');
   await shot(host, 'demo-backgammon-desk');
   await shot(bob, 'demo-backgammon-phone');

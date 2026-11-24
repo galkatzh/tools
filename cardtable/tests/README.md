@@ -765,9 +765,9 @@ wrote the landing fit's size, 1.00, 2.00 and 1.31.
 
 ## Phase 3 (3A: space)
 
-What `core-p3.test.mjs` and `t-p3-space.js` drive (spec §3a–§3e, §3g, §3i;
-decisions D104–D111). Wire version 4, state version 4: raw peers import
-`PROTO` from `core.js` (`h.PROTO`), saves use `STATE_V`.
+What `core-p3.test.mjs`, `t-p3-space.js` and `t-p3-review.js` drive (spec
+§3a–§3e, §3g, §3i; decisions D104–D118). Wire version 4, state version 4:
+raw peers import `PROTO` from `core.js` (`h.PROTO`), saves use `STATE_V`.
 
 - **`grid.js` in Node**: `gridSpot(g, x, y)` → `{c, r}` or null (cells: the
   one holding the point; points: the nearest within `cell / 2`, Euclidean;
@@ -782,7 +782,13 @@ decisions D104–D111). Wire version 4, state version 4: raw peers import
   primary, prefix}` (shown boards with a grid, spaces or zones, oldest
   first; the same function over host items or a public view),
   `displayAddr(TB, q)`, `resolveAddr(TB, s)` → `{b, local, at, x, y}`,
-  `{ambiguous: [display forms]}` or null, `snapAt(TB, cx, cy)`,
+  `{ambiguous: [display forms]}` or null, `snapAt(TB, cx, cy)` (the spot in
+  reach of a centre: snapping's and containment's), `snapTo(TB, table, w, h,
+  x, y, {free, at})` → `{x, y, at}` (where a piece put at top-left x, y
+  lands: the host's place, the page's preview, `__ct.snap` and the CLI's
+  `place` — one rule, D112), `snaps(it, boxes)` (whether an item snaps:
+  a piece, neither a board nor a die), `clampShift(table, centres, dx, dy)`
+  (a group drag's shift, cut so every member stays on the table),
   `zonesUnder`, `boxFromDef` (game.json → a box for `cleanBox`), `liveFx(fx,
   d)` (a tick's fx less the live drags its commit overtook), `gateTimers`,
   `MAX_TIMERS`, `TIMER_TAG_MAX`, `AGG_MIN` (4), `AGG_NAMES` (8),
@@ -794,15 +800,15 @@ decisions D104–D111). Wire version 4, state version 4: raw peers import
   piece, the log and every script-facing value show the display form.
   `MIGRATE[3]` reads a v3 save's addresses off its boards by containment
   (`s.boxes`: createTable migrates the state with its catalog).
-  The B9 bench's dice now lie beside its board (`core-p2-bench.mjs`), as
-  on it they would snap, two to a cell, and carry addresses.
 - **`__ct` (Phase 3)**: `resolve(addr)` (this view's boards: `{at, local,
   x, y}` with `at` in display form, `{ambiguous}`, or null), `snap(id, x,
   y)` (where a move of item `id` to top-left x, y lands as this view sees
   it: `{x, y, at}`; t-p1-bench waits for its moves there), `drawn(id)`
   (`{x, y, tx, ty}`: its element's left/top — fanned — and translate — a
   live drag), `lives()` (`{id: {x, y}}`: the live drags it shows), `spot()`
-  (the snap preview's `{x, y, to}` during a drag, else null).
+  (the snap preview during a drag, else null: `{x, y, to, slot}` — the
+  top-left the drop sends, the address, and `slot`, where it will be drawn:
+  its place in the spot's fan, where the ghost is).
 - **DOM**: the snap preview is `#table > .snap-ghost` (table units,
   `translate`d; `.round` for round and disc pieces; `hidden` when off a
   spot) and `#table-wrap > .snap-chip` (screen px, its text the display
@@ -810,13 +816,18 @@ decisions D104–D111). Wire version 4, state version 4: raw peers import
   carries `.item > .fanb` ("×k", amber, bottom left: a stack's `.count` is
   blue, top right); `.fanb` joins the view sheet's rules 0 (`--bz`) and 2
   (`--view`), like `.count`. Fanned members' `style.left/top` are their
-  drawn places (the state keeps them centred on the spot); a live drag is
-  the element's `style.translate`.
+  drawn places (the state keeps them centred on the spot), laid out from
+  the spot's centre; a member off the centre (a board moved under it, a v3
+  save) is drawn where it lies and only counted (D116). A live drag is the
+  element's `style.translate`; when it ends, its left/top jump to the new
+  place and the translation alone runs out (endLive).
 - **The wire**: a guest's drag sends `{t: 'drag', id, x, y}` every 60 ms
   (`LIVE_MS`), never a `move`; the drop is the one `move`, carrying the
   snapped `x, y` and an advisory `to`. The host relays a drag outside its
-  queue (no state, no seq): a patch with only `fx`. Its `to`, `from` and a
-  pull's `pick` are what `validate` / `onAction` see (`prepare`).
+  queue (no state, no seq): a patch with only `fx`. Whatever a payload says
+  of `to` (but an `owner`'s, the new owner), `from`, `pick` and `handled` is
+  dropped at the top of `act`; `prepare` sets the host's `to`, `from` and a
+  pull's `pick` (a vetoed pull's draw waits for the bag's next pull: D114).
 - **`t-p3-space.js`** (spec §3l items 1, 2, 7, 8, 10, 11; §3j attacker
   cases 4 and 7): Alice on a desktop, Bob on an iPhone 13, Carol on an
   iPhone 13 in landscape, Mallory raw; every interaction a real drag or
@@ -840,14 +851,36 @@ decisions D104–D111). Wire version 4, state version 4: raw peers import
   page sends, decoded, in `window.__acts`), `join` (with it and p1-lib's
   rtcHook, bodies kept), `liveFx` and `scanLive` (the live-drag fx in
   recorded bodies).
+- **`core-p3.test.mjs` (R)**: the 3A fix-up's regressions, each failing on
+  the code before it: a veto keeps a pull's draw (300 aimed pulls fish no
+  Big tile out of a bag of mixed sizes), host-set action fields on every
+  action and a deal's `a.to`, `t.newBox`'s deck cap and `__proto__` ids,
+  the load gates on items that never snap, dice, an explicit address kept
+  until a board under it changes, one snapping rule past the playing
+  area's margin, hexes at the grid's rim (brute force), a round table's
+  group drag. Its reference `snapper` leaves dice out (D112).
+- **`t-p3-review.js`** (the fix-up's regressions on real screens; Alice on
+  a desktop, Bob on an iPhone 13, Carol on one in landscape with motion
+  on): a v3 backgammon save resumed (`h.plantSave`) draws every checker
+  where it lies, on its point; a checker of each colour on the bar (both
+  show; each player's press takes their own); a guest's drop drawn at the
+  preview's slot in every frame from the release; a live glide's end on a
+  watcher (no step back; left/top stand still: translate alone); a die
+  dragged over a point (no ghost, no address); a board move (pieces off a
+  spot's centre drawn where they lie, `perf.drawn` unchanged).
 - **Existing suites changed for Phase 3A** (mechanism changes, no check
   dropped): `core-p1.test.mjs` (`migrate` runs on through `MIGRATE[3]`;
   `t.find`'s unknown-filter example is `color`, as `zone` is known now),
   `core-p2.test.mjs` (PROTO 4, STATE_V 4, `drag` in `PUBLIC_ACTIONS`),
-  `core-p2-bench.mjs` (B9's dice beside the board), `t-p1-bench.js` (B1',
-  B3 and B6 wait for a move where it snaps: `__ct.snap`), `t-p2-cli.js` (a
-  pull's `validate` sees `pick`), `t-p2-tables.js` (the save is
-  `STATE_V`).
+  `t-p1-bench.js` (B1', B3 and B6 wait for a move where it snaps:
+  `__ct.snap`), `t-p2-cli.js` (a pull's `validate` sees `pick`),
+  `t-p2-tables.js` (the save is `STATE_V`); in the fix-up, `t-p2-demos.js`
+  (a lone checker on the bar is drawn at the bar's top end: the bar fans,
+  D115), `t-fun-motion.js` (a remote move's glide may be a `translate`
+  transition: a live drag's end, D116) and `t-p3-space.js` (its bar check
+  reads the bar's fan, `fanned`). `core-p2-bench.mjs` is as Phase 2 left
+  it: dice never snap (D112), so B9's roll of 20 dice on the board is back
+  under 3 KB.
 
 ## Storage and images (Phase 1B)
 

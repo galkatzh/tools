@@ -31,8 +31,7 @@ const BENCH = {
     ...range(3).map((k) => ({ piece: 'tok', at: [1100, 800 + 100 * k], count: 200, spread: [18, 0] })),
     { piece: 'tile', at: [1100, 1200], count: 200, spread: [18, 0], up: false },
     { piece: 'tile', at: [1100, 1350], count: 50, spread: [60, 0] },
-    // (beside the board, below it, as dice lie by a game board: on it, Phase 3 would snap them into its cells, two to a cell, B9's roll then a roll of pieces with addresses)
-    { piece: 'die', at: [1100, 3350], count: 50, spread: [60, 0] },
+    { piece: 'die', at: [1100, 1550], count: 50, spread: [60, 0] },
     ...range(60).map((k) => ({ supply: k % 2 ? 'chip' : 'pawn', at: [1100 + 60 * k, 1700] })),
     ...range(39).map((k) => ({ bag: ['tok', 'tok', { t: 'tile', up: false }], name: `Bag ${k}`, at: [1100 + 95 * k, 1850] })),
   ],

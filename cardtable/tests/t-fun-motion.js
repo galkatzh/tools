@@ -17,12 +17,13 @@ const { devices } = h.playwright;
   // ------------------------------------------------------------------ UX-I1
   section('motion: remote deals, flips, moves and draws glide (motion on)');
   const ids = (p) => p.$$eval('.item', (els) => els.map((el) => el.dataset.id));
-  /** Starts a recorder on page p: every animation that starts on .item/.fly elements. */
+  /** Starts a recorder on page p: every animation that starts on .item/.fly elements (a move's glide:
+   *  left/top, or since Phase 3 translate — a live drag's end runs out on translate alone). */
   const record = (p) => p.evaluate(() => {
     window.SEEN = { deal: 0, flip: 0, move: 0, fly: 0 };
     const tick = () => {
       for (const a of document.getAnimations()) {
-        const el = a.effect?.target, k = a.transitionProperty ? (el?.classList.contains('item') && /^(left|top)$/.test(a.transitionProperty) ? 'move' : null) : el?.classList.contains('fly') ? 'fly' : el?.classList.contains('cardbox') ? 'flip' : el?.classList.contains('item') ? 'deal' : null;
+        const el = a.effect?.target, k = a.transitionProperty ? (el?.classList.contains('item') && /^(left|top|translate)$/.test(a.transitionProperty) ? 'move' : null) : el?.classList.contains('fly') ? 'fly' : el?.classList.contains('cardbox') ? 'flip' : el?.classList.contains('item') ? 'deal' : null;
         if (k && !a.__seen) { a.__seen = 1; window.SEEN[k]++; }
       }
       window.REC = requestAnimationFrame(tick);

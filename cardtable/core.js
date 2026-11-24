@@ -849,7 +849,7 @@ export function cleanBox(b) {
     if (!isObj(d) || Object.keys(d).length > MAX_BOX_DECKS) R.fail('decks', `must map at most ${MAX_BOX_DECKS} deck names to deck ids`);
     o.decks = {};
     for (const [name, id] of Object.entries(d)) {
-      if (!str(name, 24) || str(name, 24) !== name || !isId(id)) R.fail('decks', `has a bad entry: ${JSON.stringify(name).slice(0, 40)}`);
+      if (!str(name, 24) || str(name, 24) !== name || name === '__proto__' || !isId(id)) R.fail('decks', `has a bad entry: ${JSON.stringify(name).slice(0, 40)}`);
       o.decks[name] = id;
     }
   }
@@ -899,19 +899,23 @@ export function isBuiltin(b) {
  *  as color / label / text (or `face`), and any flags. Only reshapes: cleanBox
  *  checks everything. Throws a TypeError on what isn't that shape. */
 export function boxFromDef(def) {
-  const list = (v, what) => {
+  const list = (v, what, re) => {
     if (v === undefined) return [];
     if (!Array.isArray(v) || v.some((x) => !isObj(x) || typeof x.id !== 'string')) throw new TypeError(`${what} must be a list of {id, …}`);
+    // (checked here, not only by cleanBox: an id "__proto__" would set the
+    // object's prototype below, and the entry would vanish without a word)
+    const bad = v.find((x) => !isId(x.id, re));
+    if (bad) throw new TypeError(`${what}: ${JSON.stringify(bad.id.slice(0, 40))} is not an id ([A-Za-z0-9_-], 1–${re === TYPE_ID_RE ? 32 : 24})`);
     if (new Set(v.map((x) => x.id)).size < v.length) throw new TypeError(`${what}: two entries share an id`);
     return v;
   };
   const STRUCT = ['primary', 'grid', 'spaces', 'zones', 'links'], types = {}, backs = {};
-  for (const { id, ...p } of list(def.pieces, 'pieces')) {
+  for (const { id, ...p } of list(def.pieces, 'pieces', TYPE_ID_RE)) {
     const board = Object.fromEntries(STRUCT.filter((k) => k in p).map((k) => [k, p[k]]));
     for (const k of STRUCT) delete p[k];
     types[id] = { name: id, ...p, ...(Object.keys(board).length && { board }) };
   }
-  for (const { id, color, label, text, face, ...flags } of list(def.backs, 'backs')) {
+  for (const { id, color, label, text, face, ...flags } of list(def.backs, 'backs', ID_RE)) {
     backs[id] = { ...flags, face: face ?? Object.fromEntries(Object.entries({ color, label, text }).filter(([, v]) => v !== undefined)) };
   }
   return { name: def.name ?? 'Box', imgs: [], types, backs };
@@ -1015,6 +1019,49 @@ export function zonesUnder(TB, cx, cy, onId) {
   const l = toLocal(b, cx, cy);
   return zonesAt(b.B, l.x, l.y).map((z) => `${b.id}:${z}`);
 }
+/** The piece kinds that never snap (D112): a board (D22) — and a die, which
+ *  dropped on a backgammon point would join the checkers' fan, count in
+ *  their ×k and, on top, take every press there. */
+const NO_SNAP = new Set(['board', 'die']);
+/** Whether item `it` (host or public: a hidden one's type is read from its
+ *  `t` when it has one) snaps to the boards' spots and gets an address
+ *  (spec §3a): a piece that is neither a board nor a die. `boxes`: the box map. */
+export const snaps = (it, boxes) => it.k === 'g' && !(it.z < 0) && !NO_SNAP.has(typeAt(boxes, it.t)?.kind);
+/** Where a piece w × h put at top-left (x, y) lands on table `tb` with
+ *  boards TB (spec §3a, Snapping) — what the host does (place), the page
+ *  previews (the snap preview, __ct.snap) and the CLI's `place` sends, one
+ *  rule for all (D112): {x, y, at (qualified) | null}. Its top-left is
+ *  clamped onto the table first; then, centred on the spot in reach of its
+ *  centre (snapAt, which containment reads too) — even where that puts it
+ *  past the playing area's margin, as a board's edge spot may: the spot lies
+ *  on the board, in reach of a point inside the area — else where it was
+ *  put. `o.free`: no snapping; `o.at`: an address (any form) to centre it on. */
+export function snapTo(TB, tb, w, h, x, y, o = {}) {
+  const p = clampToTable(tb, x, y, w, h), s = o.free ? null : o.at ? resolveAddr(TB, o.at) : snapAt(TB, p.x + w / 2, p.y + h / 2);
+  return s?.b ? { x: s.x - w / 2, y: s.y - h / 2, at: s.at } : { ...p, at: null };
+}
+/** A group's shift (dx, dy) cut so that every member — `cs`, their centres
+ *  [[x, y], …] — stays on table `tb`'s playing area (clampToTable's): on a
+ *  rectangle each axis to the range all of them allow (the group slides
+ *  along the edge, keeping its shape); on a round table the shift is
+ *  shortened until every centre stays within playR. */
+export function clampShift(tb, cs, dx, dy) {
+  if (tb.shape === 'rect') {
+    const [x0, x1, y0, y1] = cs.reduce(([a, b, c, d], [x, y]) => [Math.max(a, 60 - x), Math.min(b, tb.w - 60 - x), Math.max(c, 60 - y), Math.min(d, tb.h - 60 - y)], [-Infinity, Infinity, -Infinity, Infinity]);
+    // (the 0s: a member already off the edge holds the group no further back than where it is)
+    return { dx: clamp(dx, Math.min(x0, 0), Math.max(x1, 0)), dy: clamp(dy, Math.min(y0, 0), Math.max(y1, 0)) };
+  }
+  // |p + t·d| ≤ r for each centre p (from the table's centre): the largest t in [0, 1] that holds for all
+  const r = playR(tb.w), dd = dx * dx + dy * dy;
+  let t = 1;
+  if (dd) {
+    for (const [x, y] of cs) {
+      const px = x - tb.w / 2, py = y - tb.h / 2, b = px * dx + py * dy, c = px * px + py * py - r * r;
+      t = Math.min(t, Math.max(0, (-b + Math.sqrt(Math.max(0, b * b - dd * c))) / dd));
+    }
+  }
+  return { dx: dx * t, dy: dy * t };
+}
 
 // --- rules engine (see ENGINE.md) ------------------------------------------
 // Host-only execution of a host-written script that can veto actions
@@ -1101,7 +1148,7 @@ export function pubItem(it, boxes, disp = (q) => q) {
     if (it.n > 1) o.n = it.n;
     if (it.owner) o.owner = it.owner;
     if (it.lock) o.lock = true;
-    if (it.at) o.at = disp(it.at);
+    if (it.k === 'g' && typeof it.at === 'string') o.at = disp(it.at);
     return o;
   }
   const { i, ...rest } = it;
@@ -1172,8 +1219,9 @@ export const MIGRATE = {
     }
     try {
       const items = isObj(s.items) ? s.items : {}, boxes = isObj(s.boxes) ? s.boxes : {}, TB = tableBoards(Object.entries(items), boxes);
-      for (const it of Object.values(items)) {
-        if (it?.k !== 'g' || it.z < 0) continue;
+      for (const [id, it] of Object.entries(items)) {
+        if (!isObj(it)) continue;
+        if (!snaps(it, boxes)) { dropAt(id, it); continue; }
         const { w, h } = sizeOf(it, boxes), spot = snapAt(TB, num(it.x) + w / 2, num(it.y) + h / 2);
         if (spot) it.at = spot.at;
         else delete it.at;
@@ -1183,6 +1231,14 @@ export const MIGRATE = {
     return s;
   },
 };
+/** Takes the address off item `id` (`it`), which never snaps (a card, a
+ *  supply, a board, a die…: snaps), loudly — a hand-edited or corrupted save
+ *  can't plant one (spec §3h). */
+function dropAt(id, it) {
+  if (!('at' in it)) return;
+  console.error(`item ${id}: an address on an item that never snaps (${String(JSON.stringify(it.at)).slice(0, 40)}) — dropped`);
+  delete it.at;
+}
 /** The most timers t.schedule keeps (rules.data._timers), and the longest tag. */
 export const MAX_TIMERS = 1000, TIMER_TAG_MAX = 100;
 /** The engine-state gate on rules.data._timers (spec §3a), run on every save
@@ -1392,6 +1448,7 @@ export function createTable(host, env = {}) {
   const byKind = new Map(['c', 'p', 'g', 's', 'b'].map((k) => [k, new Set()]));
   const byType = new Map(), byOwner = new Map(), byAt = new Map(), byZone = new Map(), zonesOf = new Map(), boardIds = new Set();
   let tbVer = 0; // bumped by whatever may change a board (see tb())
+  let boardsMoving = false; // a board was touched this tick: it may still change after a read (see tb())
   let spotsReady = false; // (while the saved items are first indexed, zones wait for every board: see below)
   /** Puts `id` in (on) or out of map's set under `key`, which goes when empty. */
   function inSet(map, key, id, on) {
@@ -1501,7 +1558,7 @@ export function createTable(host, env = {}) {
    *  ignored; true when it is on the table. */
   const touch = (id) => {
     if (!own(host.items, id)) return false;
-    if (boardIds.has(id)) tbVer++; // (a board about to change: tb() reads the boards again)
+    if (boardIds.has(id)) { tbVer++; boardsMoving = true; } // (a board about to change: tb() reads the boards again)
     dirty.items.add(id);
     stale.add(id);
     return true;
@@ -1542,21 +1599,17 @@ export function createTable(host, env = {}) {
     if (!(it.z < 0)) it.z = isBoard(it) ? BOARD_Z0 + ++host.boardSeq : zTop();
     if (o.id) index(o.id, it, true);
   }
-  /** Whether item `it` (host or new) is a piece that snaps: a piece, never a board (spec D22). */
-  const isPiece = (it) => it.k === 'g' && !(it.z < 0) && !isBoard(it);
+  /** Whether item `it` (host or new) is a piece that snaps (snaps: never a board or a die, D22, D112). */
+  const isPiece = (it) => snaps(it, host.boxes);
   /** Where piece `it` (on the table or not: nothing changes) lands when put
-   *  at top-left (x, y) (spec §3a, Snapping): its centre, in its size (its
-   *  back's when hidden), on the spot in reach of the topmost board under it
-   *  (snapAt) — {x, y (the top-left that centres it there), at (the spot's
+   *  at top-left (x, y) (spec §3a, Snapping; snapTo): its centre, in its
+   *  size (its back's when hidden), on the spot in reach of the topmost board
+   *  under it — {x, y (the top-left that centres it there), at (the spot's
    *  qualified address)} — or, with no spot in reach, {x, y, at: null}, x and
-   *  y clamped onto the table. `o` as for place: free, or a qualified `at`.
-   *  A spot past the table's playing area is none: the piece stays clamped. */
+   *  y clamped onto the table. `o` as for place: free, or a qualified `at`. */
   function snapPiece(it, x, y, o = {}) {
-    const { w, h } = size(it), p = clampToTable(host.table, x, y, w, h);
-    const s = o.at ? resolveAddr(tb(), o.at) : o.free ? null : snapAt(tb(), p.x + w / 2, p.y + h / 2);
-    if (!s) return { ...p, at: null };
-    const q = clampToTable(host.table, s.x - w / 2, s.y - h / 2, w, h);
-    return { ...q, at: Math.abs(q.x + w / 2 - s.x) < 1e-6 && Math.abs(q.y + h / 2 - s.y) < 1e-6 ? s.at : null };
+    const { w, h } = size(it);
+    return snapTo(tb(), host.table, w, h, x, y, o);
   }
   /** Brings the cached public items (T.pub) and `handy` up to date: `handy`
    *  holds the items one could hold in a hand (spec §2a: cards, piles of
@@ -1579,9 +1632,12 @@ export function createTable(host, env = {}) {
   /** The table's structured boards (tableBoards), read again whenever a
    *  board changed — its place, turn, side, type, or the set of boards: tbVer
    *  counts what may have changed one (a board indexed or touched, a box
-   *  added), and the boards' signature tells whether it did. */
+   *  added), and the boards' signature tells whether it did. A board is
+   *  touched BEFORE it changes, so in a tick that touched one the signature
+   *  is taken at every read (a read between the touch and the change must
+   *  not stand for the boards after it); takeDirty ends that. */
   function tb() {
-    if (tbAt === tbVer) return tbNow;
+    if (tbAt === tbVer && !boardsMoving) return tbNow;
     tbAt = tbVer;
     let sig = '';
     for (const id of boardIds) { const b = host.items[id]; sig += `${id} ${b.t} ${b.x} ${b.y} ${b.rot} ${b.z} ${b.up === false} ${!!typeOf(b.t)};`; }
@@ -1589,33 +1645,47 @@ export function createTable(host, env = {}) {
     return tbNow;
   }
   let spotTB = null, spotSig = null; // the boards every piece's address and zones were last read against (and tb()'s signature then)
-  let respot = false;  // pieces moved under the boards (a table resize, a resume): read them again too
+  let respot = false;  // pieces moved under the boards (a table resize): read them all again
   /** When a board changed (moved, turned, flipped, added or removed: anything
-   *  tb() sees) or the pieces were shifted under them, reads every piece's
-   *  address and zones again by containment — a piece whose centre is on a
-   *  spot in reach (as snapping would find it) gets that address, any other
-   *  loses its own — and MOVES NOTHING (spec §3a: a board move is a
-   *  deliberate rearrangement, never a mass move). A piece whose address
-   *  changed, or only its display form (the primary board or a "#n" did),
-   *  is re-sent. Run before anything reads the addresses or the indexes. */
+   *  tb() sees) or the pieces were shifted under them, reads the address and
+   *  zones of every piece the change concerns again by containment — a piece
+   *  whose centre lies on a spot in reach (snapAt, as snapping finds it) gets
+   *  that address, any other loses its own — and MOVES
+   *  NOTHING (spec §3a: a board move is a deliberate rearrangement, never a
+   *  mass move). The pieces it concerns (D106, D113): those on a board that
+   *  changed, where it was or where it is, or addressed on one; after a
+   *  table resize, all. Any other keeps its address — an explicit one under
+   *  a newer board too (D105), which a board turned across the table must
+   *  not take away. A piece whose address changed, or only its display form
+   *  (the primary board or a "#n" did), is re-sent. Run before anything
+   *  reads an address or an index (addrNow, act, the reads of the facade,
+   *  refresh). */
   function syncSpots() {
     const T = tb();
     if (tbSig === spotSig && !respot) return;
-    const was = spotTB;
+    const was = spotTB, all = respot, same = (a, b) => a && b && a.x === b.x && a.y === b.y && a.rot === b.rot && a.z === b.z && a.B === b.B;
+    const moved = [...was.list.filter((b) => !same(b, T.byId.get(b.id))), ...T.list.filter((b) => !same(b, was.byId.get(b.id)))];
+    const movedIds = new Set(moved.map((b) => b.id));
     [spotTB, spotSig, respot] = [T, tbSig, false];
     for (const id of [...byKind.get('g')]) {
       const it = host.items[id];
       if (!isPiece(it)) continue;
-      const before = it.at ? displayAddr(was, it.at) : null, { w, h } = size(it), s = snapAt(T, it.x + w / 2, it.y + h / 2);
-      index(id, it, false);
-      if (s) it.at = s.at;
-      else delete it.at;
-      index(id, it, true);
-      if (before !== (s ? displayAddr(T, s.at) : null)) touch(id);
+      const before = it.at ? displayAddr(was, it.at) : null, { w, h } = size(it), cx = it.x + w / 2, cy = it.y + h / 2;
+      if (all || (it.at && movedIds.has(it.at.slice(0, it.at.indexOf(':')))) || moved.some((b) => onBoard(b, cx, cy))) {
+        const s = snapAt(T, cx, cy);
+        index(id, it, false);
+        if (s) it.at = s.at;
+        else delete it.at;
+        index(id, it, true);
+      }
+      if (before !== (it.at ? displayAddr(T, it.at) : null)) touch(id);
     }
   }
   /** The display form of a qualified address or zone (displayAddr). */
   const display = (q) => displayAddr(tb(), q);
+  /** Piece `it`'s address as anyone reads it — in its display form, the
+   *  boards' changes caught up first (syncSpots) — or null. */
+  const addrNow = (it) => { syncSpots(); return it.at ? display(it.at) : null; };
   /** Resolves address `s` (any form) for a script call `call`: {at, x, y,
    *  b, local}, or a TypeError naming the call — no such address, or one
    *  several boards could mean ("use 'tray#1:bar' or 'tray#2:bar'"). */
@@ -1627,16 +1697,16 @@ export function createTable(host, env = {}) {
     return r;
   }
   // The saved items' addresses (a v4 save's, or MIGRATE[3]'s by containment)
-  // stand; one that names no spot on the table is dropped, loudly. Then the zones.
+  // stand; one that names no spot on the table, or on an item that never
+  // snaps, is dropped, loudly. Then the zones.
   spotsReady = true;
   spotTB = tb();
   spotSig = tbSig;
-  for (const id of [...byKind.get('g')]) {
-    const it = host.items[id];
-    if (it.z < 0) continue;
-    index(id, it, false);
-    if (it.at !== undefined && resolveAddr(spotTB, it.at)?.at !== it.at) { console.error(`item ${id}: its saved address ${JSON.stringify(it.at)} names no spot on the table — dropped`); delete it.at; }
-    index(id, it, true);
+  for (const [id, it] of Object.entries(host.items)) {
+    if (it.k === 'g') index(id, it, false);
+    if (!isPiece(it)) dropAt(id, it);
+    else if (it.at !== undefined && resolveAddr(spotTB, it.at)?.at !== it.at) { console.error(`item ${id}: its saved address ${String(JSON.stringify(it.at)).slice(0, 60)} names no spot on the table — dropped`); delete it.at; }
+    if (it.k === 'g') index(id, it, true);
   }
 
   // --- seats ------------------------------------------------------------------
@@ -1794,7 +1864,7 @@ export function createTable(host, env = {}) {
    *  number of draws): a person's at once, a script's into the run. */
   function logOp(actor, op, txt, it) {
     if (actor !== RULES) return logEvent(actor, txt);
-    runs.push({ op, txt, it: op === 'random' ? it : { at: it.at && display(it.at), name: label(it), kind: isCard(it) ? 'cards' : it.k === 'g' ? 'pieces' : 'items' } });
+    runs.push({ op, txt, it: op === 'random' ? it : { at: addrNow(it), name: label(it), kind: isCard(it) ? 'cards' : it.k === 'g' ? 'pieces' : 'items' } });
   }
   /** Writes the waiting Rules lines: each run of AGG_MIN or more of one op
    *  as one line naming the first AGG_NAMES addresses (or labels), the rest
@@ -2033,16 +2103,17 @@ export function createTable(host, env = {}) {
     const it = own(host.items, id);
     if (!it) return gone('move', id);
     if (!may(actor, it)) return false;
+    const from = addrNow(it);
     touch(id);
-    const from = it.at && display(it.at);
     place(it, num(x, it.x), num(y, it.y), { ...o, id });
-    const to = it.at && display(it.at);
+    const to = addrNow(it);
     logEvent(actor, `moved ${label(it)}${from && to ? ` ${from} → ${to}` : to ? ` to ${to}` : from ? ` from ${from}` : ''}`);
     mark(actor, id);
     return true;
   }
-  /** " to {address}" for a piece just placed on a spot (the log), else ''. */
-  const toAt = (it) => (it.at ? ` to ${display(it.at)}` : '');
+  /** " to {address}" (toAt) or " on {address}" (onAt) for a piece on a spot (the log), else ''. */
+  const toAt = (it) => { const a = addrNow(it); return a ? ` to ${a}` : ''; };
+  const onAt = (it) => { const a = addrNow(it); return a ? ` on ${a}` : ''; };
 
   /** Turns item `id` to `rot` degrees — a piece, supply or pile of pieces
    *  in steps of its rotStep (its back's when hidden). */
@@ -2062,7 +2133,8 @@ export function createTable(host, env = {}) {
     if (!it) return gone('remove', id);
     if (!may(actor, it)) return false;
     const extra = it.k === 'p' ? ` (${it.cards.length} ${unit(it)})` : it.k === 'b' ? ` (${it.of.length} pieces)` : '';
-    logOp(actor, 'removed', `removed ${label(it)}${extra}${it.at ? ` from ${display(it.at)}` : ''}`, it);
+    const at = addrNow(it);
+    logOp(actor, 'removed', `removed ${label(it)}${extra}${at ? ` from ${at}` : ''}`, it);
     mark(actor, id);
     remove(id);
     return true;
@@ -2252,13 +2324,13 @@ export function createTable(host, env = {}) {
     return nid;
   }
 
-  /** A random piece out of bag `id` — member `pick` when the action drew it
-   *  already (prepare: a.pick), else one drawn now (randInt) — onto the
-   *  table at (x, y), as it was put in (face up or down), or into the hand
-   *  (`hand`, for a bag made for hands) of player `to` (the actor's own; a
-   *  script names one). `po`: how it is placed (place's o). Returns its id,
-   *  or for a hand its entry {hand: true, t, f, up?}, or false. */
-  function opPull(actor, id, x, y, hand, pick, to = actor, po = {}) {
+  /** A random piece out of bag `id` — the member drawFrom drew (the
+   *  action's a.pick, when prepare drew it already) — onto the table at (x,
+   *  y), as it was put in (face up or down), or into the hand (`hand`, for a
+   *  bag made for hands) of player `to` (the actor's own; a script names
+   *  one). `po`: how it is placed (place's o). Returns its id, or for a hand
+   *  its entry {hand: true, t, f, up?}, or false. */
+  function opPull(actor, id, x, y, hand, to = actor, po = {}) {
     const bag = own(host.items, id), pl = own(host.players, to);
     if (!bag) return gone('pull', id);
     if (bag.k !== 'b') return no(actor, '🚫 That is not a bag');
@@ -2266,8 +2338,8 @@ export function createTable(host, env = {}) {
     if (!mayHandle(actor, bag)) return false;
     if (hand && (!pl || !bag.hand)) return no(actor, "🚫 That bag's pieces can't be held in a hand");
     if (hand ? !handRoom(actor, to) : !cap(actor)) return false;
-    const k = Number.isInteger(pick) && pick >= 0 && pick < bag.of.length ? pick : rint(bag.of.length);
-    const at = nextTo(bag), m = bag.of.splice(k, 1)[0];
+    const at = nextTo(bag), m = bag.of.splice(drawFrom(id, bag), 1)[0];
+    drawn.delete(id);
     touch(id);
     if (hand) {
       pl.hand.push(entryOf(m));
@@ -2401,22 +2473,34 @@ export function createTable(host, env = {}) {
     logEvent(actor, `cleared the table (${n} items, ${m} cards from hands)`);
   }
 
-  let boxKeys = null; // boxKey → the ids of the catalog's boxes with that key (made on first use)
-  /** Box `box` (cleaned) into the catalog — or the id of the box with the same
-   *  content already there (boxKey, confirmed by canon). A new one is minted
-   *  an id, recorded with its source (`src`, `by`: host-written, never read
-   *  from a box) and sent to everyone (the 'box' effect). */
-  function registerBox(box, src, by) {
-    if (!boxKeys) {
-      boxKeys = new Map();
-      for (const [id, b] of Object.entries(host.boxes)) listAt(boxKeys, boxKey(b)).push(id);
+  let boxIndex = null; // a box's content key (cyrb53 of boxText) → the ids of the catalog's boxes with it (made on first use)
+  /** Box `box`'s content as text (canon): its fields, and its decks by name
+   *  with their CONTENT, never their ids (`decks`: {name: deck}) — so a
+   *  script's box defined again, with decks that are not minted yet, finds
+   *  the box already there (t.newBox, D111). */
+  const boxText = (box, decks) => canon(Object.keys(decks).length ? { ...box, decks } : box);
+  /** boxText of a box of the catalog: its decks looked up by id. */
+  const storedText = ({ decks = {}, ...rest }) => boxText(rest, Object.fromEntries(Object.entries(decks).map(([n, id]) => [n, own(host.decks, id) || null])));
+  /** The id of the catalog's box whose content is `text` (boxText), or undefined. */
+  function boxWith(text) {
+    if (!boxIndex) {
+      boxIndex = new Map();
+      for (const [id, b] of Object.entries(host.boxes)) listAt(boxIndex, cyrb53(storedText(b))).push(id);
     }
-    const c = canon(box), key = boxKey(box), same = (boxKeys.get(key) || []).find((id) => canon(host.boxes[id]) === c);
+    return (boxIndex.get(cyrb53(text)) || []).find((id) => storedText(host.boxes[id]) === text);
+  }
+  /** Box `box` (cleaned; its decks, if any, in the catalog already) into the
+   *  catalog — or the id of the box with the same content already there
+   *  (boxWith). A new one is minted an id, recorded with its source (`src`,
+   *  `by`: host-written, never read from a box) and sent to everyone (the
+   *  'box' effect). */
+  function registerBox(box, src, by) {
+    const text = storedText(box), same = boxWith(text);
     if (same) return same;
     const id = mint(host.boxes);
     host.boxes[id] = box;
     host.boxSrc[id] = { src, ...(by && by !== RULES && { by }) };
-    listAt(boxKeys, key).push(id);
+    listAt(boxIndex, cyrb53(text)).push(id);
     tbVer++; // (a board waiting for its box has one now)
     emit({ t: 'box', id });
     return id;
@@ -2546,27 +2630,29 @@ export function createTable(host, env = {}) {
     flushRuns();
     return over && !changed ? bump() : changed;
   }
+  /** The fields of an action only the host sets (spec §3c, §3e, D117):
+   *  whatever a payload says of them is dropped before anything reads it —
+   *  `to` too, except on `owner`, whose `to` names the new owner (§2c). */
+  const HOST_SET = ['from', 'pick', 'handled'];
   /** Action `a` of player p as the hooks and the default effect see it (spec
    *  §3c): a copy whose `to` is the display address the piece it places
-   *  would snap to — the moved piece, or for take, split and play the
-   *  PROSPECTIVE new one, in its type's size (its back's when hidden) — or
-   *  absent, whatever the payload said (a client's `to` is advisory); whose
-   *  `from` is where the moved piece (or the stack split) was; and for a
-   *  pull, `pick`: the member it draws, drawn now (a veto discards it), which
-   *  the default effect then takes. Pure but for that draw. */
+   *  would snap to — the moved piece, or for take, split, play and a deal
+   *  from a piece pile the PROSPECTIVE new one, in its type's size (its
+   *  back's when hidden) — or absent (act dropped the payload's: it is
+   *  advisory); whose `from` is where the moved piece (or the stack split)
+   *  was; and for a pull, `pick`: the member it draws (drawFrom), drawn now,
+   *  which the default effect then takes. Pure but for that draw. */
   function prepare(p, a) {
-    const o = { ...a }, it = own(host.items, a.id), pl = own(host.players, p);
-    delete o.to;
-    delete o.from;
-    delete o.pick;
+    const o = { ...a }, it = own(host.items, a.id), pl = own(host.players, p), top = it?.k === 'p' && it.cards.at(-1);
     let piece = null, at = it && nextTo(it);
     if (a.t === 'move' && it && isPiece(it)) [piece, at] = [it, it];
     else if (a.t === 'take' && it?.k === 's' && a.hand !== true) piece = { k: 'g', t: it.t, f: it.f, ...(it.up === false && { up: false }) };
     else if (a.t === 'pull' && it?.k === 'b' && it.of.length) {
-      o.pick = rint(it.of.length);
+      o.pick = drawFrom(a.id, it);
       const m = it.of[o.pick];
       if (a.hand !== true) piece = { k: 'g', t: m.t, f: m.f, ...(m.up === false && { up: false }) };
     } else if (a.t === 'split' && it?.k === 'g' && it.n >= 2 && a.onto === undefined) piece = it;
+    else if (a.t === 'deal' && top && !isCard(top)) piece = { k: 'g', t: top.t, f: top.f, ...(!a.up && !mustShow(top.t) && { up: false }) }; // (as opDealTop deals it)
     else if (a.t === 'play') {
       const c = pl && pl.hand[handIdx(pl, a)];
       if (c && !isCard(c)) {
@@ -2575,19 +2661,33 @@ export function createTable(host, env = {}) {
       }
     }
     if ((a.t === 'move' || a.t === 'split') && it?.at) o.from = display(it.at);
-    if (piece) {
+    if (piece && isPiece(piece)) {
       const s = snapPiece(piece, num(a.x, at.x), num(a.y, at.y));
       if (s.at) o.to = display(s.at);
     }
     return o;
+  }
+  const drawn = new Map(); // bag id → the member its next pull takes (drawFrom)
+  /** The index of the member of bag `id` (`bag`) its next pull takes: the
+   *  one drawn for a pull that did not happen (a veto, a refusal) while it is
+   *  still in the bag, else a fresh draw (randInt), kept until a pull takes
+   *  it (opPull). A pull's a.to is where THAT member lands (by its own size),
+   *  so a veto that redrew would let a guest aim her pulls where only the
+   *  size she wants snaps, and fish the bag for it (D114). */
+  function drawFrom(id, bag) {
+    const k = bag.of.indexOf(drawn.get(id));
+    if (k >= 0) return k;
+    const j = rint(bag.of.length);
+    drawn.set(id, bag.of[j]);
+    return j;
   }
   /** A live drag (spec §3c, `drag`): player p's piece, or group, on its way —
    *  {id, x, y} or {ids (the first MAX_GROUP), dx, dy} — for the other
    *  screens to show. It changes nothing, and runs no hook: what p may move
    *  (mayHandle and notLocked, checked quietly — a refusal of live traffic
    *  is a console.warn, never a notice) goes out as one fx {p, id, x, y,
-   *  live: 1} or {p, ids, dx, dy, live: 1}, finite and on the table. True
-   *  when one was queued. */
+   *  live: 1} or {p, ids, dx, dy, live: 1}, finite, every member landing on
+   *  the table (clampShift, D118). True when one was queued. */
   function drag(p, a) {
     const ok = (id) => {
       const it = typeof id === 'string' && own(host.items, id);
@@ -2597,8 +2697,11 @@ export function createTable(host, env = {}) {
     };
     if (Array.isArray(a.ids)) {
       const ids = [...new Set(a.ids.slice(0, MAX_GROUP))].filter(ok);
-      if (ids.length) emit({ t: 'fx', f: { p, ids, dx: clamp(num(a.dx), -host.table.w, host.table.w), dy: clamp(num(a.dy), -host.table.h, host.table.h), live: 1 } });
-      return ids.length > 0;
+      if (!ids.length) return false;
+      // (the group's shift, cut so that every member lands on the table: clampShift)
+      const cs = ids.map((id) => { const it = host.items[id], { w, h } = size(it); return [it.x + w / 2, it.y + h / 2]; });
+      emit({ t: 'fx', f: { p, ids, ...clampShift(host.table, cs, num(a.dx), num(a.dy)), live: 1 } });
+      return true;
     }
     const it = ok(a.id);
     if (!it) return false;
@@ -2607,11 +2710,14 @@ export function createTable(host, env = {}) {
     return true;
   }
   /** The actions prepare() fills in. */
-  const PREPARED = new Set(['move', 'take', 'pull', 'split', 'play']);
+  const PREPARED = new Set(['move', 'take', 'pull', 'split', 'play', 'deal']);
   /** The action itself (see apply). */
   function act(p, a) {
     if (a.t === 'hello' || a.t === 'snap' || a.t === 'need') return false;
     if (a.t === 'drag') { drag(p, a); return false; } // (no state: the app relays it outside the queue, T.drag)
+    a = { ...a };
+    for (const k of a.t === 'owner' ? HOST_SET : [...HOST_SET, 'to']) delete a[k];
+    syncSpots(); // (an address read from here on is where each piece now lies: D106)
     if (PREPARED.has(a.t)) a = prepare(p, a);
     const items = host.items, pl = own(host.players, p);
     const it = own(items, a.id);
@@ -2747,7 +2853,7 @@ export function createTable(host, env = {}) {
       case 'split': opSplit(p, a.id, a.n, a.x, a.y, a.onto); break;
       case 'join': opJoin(p, a.id, a.onto); break;
       case 'take': opTake(p, a.id, a.x, a.y, a.hand === true); break;
-      case 'pull': opPull(p, a.id, a.x, a.y, a.hand === true, a.pick); break;
+      case 'pull': opPull(p, a.id, a.x, a.y, a.hand === true); break; // (the member prepare drew: drawFrom)
       case 'toBag': opToBag(p, a.id, a.bag); break;
       case 'lock': if (typeof a.on === 'boolean') opLock(p, a.id, a.on); else no(p, '🚫 Say lock or unlock (on: true or false)'); break;
       case 'owner': opOwner(p, a.id, a.to ?? null); break;
@@ -2899,7 +3005,7 @@ export function createTable(host, env = {}) {
     }
     host.decks = decks;
     host.boxes = boxes;
-    boxKeys = null;
+    boxIndex = null;
     // (store.js drops a box record it can't read before this: its pieces are counted here)
     const lost = Object.values(host.items).filter((it) => (it.k === 'g' || it.k === 's') && !typeOf(it.t)).length;
     if (lost || dropped) {
@@ -2955,7 +3061,10 @@ export function createTable(host, env = {}) {
     }
   }
   /** A script's own copy of item `id`: changing it never changes the table (its address in the display form). */
-  const copyItem = (id, it) => ({ id, ...it, ...(it.cards && { cards: it.cards.map((c) => ({ ...c })) }), ...(it.of && { of: it.of.map((m) => ({ ...m })) }), ...(it.at && { at: display(it.at) }) });
+  function copyItem(id, it) {
+    const at = addrNow(it);
+    return { id, ...it, ...(it.cards && { cards: it.cards.map((c) => ({ ...c })) }), ...(it.of && { of: it.of.map((m) => ({ ...m })) }), ...(at && { at }) };
+  }
   /** Runs one script hook; any throw disables the rules loudly. */
   function runHook(name, ...args) {
     if (!host.rules?.enabled || !hooks.has(name)) return undefined;
@@ -3164,11 +3273,13 @@ export function createTable(host, env = {}) {
   function scriptDecks(list) {
     if (list === undefined) return [];
     if (!Array.isArray(list)) throw new TypeError('t.newBox: decks must be a list of {name, back?, cards}');
+    if (list.length > MAX_BOX_DECKS) throw new TypeError(`t.newBox: at most ${MAX_BOX_DECKS} decks, got ${list.length}`);
     const names = new Set();
     return list.map((d, k) => {
       if (!isObj(d) || !Array.isArray(d.cards)) throw new TypeError(`t.newBox: decks[${k}] must be {name, back?, cards: [{name, text, color, bg, meta, count}]}`);
       if (d.back != null && !COLOR_RE.test(d.back)) throw new TypeError(`t.newBox: decks[${k}].back must be a colour like "#111" (a script's box has no images)`);
       const name = str(d.name, 24) || 'Deck';
+      if (name === '__proto__') throw new TypeError(`t.newBox: decks[${k}] may not be named «__proto__»`);
       if (names.has(name)) throw new TypeError(`t.newBox: two decks are named «${name}»`);
       names.add(name);
       const cards = d.cards.flatMap((c, j) => {
@@ -3353,20 +3464,17 @@ export function createTable(host, env = {}) {
       if (img) throw new TypeError(`t.newBox: a script's box has no images (${img})`);
       let box;
       try { box = cleanBox(boxFromDef(def)); } catch (err) { throw new TypeError(`t.newBox: ${err.message}`); }
-      const decks = scriptDecks(def.decks), same = canon(box);
-      for (const [id, b] of Object.entries(host.boxes)) {
-        const { decks: dm = {}, ...rest } = b;
-        if (canon(rest) === same && Object.keys(dm).length === decks.length && decks.every(([n, d]) => own(host.decks, own(dm, n)) && canon(host.decks[dm[n]]) === canon(d))) return id;
+      const decks = scriptDecks(def.decks), same = boxWith(boxText(box, Object.fromEntries(decks)));
+      if (same) return same;
+      // Its decks go into the catalog, and the whole box — decks too — passes
+      // cleanBox once more, as a guest's copy and a resume will; only then is
+      // anything sent (a refusal takes the decks out again).
+      for (const [name, d] of decks) { const deckId = mint(host.decks); host.decks[deckId] = d; (box.decks ||= {})[name] = deckId; }
+      try { box = cleanBox(box); } catch (err) {
+        for (const deckId of Object.values(box.decks)) delete host.decks[deckId];
+        throw new TypeError(`t.newBox: ${err.message}`);
       }
-      if (decks.length) {
-        box.decks = {};
-        for (const [name, d] of decks) {
-          const deckId = mint(host.decks);
-          host.decks[deckId] = d;
-          emit({ t: 'deck', id: deckId });
-          box.decks[name] = deckId;
-        }
-      }
+      for (const deckId of Object.values(box.decks || {})) emit({ t: 'deck', id: deckId });
       const id = registerBox(box, 'script', RULES), n = Object.keys(box.types).length;
       logEvent(RULES, `defined the box «${box.name}» (${n} piece ${n === 1 ? 'type' : 'types'})`);
       return id;
@@ -3392,7 +3500,7 @@ export function createTable(host, env = {}) {
       it.rot = turned(it, o.rot);
       place(it, ...scriptSpot('t.spawn', it, o.at));
       const id = put(mint(host.items), it);
-      logOp(RULES, 'placed', `placed ${label(it)}${it.at ? ` on ${display(it.at)}` : ''}`, it);
+      logOp(RULES, 'placed', `placed ${label(it)}${onAt(it)}`, it);
       mark(RULES, id);
       return id;
     },
@@ -3442,7 +3550,7 @@ export function createTable(host, env = {}) {
       const before = label(it);
       touch(id);
       it.f = f;
-      logOp(RULES, 'turned', `turned ${before}${it.up === false ? '' : ` to ${faceLabel(ty.faces[f], f)}`}${it.at ? ` on ${display(it.at)}` : ''}`, it);
+      logOp(RULES, 'turned', `turned ${before}${it.up === false ? '' : ` to ${faceLabel(ty.faces[f], f)}`}${onAt(it)}`, it);
       mark(RULES, id);
       return true;
     },
@@ -3458,7 +3566,7 @@ export function createTable(host, env = {}) {
       touch(id);
       if (n > 1) it.n = n;
       else delete it.n;
-      logOp(RULES, 'counted', `counted ${label(it)}${it.at ? ` on ${display(it.at)}` : ''}`, it);
+      logOp(RULES, 'counted', `counted ${label(it)}${onAt(it)}`, it);
       mark(RULES, id);
       return true;
     },
@@ -3489,9 +3597,7 @@ export function createTable(host, env = {}) {
     /** Piece `id`'s address (display form), or null; false when it vanished. */
     where(id) {
       const it = scriptItem('t.where', id);
-      if (!it) return false;
-      syncSpots();
-      return it.at ? display(it.at) : null;
+      return it && addrNow(it);
     },
     /** The pieces at address `a`, copied, bottom to top (by z). */
     at(a) {
@@ -3538,11 +3644,11 @@ export function createTable(host, env = {}) {
     const it = scriptItem(call, id);
     if (!it) return false;
     if (it.k !== kind) throw new TypeError(`${call}: ${id} is not a ${kind === 's' ? 'supply' : 'bag'}`);
-    if (o.to !== undefined) return kind === 's' ? opTake(RULES, id, 0, 0, true, o.to) : opPull(RULES, id, 0, 0, true, undefined, o.to);
-    // (a pull draws its piece first: an address centres it by its own size)
-    const pick = kind === 'b' && it.of.length ? rint(it.of.length) : undefined, m = kind === 's' ? it : it.of[pick];
+    if (o.to !== undefined) return kind === 's' ? opTake(RULES, id, 0, 0, true, o.to) : opPull(RULES, id, 0, 0, true, o.to);
+    // (a pull draws its piece first — drawFrom, which opPull then takes: an address centres it by its own size)
+    const m = kind === 's' ? it : it.of.length ? it.of[drawFrom(id, it)] : null;
     const at = nextTo(it), [x, y, po] = o.at === undefined || !m ? [at.x, at.y, {}] : scriptSpot(call, { k: 'g', t: m.t, f: m.f, ...(m.up === false && { up: false }) }, o.at);
-    return kind === 's' ? opTake(RULES, id, x, y, false, RULES, po) : opPull(RULES, id, x, y, false, pick, RULES, po);
+    return kind === 's' ? opTake(RULES, id, x, y, false, RULES, po) : opPull(RULES, id, x, y, false, RULES, po);
   }
 
   /** Moves a player's hand onto a pile, face down (a piece without a back
@@ -3598,6 +3704,7 @@ export function createTable(host, env = {}) {
   function takeDirty() {
     flushRuns();
     refresh();
+    boardsMoving = false; // (the boards as they now are: tb() may keep them until one is touched again)
     const d = dirty, sig = JSON.stringify(rulesView()), h = handy.size > 0;
     dirty = newDirty();
     if (sig !== rulesSig) { rulesSig = sig; d.rules = true; }
@@ -3677,7 +3784,7 @@ export function createTable(host, env = {}) {
       try {
         host.boxes[id] = cleanBox(rec.box);
         host.boxSrc[id] = { src: rec.src, ...(rec.by && { by: rec.by }) };
-        boxKeys = null;
+        boxIndex = null;
         tbVer++;
         emit({ t: 'box', id });
       } catch (err) { console.error(`patched box ${id} rejected`, err); }

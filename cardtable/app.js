@@ -22,7 +22,7 @@ import {
   CARD_W, CARD_H, RANKS, RULES, playR, clampToTable, seatAt, seatAngles, sizeOf, flagsOf, typeAt, PID_RE, ASSET_RE, rand, clamp, own, num, peerText,
   cleanDeck, cleanDeckV1, cleanBox, isBuiltin, deckOverBudget, assetRefs, cleanName, standardDeck, cardName, pieceName, faceLabel, createTable,
   MODULE_V as CORE_V, PROTO, PUBLIC_ACTIONS, HOST_ACTIONS, MAX_ROLL, MAX_N, MAX_BAG, MAX_HAND, MAX_PILE, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch, roundTable, FELT,
-  tableBoards, snapAt, displayAddr, resolveAddr, liveFx,
+  tableBoards, snapTo, snaps, displayAddr, resolveAddr, liveFx,
 } from './core.js?v=1';
 import { MODULE_V as GRID_V, turn } from './grid.js?v=1';
 import * as pieces from './pieces.js?v=1';
@@ -1562,12 +1562,15 @@ function redrawLanded() {
 
 // --- spots: pieces sharing an address are fanned (spec §3g) --------------------
 // The state keeps every piece on a spot centred on it; drawn, they fan out
-// (pieces.js fanOffsets): along a space's `dir`, or a few units apart. Each
-// piece's element is placed at its fanned spot, where it is hit-tested too;
-// the top one carries a "×k" badge (.fanb).
+// (pieces.js fanOffsets) from the spot's centre: along a space's `dir`, or a
+// few units apart. Each piece's element is placed at its fanned spot, where
+// it is hit-tested too; the top one carries a "×k" badge (.fanb). A piece
+// whose address was read by containment while it lies off the spot's centre
+// (a board moved under it, a Phase 2 save: D106) is drawn where it lies and
+// only counted (D116).
 const fanAt = new Map();  // display address → the ids of the pieces there
 const atOf = new Map();   // piece id → its display address
-const fanPos = new Map(); // piece id → where it is drawn (top-left), when fanned off its own
+const fanPos = new Map(); // piece id → where it is drawn (top-left), when fanned
 const fanDirty = new Set(); // addresses whose fan is laid out again (layoutFans)
 let viewTB = null;        // the view's boards (core.js tableBoards), until one changes
 /** The view's structured boards (tableBoards over the public items). */
@@ -1585,26 +1588,30 @@ function fanTrack(id, it) {
 }
 /** The members of spot `at` on the table, bottom to top (by z). */
 const spotMembers = (at) => [...(fanAt.get(at) || [])].filter((id) => view.items[id]).sort((a, b) => view.items[a].z - view.items[b].z);
-/** Spot `at` as the boards show it: {b (its board), sp (its space, if one)}, or null. */
+/** Spot `at` on the view's boards: {r (resolveAddr's: its board b and centre x, y), sp (its space, if one)}, or null. */
 function spotOn(at) {
   const r = resolveAddr(boardsNow(), at);
-  return r?.b ? { b: r.b, sp: r.b.B.spaces?.find((x) => x.id === r.local) } : null;
+  return r?.b ? { r, sp: r.b.B.spaces?.find((x) => x.id === r.local) } : null;
 }
-/** The offset (table units) of place j of k pieces of size w × h on spot `at` (fanOffsets, turned with the board). */
-function fanOffset(at, j, sizes) {
-  const S = spotOn(at);
-  if (!S || (sizes.length < 2 && !S.sp?.dir)) return [0, 0];
-  const o = pieces.fanOffsets(S.sp, sizes)[j];
-  return turn(o.x, o.y, S.b.rot);
+/** The members of spot S (spotOn) among `ids` that lie centred on it: the ones its fan lays out. */
+const centredOn = (S, ids) => ids.filter((id) => { const it = view.items[id], { w, h } = sizeOf(it, boxes); return Math.abs(it.x + w / 2 - S.r.x) < 0.5 && Math.abs(it.y + h / 2 - S.r.y) < 0.5; });
+/** Where pieces of sizes `sizes` ([{w, h}], bottom first) centred on spot S
+ *  (spotOn) are drawn: their top-lefts on the table, laid out from its
+ *  centre (fanOffsets, turned with its board) — or null when there is
+ *  nothing to fan (one piece, on a spot with no `dir`). */
+function fanSlots(S, sizes) {
+  if (!S || (sizes.length < 2 && !S.sp?.dir)) return null;
+  const { r } = S;
+  return pieces.fanOffsets(S.sp, sizes).map((o, j) => { const [ox, oy] = turn(o.x, o.y, r.b.rot); return { x: r.x + ox - sizes[j].w / 2, y: r.y + oy - sizes[j].h / 2 }; });
 }
 /** Lays out the fans of the spots that changed (fanDirty): where each member is drawn, and the top one's "×k". */
 function layoutFans() {
   if (!viewTB) for (const at of fanAt.keys()) fanDirty.add(at);
   for (const at of fanDirty) {
-    const ids = spotMembers(at), sizes = ids.map((id) => sizeOf(view.items[id], boxes));
+    const ids = spotMembers(at), S = spotOn(at), fan = S ? centredOn(S, ids) : [], slots = fanSlots(S, fan.map((id) => sizeOf(view.items[id], boxes)));
     ids.forEach((id, j) => {
-      const it = view.items[id], [ox, oy] = fanOffset(at, j, sizes);
-      if (ox || oy) fanPos.set(id, { x: it.x + ox, y: it.y + oy });
+      const k = fan.indexOf(id);
+      if (slots && k >= 0) fanPos.set(id, slots[k]);
       else fanPos.delete(id);
       fanBadge(id, j === ids.length - 1 && ids.length > 1 ? ids.length : 0);
       placeEl(id);
@@ -1620,10 +1627,13 @@ function fanBadge(id, k) {
   if (!b) { b = document.createElement('span'); b.className = 'fanb'; el.appendChild(b); }
   b.textContent = `×${k}`;
 }
-/** The piece a press on item `id` means: on a crowded spot, its top one (spec §3g). */
+/** The piece a press on item `id` means (spec §3g, D115): on a crowded
+ *  spot, its topmost piece this player may move (one of each colour on
+ *  backgammon's bar: each player takes their own), else its top one. */
 function topOf(id) {
   const ids = atOf.has(id) ? spotMembers(atOf.get(id)) : [];
-  return ids.length > 1 ? ids.at(-1) : id;
+  if (ids.length < 2) return id;
+  return ids.findLast((m) => mayTouch(view.items[m]) && !view.items[m].lock) ?? ids.at(-1);
 }
 /** Puts item `id`'s element where it is drawn — its fanned place, or its
  *  own — and, while someone else drags it, on its live spot by a
@@ -1633,10 +1643,27 @@ function placeEl(id) {
   const el = itemEls.get(id), it = view.items[id];
   if (!el || !it || drag?.id === id || landing?.id === id) return;
   const p = fanPos.get(id) || it, L = lives.get(id);
+  if (!L && el.classList.contains('live')) { endLive(el, p); return; }
   el.style.left = `${p.x}px`;
   el.style.top = `${p.y}px`;
   el.style.translate = L ? `${L.x - p.x}px ${L.y - p.y}px` : '';
   el.classList.toggle('live', !!L); // (its spot's ×k stays home: style.css)
+}
+/** A live glide ends (a commit, or the hold ran out) with item element `el`
+ *  drawn at `p` (FLIP): it jumps there, translated back to where the glide
+ *  has it now (untransitioned), and the translation alone then runs out —
+ *  one composited property, so nothing is laid out per frame and the two
+ *  never part (left/top's transition starts a frame after translate's: the
+ *  piece would jump back half a man first). */
+function endLive(el, p) {
+  const [tx, ty] = getComputedStyle(el).translate.split(' ').map(parseFloat); // ('none': NaN, so 0 below)
+  const x = parseFloat(el.style.left) + (tx || 0) - p.x, y = parseFloat(el.style.top) + (ty || 0) - p.y;
+  el.classList.remove('live');
+  el.style.transition = 'none';
+  Object.assign(el.style, { left: `${p.x}px`, top: `${p.y}px`, translate: `${x}px ${y}px` });
+  void getComputedStyle(el).translate; // (a style flush, no layout: this is where the transition starts from)
+  el.style.transition = '';
+  el.style.translate = '';
 }
 
 // --- live drags (spec §3c, §3g): someone else's piece on its way -------------
@@ -1727,7 +1754,7 @@ function renderItems(prev, prevPlayers = new Map()) {
     const at = (x, y) => Math.abs(it.x - x) < 0.5 && Math.abs(it.y - y) < 0.5;
     if (landing?.id === id && (at(landing.x, landing.y) || at(landing.ox, landing.oy))) landing = null;
     lives.delete(id); // (a committed update: no glide outlives it)
-    placeEl(id);
+    if (!atOf.has(id)) placeEl(id); // (a piece on a spot is placed by layoutFans below, in its fan)
     el.style.transform = `rotate(${it.rot}deg)`;
     // its badges, and a board's printed text, turn back against it (style.css, D91)
     if (it.rot) el.style.setProperty('--rot', `${num(it.rot)}deg`);
@@ -1750,7 +1777,7 @@ function renderItems(prev, prevPlayers = new Map()) {
 }
 
 /** What an item's drawing depends on: all of it but where it lies. */
-const looks = ({ x, y, z, rot, ...rest }) => JSON.stringify(rest);
+const looks = ({ x, y, z, rot, at, ...rest }) => JSON.stringify(rest); // (an address alone redraws nothing: layoutFans places it)
 /** Gives item element `el` the classes of its kind (`cls`: those drawn last
  *  go, these come) and its size (a card's by default: the CSS variables). */
 function kind(el, cls, w, h) {
@@ -2602,32 +2629,39 @@ function cancelItemDrag() {
 // board, an outline (.snap-ghost, in #table: table units) shows the spot it
 // would land on — where it will be drawn, fanned in with the pieces there
 // — and a chip by the finger (.snap-chip, screen space) names its address.
-// Computed here from the public view by core's own snapping (snapAt), so the
+// Computed here from the public view by core's own snapping (snapTo), so the
 // drop sends the spot the host snaps to. Both move by translation.
 const ghostEl = Object.assign(document.createElement('div'), { className: 'snap-ghost hidden' });
 const chipEl = Object.assign(document.createElement('div'), { className: 'snap-chip hidden' });
 tableEl.appendChild(ghostEl);
 wrapEl.appendChild(chipEl);
 /** What drag `d` (of public item `it`, in mode `mode`) puts down that
- *  snaps: the piece moved, or the one a supply or a stack hands out —
- *  {w, h, shape, rot} — or null (cards, piles, bags and boards never snap). */
+ *  snaps (core's snaps): the piece moved, or the one a supply or a stack
+ *  hands out — {w, h, shape, rot} — or null (cards, piles, bags, boards and
+ *  dice never snap). */
 function snapsAs(it, mode) {
-  if (mode === 'move' ? it.k !== 'g' || isBoard(it) : it.k !== 's' && it.k !== 'g') return null;
-  return { ...flagsOf(it, boxes), rot: mode === 'take' ? 0 : num(it.rot) };
+  const put = mode === 'move' ? it : { k: 'g', t: it.t }; // (the item itself, or one piece its supply or stack hands out)
+  return snaps(put, boxes) ? { ...flagsOf(it, boxes), rot: mode === 'take' ? 0 : num(it.rot) } : null;
 }
-/** Shows where the dragged piece would land (drag.spot: {x, y, to}), or nothing. */
+/** Shows where the dragged piece would land, or nothing: drag.spot = {x, y
+ *  (the top-left the host centres it at, sent with the drop), to (its
+ *  address), slot (where it will be drawn: its place in the spot's fan)}. */
 function previewSnap() {
-  const P = drag.snap, T = P && boardsNow(), s = P && snapAt(T, drag.x + P.w / 2, drag.y + P.h / 2);
-  drag.spot = s ? { x: s.x - P.w / 2, y: s.y - P.h / 2, to: displayAddr(T, s.at) } : null;
-  ghostEl.classList.toggle('hidden', !s);
-  chipEl.classList.toggle('hidden', !s);
-  if (!s) return;
-  const others = spotMembers(drag.spot.to).filter((id) => id !== drag.id), [ox, oy] = fanOffset(drag.spot.to, others.length, [...others.map((id) => sizeOf(view.items[id], boxes)), P]);
-  Object.assign(ghostEl.style, { width: `${P.w}px`, height: `${P.h}px`, translate: `${drag.spot.x + ox}px ${drag.spot.y + oy}px`, rotate: `${P.rot}deg` });
+  const P = drag.snap, T = P && boardsNow(), s = P && snapTo(T, TABLE, P.w, P.h, drag.x, drag.y);
+  drag.spot = s?.at ? { x: s.x, y: s.y, to: displayAddr(T, s.at) } : null;
+  ghostEl.classList.toggle('hidden', !drag.spot);
+  chipEl.classList.toggle('hidden', !drag.spot);
+  if (!drag.spot) return;
+  const S = spotOn(drag.spot.to), others = S ? centredOn(S, spotMembers(drag.spot.to).filter((id) => id !== drag.id)) : [];
+  drag.spot.slot = fanSlots(S, [...others.map((id) => sizeOf(view.items[id], boxes)), P])?.[others.length] || { x: s.x, y: s.y };
+  Object.assign(ghostEl.style, { width: `${P.w}px`, height: `${P.h}px`, translate: `${drag.spot.slot.x}px ${drag.spot.slot.y}px`, rotate: `${P.rot}deg` });
   ghostEl.classList.toggle('round', P.shape === 'round' || P.shape === 'disc');
   const [px, py] = tableToScreen(drag.x + drag.dx, drag.y + drag.dy); // (the finger: no layout read)
-  chipEl.textContent = drag.spot.to;
-  chipEl.style.translate = `${Math.round(clamp(px + 18, 4, wrapW - 64))}px ${Math.round(Math.max(4, py - 46))}px`;
+  if (chipEl.textContent !== drag.spot.to) chipEl.textContent = drag.spot.to; // (a DOM write only when the address changes)
+  // (its width estimated, not measured — a measure would lay the table out
+  // mid-drag: 15 px bold, at most 9.5 px a character, and its padding)
+  const cw = 20 + 9.5 * drag.spot.to.length;
+  chipEl.style.translate = `${Math.round(clamp(px + 18, 4, wrapW - cw - 4))}px ${Math.round(Math.max(4, py - 46))}px`;
 }
 /** Takes the snap preview away. */
 function hideSnap() {
@@ -2894,7 +2928,9 @@ window.addEventListener('pointerup', (e) => {
   if (tgtId === d.id) return; // a piece taken out of its stack or supply and put back on it: nothing happened
   if (d.spot) [d.x, d.y] = [d.spot.x, d.spot.y]; // (onto the snap preview's spot: the host snaps there too)
   const a = dropAction(d, it, tgtId, tgtId && view.items[tgtId], !!under?.closest('#hand-bar'));
-  if (a.t === 'move' && d.spot) { d.el.style.left = `${d.x}px`; d.el.style.top = `${d.y}px`; }
+  // (drawn where the preview showed it — its place in the spot's fan — while
+  // the landing hold waits for the state to centre it on the spot)
+  if (a.t === 'move' && d.spot) { d.el.style.left = `${d.spot.slot.x}px`; d.el.style.top = `${d.spot.slot.y}px`; }
   if (a.t === 'move') {
     // The hold heals itself: with no confirming state (a script moved the
     // card elsewhere, a veto left it mid-drag, coalescing merged the state
@@ -3547,8 +3583,8 @@ function cliExec(c) {
         if (r?.ambiguous) throw new Error(`🚫 Which board? Say '${r.ambiguous[0]}'`);
         if (!r) throw new Error(`no such address: ${c.at}`);
         const it = c.id != null && view.items[c.id], id = it && it.k !== 's' ? String(c.id) : cliItem(c.id, 's');
-        const { w, h } = sizeOf(view.items[id], boxes), to = displayAddr(B, r.at);
-        act({ t: view.items[id].k === 's' ? 'take' : 'move', id, x: r.x - w / 2, y: r.y - h / 2, to });
+        const { w, h } = sizeOf(view.items[id], boxes), s = snapTo(B, TABLE, w, h, 0, 0, { at: r.at }); // (centred there: the host's own rule, D112)
+        act({ t: view.items[id].k === 's' ? 'take' : 'move', id, x: s.x, y: s.y, to: displayAddr(B, r.at) });
         break;
       }
       default: throw new Error(`unknown command: ${c.t}`);
@@ -3720,8 +3756,8 @@ if (window.CARDTABLE_TEST) {
     lives: () => Object.fromEntries([...lives].map(([id, L]) => [id, { x: L.x, y: L.y }])),
     spot: () => drag?.spot ?? null,
     snap(id, x, y) {
-      const it = view.items[id], { w, h } = sizeOf(it, boxes), p = clampToTable(TABLE, x, y, w, h), B = boardsNow(), s = snapsAs(it, 'move') && snapAt(B, p.x + w / 2, p.y + h / 2);
-      return s ? { x: s.x - w / 2, y: s.y - h / 2, at: displayAddr(B, s.at) } : { ...p, at: null };
+      const it = view.items[id], { w, h } = sizeOf(it, boxes), B = boardsNow(), s = snapTo(B, TABLE, w, h, x, y, { free: !snaps(it, boxes) });
+      return { ...s, at: s.at && displayAddr(B, s.at) };
     },
   };
 }

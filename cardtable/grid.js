@@ -142,7 +142,7 @@ export function hexRound(q, r) {
   return { q: rq + 0, r: rr + 0 }; // (+ 0: never -0)
 }
 /** The hex of grid g holding board-local (x, y), by pixel → axial → cube
- *  rounding (the inverse of cellCenter's formulas): {c, r}, maybe off the grid. */
+ *  rounding (the inverse of cellCenter's formulas): axial {q, r}, maybe off the grid. */
 function hexAt(g, x, y) {
   const R = hexR(g);
   let q, r;
@@ -153,20 +153,29 @@ function hexAt(g, x, y) {
     r = (y - g.y - R) / (1.5 * R);
     q = (x - g.x - g.cell / 2) / g.cell - r / 2;
   }
-  const a = hexRound(q, r);
-  return fromAxial(g, a.q, a.r);
+  return hexRound(q, r);
 }
 /** The grid spot of g within reach of board-local (x, y), or null: square
  *  cells, the cell holding the point; square points, the nearest point within
  *  cell/2; hexes, the nearest centre within R (spec §3a, Snapping). */
 export function gridSpot(g, x, y) {
-  let c, r;
-  if (g.type === 'hex') ({ c, r } = hexAt(g, x, y));
-  else if (g.snap === 'point') [c, r] = [Math.round((x - g.x) / g.cell), Math.round((y - g.y) / g.cell)];
-  else [c, r] = [Math.floor((x - g.x) / g.cell), Math.floor((y - g.y) / g.cell)];
+  if (g.type === 'hex') {
+    // The hex holding the point is the nearest centre (a hex is its centre's
+    // Voronoi cell) — unless it is off the grid: then, at the grid's rim, an
+    // edge hex next to it can still have its centre within R.
+    const a = hexAt(g, x, y);
+    let best = null, bd = Infinity;
+    for (const [dq, dr] of [[0, 0], ...HEX6]) {
+      const cr = fromAxial(g, a.q + dq, a.r + dr), p = inGrid(g, cr.c, cr.r) && cellCenter(g, cr.c, cr.r), d = p ? Math.hypot(p.x - x, p.y - y) : Infinity;
+      if (d < bd) [best, bd] = [cr, d];
+    }
+    return bd <= hexR(g) ? best : null;
+  }
+  const pt = g.snap === 'point', at = pt ? Math.round : Math.floor, c = at((x - g.x) / g.cell), r = at((y - g.y) / g.cell);
   if (!inGrid(g, c, r)) return null;
-  const p = cellCenter(g, c, r), reach = g.type === 'hex' ? hexR(g) : g.snap === 'point' ? g.cell / 2 : Infinity;
-  return Math.hypot(p.x - x, p.y - y) <= reach ? { c, r } : null;
+  if (!pt) return { c, r };
+  const p = cellCenter(g, c, r);
+  return Math.hypot(p.x - x, p.y - y) <= g.cell / 2 ? { c, r } : null;
 }
 /** How far board-local (x, y) is from space sp: 0 inside its drawn
  *  rectangle (a space with both w and h: a backgammon point, the bar), else

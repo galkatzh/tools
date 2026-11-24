@@ -132,12 +132,17 @@ Playing on the free table:
   with its name first (*map:c3*, or *tray#2:bar* for the second tray). The
   log says where pieces went ("Alice moved Light man c3 → d4"). Moving a
   board moves nothing else: the pieces stay where they are, and know their
-  new spots. Cards, piles, supplies and bags never snap.
+  new spots. Cards, piles, supplies, bags and dice never snap (a die set
+  down on a backgammon point stays where it lands).
 - **Pieces sharing a spot fan out** so each shows: a backgammon point's
   checkers line up from its base toward its tip, squeezed together when
-  many (15 on one point still fit inside it); elsewhere they step up a
-  little. The top one carries an amber **×k** (how many are there); a tap
-  or a drag on the crowd takes the top piece.
+  many (15 on one point still fit inside it), and so do the bar's (from its
+  top end) and the trays'; elsewhere they step up a little. The top one
+  carries an amber **×k** (how many are there); a tap or a drag on the
+  crowd takes the top piece you may move — with a checker of each colour
+  on the bar, each player takes their own. A piece left off a spot's
+  centre (a board moved under it, a table saved before snapping) is drawn
+  where it lies, and counted.
 - **Live drags.** While someone drags a piece, everyone sees it glide; the
   table itself only changes when they let go (the drop is the one move, so
   a rules script judges only the drop).

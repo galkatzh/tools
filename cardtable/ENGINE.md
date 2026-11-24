@@ -234,7 +234,7 @@ A thin wrapper over the table's existing ops (today in `core.js`):
 ### Addresses and the spatial helpers (Phase 3)
 
 A board's structure — its grid, spaces, zones and links — has meaning:
-a **piece** (never a card, pile, supply, bag or board) placed on a
+a **piece** (never a card, pile, supply, bag, board or die) placed on a
 structured board **snaps** to the spot in reach of its centre on the
 topmost board there (a grid cell; a go-style point within half a cell; a
 hex; a space first — within its `r` of its centre, or anywhere inside its
@@ -258,8 +258,12 @@ setups. `{x, y, free: true}` skips it.
   `'<board item id>:<local>'`; `t.item(id).at` is the display form.)
 - **Moving a board moves nothing else.** After a board is moved, turned
   (quarter turns only), flipped or removed, or the table resized, every
-  piece keeps its place, and its address is read again: the spot under its
-  centre, if one is in reach, else none.
+  piece keeps its place, and the address of each piece on that board
+  (where it was, or where it is) is read again, before anything reads one
+  — the next action's `a.from`, a log line, `t.item(id).at` in the same
+  hook: the spot under its centre, if one is in reach, else none. An
+  address you gave (`t.move(id, 'map:c3')`, under a board lying on top)
+  stands until a board under the piece changes.
 - **Reads**: `t.where(id)` → the piece's address, or `null` (`false`: no
   such item); `t.at(addr)` → the pieces there, copied, bottom to top;
   `t.find({…, at, zone})` (`zone`: a zone id on any board, or
@@ -278,10 +282,13 @@ setups. `{x, y, free: true}` skips it.
   logs its addresses: "moved White pawn e2 → e4".
 - **What an action says** (`validate`, `onAction`): `a.to` is the address
   the piece it places will snap to — the moved piece, or the new piece of
-  a `take`, `split`, `play` or `pull` (by its own size) — whatever a
-  client sent; `a.from` where a moved (or split) piece was; a `pull`'s
-  `a.pick` is the bag member it draws (drawn before the hooks: a veto
-  discards it, and the bag is unchanged).
+  a `take`, `split`, `play`, `pull` or a `deal` from a pile of pieces (by
+  its own size); `a.from` where a moved (or split) piece was; a `pull`'s
+  `a.pick` is the bag member it draws (drawn before the hooks; a veto
+  leaves the bag unchanged, and that member is what the bag's next pull
+  takes: refusing pulls never draws again). Only the host sets these (and
+  `a.handled`): whatever a client sends of them is dropped, on every
+  action — but an `owner` action's own `to`, the new owner.
 
 ### Components from code (Phase 3)
 
@@ -291,9 +298,10 @@ setups. `{x, y, free: true}` skips it.
   `spaces`, `zones`, `links` and `primary` on the piece itself), `backs` a
   list (`{id, color, label}`), `decks` text decks (`{name, back, cards:
   [{name, text, color, bg, meta, count}]}`, registered as ordinary decks:
-  the box's `decks` maps their names to deck ids). No images: a script's
-  box is drawn from colours, labels and pips (any `img` throws). The same
-  box again — a reset re-running `setup` — is the box already there.
+  the box's `decks` maps their names to deck ids; at most 50). No images:
+  a script's box is drawn from colours, labels and pips (any `img` throws).
+  Ids are ids (`[A-Za-z0-9_-]`; never `__proto__`). The same box again — a
+  reset re-running `setup` — is the box already there.
 - `t.spawn('box/type', {at, f, n, owner, up, rot, lock, as})` places a
   piece (`as: 'supply'`: a supply) at an address, `'center'` or `{x, y,
   free}` → its id (`false` at the 5,000-item cap); a board is locked unless
