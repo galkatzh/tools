@@ -40,10 +40,11 @@ node t-smoke.js         # one suite, output on the terminal
   suites and the Node-only `*.test.mjs` ones.
 - **The serial list.** The benchmarks, and the suites with a timing budget
   (a host long task under 50 ms; a move that reaches a guest pulling 34 MB
-  within 1 s), run alone, one at a time after the parallel batch, under the
-  same lock: `SERIAL`, a comma-separated list of suite names, default
-  `t-p1-bench,core-p1-bench,core-p2-bench,t-p1-flood,t-p1-assets`. A listed
-  suite that doesn't exist fails the run.
+  within 1 s; go's stone #300 within 10 ms of Worker time), run alone, one
+  at a time after the parallel batch, under the same lock: `SERIAL`, a
+  comma-separated list of suite names, default
+  `t-p1-bench,core-p1-bench,core-p2-bench,t-p1-flood,t-p1-assets,t-p3-go`.
+  A listed suite that doesn't exist fails the run.
 - Runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
   `/tmp/cardtable-tests.lock`): concurrent runs on a small machine starve each
   other into flaky timeouts, so a second run waits for the first.
@@ -1471,6 +1472,61 @@ button (`id: 'new'`, no `pid`: a seated player or the host) starts over.
   dropped): `t-fun-games.js` expects the four new games in the strip's
   order (`…bridge,chess,go9,go19,reversi,draughts…`) and 13 entries in the
   🎲 dialog.
+
+### The go and reversi suites (3C tests)
+
+`t-p3-go.js` and `t-p3-reversi.js` (spec §3l): Alice hosts on a desktop,
+Bob plays on an iPhone 13 (upright; sideways for reversi's last game), and
+Alice picks each game from 🎲. Each suite carries its own **referee**,
+written from the rules of the game (go: no suicide, simple positional ko,
+area scoring with komi 6.5; reversi: a disc must outflank, every closed
+line turns, a side with no move passes, the most discs win), and every
+expectation — legality, captures, flips, whose turn, the score — is the
+referee's, never the template's. After each move both screens must hold the
+referee's position, in their views and as drawn: every stone or disc
+centred on its spot (≤ 3 px, through a probe in `#table`) in its colour
+(the luminance of its face). A refusal must toast "🚫 …" on the mover's
+screen and change nothing on either. Which page plays which side is read
+from the seats (go) or from the pile showing the dark face (reversi).
+
+- **`t-p3-go.js`** (in the serial batch: B13 is a timing budget). 9 × 9 by
+  real drags out of each player's own bowl (mouse; CDP touches on the
+  phone): a stone placed on its point, a taken point, a play out of turn,
+  a single capture, suicide, a two-stone group capture, a ko refused and
+  then allowed after a move elsewhere by each, Pass and Pass (Count is
+  offered only then), Count's score and 🏆. The group capture also checks
+  the task's "a capture of N stones is ONE log line", which D164 (one line
+  per stone below §3e's aggregation threshold of 4) does not meet. 19 × 19
+  through `__ct.act` as both players (the spec says so): 361 alternating
+  legal placements (`fill19`: White's 30-stone group taken by Black's L3 at
+  #61, B16, one log line; each side then fills its half but its eyes; #300
+  is White's C19 taking the stone Black threw in at B19: B13 reads
+  `__ct.perf.lastRulesWorkerMs`, `done.ms`, after checking `workerJobs`
+  moved by exactly one), then both screens agree stone for stone, and B17:
+  Carol joins with the RTC hook keeping bodies, and her snapshot's UTF-8
+  size, as received and carried on to 361 stones, is at most 70,000 bytes.
+  Bob's moves are paced to at most 15 a second (a guest's flood limit is 20).
+- **`t-p3-reversi.js`**: the board (8 × 8 cells, green), the two-faced
+  disc and a pile per seat with its own face; the start (light d4 e5, dark
+  d5 e4, Dark to move); refused placements (outflanks nothing, taken, out
+  of turn); the line `d3 c3 b3 b2 f5 a3 a1 c1`, where a1 turns b2 c3 d4 and
+  after c1 Dark has no move: the pass announced on both screens and Light
+  plays again; then a near-end position (`NEAR_END`, from a legal game:
+  six squares empty, Dark to play) planted by the template wrapped with a
+  host-only Plant button (`planter`, the "Planting a position" recipe
+  above) and played out on Bob's phone held sideways — a5 closes four lines
+  at once — to a full board: the count announced, `t.win`, 🏆 on the winner.
+- **`stones-lib.js`**: their shared helpers — `pickGame` (🎲, accepting the
+  confirm), `playing` (the 🎲 entry marked as playing), `record` / `mark` /
+  `seen` / `waitSeen` (every toast and banner a page shows, as they replace
+  each other), `place` (a drag out of a supply onto an address, paced as a
+  hand moves and held still before the release: a finger let go mid-flick
+  leaves Chrome flinging, and it then spends the next tap on stopping the
+  fling, with no click), `drawn` (each piece on a spot as drawn: its offset
+  from the spot, its face's luminance), `buttons` / `press` (the rules'
+  buttons), `seatTexts`, `newLines` (the log lines a move wrote) and
+  `everywhere` (a view condition on every page).
+- Screenshots: `shots/p3-go9-*.png`, `shots/p3-go19-*.png`, `shots/p3-rev-*.png`.
 
 ## Storage and images (Phase 1B)
 
