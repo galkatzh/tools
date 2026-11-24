@@ -1090,6 +1090,38 @@ also hides the page (visibility only) for 3 s of a 5 s hook, and times a
 genuine loop with the page visible (4–5 s, from a MutationObserver on the
 toast).
 
+**`t-p3-attack.js`** (spec §3j attacker cases 1, 2, 3, 5, 6, 8 and 9, and
+the rules Worker's hardening tried by the author of a pasted script). Alice
+hosts; Bob is an honest guest (p3-lib `join`: his incoming bodies are
+kept); Mallory is final-lib's raw peer, seated; Eve is a raw peer who only
+knocks anonymously, never registered. The "Attack probe" script counts its
+hooks in `t.public.c` and runs the code a host press of "run" carries, in
+`onAction` (as t-engine's Probe). The texts that must stay private (each
+player's prompts, option labels and values, secrets) are random and reach
+the Worker as character codes, so a scan can only find them where the
+engine put them; Bob's hint names a second board's spaces
+(`qzhintmap:a1`), an address nothing else shows. Case 3 goes first (an
+unknown action's notice comes once per 10 s per peer). Case 2: 400
+`select`s in 4 s at 80 ms of Worker time each — at most 5 a second plus
+one second's burst run `onSelect`, and the host's own moves meanwhile apply
+in under 2 s (loose bounds: an unthrottled select would leave the Worker
+seconds behind). Case 5 scans, at the end, every message Mallory and Eve
+received on every channel but `asset` and `act` (what peers send the host:
+Mallory's own crafted answers travel there), and Bob's bodies for
+everybody else's texts. After each case and every Enable, the Worker's
+`workerDigest()` must equal the host's `digest()` (§3f.3). The escapes: a
+survey of the Worker's globals (logged), a server outside the table (a
+local HTTP server: dynamic `import()` reaching it is README's stated limit;
+any other API reaching it, or OPFS keeping a file, fails), the script's
+own `postMessage` (a `done`, a `ready` while evaluated), its own
+`self.onmessage`, a `MessageEvent` it dispatches to its own Worker (a fake
+act of Bob's with the next job's id, and one with an id never posted), a
+fake `init`, and three ways to keep the Worker from answering (a capture
+listener, `self.close()`, `Atomics.wait` on a shared WebAssembly memory —
+`SharedArrayBuffer` is undefined, but such a memory still gives one): each
+must go on, or end loudly through the watchdog. The Worker's console
+reaches the host page's (`QZ…` lines).
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores
