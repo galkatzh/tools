@@ -526,6 +526,11 @@ setups. `{x, y, free: true}` skips it.
   [{name, text, color, bg, meta, count}]}`, registered as ordinary decks:
   the box's `decks` maps their names to deck ids; at most 50). No images:
   a script's box is drawn from colours, labels and pips (any `img` throws).
+  A type with `upright: true` draws its label (and text) upright on every
+  player's screen, as the board's coordinates are, instead of as it lies on
+  the table: a chess glyph for the player across the board too. A face's
+  `name` (never drawn) is what the log calls a piece showing it when the
+  face has no label: reversi's "Light disc".
   Ids are ids (`[A-Za-z0-9_-]`; never `__proto__`). The same box again — a
   reset re-running `setup` — is the box already there.
 - `t.spawn('box/type', {at, f, n, owner, up, rot, lock, as})` places a
@@ -740,6 +745,42 @@ the default.
 5. **Simple dealer** — deal 1 to all on a button, saying so when the
    deck is short or gone; the minimal-script example.
 
+Three more own their rules outright (Phase 3: `strict`, `handle`, `t.ask`,
+`onSelect` / `t.hint`, components from code). Each is an expression that
+calls a function, so its rules read first and its helpers are plain
+functions below them; each builds its board in `setup` (`t.setTable`,
+`t.setSeats`, `t.newBox`, `t.spawn`, guarded by `t.data.ready` so a
+re-enable goes on where it was), reads the position from the pieces where
+they stand (`t.find`: the table and the rules can't drift apart), keeps
+in `t.data` only what a board can't show, plays every move itself in
+`handle` (returning `true`) or refuses it with the reason, sets
+`public.turn` to the player to move, and ends with `t.win` or an
+announced draw and a *New game* button. The 🎲 picker starts them on a
+cleared table with a fresh state (`clear: true` in `GAMES`).
+
+6. **Chess** — legal moves for every piece, with check: `onSelect` hints
+   the squares of the piece picked up, `handle` plays the drop (captures,
+   castling's rook, en passant) or says why not ("You can't castle through
+   check"), a pawn on the last rank asks its player ♕ ♖ ♗ ♘ (`t.ask`,
+   `onAnswer`) before the turn passes. After each move: checkmate
+   (`t.win`), stalemate, threefold repetition (positions counted in
+   `t.data.seen`, the en-passant square only while a capture there is
+   legal), the fifty-move rule and dead positions end the game; a draw
+   offer is the opponent's ask, resigning asks for confirmation. Glyph
+   tokens of an `upright` type.
+7. **Go** (`goTemplate(9)`, `goTemplate(19)`) — stones taken from a bowl
+   (a supply) onto the points; `handle` places them, removes every group
+   left without a liberty, refuses suicide and ko (the position before the
+   opponent's last move, kept in `t.data.prev`); Pass, Resign, and Count
+   after two passes in a row (area scoring, komi 6.5). `onSelect` shows a
+   tapped stone's group and liberties. No dead-stone marking: players
+   capture dead stones before they pass.
+8. **Reversi** — discs from each player's own pile; `handle` places one
+   only where it outflanks, turns the closed lines with `t.setFace`, passes
+   for a player with no move (announced) and counts at the end;
+   `onSelect` on your pile hints where a disc may go; the counts are seat
+   badges (`public.badges`).
+
 ## What it deliberately does NOT do
 
 - No betting/scoring arithmetic beyond what a script author writes.
@@ -784,8 +825,9 @@ the default.
   snapping, and the maths under `t.neighbors`, `t.distance`, `t.line`,
   `t.linked` and zones; `core.js` keeps the addresses (the primary board,
   display forms) and the `byAt` / `byZone` indexes.
-- `cardtable/templates.js`: the example scripts (`RULES_TEMPLATES`) and
-  the 🎲 picker's catalog (`GAMES`).
+- `cardtable/templates.js`: the example scripts (`RULES_TEMPLATES`: the
+  card games, chess, go — `goTemplate(n)` — and reversi) and the 🎲
+  picker's catalog (`GAMES`).
 - `cardtable/rules-worker.js`: the Worker — the version check, the
   hardening (the allowlist of globals, the throwing timers and page APIs,
   the lockdown that freezes the built-ins and the engine's modules), the

@@ -565,14 +565,17 @@ sync and rendering, and the Worker together with `handle`.
    - Components from code and the spatial helpers.
    - *Demos:* chess with full rules (§6), go 9×9 and 19×19 (up to 361 stones:
      a real scale test), reversi.
-   - *Under way*, in three parts: space, the Worker, then play (the ask,
-     hint and secret UI and the demos). Space is built (README "Pieces,
-     dice and boards", ENGINE.md "Addresses and the spatial helpers"):
-     snapping, addresses, the spatial helpers, components from code, the
-     snap preview, fanned spots and live drags; state v4, wire version 4.
-     The Worker is built too (README "Scriptable rules", ENGINE.md "Running
+   - *Done*, in three parts: space, the Worker, then play. Space (README
+     "Pieces, dice and boards", ENGINE.md "Addresses and the spatial
+     helpers"): snapping, addresses, the spatial helpers, components from
+     code, the snap preview, fanned spots and live drags; state v4, wire
+     version 4. The Worker (README "Scriptable rules", ENGINE.md "Running
      in a Worker"): a rules script runs away from the host's page, under a
-     watchdog. The decisions taken on the way:
+     watchdog. Play (README "Scriptable rules", ENGINE.md §4 and §5): the
+     ask panel, the hint layer and the secret card, the terminal's `asks`,
+     `answer` and `select`, and the demos — chess with every rule, go on
+     9 × 9 and 19 × 19, and reversi, each a script a reader can learn
+     from. The decisions taken on the way:
      - A space reaches as far as its drawn rectangle, not only a circle
        round its centre: a checker dropped on the far end of the tall bar
        lands on the bar, not on the point whose centre is nearer.
@@ -695,6 +698,23 @@ sync and rendering, and the Worker together with `handle`.
        card on the next reload; the host is told what a reload couldn't
        read; and checking the script's state no longer slows down with
        long lists.
+     - Playing (its first part): a question takes its own room above the
+       hand bar, never covering the table; a tap in a strict game asks the
+       rules for a hint and shows no buttons they would refuse; the
+       terminal writes the same question text in both languages.
+     - The demos: each game reads its position from the pieces where they
+       stand, so the table and the rules can't drift apart, and plays
+       every move itself or says why not. A chess glyph reads upright for
+       both players (a piece type may ask for that; a piece's face
+       otherwise still lies as it lies), and a reversi disc is named by the
+       side it shows in the log. Their tables are taller than wide, with
+       room by each edge for a seat label and its player's buttons, so a
+       phone held upright draws the board as large as its width allows.
+       🎲 starts each on a cleared table, afresh even over the same game.
+       Chess's draws are automatic (no claim: a casual table has no
+       arbiter); a draw offer is the opponent's question, resigning asks
+       first. Go has no dead-stone marking: players capture dead stones
+       before passing, and Count scores what is on the board.
 4. **Game boxes.**
    - `game.json` plus `.zip` upload, declarative setup and reset.
    - Export with the current position.
@@ -768,3 +788,9 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
 - **A tap is a selection in a strict game:** with rules that want selections,
   it asks them for a hint and shows no action bar, whose buttons they would
   refuse (§5).
+- **The demos are scripts, not engine features:** chess, go and reversi use
+  only the public `t` API; the table is their position, `t.data` only what
+  a board can't show (§5, §6).
+- **Upright glyphs on request:** a piece type may ask for its label to read
+  upright on every screen (chess); every other face still lies as it lies
+  on the table (§2).

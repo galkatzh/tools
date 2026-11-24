@@ -22,7 +22,7 @@ const { devices } = h.playwright;
   const fc = { l: (felt.l + felt.r) / 2 - 40, r: (felt.l + felt.r) / 2 + 40, t: (felt.t + felt.b) / 2 - 40, b: (felt.t + felt.b) / 2 + 40 };
   if (overlap(strip, fc)) covered.push('felt centre');
   ok(!covered.length, `the strip covers no toolbar, hand, deck or felt centre (${covered.join() || 'clear'})`);
-  ok(await host.$$eval('#game-strip .games', (els) => els.length) && await host.$eval('#game-strip .games', (el) => [...el.querySelectorAll('[data-game]')].map((b) => b.dataset.game).join()) === 'holdem,cah,bridge,draughts,backgammon,turns,dealer,free,custom',
+  ok(await host.$$eval('#game-strip .games', (els) => els.length) && await host.$eval('#game-strip .games', (el) => [...el.querySelectorAll('[data-game]')].map((b) => b.dataset.game).join()) === 'holdem,cah,bridge,chess,go9,go19,reversi,draughts,backgammon,turns,dealer,free,custom',
     'the strip offers every shipped game, a free table and a custom script');
   await shot(host, 'desk-strip');
   await host.dblclick(PILE); // the default deck stays usable under the strip
@@ -51,7 +51,7 @@ const { devices } = h.playwright;
   await host.click('#games-btn');
   await host.waitForSelector('#games-dialog[open]');
   const rows = await host.$$eval('#games-list [data-game]', (els) => els.map((b) => ({ k: b.dataset.game, on: b.classList.contains('on'), txt: b.textContent })));
-  ok(rows.length === 9 && rows.every((r) => r.txt.length > 20), `the dialog lists each game with a pitch (${rows.length})`);
+  ok(rows.length === 13 && rows.every((r) => r.txt.length > 20), `the dialog lists each game with a pitch (${rows.length})`);
   ok(rows.find((r) => r.on)?.k === 'turns', 'the running game is marked "playing"');
   ok(/2–8 players/.test(rows.find((r) => r.k === 'holdem').txt) && /4 players/.test(rows.find((r) => r.k === 'bridge').txt), 'entries show the player count');
   await shot(host, 'desk-picker');

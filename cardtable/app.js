@@ -2843,7 +2843,9 @@ function rotv(x, y, a) {
 //   1  --view for a board's printed text (D91), which turns back against
 //      the view: every frame of a turn (a board holds a few dozen texts).
 //   2  --view for the badges with a number or a name (a spot's ×k too), 🔒
-//      and a bag, which turn back too (D91).
+//      and a bag, which turn back too (D91), and an `upright` type's label
+//      (.uptext, D160: a chess glyph; its own class, so a change restyles
+//      those labels alone, never every piece's).
 // On a 1,000-stack table the badges are a thousand: a restyle of them all
 // (rule 0 or 2) in a frame that also moves the table is a long task on the
 // B4 phone, 50 to 670 ms (D96). So while two fingers move the view (a
@@ -2864,7 +2866,7 @@ function rotv(x, y, a) {
 // budget.
 const viewSheet = new CSSStyleSheet(), BADGE_MAX = 3, BZ_STEP = 1.25, PINCH_REST_MS = 300;
 viewSheet.replaceSync('#table .item > .count, #table .item > .fanb, #table .item > .odot, #table .item > .lockb, #table .pile > .pname, #table .item.selected, #table .item.hint, #table .item.offer, #table .blabels text, #table .snap-ghost {} '
-  + '#table .psvg text {} #table .item > .count, #table .item > .fanb, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb {}');
+  + '#table .psvg text {} #table .item > .count, #table .item > .fanb, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb, #table .uptext {}');
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, viewSheet];
 let badgeZ = '', textAngle = 0, badgeAngle = 0, feltW = 0;
 
@@ -3746,8 +3748,8 @@ function renderGames() {
  *  Switching away from a running game asks first: its state would be lost.
  *  (The free table only disables the rules: re-enabling keeps the state.) */
 function pickGame(k) {
-  const box = GAMES.find((g) => g.k === k)?.box;
-  if (box) { pickBox(k, box); return; }
+  const game = GAMES.find((g) => g.k === k);
+  if (game?.box || game?.clear) { pickCleared(game); return; }
   // Another game's state (chips, scores, a hand) is discarded by setRules —
   // even while the rules are off ("Free table" keeps it for re-enabling).
   // setRules keeps the state of a script with the same name: compare names too.
@@ -3765,16 +3767,24 @@ function pickGame(k) {
   }
 }
 
-/** Sets up box game `k` (BOXES[box], spec §2g): on a table with items or a
- *  rules state, only once the host agrees to discard them; the rules are
- *  switched off (it is played by hand), then the box is set up on a cleared table. */
-function pickBox(k, box) {
-  const { title } = GAMES.find((g) => g.k === k);
-  if ((Object.keys(T.state.items).length || T.state.rules) && !confirm(`Clear the table and set up ${title}? The current game is discarded.`)) return;
+/** Sets up a game that needs a cleared table: a box game (`box`: BOXES[box],
+ *  spec §2g, played by hand — the rules are switched off, then the box set
+ *  up) or a rules game that builds its own board (`clear`: chess, go,
+ *  reversi, §3g — the table cleared, then the rules enabled afresh, their
+ *  setup laying the game out). On a table with items or a rules state, only
+ *  once the host agrees to discard them. */
+function pickCleared(game) {
+  if ((Object.keys(T.state.items).length || T.state.rules) && !confirm(`Clear the table and set up ${game.title}? The current game is discarded.`)) return;
   askGame = false;
   $('games-dialog').close();
-  if (T.state.rules?.enabled) act({ t: 'setRules', enabled: false });
-  act({ t: 'loadBox', box: BOXES[box], setup: true, clear: true });
+  if (game.box) {
+    if (T.state.rules?.enabled) act({ t: 'setRules', enabled: false });
+    act({ t: 'loadBox', box: BOXES[game.box], setup: true, clear: true });
+    return;
+  }
+  act({ t: 'clear' });
+  $('rules-code').value = RULES_TEMPLATES[game.k]; // the 📜 dialog shows what runs
+  act({ t: 'setRules', code: RULES_TEMPLATES[game.k], enabled: true, reset: true });
 }
 
 $('game-strip').querySelector('.games').innerHTML = GAMES.map((g) =>

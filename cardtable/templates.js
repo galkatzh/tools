@@ -1109,15 +1109,675 @@ export const RULES_TEMPLATES = {
     t.dealToAll(deck.id, 1);
   },
 })`,
+  chess: `(() => {
+  // Chess with every rule, as a script (ENGINE.md). The pieces on the table
+  // ARE the position: each hook reads it from where they stand
+  // (readPosition), so the board and the rules can't drift apart. t.data
+  // keeps what a board can't show: whose turn it is, the castling rights,
+  // the en-passant square, the fifty-move clock, the positions seen (for
+  // repetition), a pending promotion or draw offer, and the result.
+  // A move is a drag. Picking a piece up hints its legal squares (onSelect);
+  // handle() takes the drop and plays it — the capture, castling's rook, en
+  // passant — or refuses it, saying why; a pawn reaching the last rank asks
+  // its player what it becomes (t.ask, onAnswer). After every move endTurn()
+  // looks for checkmate, stalemate and the draws the rules make automatic.
+  // Strict: nothing else moves a piece.
+  const rules = {
+    name: 'Chess',
+    strict: true,
+    setup(t) {
+      if (t.data.ready) return; // enabled again: the game goes on where it was
+      t.setTable({ shape: 'rect', w: 1000, h: 1360 }); // (room by each edge for a seat label and its player's buttons)
+      t.setSeats([
+        { id: 'white', name: 'White', color: '#f5f5f4', edge: 'bottom' },
+        { id: 'black', name: 'Black', color: '#1c1917', edge: 'top' },
+      ]);
+      const box = t.newBox(chessBox());
+      if (!t.find({ type: box + '/board' }).length) t.spawn(box + '/board', { at: 'center' });
+      Object.assign(t.data, { ready: true, box });
+      newGame(t);
+      t.say('Chess: drag a piece to move it — picking it up shows where it may go. White moves first.');
+    },
+    // Picking up one of your pieces on your turn shows its legal squares.
+    onSelect(t, p, id) {
+      const g = t.data, P = readPosition(t), from = P.b.findIndex((x) => x && x.id === id);
+      if (g.over || g.promo || from < 0 || P.b[from].c !== g.turn || sideOf(t, p) !== g.turn) return t.hint(p, null);
+      t.hint(p, { spaces: legalMoves(P).filter((m) => m.from === from).map((m) => square(m.to)) });
+    },
+    // Every drop of a piece: played if it is legal (true), else refused with the reason.
+    handle(t, a) {
+      if (a.t !== 'move') return; // strict refuses every other action
+      const g = t.data, P = readPosition(t), from = P.b.findIndex((x) => x && x.id === a.id);
+      if (from < 0) return; // not a chess piece (strict refuses it)
+      const side = sideOf(t, a.p);
+      if (g.over) return 'The game is over — press New game for another';
+      if (!side) return 'Only the two players move the pieces';
+      if (P.b[from].c !== side) return "That's not your piece";
+      if (side !== g.turn) return "It's not your turn";
+      if (g.promo) return 'Choose what your pawn becomes first';
+      if (!a.to) return 'Drop the piece on a square of the board';
+      const to = index(a.to);
+      if (to === from) return true; // put back where it was: no move
+      const m = legalMoves(P).find((x) => x.from === from && x.to === to);
+      if (!m) return whyNot(P, from, to);
+      play(t, P, m, a.p);
+      return true;
+    },
+    onAnswer(t, p, id, v) {
+      const g = t.data, c = sideOf(t, p);
+      if (id === 'promo' && g.promo) {
+        t.remove(g.promo.id);
+        t.spawn(g.box + '/' + g.turn + v, { at: g.promo.at, owner: 'seat:' + SEAT[g.turn] });
+        g.promo = null;
+        endTurn(t);
+      } else if (id === 'draw' && g.offer) {
+        if (v === 'Accept') return finish(t, null, 'Draw agreed');
+        t.say(SIDE[other(g.offer)] + ' declines the draw');
+        g.offer = null;
+      } else if (id === 'resign' && v === 'Resign' && c && !g.over) {
+        finish(t, other(c), SIDE[c] + ' resigns — ' + SIDE[other(c)] + ' wins');
+      }
+    },
+    // Each player's buttons: offer a draw, resign; once the game is over, a new one.
+    buttons(t) {
+      const g = t.data, out = [];
+      if (!g.ready) return out;
+      if (g.over) return [{ id: 'new', label: '♻ New game' }];
+      for (const c of ['w', 'b']) {
+        const pid = occupant(t, c);
+        if (!pid) continue;
+        if (!g.offer && occupant(t, other(c))) out.push({ id: 'draw-' + c, label: '½ Offer a draw', pid });
+        out.push({ id: 'resign-' + c, label: '🏳 Resign', pid });
+      }
+      return out;
+    },
+    onButton(t, id, p) {
+      const g = t.data, c = id.slice(-1), them = occupant(t, other(c));
+      if (id === 'new') return sideOf(t, p) || p === t.hostId ? newGame(t) : t.tell(p, 'Only the players start a new game');
+      if (id === 'draw-' + c && them) {
+        g.offer = c;
+        t.ask(them, { id: 'draw', prompt: SIDE[c] + ' offers a draw', options: ['Accept', 'Decline'] });
+        t.say(SIDE[c] + ' offers a draw');
+      }
+      if (id === 'resign-' + c) t.ask(p, { id: 'resign', prompt: 'Resign this game?', options: ['Resign', 'Keep playing'] });
+    },
+    onJoin: (t) => showTurn(t),
+    onAction: (t) => showTurn(t), // (after every action — a move, a button, an answer, a seat taken or left)
+  };
+
+  const FILES = 'abcdefgh', BACK_RANK = 'RNBQKBNR';
+  const SIDE = { w: 'White', b: 'Black' }, SEAT = { w: 'white', b: 'black' };
+  const NAMES = { K: 'king', Q: 'queen', R: 'rook', B: 'bishop', N: 'knight', P: 'pawn' };
+  // White's glyphs are the outlined ones, Black's the solid ones (the pawn
+  // asks for its text form: iPhones draw a bare ♟ as an emoji).
+  const GLYPHS = { w: { K: '♔', Q: '♕', R: '♖', B: '♗', N: '♘', P: '♙' }, b: { K: '♚', Q: '♛', R: '♜', B: '♝', N: '♞', P: '♟\\uFE0E' } };
+  const KNIGHT = [[1, 2], [2, 1], [2, -1], [1, -2], [-1, -2], [-2, -1], [-2, 1], [-1, 2]];
+  const KING = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+  const SLIDES = { R: KING.filter(([x, y]) => !x || !y), B: KING.filter(([x, y]) => x && y), Q: KING };
+  // Castling, by the king's landing square: its rook's [from, to]. And the
+  // squares whose piece moving away (or being taken) loses a castling right.
+  const ROOK_HOP = { 6: [7, 5], 2: [0, 3], 62: [63, 61], 58: [56, 59] };
+  const LOSES = { 0: 'Q', 4: 'KQ', 7: 'K', 56: 'q', 60: 'kq', 63: 'k' };
+
+  // Squares are numbered 0 (a1) to 63 (h8): file + 8 × rank.
+  const index = (name) => FILES.indexOf(name[0]) + 8 * (name.slice(1) - 1);
+  const square = (s) => FILES[s % 8] + (Math.floor(s / 8) + 1);
+  const other = (c) => (c === 'w' ? 'b' : 'w');
+  /** The square dx files and dy ranks away from s, or -1 off the board. */
+  function step(s, dx, dy) {
+    const f = (s % 8) + dx, r = Math.floor(s / 8) + dy;
+    return f >= 0 && f < 8 && r >= 0 && r < 8 ? f + 8 * r : -1;
+  }
+  /** The player at side c's seat, or null. */
+  const occupant = (t, c) => t.players().find((x) => x.seatId === SEAT[c])?.id ?? null;
+  /** Player p's side, 'w' or 'b' — null for a watcher. */
+  const sideOf = (t, p) => ({ white: 'w', black: 'b' })[t.players().find((x) => x.id === p)?.seatId] ?? null;
+  /** Lights the seat of whoever is to move (nobody's once the game is over). */
+  function showTurn(t) { t.public.turn = t.data.ready && !t.data.over ? occupant(t, t.data.turn) : null; }
+
+  /** The game's box: a drawn 8 × 8 board, and the twelve pieces as glyphs
+   *  on round tokens that read upright on both players' screens. */
+  function chessBox() {
+    const board = { id: 'board', kind: 'board', name: 'Chessboard', w: 840, faces: [{ color: '#5c3a1e' }],
+      grid: { type: 'square', cols: 8, rows: 8, cell: 100, x: 20, y: 20, draw: 'checker', colors: ['#f0d9b5', '#b58863'], labels: 'chess' } };
+    const pieces = ['w', 'b'].flatMap((c) => Object.keys(NAMES).map((k) => ({
+      id: c + k, kind: 'token', name: SIDE[c] + ' ' + NAMES[k], shape: 'round', w: 88, stack: 'none', upright: true,
+      faces: [{ color: c === 'w' ? '#f5f5f4' : '#1c1917', label: GLYPHS[c][k] }],
+    })));
+    return { name: 'Chess', pieces: [board, ...pieces] };
+  }
+  /** A new game: the 32 pieces in their places (any left from a game before
+   *  go first), every question withdrawn, White to move. */
+  function newGame(t) {
+    const g = t.data, put = (c, k, s) => t.spawn(g.box + '/' + c + k, { at: square(s), owner: 'seat:' + SEAT[c] });
+    for (const it of t.find({ kind: 'token' })) if (it.t.startsWith(g.box + '/')) t.remove(it.id);
+    for (const p of t.players({ all: true })) t.cancelAsk(p.id);
+    for (let f = 0; f < 8; f++) put('w', BACK_RANK[f], f);
+    for (let f = 0; f < 8; f++) put('w', 'P', 8 + f);
+    for (let f = 0; f < 8; f++) put('b', 'P', 48 + f);
+    for (let f = 0; f < 8; f++) put('b', BACK_RANK[f], 56 + f);
+    Object.assign(g, { turn: 'w', castle: 'KQkq', ep: null, half: 0, seen: {}, over: null, offer: null, promo: null });
+    t.public.winners = [];
+    remember(t, readPosition(t));
+    showTurn(t);
+  }
+  /** The position as the table shows it: b[64] holds {c: 'w' | 'b', k: one
+   *  of KQRBNP, id} or null; with t.data's side to move, castling rights
+   *  ('KQkq', less those lost) and en-passant square (-1: none). */
+  function readPosition(t) {
+    const g = t.data, b = Array(64).fill(null);
+    for (const it of t.find({ kind: 'token' })) {
+      if (it.at && it.t.startsWith(g.box + '/')) b[index(it.at)] = { c: it.t.at(-2), k: it.t.at(-1), id: it.id };
+    }
+    return { b, turn: g.turn, castle: g.castle, ep: g.ep ? index(g.ep) : -1 };
+  }
+
+  // --- the moves -------------------------------------------------------------
+  /** Every move of the side to move, its own king's safety aside: {from, to,
+   *  cap (the square of the piece it takes, or -1), ep?, double?, promo?}. */
+  function pseudoMoves(P) {
+    const out = [], b = P.b, c = P.turn, fwd = c === 'w' ? 1 : -1;
+    const add = (from, to, o) => out.push({ from, to, cap: b[to] ? to : -1, ...o });
+    for (let from = 0; from < 64; from++) {
+      const p = b[from];
+      if (!p || p.c !== c) continue;
+      if (p.k === 'P') {
+        const one = step(from, 0, fwd), promo = Math.floor(one / 8) === (c === 'w' ? 7 : 0);
+        if (one >= 0 && !b[one]) {
+          add(from, one, { promo });
+          const two = step(one, 0, fwd);
+          if (Math.floor(from / 8) === (c === 'w' ? 1 : 6) && !b[two]) add(from, two, { double: true });
+        }
+        for (const dx of [-1, 1]) {
+          const to = step(from, dx, fwd);
+          if (to >= 0 && b[to] && b[to].c !== c) add(from, to, { promo });
+          else if (to >= 0 && to === P.ep) out.push({ from, to, cap: to - 8 * fwd, ep: true });
+        }
+      } else if (p.k === 'N' || p.k === 'K') {
+        for (const [dx, dy] of p.k === 'N' ? KNIGHT : KING) {
+          const to = step(from, dx, dy);
+          if (to >= 0 && b[to]?.c !== c) add(from, to);
+        }
+      } else {
+        for (const [dx, dy] of SLIDES[p.k]) {
+          for (let to = step(from, dx, dy); to >= 0 && b[to]?.c !== c; to = step(to, dx, dy)) {
+            add(from, to);
+            if (b[to]) break;
+          }
+        }
+      }
+    }
+    return out;
+  }
+  /** The castlings of the side to move: the right kept, the squares between
+   *  empty, the king neither in check nor passing an attacked square (where
+   *  it lands, legalMoves checks). */
+  function castlings(P) {
+    const c = P.turn, home = c === 'w' ? 4 : 60, out = [];
+    if (P.b[home]?.k !== 'K' || P.b[home].c !== c || inCheck(P.b, c)) return out;
+    for (const [right, dir, between] of [['K', 1, [1, 2]], ['Q', -1, [1, 2, 3]]]) {
+      if (P.castle.includes(c === 'w' ? right : right.toLowerCase()) && between.every((d) => !P.b[home + dir * d])
+        && !attacked(P.b, home + dir, other(c))) out.push({ from: home, to: home + 2 * dir, cap: -1, castle: true });
+    }
+    return out;
+  }
+  /** Whether side c attacks square s on board b. */
+  function attacked(b, s, c) {
+    if (s < 0) return false;
+    const has = (q, kinds) => q >= 0 && b[q]?.c === c && kinds.includes(b[q].k);
+    if ([-1, 1].some((dx) => has(step(s, dx, c === 'w' ? -1 : 1), 'P'))) return true;
+    if (KNIGHT.some(([dx, dy]) => has(step(s, dx, dy), 'N'))) return true;
+    return KING.some(([dx, dy]) => {
+      if (has(step(s, dx, dy), 'K')) return true;
+      let q = step(s, dx, dy);
+      while (q >= 0 && !b[q]) q = step(q, dx, dy);
+      return has(q, dx && dy ? 'BQ' : 'RQ');
+    });
+  }
+  const kingOf = (b, c) => b.findIndex((p) => p && p.c === c && p.k === 'K');
+  const inCheck = (b, c) => attacked(b, kingOf(b, c), other(c));
+  /** Board b after move m (a copy: b is left as it was). */
+  function boardAfter(b0, m) {
+    const b = b0.slice();
+    if (m.cap >= 0) b[m.cap] = null;
+    b[m.to] = b[m.from];
+    b[m.from] = null;
+    if (m.castle) { const [rf, rt] = ROOK_HOP[m.to]; b[rt] = b[rf]; b[rf] = null; }
+    return b;
+  }
+  /** The legal moves of the side to move: those after which its king isn't attacked. */
+  const legalMoves = (P) => [...pseudoMoves(P), ...castlings(P)].filter((m) => !inCheck(boardAfter(P.b, m), P.turn));
+  /** Why moving from → to isn't legal, in a player's words. */
+  function whyNot(P, from, to) {
+    const p = P.b[from], c = p.c, home = c === 'w' ? 4 : 60;
+    if (p.k === 'K' && from === home && Math.abs(to - from) === 2) {
+      const dir = to > from ? 1 : -1, right = dir > 0 ? 'K' : 'Q';
+      if (!P.castle.includes(c === 'w' ? right : right.toLowerCase())) return "You can't castle on that side any more: the king or that rook has moved";
+      if ((dir > 0 ? [1, 2] : [1, 2, 3]).some((d) => P.b[home + dir * d])) return "You can't castle: there are pieces in the way";
+      if (inCheck(P.b, c)) return "You can't castle out of check";
+      return attacked(P.b, home + dir, other(c)) ? "You can't castle through check" : "You can't castle into check";
+    }
+    if (pseudoMoves(P).some((m) => m.from === from && m.to === to)) return inCheck(P.b, c) ? "You're in check — that move doesn't get you out of it" : 'That would leave your king in check';
+    return 'The ' + NAMES[p.k] + " can't move there";
+  }
+
+  // --- playing a move, and the end of the game ---------------------------------
+  /** Plays legal move m of player p on the table, then ends the turn — or
+   *  first asks p what a pawn on the last rank becomes. */
+  function play(t, P, m, p) {
+    const g = t.data, piece = P.b[m.from];
+    t.move(piece.id, square(m.to));
+    if (m.cap >= 0) t.remove(P.b[m.cap].id);
+    if (m.castle) { const [rf, rt] = ROOK_HOP[m.to]; t.move(P.b[rf].id, square(rt)); }
+    for (const s of [m.from, m.to]) for (const r of LOSES[s] || '') g.castle = g.castle.replace(r, '');
+    g.ep = m.double ? square((m.from + m.to) / 2) : null;
+    g.half = piece.k === 'P' || m.cap >= 0 ? 0 : g.half + 1;
+    if (g.offer) { // a move answers a draw offer: it lapses
+      for (const x of t.players({ all: true })) t.cancelAsk(x.id, 'draw');
+      g.offer = null;
+      t.say('The draw offer lapses');
+    }
+    if (m.promo) {
+      g.promo = { id: piece.id, at: square(m.to) };
+      return t.ask(p, { id: 'promo', prompt: 'Promote your pawn to', options: ['Q', 'R', 'B', 'N'].map((k) => ({ label: GLYPHS[g.turn][k], value: k })) });
+    }
+    endTurn(t);
+  }
+  /** Passes the move; then the game ends if the side to move is mated or
+   *  stalemated, or a draw rule applies: a dead position, fifty moves with
+   *  no capture or pawn move, a position seen for the third time. */
+  function endTurn(t) {
+    const g = t.data, mover = g.turn;
+    g.turn = other(mover);
+    const P = readPosition(t), moves = legalMoves(P), check = inCheck(P.b, g.turn), seen = remember(t, P, moves);
+    if (!moves.length) return check ? finish(t, mover, 'Checkmate — ' + SIDE[mover] + ' wins') : finish(t, null, 'Stalemate — a draw');
+    if (deadPosition(P.b)) return finish(t, null, 'Neither side can checkmate any more — a draw');
+    if (g.half >= 100) return finish(t, null, 'Fifty moves without a capture or a pawn move — a draw');
+    if (seen >= 3) return finish(t, null, 'The same position for the third time — a draw');
+    if (check) t.say(SIDE[g.turn] + ' is in check');
+  }
+  /** Counts position P in t.data.seen and returns how often it has come up.
+   *  Its key: the pieces, the side to move, the castling rights, and the
+   *  en-passant square while a capture there is legal. After a capture or a
+   *  pawn move no earlier position can come back: the count starts afresh. */
+  function remember(t, P, moves = legalMoves(P)) {
+    const g = t.data;
+    if (g.half === 0) g.seen = {};
+    const key = P.b.map((p) => (p ? (p.c === 'w' ? p.k : p.k.toLowerCase()) : '.')).join('') + P.turn + P.castle + (moves.some((m) => m.ep) ? square(P.ep) : '');
+    return (g.seen[key] = (g.seen[key] || 0) + 1);
+  }
+  /** Whether neither side can ever checkmate: kings and at most one knight
+   *  or bishop, or only bishops all on squares of one colour (K+B v K+B
+   *  with the bishops on opposite colours can still end in mate). */
+  function deadPosition(b) {
+    const minors = [];
+    for (let s = 0; s < 64; s++) {
+      const p = b[s];
+      if (!p || p.k === 'K') continue;
+      if (p.k !== 'B' && p.k !== 'N') return false;
+      minors.push({ k: p.k, shade: ((s % 8) + Math.floor(s / 8)) % 2 });
+    }
+    return minors.length <= 1 || minors.every((m) => m.k === 'B' && m.shade === minors[0].shade);
+  }
+  /** Ends the game: the winner ('w' or 'b'; null: a draw) gets 🏆, and every pending question goes. */
+  function finish(t, winner, msg) {
+    Object.assign(t.data, { over: msg, offer: null, promo: null });
+    for (const p of t.players({ all: true })) t.cancelAsk(p.id);
+    if (winner) t.win(occupant(t, winner), msg);
+    else t.announce(msg);
+  }
+  return rules;
+})()`,
+  go9: goTemplate(9),
+  go19: goTemplate(19),
+  reversi: `(() => {
+  // Reversi, the 19th-century game of discs that turn over, as a script
+  // (ENGINE.md). Each player drags discs from their own pile onto the board:
+  // a disc must outflank — close a line of the other colour between itself
+  // and a disc of its own — and every line it closes turns over. A player
+  // with no such square passes (said aloud); when neither has one, the
+  // most discs win. The discs on the table are the position (readBoard);
+  // t.data keeps whose turn it is and the result. Picking up your pile on
+  // your turn hints where a disc may go (onSelect). Strict: nothing else moves.
+  const rules = {
+    name: 'Reversi',
+    strict: true,
+    setup(t) {
+      if (t.data.ready) return; // enabled again: the game goes on where it was
+      t.setTable({ shape: 'rect', w: 1000, h: 1360 }); // (room by each edge for a seat label and its player's buttons)
+      t.setSeats([
+        { id: 'dark', name: 'Dark', color: '#1c1917', edge: 'bottom' },
+        { id: 'light', name: 'Light', color: '#f5f5f4', edge: 'top' },
+      ]);
+      const box = t.newBox(reversiBox()), disc = box + '/disc';
+      if (!t.find({ type: box + '/board' }).length) t.spawn(box + '/board', { at: 'center' });
+      // a pile for each player, by their own edge of the table (a supply: it never runs out)
+      for (const [c, x, y] of [[DARK, 858, 1188], [LIGHT, 58, 88]]) {
+        if (!t.find({ type: disc, owner: 'seat:' + SEAT[c] }).length) t.spawn(disc, { as: 'supply', f: c, owner: 'seat:' + SEAT[c], at: { x, y } });
+      }
+      Object.assign(t.data, { ready: true, box });
+      newGame(t);
+      t.say('Reversi: drag discs from your pile — picking it up shows where one may go. Dark moves first.');
+    },
+    // Picking up your pile on your turn shows where a disc may go.
+    onSelect(t, p, id) {
+      const g = t.data, it = t.item(id), c = sideOf(t, p);
+      if (g.over || !it || it.k !== 's' || it.f !== c || c !== g.turn) return t.hint(p, null);
+      const cells = readBoard(t).cells;
+      t.hint(p, { spaces: cells.map((_, s) => s).filter((s) => flips(cells, s, c).length).map(square) });
+    },
+    // A disc taken from a pile and dropped on the board: placed if it outflanks, else refused.
+    handle(t, a) {
+      const g = t.data, it = t.item(a.id);
+      if (!it || !it.t.startsWith(g.box + '/')) return; // not this game's (strict refuses it)
+      if (a.t !== 'take' || it.k !== 's') return a.t === 'move' && it.k === 'g' ? 'A disc stays where it is played' : undefined;
+      const c = sideOf(t, a.p);
+      if (g.over) return 'The game is over — press New game for another';
+      if (c === null) return 'Only the two players play discs';
+      if (it.f !== c) return 'Play from your own pile';
+      if (c !== g.turn) return "It's not your turn";
+      if (!a.to) return 'Put the disc on a square of the board';
+      const B = readBoard(t), s = index(a.to);
+      if (B.cells[s] !== null) return 'That square is taken';
+      const turned = flips(B.cells, s, c);
+      if (!turned.length) return 'A disc must outflank: close a line of the other colour';
+      t.spawn(g.box + '/disc', { at: a.to, f: c, lock: true });
+      for (const x of turned) t.setFace(B.ids[x], c);
+      nextTurn(t);
+      return true;
+    },
+    buttons: (t) => (t.data.over ? [{ id: 'new', label: '♻ New game' }] : []),
+    onButton(t, id, p) {
+      if (id === 'new') return sideOf(t, p) !== null || p === t.hostId ? newGame(t) : t.tell(p, 'Only the players start a new game');
+    },
+    onJoin: (t) => show(t),
+    onAction: (t) => show(t), // (after every action — a move, a button, a seat taken or left)
+  };
+
+  const DARK = 0, LIGHT = 1; // a side is the face its discs show
+  const SIDE = ['Dark', 'Light'], SEAT = ['dark', 'light'], FILES = 'abcdefgh';
+  const DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+  // Squares are numbered 0 (a1) to 63 (h8): file + 8 × rank.
+  const index = (name) => FILES.indexOf(name[0]) + 8 * (name.slice(1) - 1);
+  const square = (s) => FILES[s % 8] + (Math.floor(s / 8) + 1);
+  /** The square dx files and dy ranks away from s, or -1 off the board. */
+  function step(s, dx, dy) {
+    const f = (s % 8) + dx, r = Math.floor(s / 8) + dy;
+    return f >= 0 && f < 8 && r >= 0 && r < 8 ? f + 8 * r : -1;
+  }
+  /** The player at side c's seat, or null. */
+  const occupant = (t, c) => t.players().find((x) => x.seatId === SEAT[c])?.id ?? null;
+  /** Player p's side (DARK or LIGHT), or null for a watcher. */
+  const sideOf = (t, p) => { const k = SEAT.indexOf(t.players().find((x) => x.id === p)?.seatId); return k < 0 ? null : k; };
+  /** Lights the seat of whoever is to move (nobody's once the game is over),
+   *  and shows each seated player's count of discs on their seat label. */
+  function show(t) {
+    const g = t.data, n = g.ready ? counts(readBoard(t).cells) : [0, 0], badges = {};
+    for (const c of [DARK, LIGHT]) { const p = occupant(t, c); if (p) badges[p] = n[c] + (n[c] === 1 ? ' disc' : ' discs'); }
+    Object.assign(t.public, { turn: g.ready && !g.over ? occupant(t, g.turn) : null, badges });
+  }
+
+  /** The game's box: a green 8 × 8 board, and one disc with two faces. */
+  function reversiBox() {
+    return { name: 'Reversi', pieces: [
+      { id: 'board', kind: 'board', name: 'Reversi board', w: 840, faces: [{ color: '#14532d' }],
+        grid: { type: 'square', cols: 8, rows: 8, cell: 100, x: 20, y: 20, draw: 'cells', colors: ['#15803d', '#052e16'], labels: 'chess' } },
+      { id: 'disc', kind: 'token', name: 'Disc', shape: 'round', w: 84, stack: 'none',
+        faces: [{ color: '#1c1917', name: 'Dark disc' }, { color: '#f5f5f4', name: 'Light disc' }] },
+    ] };
+  }
+  /** A new game: the board cleared, the four centre discs crosswise (light
+   *  on d4 and e5, dark on d5 and e4), Dark to move. */
+  function newGame(t) {
+    const g = t.data;
+    for (const it of t.find({ type: g.box + '/disc' })) if (it.k === 'g') t.remove(it.id);
+    for (const [at, f] of [['d4', LIGHT], ['e5', LIGHT], ['d5', DARK], ['e4', DARK]]) t.spawn(g.box + '/disc', { at, f, lock: true });
+    Object.assign(g, { turn: DARK, over: null });
+    t.public.winners = [];
+    show(t);
+  }
+  /** The board as the table shows it: cells[64] (DARK, LIGHT or null) and the discs' ids. */
+  function readBoard(t) {
+    const cells = Array(64).fill(null), ids = Array(64).fill(null);
+    for (const it of t.find({ type: t.data.box + '/disc' })) if (it.k === 'g' && it.at) { cells[index(it.at)] = it.f; ids[index(it.at)] = it.id; }
+    return { cells, ids };
+  }
+  /** The discs a disc of side c on empty square s would turn over: in each
+   *  direction, a run of the other side's discs closed by one of c's. */
+  function flips(cells, s, c) {
+    const out = [];
+    if (cells[s] !== null) return out;
+    for (const [dx, dy] of DIRS) {
+      const run = [];
+      let q = step(s, dx, dy);
+      while (q >= 0 && cells[q] === 1 - c) { run.push(q); q = step(q, dx, dy); }
+      if (q >= 0 && cells[q] === c) out.push(...run);
+    }
+    return out;
+  }
+  const canMove = (cells, c) => cells.some((_, s) => flips(cells, s, c).length > 0);
+  /** After a move: the other side plays — or, with no square to play, passes
+   *  (said aloud) — and when neither side can play, the game ends. */
+  function nextTurn(t) {
+    const g = t.data, cells = readBoard(t).cells, n = counts(cells), them = 1 - g.turn;
+    if (canMove(cells, them)) g.turn = them;
+    else if (canMove(cells, g.turn)) t.announce(SIDE[them] + ' has no move and passes — ' + SIDE[g.turn] + ' plays again');
+    else {
+      g.over = SIDE[DARK] + ' ' + n[DARK] + ' – ' + SIDE[LIGHT] + ' ' + n[LIGHT];
+      if (n[DARK] === n[LIGHT]) t.announce(g.over + ': a draw');
+      else { const w = n[DARK] > n[LIGHT] ? DARK : LIGHT; t.win(occupant(t, w), g.over + ': ' + SIDE[w] + ' wins'); }
+    }
+  }
+  /** Each side's count of discs: [dark, light]. */
+  const counts = (cells) => [DARK, LIGHT].map((c) => cells.filter((x) => x === c).length);
+  return rules;
+})()`,
 };
 
-/** One entry per shipped template (k = its RULES_TEMPLATES key), the box
- *  games (`box`: a BOXES key — set up on a cleared table, rules off), the
- *  free table (rules off) and a custom script (the 📜 dialog). */
+/** Go on an n × n board (9 or 19), as a script: the same text for the same
+ *  n, so the 🎲 picker knows the game that runs (currentGame compares code). */
+export function goTemplate(n) {
+  const cell = n === 9 ? 100 : 60;
+  return `(() => {
+  // Go on a ${n} × ${n} board, as a script (ENGINE.md). Each player drags
+  // stones from their own bowl onto the points. handle() takes the drop:
+  // the point must be free, the stone takes every group of the other colour
+  // it leaves without a liberty (four or more stones: one log line), it may not end
+  // with no liberty itself (suicide), and it may not bring back the position
+  // before the other player's last move (ko). Pass, Resign, and after two
+  // passes in a row, Count: area scoring (stones plus the empty points only
+  // one colour surrounds), komi 6.5 to White. There is no dead-stone
+  // marking: capture the dead stones before you pass. The stones on the
+  // table are the position (readBoard); t.data keeps whose turn it is, the
+  // position before the last move (for ko), the passes and the result.
+  // Tapping a stone shows its group's liberties (onSelect).
+  const N = ${n}, CELL = ${cell};
+  const rules = {
+    name: 'Go ${n} × ${n}',
+    strict: true,
+    setup(t) {
+      if (t.data.ready) return; // enabled again: the game goes on where it was
+      const board = 2 * MARGIN + (N - 1) * CELL, W = board + 80, H = board + 2 * BAND, x = 50 + STONE / 2;
+      t.setTable({ shape: 'rect', w: W, h: H });
+      t.setSeats([
+        { id: 'black', name: 'Black', color: '#1c1917', edge: 'bottom' },
+        { id: 'white', name: 'White', color: '#f5f5f4', edge: 'top' },
+      ]);
+      const box = t.newBox(goBox(board));
+      if (!t.find({ type: box + '/board' }).length) t.spawn(box + '/board', { at: 'center' });
+      // a bowl for each player, by their own edge of the table (a supply: it never runs out)
+      for (const [c, cx, cy] of [['b', W - x, H - BAND / 2], ['w', x, BAND / 2]]) {
+        if (!t.find({ type: box + '/' + c, kind: 'supply' }).length) t.spawn(box + '/' + c, { as: 'supply', owner: 'seat:' + SEAT[c], at: { x: cx - STONE / 2, y: cy - STONE / 2 } });
+      }
+      Object.assign(t.data, { ready: true, box });
+      newGame(t);
+      t.say('Go: drag stones from your bowl onto the points; tap a stone to see its liberties. Black plays first.');
+    },
+    // Every stone played from a bowl: placed if it may be, else refused with the reason.
+    handle(t, a) {
+      const g = t.data, it = t.item(a.id);
+      if (!it || !it.t.startsWith(g.box + '/')) return; // not this game's (strict refuses it)
+      if (a.t !== 'take' || it.k !== 's') return a.t === 'move' && it.k === 'g' ? 'A stone stays where it is played' : undefined;
+      const c = it.t.at(-1), side = sideOf(t, a.p);
+      if (g.over) return 'The game is over — press New game for another';
+      if (!side) return 'Only the two players play stones';
+      if (c !== side) return 'Play from your own bowl';
+      if (side !== g.turn) return "It's not your turn";
+      if (!a.to) return 'Put the stone on a point of the board';
+      const B = readBoard(t), s = index(a.to), cells = B.cells.slice();
+      if (cells[s]) return 'That point is taken';
+      cells[s] = side;
+      const taken = [];
+      for (const q of around(s)) {
+        if (cells[q] !== other(side)) continue;
+        const grp = group(cells, q);
+        if (!grp.libs.size) for (const x of grp.stones) { cells[x] = null; taken.push(x); }
+      }
+      if (!group(cells, s).libs.size) return 'Suicide: that stone would have no liberty';
+      if (key(cells) === g.prev) return 'Ko: play elsewhere before you take back';
+      t.spawn(g.box + '/' + side, { at: a.to, lock: true });
+      for (const x of taken) t.remove(B.ids[x]); // (four or more removals are one log line)
+      Object.assign(g, { prev: key(B.cells), passes: 0, turn: other(side) });
+      return true;
+    },
+    // Tapping a stone on the board shows its group and the group's liberties.
+    onSelect(t, p, id) {
+      const it = t.item(id), B = readBoard(t), s = it && it.k === 'g' && it.at ? index(it.at) : -1;
+      if (s < 0 || !B.cells[s]) return t.hint(p, null);
+      const grp = group(B.cells, s);
+      t.hint(p, { items: grp.stones.length + grp.libs.size <= 500 ? grp.stones.map((x) => B.ids[x]) : [], spaces: [...grp.libs].map(point) });
+    },
+    // Pass for the player to move, Resign for both, and Count once both have passed.
+    buttons(t) {
+      const g = t.data, out = [], mover = occupant(t, g.turn);
+      if (!g.ready) return out;
+      if (g.over) return [{ id: 'new', label: '♻ New game' }];
+      if (mover) out.push({ id: 'pass', label: '⏭ Pass', pid: mover });
+      for (const c of ['b', 'w']) {
+        const pid = occupant(t, c);
+        if (pid && g.passes >= 2) out.push({ id: 'count-' + c, label: '🧮 Count', pid });
+        if (pid) out.push({ id: 'resign-' + c, label: '🏳 Resign', pid });
+      }
+      return out;
+    },
+    onButton(t, id, p) {
+      const g = t.data;
+      if (id === 'new') return sideOf(t, p) || p === t.hostId ? newGame(t) : t.tell(p, 'Only the players start a new game');
+      if (id === 'pass' && sideOf(t, p) === g.turn) {
+        Object.assign(g, { prev: key(readBoard(t).cells), passes: g.passes + 1, turn: other(g.turn) });
+        t.say(COLOR[other(g.turn)] + ' passes');
+        if (g.passes >= 2) t.announce('Both players passed — press Count to score, or play on');
+      }
+      if (id.startsWith('count-') && g.passes >= 2) count(t);
+      if (id.startsWith('resign-')) t.ask(p, { id: 'resign', prompt: 'Resign this game?', options: ['Resign', 'Keep playing'] });
+    },
+    onAnswer(t, p, id, v) {
+      const c = sideOf(t, p);
+      if (id === 'resign' && v === 'Resign' && c && !t.data.over) finish(t, other(c), COLOR[c] + ' resigns — ' + COLOR[other(c)] + ' wins');
+    },
+    onJoin: (t) => showTurn(t),
+    onAction: (t) => showTurn(t), // (after every action — a move, a button, an answer, a seat taken or left)
+  };
+
+  const COLOR = { b: 'Black', w: 'White' }, SEAT = { b: 'black', w: 'white' };
+  const LETTERS = 'ABCDEFGHJKLMNOPQRST'; // (go skips I)
+  // A stone's size; the board's margin, where its coordinates stand clear of
+  // the stones on its edge; the room by each edge of the table, for a seat
+  // label, its player's buttons and their bowl.
+  const STONE = Math.round(CELL * 0.94), MARGIN = Math.round(CELL * 1.5), BAND = 260;
+  const other = (c) => (c === 'b' ? 'w' : 'b');
+  // Points are numbered 0 (A${n}, top left) to ${n * n - 1}: column + N × row from the top.
+  const index = (a) => LETTERS.indexOf(a[0].toUpperCase()) + N * (N - a.slice(1));
+  const point = (s) => LETTERS[s % N] + (N - Math.floor(s / N));
+  /** The points next to s, on the board. */
+  function around(s) {
+    const x = s % N, out = [];
+    if (x > 0) out.push(s - 1);
+    if (x < N - 1) out.push(s + 1);
+    if (s >= N) out.push(s - N);
+    if (s < N * (N - 1)) out.push(s + N);
+    return out;
+  }
+  /** The group of the stone on s: {stones, libs (a Set of the free points next to it)}. */
+  function group(cells, s) {
+    const stones = new Set([s]), libs = new Set();
+    for (const x of stones) for (const q of around(x)) { if (!cells[q]) libs.add(q); else if (cells[q] === cells[s]) stones.add(q); }
+    return { stones: [...stones], libs };
+  }
+  /** The position as one string, for ko: '.', 'b' or 'w' per point. */
+  const key = (cells) => cells.map((c) => c || '.').join('');
+  /** The player at side c's seat, or null. */
+  const occupant = (t, c) => t.players().find((x) => x.seatId === SEAT[c])?.id ?? null;
+  /** Player p's colour, 'b' or 'w' — null for a watcher. */
+  const sideOf = (t, p) => ({ black: 'b', white: 'w' })[t.players().find((x) => x.id === p)?.seatId] ?? null;
+  /** Lights the seat of whoever is to move (nobody's once the game is over). */
+  function showTurn(t) { t.public.turn = t.data.ready && !t.data.over ? occupant(t, t.data.turn) : null; }
+
+  /** The game's box: a drawn board of points (go's coordinates, its star
+   *  points) and a stone of each colour. */
+  function goBox(w) {
+    const stars = N === 9 ? ['C3', 'G3', 'E5', 'C7', 'G7'] : ['D4', 'K4', 'Q4', 'D10', 'K10', 'Q10', 'D16', 'K16', 'Q16'];
+    const stone = (c) => ({ id: c, kind: 'token', name: COLOR[c] + ' stone', shape: 'round', w: STONE, stack: 'none', faces: [{ color: c === 'b' ? '#1c1917' : '#f5f5f4' }] });
+    return { name: 'Go ${n} × ${n}', pieces: [
+      { id: 'board', kind: 'board', name: 'Go board', w, faces: [{ color: '#dcb35c' }],
+        grid: { type: 'square', snap: 'point', cols: N, rows: N, cell: CELL, x: MARGIN, y: MARGIN, draw: 'lines', colors: ['#dcb35c', '#3f2a12'], labels: 'go', marks: stars } },
+      stone('b'), stone('w'),
+    ] };
+  }
+  /** A new game: the board cleared, every question withdrawn, Black to play. */
+  function newGame(t) {
+    const g = t.data;
+    for (const c of ['b', 'w']) for (const it of t.find({ type: g.box + '/' + c })) if (it.k === 'g') t.remove(it.id);
+    for (const p of t.players({ all: true })) t.cancelAsk(p.id);
+    Object.assign(g, { turn: 'b', prev: '', passes: 0, over: null });
+    t.public.winners = [];
+    showTurn(t);
+  }
+  /** The board as the table shows it: cells[N × N] ('b', 'w' or null) and the stones' ids. */
+  function readBoard(t) {
+    const cells = Array(N * N).fill(null), ids = Array(N * N).fill(null);
+    for (const c of ['b', 'w']) {
+      for (const it of t.find({ type: t.data.box + '/' + c })) if (it.k === 'g' && it.at) { cells[index(it.at)] = c; ids[index(it.at)] = it.id; }
+    }
+    return { cells, ids };
+  }
+  /** Area scoring: each side's stones, plus the empty regions that only its
+   *  stones border; komi 6.5 to White. The higher score wins (never a tie). */
+  function count(t) {
+    const cells = readBoard(t).cells, n = { b: 0, w: 6.5 }, seen = new Set();
+    cells.forEach((c, s) => {
+      if (c) n[c]++;
+      if (c || seen.has(s)) return;
+      const region = new Set([s]), borders = new Set();
+      for (const x of region) for (const q of around(x)) { if (!cells[q]) region.add(q); else borders.add(cells[q]); }
+      for (const x of region) seen.add(x);
+      if (borders.size === 1) n[[...borders][0]] += region.size;
+    });
+    const w = n.b > n.w ? 'b' : 'w';
+    finish(t, w, 'Black ' + n.b + ' – White ' + n.w + ' (komi 6.5): ' + COLOR[w] + ' wins by ' + Math.abs(n.b - n.w));
+  }
+  /** Ends the game: the winner ('b' or 'w') gets 🏆, and every pending question goes. */
+  function finish(t, winner, msg) {
+    t.data.over = msg;
+    for (const p of t.players({ all: true })) t.cancelAsk(p.id);
+    t.win(occupant(t, winner), msg);
+  }
+  return rules;
+})()`;
+}
+
+/** One entry per shipped template (k = its RULES_TEMPLATES key; `clear`: the
+ *  game builds its own board, so it starts on a cleared table with a fresh
+ *  state), the box games (`box`: a BOXES key — set up on a cleared table,
+ *  rules off), the free table (rules off) and a custom script (the 📜 dialog). */
 export const GAMES = [
   { k: 'holdem', emoji: '🃏', title: "Texas Hold'em", short: "Hold'em", pitch: 'No-limit poker: chips, blinds, betting rounds, automatic showdown', players: '2–8 players' },
   { k: 'cah', emoji: '😈', title: 'Cards Against Humanity', pitch: 'Fill in the blank; the Card Czar crowns the funniest answer', players: '3+ players' },
   { k: 'bridge', emoji: '🤝', title: 'Bridge', pitch: 'Partners bid in the chat, then tricks, trumps, the dummy and scoring', players: '4 players' },
+  { k: 'chess', emoji: '♟️', title: 'Chess', clear: true, pitch: 'Every rule enforced: pick a piece up to see its moves; castling, en passant, promotion, mate and the draws', players: '2 players' },
+  { k: 'go9', emoji: '⚫', title: 'Go 9 × 9', short: 'Go 9×9', clear: true, pitch: 'Stones from your bowl onto the points; captures and ko enforced; pass twice, then Count', players: '2 players' },
+  { k: 'go19', emoji: '⚪', title: 'Go 19 × 19', short: 'Go 19×19', clear: true, pitch: 'The full board: 361 points, area scoring, komi 6.5 (capture dead stones before passing)', players: '2 players' },
+  { k: 'reversi', emoji: '🔘', title: 'Reversi', clear: true, pitch: 'Outflank to turn discs over; your pile shows where a disc may go; the most discs win', players: '2 players' },
   { k: 'draughts', emoji: '⛀', title: 'Draughts', box: 'draughts', pitch: 'Checkers on an 8 × 8 board, played by hand: move, jump, crown with a double-click', players: '2 players' },
   { k: 'backgammon', emoji: '🎲', title: 'Backgammon', box: 'backgammon', pitch: 'The race around the board, played by hand: two dice and the doubling cube', players: '2 players' },
   { k: 'turns', emoji: '🔁', title: 'Turn order', short: 'Turns', pitch: 'Any game you like, one player at a time', players: '2+ players' },

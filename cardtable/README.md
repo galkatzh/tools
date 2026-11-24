@@ -11,9 +11,10 @@ link, pick their nickname, and everyone plays on the same live table. A
 brand-new table asks the host *What are we playing?* in a slim strip along
 its top edge (never a pop-up; once friends sit down it shrinks to a 🎲 chip
 in the corner, clear of their seats): one click starts Hold'em, Cards Against
-Humanity, Bridge, **Draughts**, **Backgammon**, turn order or a simple
-dealer, keeps the free table, or opens the 📜 script editor; the **🎲 Games**
-button offers the same picker any time.
+Humanity, Bridge, **Chess**, **Go** (9 × 9 or 19 × 19), **Reversi**,
+**Draughts**, **Backgammon**, turn order or a simple dealer, keeps the free
+table, or opens the 📜 script editor; the **🎲 Games** button offers the
+same picker any time.
 
 The table is **round** (a game box can bring a rectangle: see *Pieces, dice
 and boards*) and everyone gets a **seat** on the rim (host-assigned
@@ -80,7 +81,11 @@ count and name, ×N, ∞, 🔒 — and a bag, and a pile's name always sits unde
 its pile on your screen; while two fingers turn or zoom the view they move
 with the table, take the zoom's size when the fingers rest a moment, and
 settle when they lift. A piece's own face (its
-label, text, pips, art) stays as it lies on the table.
+label, text, pips, art) stays as it lies on the table — unless its type is
+marked `upright` (chess pieces are): then its label reads upright on every
+screen too, so the player across the board never reads a knight upside
+down. A face may also carry a `name`, never drawn, which the log uses when
+it has no label ("turned Light disc to Dark disc on d4").
 
 Playing on the free table:
 
@@ -484,6 +489,39 @@ winners and bidding are `onChat` (scripts parse any chat command),
 (one player, or a list) gets the your-turn alert for free — the Hold'em
 player to act, the CAH answerers and then the Card Czar included.
 
+Three board games own their rules outright, as plain scripts built on the
+same public API (`strict` scripts that build their own board with
+`t.newBox`, read the position from the pieces where they stand, and carry
+out every move in `handle`): 🎲 starts each on a cleared table, with named
+seats and a table shaped for a phone held upright.
+
+- **Chess**: every rule. Pick a piece up and its legal squares light up
+  (captures as rings); a drop the rules refuse says why ("That would leave
+  your king in check", "You can't castle through check") and the piece
+  goes back. Castling moves the rook too, en passant takes the pawn
+  passed, and a pawn on the last rank asks its player what it becomes
+  (♕ ♖ ♗ ♘). Checkmate crowns the winner (🏆, confetti); stalemate,
+  threefold repetition, fifty moves without a capture or a pawn move and
+  positions where neither side can mate any more end in a draw on their
+  own (K+B v K+B with bishops on opposite colours plays on). Each player
+  has *½ Offer a draw* (the other player is asked; a move lets it lapse)
+  and *🏳 Resign* (asked to confirm). The glyphs read upright for both
+  players.
+- **Go**, 9 × 9 or 19 × 19: drag stones from your bowl onto the points.
+  Captures (a group of four or more taken in one move is one log line),
+  suicide refused, ko (the position before the opponent's last move can't
+  come back). *Pass*, *Resign*, and once both players have passed in a row,
+  *Count*: area scoring, komi 6.5. Tap a stone to see its group's
+  liberties. 361 stones stay quick (a move at stone 300 costs the rules
+  under a millisecond).
+- **Reversi** (the 19th-century public-domain game): light on d4 and e5,
+  dark on d5 and e4, dark first. Pick up your pile and the squares where a
+  disc may go light up; a disc that outflanks nothing is refused, every
+  line it closes turns over, the seat labels count each side's discs, a
+  player with no move passes (it's announced), and the most discs win.
+
+After a game, *♻ New game* sets the same game up again.
+
 ## Terminal bridge & bots (cli.js / cli.py)
 
 Play from a terminal — or script a player. A browser tab can't listen on a
@@ -524,7 +562,10 @@ Game pieces have their own commands (both REPLs; `help` lists them):
 
 New questions, a new hint (`💡 hint: e3, e4`) and a new `t.secret`
 (`🔒 for you: …`) print as they arrive, the same text in both REPLs (the
-tab writes it).
+tab writes it). So a bot can play the board games too: `place <id> e4`
+drops a chess piece there (the rules check it as they check a drag), `place
+<bowl id> D4` plays a go stone, `select <id>` asks for a piece's moves, and
+`answer promo 3` promotes to a knight.
 
 `table` lists pieces too, one per line in the same `  [id] … @x,y` frame,
 a piece's spot (`at:e4`), the owner and 🔒 after it when present:
@@ -630,6 +671,15 @@ refuse the `https → http://127.0.0.1` fetch.
   reveal it: the engine refuses a selection of a piece hidden from the
   player selecting it, but beyond that, what a script reveals is its
   author's choice.
+- The board games are honest about what they leave out. Go has **no
+  dead-stone marking**: the players capture the dead stones before they
+  pass, and Count scores what is on the board. Chess's draws are automatic,
+  never claimed (there is no arbiter at a casual table), and it has no
+  clock; a move is logged as the rules' ("📜 Rules moved ♙ e2 → e4"), since
+  the script plays it. In go, capturing one to three stones logs a line
+  per stone (four or more are one line). On a phone held sideways the
+  boards are small (they are shaped for a phone held upright): pinch to
+  zoom.
 
 ## Testing
 

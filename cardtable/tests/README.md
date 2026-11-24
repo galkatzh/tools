@@ -1340,6 +1340,138 @@ how a test reads it:
 - **Existing suites changed for 3C part 1** (mechanism changes, no check
   dropped): `t-p2-cli.js` takes its helpers from `cli-lib.js`.
 
+### The demos: chess, go and reversi (3C part 2)
+
+What `t-p3-chess.js`, `t-p3-go.js`, `t-p3-reversi.js` and core-p3 item 11
+can rely on (spec §3g "The demos", D160–D166). Each is a script in
+`templates.js` — `RULES_TEMPLATES.chess`, `.go9` and `.go19` (both
+`goTemplate(n)`, exported: the same text for the same n), `.reversi` — and
+a 🎲 entry with `clear: true` (`GAMES` keys `chess`, `go9`, `go19`,
+`reversi`; also in the 📜 dialog's `#rules-tpl`). Picking one (app.js
+`pickCleared`) confirms "Clear the table and set up {title}? The current
+game is discarded." on a table with items or a rules state, then sends
+`clear` and `setRules {enabled: true, reset: true}`: a fresh game even when
+the same one runs. Each script is an IIFE whose hooks come first and its
+helpers after; `strict: true`, no `allow`; every move is `handle` doing it
+with `t.*` ops and returning `true` (the log says "📜 Rules moved ♙ e2 →
+e4", "📜 Rules placed Black stone on D4"…). The pieces on the table are
+the position: each hook reads it from `t.find`, so a test can plant a
+position by moving pieces (see below). After the game a "♻ New game"
+button (`id: 'new'`, no `pid`: a seated player or the host) starts over.
+
+- **Seats and table** (named seats, set in `setup`, guarded by
+  `t.data.ready`): chess `white` (bottom) / `black`, reversi `dark`
+  (bottom) / `light`, go `black` (bottom) / `white`; the first two players
+  seated (`setSeats` re-seats in seat order, online first) play, a third
+  watches. Tables: chess and reversi 1000 × 1360; go 9 × 9 1180 × 1620,
+  19 × 19 1340 × 1780 (the board, `(n − 1 + 3) · cell`, plus 40 units at
+  each side and 260 by each seat's edge). `public.turn` is the occupant of the
+  side to move (null when that seat is empty or the game is over); the
+  winner gets 🏆 through `t.win` (`public.winners`, `winSeq`).
+- **Chess** (`chess`). Box «Chess»: `board` (840, an 8 × 8 `checker` grid,
+  cell 100 from (20, 20), chess labels) and twelve tokens `wK wQ wR wB wN
+  wP bK bQ bR bB bN bP` (88 × 88, `shape: 'round'`, `upright: true`, one
+  face: White's outlined glyphs ♔♕♖♗♘♙ on `#f5f5f4`, Black's solid ones
+  ♚♛♜♝♞ and `♟︎` on `#1c1917`), owned by `seat:white` /
+  `seat:black`. `t.data`: `{ready, box, turn: 'w' | 'b', castle (a subset
+  of 'KQkq'), ep (a square or null), half (the fifty-move clock), seen
+  ({positionKey: count}, since the last capture or pawn move), over (the
+  result text, or null), offer ('w' | 'b' | null), promo ({id, at} |
+  null)}`. A move is a drag (`move` with `a.to`); `onSelect` hints the
+  legal squares of the mover's own piece on their turn (`spaces`; a
+  capture square shows as a ring). Refusals (toast "🚫 …", the piece
+  snaps back): "It's not your turn", "That's not your piece", "Only the
+  two players move the pieces", "The bishop can't move there" (any piece's
+  name), "That would leave your king in check", "You're in check — that
+  move doesn't get you out of it", "You can't castle out of check" /
+  "through check" / "into check" / "on that side any more: the king or
+  that rook has moved" / ": there are pieces in the way", "Choose what
+  your pawn becomes first", "Drop the piece on a square of the board",
+  "The game is over — press New game for another"; any other action:
+  strict's "Not a move in this game". A drop on its own square is a no-op
+  (handled, no toast). Castling is the king's two-square drag (the rook
+  follows); en passant takes the pawn passed; a pawn on the last rank asks
+  its player `{id: 'promo', prompt: 'Promote your pawn to', options:
+  [{label: the side's glyph, value: 'Q' | 'R' | 'B' | 'N'}]}` (index 3 =
+  the knight; the CLI's `answer promo 3`) and the turn waits for the
+  answer. Buttons per seated side: `draw-w` / `draw-b` ("½ Offer a draw",
+  while no offer is pending and the other seat is taken: asks the other
+  player `{id: 'draw', options: ['Accept', 'Decline']}`; any move lets it
+  lapse, "The draw offer lapses") and `resign-w` / `resign-b` ("🏳
+  Resign": asks `{id: 'resign', options: ['Resign', 'Keep playing']}`
+  first). Endings, announced (and `t.data.over`): "Checkmate — White
+  wins" (🏆), "Stalemate — a draw", "Neither side can checkmate any more —
+  a draw", "Fifty moves without a capture or a pawn move — a draw", "The
+  same position for the third time — a draw", "Draw agreed", "White
+  resigns — Black wins". A check says "📜 Rules White is in check".
+  Dead positions: no pawn, rook or queen, and at most one minor piece or
+  only bishops all on one colour of square (K+B v K+B on opposite colours
+  and K+N v K+N play on). Repetition keys count the en-passant square only
+  while a capture there is legal. Handy sequences: fool's mate `f2f3 e7e5
+  g2g4 d8h4`; Loyd's stalemate `e2e3 a7a5 d1h5 a8a6 h5a5 h7h5 h2h4 a6h6
+  a5c7 f7f6 c7d7 e8f7 d7b7 d8d3 b7b8 d3h7 b8c8 f7g6 c8e6`; threefold
+  `g1f3 g8f6 f3g1 f6g8` twice; black promotes after `a2a3 h7h5 a3a4 h5h4
+  g2g4 h4g3` (en passant) `b2b3 g3h2 b3b4 h2g1`.
+- **Go** (`go9`, `go19`). Box «Go 9 × 9» / «Go 19 × 19»: `board` (a point
+  grid, `draw: 'lines'`, go labels, the star points as `marks`, cell 100 or
+  60, margin 1.5 cells) and tokens `b` / `w` («Black stone» / «White
+  stone», 0.94 cell, round); one supply of each, owned by `seat:black` /
+  `seat:white` (the bowls, in the bottom-right and top-left corners). A
+  move is a `take` from your own bowl with `a.to`; the stone is spawned
+  locked and ownerless (a drag of it: "A stone stays where it is played").
+  `t.data`: `{ready, box, turn: 'b' | 'w', prev (the position before the
+  last move, N × N of '.', 'b', 'w': ko), passes, over}`. Refusals: "It's
+  not your turn", "Play from your own bowl", "That point is taken",
+  "Suicide: that stone would have no liberty", "Ko: play elsewhere before
+  you take back", "Put the stone on a point of the board", "Only the two
+  players play stones". Captured stones go by `t.remove`: four or more are
+  one log line ("📜 Rules removed 30 pieces: …", B16); one to three, a line
+  each (AGG_MIN). Buttons: `pass` (the player to move: "Black passes";
+  after two, the announcement "Both players passed — press Count to
+  score, or play on"), `count-b` / `count-w` (after two passes in a row:
+  area scoring, komi 6.5: "Black 5 – White 8.5 (komi 6.5): White wins by
+  3.5", 🏆), `resign-b` / `resign-w` (a `resign` ask first). A play after
+  two passes resumes the game (passes back to 0). `onSelect` on a stone
+  hints its group (`items`) and its liberties (`spaces`). No dead-stone
+  marking. B13: `__ct.perf.lastRulesWorkerMs` at stone #300 measured
+  0.3–0.9 ms while building these.
+- **Reversi** (`reversi`). Box «Reversi»: `board` (840, `draw: 'cells'`,
+  green, chess labels) and `disc` (84, round, faces `[{color: '#1c1917',
+  name: 'Dark disc'}, {color: '#f5f5f4', name: 'Light disc'}]`: face 0
+  dark, 1 light); one supply per seat with its face (`f`), owned by
+  `seat:dark` / `seat:light`. `t.data`: `{ready, box, turn: 0 | 1, over}`.
+  Start: light on d4 and e5, dark on d5 and e4, dark to move. A move is a
+  `take` from your own pile with `a.to`; the disc is spawned locked, and
+  each bracketed disc turned with `t.setFace` ("📜 Rules turned Light disc
+  to Dark disc on d4"; four or more: one line). Refusals: "A disc must
+  outflank: close a line of the other colour", "That square is taken",
+  "Play from your own pile", "It's not your turn". A side with no move
+  passes: the announcement "Light has no move and passes — Dark plays
+  again"; with neither able to move: "Dark 43 – Light 21: Dark wins" (🏆;
+  equal counts: "…: a draw"). `public.badges` hold each seated player's
+  count ("30 discs"); `onSelect` on your own pile on your turn hints the
+  legal squares.
+- **Planting a position.** In Node, drive the table with `T.apply` (the
+  in-page path, as `final-lib.js` does): `T.job` runs the Worker's
+  `guard()` first, which refuses a `t.data` changed between jobs. Then
+  `T.api.remove` / `T.api.spawn(box + '/wK', {at: 'e1', owner:
+  'seat:white'})` and `Object.assign(T.state.rules.data, {turn, castle,
+  ep, half, seen})` set any position, and the next move runs `endTurn` on
+  it (e.g. a capture leaving K+B v K). In a browser, wrap the template so a
+  host-only button plants it inside a hook: `(() => { const r =
+  <template>; return {...r, buttons: (t) => [...r.buttons(t), {id:
+  'plant', label: 'Plant', pid: t.hostId}], onButton(t, id, p) { if (id
+  === 'plant') { … t.data.box … } else r.onButton(t, id, p); }}; })()` —
+  the same lockdown as any script, so plain `t.*` calls only.
+- **`core-p3.test.mjs` (3C, the demos' box fields)**: `upright` kept only
+  when true (a box without it is unchanged), a non-boolean refused, an
+  upright type's shown label and text carrying `.uptext` (a back never); a
+  face's `name` used by `pieceName` / `faceLabel` and never drawn.
+- **Existing suites changed for 3C part 2** (mechanism changes, no check
+  dropped): `t-fun-games.js` expects the four new games in the strip's
+  order (`…bridge,chess,go9,go19,reversi,draughts…`) and 13 entries in the
+  🎲 dialog.
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores

@@ -96,14 +96,15 @@ const pipField = (n) => `<div class="pips">${Array.from({ length: 9 }, (_, k) =>
  *  the app's), its label (at 0.55 · min(w, h), in a colour that reads on
  *  it), its text (small, cut to a few lines) and its pips ([a, b]: two
  *  fields split along the long side); `extra`: markup laid over them (a
- *  board's SVG). A back without a colour is slate. */
-export function faceHTML(face, w, h, box, img, back, extra = '') {
-  const bg = safeColor(face.color, back ? '#475569' : '#f8fafc');
+ *  board's SVG). A back without a colour is slate. `upright`: its label and
+ *  text read upright on every screen (an `upright` type's: .uptext, D160). */
+export function faceHTML(face, w, h, box, img, back, extra = '', upright = false) {
+  const bg = safeColor(face.color, back ? '#475569' : '#f8fafc'), up = upright ? ' uptext' : '';
   let s = `<div class="pface${back ? ' pback' : ''}" style="background-color:${bg};color:${contrastFor(bg)}">`;
   if (face.img !== undefined && box?.imgs[face.img]) s += `<div class="pimg">${img(box.imgs[face.img])}</div>`;
   s += extra;
-  if (face.label) s += `<b class="plabel" style="font-size:${Math.round(0.55 * Math.min(num(w), num(h)))}px">${esc(face.label)}</b>`;
-  if (face.text) s += `<span class="ptext">${esc(face.text)}</span>`;
+  if (face.label) s += `<b class="plabel${up}" style="font-size:${Math.round(0.55 * Math.min(num(w), num(h)))}px">${esc(face.label)}</b>`;
+  if (face.text) s += `<span class="ptext${up}">${esc(face.text)}</span>`;
   if (face.pips !== undefined) s += Array.isArray(face.pips) ? `<div class="pips2${w >= h ? '' : ' tall'}">${pipField(face.pips[0])}${pipField(face.pips[1])}</div>` : pipField(face.pips);
   return `${s}</div>`;
 }
@@ -134,8 +135,8 @@ export function itemView(it, boxes, img, ownerColor) {
     return { html, cls: ['bag'], w, h };
   }
   const m = shownPart(it), L = lookOf(m, boxes), F = flagsOf(m || {}, boxes), board = isBoard(it, boxes);
-  const ty = board && !L?.back && typeAt(boxes, m.t);
-  let html = L ? faceHTML(L.face, w, h, L.box, img, L.back, ty?.board ? boardSVG(ty) : '') : PLACEHOLDER_HTML;
+  const ty = L && !L.back && typeAt(boxes, m.t);
+  let html = L ? faceHTML(L.face, w, h, L.box, img, L.back, board && ty?.board ? boardSVG(ty) : '', !!ty?.upright) : PLACEHOLDER_HTML;
   if (it.k === 'p') html += `<span class="count">${num(it.n)}</span>${it.name ? `<span class="pname">${esc(it.name)}</span>` : ''}`;
   else if (it.k === 's') html += '<span class="count">∞</span>';
   else if (it.n >= 2) html += `<span class="count">×${num(it.n)}</span>`;

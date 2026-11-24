@@ -34,7 +34,8 @@
 //  (B17) A 361-stone go board's snapshot ≤ 70 KB.
 // Phase 3B (the rules engine: the journal, the pipeline, asks, answer,
 // select, internal actions, per-recipient parts, guards, T.digest) has its own
-// sections, after 3A's: see "Phase 3B" below.
+// sections, after 3A's: see "Phase 3B" below; Phase 3C (a view's asks, the
+// hint layer, the demos' box fields `upright` and a face's `name`) closes it.
 // Every random sequence is seeded and every failure names its seed.
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -3552,6 +3553,29 @@ function testViewAsks() {
   ok(SHAPE.test(svg) && SHAPE.test(odd), `whatever it is handed, only numbers reach it (${odd})`);
 }
 
+/** D160 and D161, the box fields the demos brought: a type's `upright`
+ *  (kept only when true; its shown label and text carry .uptext, a back
+ *  never) and a face's `name` (what the log calls it when it has no label). */
+function testDemoBoxFields() {
+  const { cleanBox, pieceName, faceLabel, canon } = core;
+  const def = (up) => ({ name: 'Glyphs', imgs: [], backs: { bk: { face: { color: '#334455', label: '?' } } }, types: {
+    king: { kind: 'token', name: 'King', ...(up !== undefined && { upright: up }), faces: [{ label: '♔', text: 'King' }] },
+    hid: { kind: 'token', name: 'Hidden', upright: true, back: 'bk', faces: [{ label: 'H' }] },
+    disc: { kind: 'token', name: 'Disc', faces: [{ color: '#111111', name: 'Dark disc' }, { color: '#eeeeee', name: 'Light disc' }, { color: '#888888' }] } } });
+  const on = cleanBox(def(true)), off = cleanBox(def(false)), none = cleanBox(def());
+  ok(on.types.king.upright === true && !('upright' in off.types.king) && canon(off) === canon(none), 'cleanBox keeps upright only when true: a box without it (or with false) is unchanged');
+  let threw = '';
+  try { cleanBox({ ...def(), types: { ...def().types, king: { ...def().types.king, upright: 'yes' } } }); } catch (err) { threw = err.message; }
+  ok(/upright must be true or false/.test(threw), `a non-boolean upright fails loudly (${threw})`);
+  const boxes = { B: on }, view = (it) => pieces.itemView(it, boxes, () => '', '#fff').html;
+  const king = view({ k: 'g', t: 'B/king', f: 0, x: 0, y: 0, rot: 0 }), back = view({ k: 'g', b: 'B/bk', x: 0, y: 0, rot: 0 });
+  ok(/class="plabel uptext"/.test(king) && /class="ptext uptext"/.test(king), 'an upright type\'s shown label and text carry .uptext');
+  ok(!/uptext/.test(back) && !/uptext/.test(view({ k: 'g', t: 'B/disc', f: 0, x: 0, y: 0, rot: 0 })), 'a hidden piece\'s back, and a type without the flag, never');
+  ok(pieceName(boxes, 'B/disc', 0) === 'Dark disc' && pieceName(boxes, 'B/disc', 2) === 'Disc' && pieceName(boxes, 'B/king', 0) === '♔', 'pieceName: the label, else the face\'s name, else the type\'s');
+  ok(faceLabel(on.types.disc.faces[1], 1) === 'Light disc' && faceLabel(on.types.disc.faces[2], 2) === '3', 'faceLabel: a face\'s name before its number');
+  ok(!/Dark disc/.test(view({ k: 'g', t: 'B/disc', f: 0, x: 0, y: 0, rot: 0 })), 'a face\'s name is never drawn');
+}
+
 (async () => {
   await guard('(1) grid.js addresses', testGridAddresses);
   await guard('(1) grid.js centres', testGridCentres);
@@ -3608,5 +3632,6 @@ function testViewAsks() {
   await guard('(RF3) the third 3B review', testThirdReview);
   await guard('(RF4) the fourth 3B review', testFourthReview);
   await guard('(3C) a view\'s asks and the hint layer', testViewAsks);
+  await guard('(3C) the demos\' box fields', testDemoBoxFields);
   report();
 })().catch(crash);

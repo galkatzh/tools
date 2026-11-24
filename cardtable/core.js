@@ -394,16 +394,17 @@ export function seatAt(tb, a, def) {
   const [x, y] = def.at, dx = tb.w / 2 - x, dy = tb.h / 2 - y, d = Math.hypot(dx, dy) || 1;
   return { x, y, ux: dx / d, uy: dy / d };
 }
-/** A face's name: its label, else its pips ("5", "3|4"), else its number from 1. */
+/** A face's name: its label, else its `name` (never drawn: a reversi disc's
+ *  "Light disc"), else its pips ("5", "3|4"), else its number from 1. */
 export function faceLabel(face, f) {
-  if (face?.label) return face.label;
+  if (face?.label || face?.name) return face.label || face.name;
   if (face?.pips !== undefined) return Array.isArray(face.pips) ? face.pips.join('|') : String(face.pips);
   return String(num(f) + 1);
 }
-/** A SHOWN piece's name {t, f}: its face's label if it has one, else its type's name. */
+/** A SHOWN piece's name {t, f}: its face's label or name if it has one, else its type's name. */
 export function pieceName(boxes, t, f) {
   const ty = typeAt(boxes, t);
-  return ty ? ty.faces[f]?.label || ty.name : 'an unknown piece';
+  return ty ? ty.faces[f]?.label || ty.faces[f]?.name || ty.name : 'an unknown piece';
 }
 /** What the log calls item `it` (a host item), naming nothing hidden: a card
  *  or a face-down one, a pile, a bag, a supply or "a supply of hidden
@@ -565,6 +566,7 @@ function cleanFace(f, at, imgs, die) {
   if (R.has('color')) o.color = R.color('color');
   if (R.has('text')) o.text = R.text('text', 300, 0, CTRL_NL);
   if (R.has('label')) o.label = R.text('label', 8);
+  if (R.has('name')) o.name = R.text('name', 40, 1); // (what the log calls it, when it has no label: never drawn)
   if (R.has('pips')) {
     const p = R.get('pips'), pip = (x) => (typeof x === 'number' && Number.isFinite(x) ? clamp(Math.round(x), 0, 9) : R.fail('pips', 'must be 0–9, or [a, b]'));
     o.pips = Array.isArray(p) && p.length === 2 ? p.map(pip) : pip(p);
@@ -593,6 +595,10 @@ function cleanType(t, at, imgs, backs) {
   o.rotStep = R.one('rotStep', STEPS, D.rotStep);
   o.hand = R.bool('hand', D.hand);
   o.stack = R.one('stack', STACKS, D.stack);
+  // A piece whose label must read upright on every screen (a chess piece's
+  // glyph, for the player across the board too), as a board's coordinates
+  // do: pieces.js draws it so (D160). Only `true` is kept, so a box without it is unchanged.
+  if (R.bool('upright', false)) o.upright = true;
   if (R.has('meta')) o.meta = R.json('meta', MAX_META_CHARS);
   if (R.has('board')) {
     if (kind !== 'board') R.fail('board', 'is only for boards');

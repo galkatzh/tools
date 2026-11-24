@@ -165,7 +165,7 @@ body.nohand #hand-bar { display: none; }
 #games-list button { display: flex; align-items: center; gap: 12px; text-align: left; padding: 9px 12px; background: #273449; }
 #games-list button:hover { background: #334155; }
 #games-list button.on { box-shadow: inset 0 0 0 2px #2dd4bf; }
-#games-list .ge { font-size: 26px; width: 34px; text-align: center; }
+#games-list .ge { font-size: 26px; width: 34px; flex: none; text-align: center; }
 #games-list b { font-size: 15px; }
 #games-list i { color: #2dd4bf; font-size: 12px; }
 #games-list small { display: block; color: #94a3b8; font-size: 12.5px; margin-top: 2px; }
@@ -305,6 +305,9 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
    turn (--rot, on the item's element); and on a table drawn small they grow
    (--bz: the view sheet's too). */
 .item > .count, .item > .fanb, .bag > .bagbox, .item > .lockb { rotate: calc(-1 * (var(--view, 0deg) + var(--rot, 0deg))); }
+/* …and so does the label (and text) of an `upright` type's face (D160): a chess
+   piece's glyph reads upright for the player across the board too */
+.uptext { rotate: calc(-1 * (var(--view, 0deg) + var(--rot, 0deg))); }
 .item > .count, .item > .fanb, .item > .odot, .item > .lockb { scale: var(--bz, 1); }
 /* a crowded spot's "×k" (app.js fanBadge, spec §3g): on its top piece, at the
    bottom left, dark on amber — never mistaken for a stack's blue ×N; the

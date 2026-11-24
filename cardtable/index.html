@@ -74,6 +74,10 @@
         <option value="bridge">Bridge</option>
         <option value="cah">Cards Against Humanity</option>
         <option value="dealer">Simple dealer</option>
+        <option value="chess">Chess</option>
+        <option value="go9">Go 9 × 9</option>
+        <option value="go19">Go 19 × 19</option>
+        <option value="reversi">Reversi</option>
       </select>
       <textarea id="rules-code" spellcheck="false"></textarea>
       <div id="rules-err"></div>
@@ -148,7 +152,8 @@
       <li>Everyone gets a <b>seat</b> around the table, and the table auto-turns so your seat is at the bottom. Cards you play land facing you.</li>
       <li><b>Scroll</b> to zoom, <b>drag empty felt</b> to pan; on touch screens, <b>pinch with two fingers</b> to zoom, rotate and pan at once. Your view is yours alone — <b>🧭</b> resets it to your seat.</li>
       <li>The <b>host</b> can enlarge the table (Table: small / medium / large) when more players join.</li>
-      <li><b>🎲 Games</b>: the host starts Hold'em, Cards Against Humanity, Bridge and more in one click (or goes back to a free table).</li>
+      <li><b>🎲 Games</b>: the host starts Hold'em, Cards Against Humanity, Bridge, chess, go, reversi and more in one click (or goes back to a free table).</li>
+      <li><b>Chess, Go and Reversi</b> play by their rules: <b>drag</b> a piece — or a stone or disc from your own bowl or pile — and pick it up first to see where it may go (cyan). A move the rules refuse says why and goes back. Chess asks what a pawn on the last rank becomes; its buttons offer a draw or resign. Go has Pass, Resign, and Count once both players have passed (capture the dead stones first: there is no marking them); tap a stone to see its liberties. Reversi passes for you when you have no move.</li>
       <li><b>📜 Rules</b>: the host can write a script that enforces rules (turn order, legal moves) and automates play (auto-dealing, a poker dealer). Everyone can read the active script; everything it does appears in the log as "📜 Rules". It runs beside the host's page, never on it: a script that hangs is stopped after a few seconds and the table goes on without rules.</li>
       <li>The rules may <b>ask you</b> something: the question shows above your hand (❓) — tap an option, one of the <b>highlighted</b> pieces or spots, the cards in your hand it wants, or set a number; <b>▾</b> folds it away until you're ready. They may <b>highlight</b> where a piece you tap can go (cyan), and tell you something meant for you alone (<b>🔒 For you</b>, by the rules buttons). A <b>strict</b> game (📜 says so) allows only the moves its rules know.</li>
       <li>Drag from your hand to the table to play it, or onto a pile to put it on top — toggle <b>🂠 face-down</b> to play cards face down; <b>⇅ sort</b> orders your hand by suit and rank (on your screen only).</li>
