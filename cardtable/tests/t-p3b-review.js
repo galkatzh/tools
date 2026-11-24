@@ -1,5 +1,5 @@
 // The Phase 3B fix-up's regressions on real screens (the reviews of 3B: spec
-// §3f, SPEC D132–D144). Alice hosts on a desktop; Bob and Carol play; Mallory
+// §3f, SPEC D132–D145). Alice hosts on a desktop; Bob and Carol play; Mallory
 // is a raw peer (final-lib). Every check reads what a person would see — the
 // views, the log, the toasts — and the host's __ct (digest(),
 // workerDigest(), jobs(), lastRulesError, perf).
@@ -24,7 +24,11 @@
 //     the Worker's address (D132).
 // 10. A patch the host refuses (its gates, in the host's realm: D142) ends the
 //     rules with the job still in flight: a departure in it is kept, a
-//     player's move dropped aloud and re-sent (D134, D144).
+//     player's move dropped aloud and re-sent (D134, D144). The Worker is a
+//     liar the test made (p3-lib liar): past the lockdown (D145), a script
+//     can't make its own Worker's patch fail the host's checks.
+// 11. A write outside a hook (guard) names the script's own keys to the host
+//     alone: the public log line is the engine's fixed words (D136, D145).
 // The other fixes are checked where they belong: core-p3.test.mjs (RF), and
 // t-p3-attack.js (the script's own messages, the APIs taken away, close(): D140).
 'use strict';
@@ -237,10 +241,13 @@ const idle = (host, ms = 20000) => until(host, () => window.__ct.jobs() === 0, n
 
   section('10. A patch the host refuses ends the rules: a departure in it is kept, a player\'s move dropped aloud (D134, D144)');
   {
-    // (the script defeats its own gate in the Worker — RegExp.prototype.test is its to replace — which the host checks again, D142)
-    const REGATE = (hook) => `({ name: 'Regate', ${hook}(t, x) { if (typeof x === 'string' || x.t === 'rot') { RegExp.prototype.test = () => true; t.secret['not a player'] = { text: 'x' }; } } })`;
+    // (a Worker that lies — what a script past the Worker's lockdown could post — has its next done rewritten by the
+    // test: p3-lib liar/forge; the host checks the patch again, in its own realm, D142)
+    await S.liar(host);
+    const BADSECRET = "m.patch.rules = { ...m.patch.rules, secret: { 'not a player': { text: 'x' } } };";
     const dave = await S.join(env, 'Dave', invite);
-    ok((await enable(REGATE('onLeave'))).ok, 'a script whose onLeave writes t.secret["not a player"], past its own gate');
+    ok((await enable("({ name: 'Regate', onLeave(t) { t.say('bye'); }, onAction(t) { t.say('seen'); } })")).ok, "a script whose onLeave speaks — in a Worker whose next done brings t.secret['not a player']");
+    await S.forge(host, BADSECRET);
     await watchToasts(host);
     const t0 = await mark(host);
     await dave.context().close();
@@ -252,7 +259,8 @@ const idle = (host, ms = 20000) => until(host, () => window.__ct.jobs() === 0, n
     ok(lines.includes("rules disabled — the host could not apply the script's changes") && lines.at(-1) === 'left the table', `the log: the rules off, then his departure (${J(lines)})`);
     ok(!(await toasts(host)).some((t) => /your action was not applied/.test(t)), 'and nobody is told an action of theirs was dropped');
 
-    ok((await enable(REGATE('onAction'))).ok, 'the same, in onAction after a rot');
+    ok((await enable("({ name: 'Regate', onAction(t) { t.say('seen'); } })")).ok, 'the same, on a rot of Bob\'s');
+    await S.forge(host, BADSECRET);
     await watchToasts(bob);
     const rot0 = await host.evaluate((id) => window.__ct.view().items[id].rot, pile);
     const r = await act(bob, { t: 'rot', id: pile, rot: (rot0 + 90) % 360 });
@@ -260,6 +268,26 @@ const idle = (host, ms = 20000) => until(host, () => window.__ct.jobs() === 0, n
     ok(await until(bob, () => (window.__toasts || []).some((t) => t.includes('The rules stopped responding — your action was not applied'))), 'Bob is told his move was not applied');
     ok(await until(bob, ([id, rot]) => window.__ct.view().items[id].rot === rot, [pile, rot0]) && await host.evaluate(([id, rot]) => window.__ct.view().items[id].rot === rot, [pile, rot0]),
       `and the pile is as it was, on both screens (${rot0}°)`);
+  }
+
+  section('11. A write outside a hook names the script\'s own keys to the host alone: the public line is the engine\'s fixed words (D136, D145)');
+  for (const [what, stray, re] of [
+    ['a Map over {} under a key of its private t.data', "d['Alice: Q of hearts'] = new Map();", /^the script crashed: the script changed t\.data outside a hook: t\.data\.dealt\["Alice: Q of hearts"\] is a Map, not JSON/],
+    ['a cycle through that key', "d['Alice: Q of hearts'].loop = d;", /^the script crashed: the script left its state unserializable outside a hook: [\s\S]*Alice: Q of hearts/],
+  ]) {
+    const KEYS = `({ name: 'Keys', setup(t) { t.data.dealt = { 'Alice: Q of hearts': {} }; },
+      onChat(t, text) { if (text === 'arm') { const d = t.data.dealt; Promise.resolve().then(() => { ${stray} }); } } })`;
+    ok((await enable(KEYS, { reset: true })).ok, `${what}: a script that keeps the card it dealt Alice as a key of t.data`);
+    await watchToasts(host);
+    const t0 = await mark(bob);
+    await act(host, { t: 'chat', msg: 'arm' });
+    ok(await until(host, () => !window.__ct.view().rules?.enabled), `${what}, from a stray continuation: the rules go off`);
+    const err = await lastErr(host), line = (await since(bob, t0)).find((l) => l.startsWith('rules disabled'));
+    ok(re.test(err) && (await toasts(host)).some((t) => t.includes('Alice: Q of hearts')), `${what}: the host's 📜 dialog and toast name it ("${err.slice(0, 160)}")`);
+    await sleep(300);
+    const seen = await bob.evaluate(() => JSON.stringify(window.__ct.log()) + JSON.stringify(window.__rtc.bodies.map((b) => b.body)));
+    ok(/^rules disabled — the script crashed: the script (changed t\.data|left its state unserializable) outside a hook$/.test(line || '') && !seen.includes('Q of hearts'),
+      `${what}: Bob's log says only "${line}", and nothing he received names the key`);
   }
 
   await env.done();

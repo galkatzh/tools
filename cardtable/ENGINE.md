@@ -173,47 +173,62 @@ they are off, no Worker exists.
   3. once an action's hooks are done, the Worker lets every pending
      promise callback run, then checks that `t.data`, `t.public`, the asks
      and `t.secret` are exactly as the action left them — their JSON, and
-     every value in them, so a function slipped into `t.secret` or a
-     `Date` written over its own text is seen too: a callback that wrote
-     one disables the rules ("the script changed t.data outside a hook",
-     "the script changed t.secret outside a hook (…)") before the next
-     action, which is not blamed for it, and nothing it wrote reaches the
-     table.
+     every value in them, so a function slipped into `t.data` or
+     `t.secret`, or a `Date` written over its own text, is seen too: a
+     callback that wrote one disables the rules ("the script changed t.data
+     outside a hook", "the script changed t.secret outside a hook") before
+     the next action, which is not blamed for it, and nothing it wrote
+     reaches the table. Everyone's log says only those words; which value,
+     under which of the script's keys, is for the host's toast and 📜
+     dialog alone (a key of `t.data` may name a hidden card).
 
   `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`,
-  `queueMicrotask` and `requestAnimationFrame` throw "setTimeout is not
-  available to rules scripts — use t.schedule(seconds, tag)": `t.schedule`
-  and `onTimer` are the script's clock (and survive a host reload).
+  `queueMicrotask`, `requestAnimationFrame` and `scheduler.postTask` throw
+  ("setTimeout is not available to rules scripts — use t.schedule(seconds,
+  tag)"): `t.schedule` and `onTimer` are the script's clock (and survive a
+  host reload).
 - **What a script can reach.** Before it evaluates the script, the Worker
-  removes the network (`fetch`, `XMLHttpRequest`, `WebSocket`,
-  `WebSocketStream`, `EventSource`, `WebTransport`, and `FontFace` /
-  `fonts`, which load from URLs), storage (`indexedDB`, `caches`,
-  `navigator.storage` — the origin's private file system —
-  `navigator.storageBuckets`, `navigator.locks` and the old `webkit…`
-  file system), other Workers and channels (`Worker`, `SharedWorker`,
-  `BroadcastChannel`, `MessageChannel`, `importScripts`), its own
-  `postMessage`, and `close` (which throws: it would end the Worker
-  silently): calling one fails ("fetch is not defined"). The Worker reads
-  only the host's own messages — one a script makes and dispatches to its
-  Worker ends the rules — and reads each with what it kept before the
-  script ran (the promises and events it relies on have frozen
-  prototypes). The engine in the Worker, though, shares its built-ins with
-  the script, which could replace one (`Array.prototype.push`, say) and so
-  rewrite what the engine writes there. So the host checks every action's
-  changes again on its own page, where the script can't reach: the rules'
-  state through the engine's gates, and who each log line and name bulb
-  speaks for — the action's player or the rules, a chat line only that
-  player's own words, in their own chat. A change that fails ends the
-  rules ("rules disabled — the host could not apply the script's changes")
-  and never reaches the table: a script can't sign Bob's name to someone
-  else's action, nor put words in anyone's chat. (What the other lines of
-  an action say is the Worker's account, as the rules' own lines are.) That is
-  defence in depth, not a sandbox — a script sees every hidden card and can
-  tell it in game (`t.tell`), so enabling one is an act of trust, and
-  dynamic `import()` can't be taken away (README, honest limits). `Date`,
-  `Math`, `JSON`, `crypto` and `console` are there (`console.log` goes to
-  the Worker's console in devtools); `window` is the Worker's global scope,
-  with the page globals a template needs copied in — today
+  keeps only what is on a short list: the language's own built-ins
+  (`Object`, `Array`, `Math`, `JSON`, `Date`, `Intl`, `Map`, the typed
+  arrays, `WebAssembly`…), and of the platform `console`, `crypto`,
+  `structuredClone`, `performance`, `TextEncoder` / `TextDecoder`, `URL`,
+  `atob` / `btoa`, the event classes, `self` / `window` / `globalThis`,
+  `location`, and a `navigator` of five plain values (`userAgent`,
+  `language`, `languages`, `hardwareConcurrency`, `onLine`). Every other
+  name goes, whatever the browser — the network (`fetch`, `WebSocket`,
+  `FontFace`…), storage (`indexedDB`, `caches`, the origin's private file
+  system, Web Locks — and the service workers of every app on the site,
+  which Safari and Firefox expose in a Worker), other Workers and
+  channels, notifications, devices (`navigator.usb`, `hid`, `serial`…),
+  its own `postMessage`, and whatever a browser adds next; `close` throws
+  (it would end the Worker silently). Calling one fails ("fetch is not
+  defined"). The Worker reads only the host's own messages — one a script
+  makes and dispatches to its Worker ends the rules.
+- **The built-ins are frozen.** The engine runs in the Worker next to the
+  script, on the same built-ins, so before the script is evaluated the
+  Worker freezes every one of them, all the way down — the prototypes,
+  the iterators `for…of` uses, `JSON`, `Object.entries` — and the global
+  names that hold them can't be rebound: `Array.prototype.push = …` or
+  `Object.defineProperty(Object.prototype, …)` throws a `TypeError`, so a
+  script can't rewrite what the engine writes. A script's own objects
+  still take what scripts commonly give them: `obj.toString = …`,
+  `this.name = 'MyError'` in an error class, a function's own `call`. And
+  the host checks every action's changes again on its own page, where the
+  script can't reach: every field as the engine writes it (items, players,
+  the rules' state through the engine's gates, log lines, effects, the
+  counters, a catalog that only grows), and against who acted — a player
+  appears only by joining, a name changes only by its player's rename, a
+  colour never, the rules' code only in the host's Enable; each log line
+  and name bulb speaks for the action's player or the rules, a chat line
+  only that player's own words, in their own chat. A change that fails is
+  refused whole and ends the rules ("rules disabled — the host could not
+  apply the script's changes"): a script can't sign Bob's name to someone
+  else's action, nor put words in anyone's chat or mouth. That is defence
+  in depth, not a sandbox — a script sees every hidden card and can tell
+  it in game (`t.tell`), so enabling one is an act of trust, and dynamic
+  `import()` can't be taken away (README, honest limits). `console.log`
+  goes to the Worker's console in devtools; `window` is the Worker's
+  global scope, with the page globals a template needs copied in — today
   `window.CAH_CARDS`, the CAH card texts (`WORKER_GLOBALS` in `app.js`).
 - **State on `this` is not journaled**: `this.x = …` survives a rollback,
   and is lost on a host reload or a new Worker (every Enable starts one).
@@ -221,12 +236,15 @@ they are off, no Worker exists.
   `t.public` and `t.secret` must stay plain JSON — objects, arrays,
   strings, finite numbers, `true`, `false`, `null`: a rollback or a save
   would hand back something else. A hook that leaves a typed array, a
-  `Map`, a `Set`, a `Date`, `NaN` or an object of a class in one fails
-  ("onAction(): t.data.board is a Uint8Array, not JSON — …") — every
-  action, even one whose JSON is unchanged (a `Date` over its own text) —
-  as does a function in `t.secret`; a function in `t.data` or `t.public`
-  disables the rules when its action is sent to the host, keeping their
-  JSON part.
+  `Map`, a `Set`, a `Date`, `NaN`, an object of a class, an array with a
+  hole (`new Array(64)`: fill it) or `undefined` in it, a property hung on
+  an array (`moves.turn = …`), or a property JSON doesn't see
+  (non-enumerable, symbol-keyed) in one fails ("onAction(): t.data.board[0]
+  is a hole, not JSON …") — every action, even one whose JSON is unchanged
+  (a `Date` over its own text) — as does a function in `t.secret`, or one
+  in `t.data` or `t.public` that leaves their JSON as it was; a function
+  written there with other changes disables the rules when its action is
+  sent to the host, keeping their JSON part.
 - **A host reload** starts a new Worker over the saved table: the rules go
   on where they were — `t.data`, `t.public`, the asks, `t.secret` and the
   pending timers are saved — without running `setup` again. A saved script
@@ -242,10 +260,11 @@ they are off, no Worker exists.
   the `move` the rules see.
 
 **Migrating a script written for the page.** Before Phase 3 a script ran on
-the host's page, so it could touch it; in the Worker, `document`, `alert`,
-`localStorage` and `sessionStorage` throw "document is not available:
-rules now run in a Worker, away from the page (see ENGINE.md, 'Running in
-a Worker')", `setTimeout` throws as above, and the rules disable with that
+the host's page, so it could touch it; in the Worker, any use of
+`document`, `alert`, `localStorage` or `sessionStorage` throws "document
+is not available: rules now run in a Worker, away from the page (see
+ENGINE.md, 'Running in a Worker')", `setTimeout` throws as above, and the
+rules disable with that
 message in the 📜 dialog. Use `t.say` / `t.tell` (or `t.announce`) instead
 of `alert`, `t.data` instead of `localStorage`, and `t.schedule(seconds,
 tag)` with `onTimer` instead of `setTimeout`. A hook that threw halfway
@@ -700,7 +719,8 @@ the default.
   the veto fails closed. A rules Worker therefore wraps the whole table,
   not the runner: it runs `createTable()` on a mirror of the state, one
   `T.job(p, a)` per action, and the host applies what each job changed
-  (its state patch, `T.applyStatePatch()`) and its effects; `T.digest()`
+  (its state patch, `T.applyStatePatch()`, which checks it all first and
+  refuses it whole) and its effects; `T.digest()`
   proves both agree, and `T.guard()` catches a script that changed its
   state between jobs. The host's own table never runs the script (its
   runner only answers what the rules view says of it). Time, randomness and new ids
@@ -718,9 +738,11 @@ the default.
 - `cardtable/templates.js`: the example scripts (`RULES_TEMPLATES`) and
   the 🎲 picker's catalog (`GAMES`).
 - `cardtable/rules-worker.js`: the Worker — the version check, the
-  hardening (the APIs it takes away, the throwing timers and page APIs),
-  the script's evaluation, the mirror table and its jobs, `drain()` and
-  `T.guard()` after each, and the error forwarding (`fatal`).
+  hardening (the allowlist of globals, the throwing timers and page APIs,
+  the lockdown that freezes the built-ins), the script's evaluation, the
+  mirror table and its jobs, `drain()` and `T.guard()` after each, and the
+  error forwarding (`fatal`: the engine's fixed words, and a detail for the
+  host alone).
 - `cardtable/app.js`: the host's action queue (one FIFO; with the rules on,
   one job at a time through the Worker: `startWorker`, `toWorker`, `done`),
   the visible-time watchdog and what ends the rules (`rulesDown`), the

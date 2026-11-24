@@ -662,6 +662,19 @@ sync and rendering, and the Worker together with `handle`.
        it happens, not blamed on the next player's move. A change the host
        refuses ends the rules like a crash: a departure in it is kept, a
        player's move dropped with a notice.
+     - After its third review: before a script runs, the Worker freezes
+       every built-in it shares with the engine, so a script can't rewrite
+       what the engine writes at all — not a line's words, not a player's
+       name; and it keeps only a short list of globals, so no browser's
+       extra API (the site's service workers in Safari and Firefox, a real
+       timer, notifications, devices) is left to it. The host still checks
+       each action's changes in full, and refuses them whole: a player
+       appears, is renamed or changes colour only by their own join or
+       rename, the rules' code changes only when the host enables a
+       script, and nothing the host shows or saves can be malformed — a
+       save with a broken record starts without it. When a script breaks a
+       rule from outside a hook, everyone is told only that it did; which
+       value, under which of its keys, goes to the host alone.
 4. **Game boxes.**
    - `game.json` plus `.zip` upload, declarative setup and reset.
    - Export with the current position.

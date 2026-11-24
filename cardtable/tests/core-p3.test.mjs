@@ -2785,11 +2785,11 @@ function testGuards() {
   for (const [what, fn] of [['t.data', (t) => { t.data.x = 1; }], ['t.public', (t) => { t.public.y = 2; }], ['t.secret', (t) => { t.secret[BOB] = { text: 'late' }; }]]) {
     const T2 = rtable(PIPE(), { onAction() {} });
     run(T2, (t) => { F.saved = t; });
-    ok(T2.guard() === '', 'after a clean job: guard() is ""');
+    ok(T2.guard() === null, 'after a clean job: guard() is null');
     fn(F.saved);
     const g = T2.guard();
     r = job(T2, BOB, { t: 'rot', id: 'm', rot: 90 });
-    ok(/changed t\.data outside a hook/.test(g) && /changed t\.data outside a hook/.test(r.fatal || '') && T2.state.items.m.rot === 0, `${what} written outside a hook: guard() says "${g}", the next job is fatal`);
+    ok(g?.why === 'the script changed t.data outside a hook' && !g.detail && r.fatal === g.why && T2.state.items.m.rot === 0, `${what} written outside a hook: guard() says "${g?.why}", the next job is fatal`);
   }
 
   section('(G) on the page (T.apply), a stray call disables the rules with that reason (D125)');
@@ -2904,7 +2904,7 @@ function testDigest() {
     const R = rng(seed), clk = { t: 1.7e12 }, base = state3b(DIGEST_ITEMS(), { [BOB]: [{ d: DK, i: 5 }, { d: DK, i: 6 }], [CAROL]: [{ t: GEM, f: 2 }] });
     let n = 0;
     const M = quietly(() => createTable(structuredClone(base), { pid: HOST, now: () => clk.t, random: rng(seed ^ 0x77), uid: () => `m${(++n).toString(16).padStart(7, '0')}`, hooks: scriptHooks() })).value;
-    const H = quietly(() => createTable(structuredClone(base), { pid: HOST, now: () => clk.t, hooks: HOST_HOOKS, test: true })).value;
+    const H = quietly(() => createTable(structuredClone(base), { pid: HOST, now: () => clk.t, hooks: HOST_HOOKS })).value;
     const d0 = H.digest(), same0 = M.digest() === d0;
     const seen = { items: 0, players: 0, rules: 0, decks: 0, log: 0, refresh: 0, refreshHands: 0, table: 0, seats: 0, error: 0, vetoes: 0 };
     let first = null, fatal = null, threw = null, lost = null;
@@ -2937,20 +2937,25 @@ function testDigest() {
     ok(seen.items && seen.players && seen.rules && seen.decks && seen.log && seen.refresh && seen.table && seen.seats && seen.error && seen.vetoes, `seed ${seed}: the run covered every kind of patch, hook failures and vetoes (${J(seen)})`);
   }
 
-  section('(7) applyStatePatch gates what a patch brings: decks (cleanDeck), boxes (cleanBox), "__proto__" keys; in a test build, a malformed item throws');
-  const H = quietly(() => createTable(state3b({ m: PC('man', 1500, 300) }), { pid: HOST, now: () => 1.7e12, hooks: HOST_HOOKS, test: true })).value;
+  section('(7) applyStatePatch gates what a patch brings: decks (cleanDeck), boxes (cleanBox), "__proto__" keys, a malformed item — any one refuses the whole patch, nothing applied (D145)');
+  const H = quietly(() => createTable(state3b({ m: PC('man', 1500, 300) }), { pid: HOST, now: () => 1.7e12, hooks: HOST_HOOKS })).value;
   const goodBox = cleanBox({ name: 'Good', imgs: [], types: { x: { kind: 'token', name: 'X', faces: ['A'] } } });
-  const P = JSON.parse(`{"decks": {"dk00bad1": {"name": "X", "cards": "nope"}, "dk00good": ${J(core.standardDeck(false))}, "__proto__": {"polluted": 1}},
-    "boxes": {"bx00bad1": {"box": {"name": "B", "types": 5}, "src": "script"}, "bx00good": {"box": ${J(goodBox)}, "src": "script"}, "__proto__": {"box": {}, "src": "x"}},
-    "items": {"__proto__": {"k": "g"}}, "players": {"__proto__": {"name": "x"}}}`);
-  const q = quietly(() => H.applyStatePatch(P, { effects: [] }));
-  ok(!own(H.state.decks, 'dk00bad1') && own(H.state.decks, 'dk00good') && !own(H.state.boxes, 'bx00bad1') && own(H.state.boxes, 'bx00good') && H.state.boxSrc.bx00good?.src === 'script' && q.error.length >= 2,
-    `the bad deck and box are refused (console.error), the good ones join the catalog (${q.error.length} errors)`);
-  ok(({}).polluted === undefined && !Object.hasOwn(H.state.items, '__proto__') && !Object.hasOwn(H.state.players, '__proto__') && !Object.hasOwn(H.state.decks, '__proto__') && !Object.hasOwn(H.state.boxes, '__proto__'),
-    '"__proto__" entries are skipped, no prototype touched');
-  let threw = null;
-  try { quietly(() => H.applyStatePatch({ items: { zz000001: { k: 'g', t: MAN } } }, { effects: [] })); } catch (e) { threw = e; }
-  ok(threw && !own(H.state.items, 'zz000001'), `a test build: an item without x, y, rot, z throws (${threw?.message})`);
+  for (const [what, src] of [
+    ['a deck that is no deck', '{"decks": {"dk00bad1": {"name": "X", "cards": "nope"}}}'],
+    ['a box that is no box', '{"boxes": {"bx00bad1": {"box": {"name": "B", "types": 5}, "src": "script"}}}'],
+    ['a deck under "__proto__"', `{"decks": {"__proto__": ${J(core.standardDeck(false))}}}`],
+    ['a box under "__proto__"', `{"boxes": {"__proto__": {"box": ${J(goodBox)}, "src": "script"}}}`],
+    ['an item under "__proto__"', '{"items": {"__proto__": {"k": "g", "t": "x", "x": 0, "y": 0, "rot": 0, "z": 1}}}'],
+    ['a player under "__proto__"', '{"players": {"__proto__": {"name": "x", "color": "#fff", "online": true, "hand": []}}}'],
+    ['an item without x, y, rot and z', `{"items": {"zz000001": {"k": "g", "t": ${J(MAN)}}}}`],
+  ]) {
+    const before = stateOf(H);
+    let threw = null;
+    try { quietly(() => H.applyStatePatch(JSON.parse(src), { effects: [] })); } catch (e) { threw = e; }
+    ok(threw && stateOf(H) === before && ({}).polluted === undefined && !Object.hasOwn(H.state.items, '__proto__') && !Object.hasOwn(H.state.decks, '__proto__'), `${what}: refused (${threw?.message}), nothing applied, no prototype touched`);
+  }
+  quietly(() => H.applyStatePatch(JSON.parse(`{"decks": {"dk00good": ${J(core.standardDeck(false))}}, "boxes": {"bx00good": {"box": ${J(goodBox)}, "src": "script"}}}`), { effects: [] }));
+  ok(own(H.state.decks, 'dk00good') && own(H.state.boxes, 'bx00good') && H.state.boxSrc.bx00good?.src === 'script', 'a good deck and box join the catalog');
 
   section('(7) applyStatePatch\'s steps (§3f.6): players (hands marked only when they changed), rules (asks, hints, secret per pid; a code change said), refresh touches, seq');
   const T = rtable(PIPE(), {}, { hands: HANDS });
@@ -3005,7 +3010,7 @@ function lifecycle(items, o = {}) {
     load: () => '', has: (h) => h === 'onSelect' && !!ready?.wants.includes('select'),
     flag: (k) => (k === 'strict' ? ready?.strict : undefined), call(h) { throw new Error(`${h}() ran on the page`); },
   };
-  const H = quietly(() => createTable(state3b(items, o.hands), { pid: HOST, now: () => clk.t, hooks: pageHooks, test: true })).value;
+  const H = quietly(() => createTable(state3b(items, o.hands), { pid: HOST, now: () => clk.t, hooks: pageHooks })).value;
   H.takeDirty();
   const L = { H, clk, M: null };
   L.start = (code) => {
@@ -3105,7 +3110,7 @@ function testReviewFixups() {
   }
 
   section('(RF) applyStatePatch checks the rules\' state a patch brings, in the host\'s realm (D142): a bad secret key, ask, hint or timer throws, and nothing is applied');
-  const H = quietly(() => createTable(state3b(PIPE()), { pid: HOST, now: () => 1.7e12, hooks: HOST_HOOKS, test: true })).value;
+  const H = quietly(() => createTable(state3b(PIPE()), { pid: HOST, now: () => 1.7e12, hooks: HOST_HOOKS })).value;
   quietly(() => H.applyStatePatch(structuredClone({ rules: { code: '({})', name: 'X', enabled: true, data: {}, public: {}, asks: {}, secret: {} } }), { effects: [] }));
   H.takeDirty();
   for (const [what, rules] of [
@@ -3117,6 +3122,7 @@ function testReviewFixups() {
     ['nine asks for one player', { asks: { [BOB]: range(9).map((k) => ({ id: `q${k}`, prompt: 'P', options: ['a'] })) } }],
     ['a timer that is not one', { data: { _timers: [{ at: 'soon', tag: 'x' }] } }],
     ['a hint of 600 items', { hints: { [BOB]: { items: range(600).map(() => 'm'), spaces: [] } } }],
+    ['a hint with a megabyte of its own beside its lists (sent whole to Bob)', { hints: { [BOB]: { items: [], spaces: [], note: 'x'.repeat(1e6) } } }],
   ]) {
     const before = stateOf(H);
     let threw = null;
@@ -3149,18 +3155,22 @@ function testSecondReview() {
     ok(J(m.data.v) === J(json) && Object.getPrototypeOf(m.data.v ?? {}) === Object.getPrototypeOf(hr.data.v ?? {}) && L.same(), `${what}: the mirror holds what the host holds (${J(m.data.v)}), the digests agree`);
   }
 
-  section('(RF2) guard(): a write outside a hook that JSON can\'t see — a function into t.secret, a Date over its ISO string — is named at once, not blamed on the next job (D144)');
-  for (const [what, fn, re] of [
-    ['a function into t.secret[Bob]', (t) => { t.secret[BOB] = () => 1; }, /^the script changed t\.secret outside a hook \(t\.secret\[b{16}\] is a function, not JSON\)$/],
-    ['a Date over t.data.when\'s ISO string', (t) => { t.data.when = new Date('2026-01-01T00:00:00.000Z'); }, /^the script changed t\.data outside a hook \(t\.data\.when is a Date, not JSON/],
-    ['NaN over null in t.public', (t) => { t.public.best = 0 / 0; }, /^the script changed t\.public outside a hook \(t\.public\.best is NaN, not JSON\)$/],
+  section('(RF2) guard(): a write outside a hook that JSON can\'t see — a function, a Date over its ISO string — is named at once, not blamed on the next job (D144); its words are the engine\'s, the script\'s keys only in the host\'s detail (D145)');
+  for (const [what, fn, why, re] of [
+    ['a function into t.secret[Bob]', (t) => { t.secret[BOB] = () => 1; }, 't.secret', /^t\.secret\[b{16}\] is a function, not JSON$/],
+    ['a Date over t.data.when\'s ISO string', (t) => { t.data.when = new Date('2026-01-01T00:00:00.000Z'); }, 't.data', /^t\.data\.when is a Date, not JSON/],
+    ['NaN over null in t.public', (t) => { t.public.best = 0 / 0; }, 't.public', /^t\.public\.best is NaN, not JSON$/],
+    ['a function under a new key of t.data (its JSON unchanged)', (t) => { t.data.f = () => 1; }, 't.data', /^t\.data\.f is a function, not JSON$/],
+    ['a Map over {} under a marker key', (t) => { t.data.dealt['Alice: Q of hearts'] = new Map(); }, 't.data', /^t\.data\.dealt\["Alice: Q of hearts"\] is a Map, not JSON/],
   ]) {
     const T = rtable(PIPE(), {});
-    run(T, (t) => { t.data.when = '2026-01-01T00:00:00.000Z'; t.public.best = null; F.saved = t; F.data = t.data; F.pub = t.public; F.sec = t.secret; });
-    ok(T.guard() === '', `${what}: after a clean job, guard() is ""`);
+    run(T, (t) => { t.data.when = '2026-01-01T00:00:00.000Z'; t.data.dealt = { 'Alice: Q of hearts': {} }; t.public.best = null; F.saved = t; F.data = t.data; F.pub = t.public; F.sec = t.secret; });
+    run(T, () => {}); // (a job whose patch carries none of the fields: a function written into one it carries is its failed post's, D129)
+    ok(T.guard() === null, `${what}: after a clean job, guard() is null`);
     fn({ data: F.data, public: F.pub, secret: F.sec }); // (kept references, written from a stray continuation: no facade call)
     const g = T.guard(), r = job(T, BOB, { t: 'rot', id: 'm', rot: 90 });
-    ok(re.test(g) && r.fatal === g && T.state.items.m.rot === 0 && !r.patch, `${what}: guard() says "${g}"; Bob's next move is that fatal, not his fault, and nothing of it applied`);
+    ok(g?.why === `the script changed ${why} outside a hook` && re.test(g.detail) && r.fatal === g.why && r.detail === g.detail && T.state.items.m.rot === 0 && !r.patch,
+      `${what}: guard() says "${g?.why}" (the host alone: "${g?.detail}"); Bob's next move is that fatal, not his fault, and nothing of it applied`);
   }
 
   section('(RF2) applyStatePatch(patch, out, job): every log line and name bulb is the job\'s player\'s or the rules\'; a chat line is theirs, as sent; a frozen name only on their rename (D144)');
@@ -3197,7 +3207,7 @@ function testSecondReview() {
 
   section('(RF2) applyStatePatch: t.data and t.public in a patch are plain JSON (a structured clone keeps a Map, a Date, a cycle) — checked in the host\'s realm (D144)');
   {
-    const H = quietly(() => createTable(state3b(PIPE()), { pid: HOST, now: () => 1.7e12, hooks: HOST_HOOKS, test: true })).value;
+    const H = quietly(() => createTable(state3b(PIPE()), { pid: HOST, now: () => 1.7e12, hooks: HOST_HOOKS })).value;
     quietly(() => H.applyStatePatch(structuredClone({ rules: { code: '({})', name: 'X', enabled: true, data: {}, public: {}, asks: {}, secret: {} } }), { effects: [] }));
     const cyc = { a: 1 };
     cyc.self = cyc;
@@ -3212,6 +3222,150 @@ function testSecondReview() {
       try { quietly(() => H.applyStatePatch(structuredClone({ rules }), { effects: [] })); } catch (e) { threw = e; }
       ok(threw && re.test(threw.message) && stateOf(H) === before, `${what}: throws (${threw?.message}), the table as it was`);
     }
+  }
+}
+
+// =============================================================================
+// (RF3) The third review of 3B (SPEC D145–D147)
+// =============================================================================
+function testThirdReview() {
+  const { notJSON, LOG_CAPS, LOG_TXT_MAX } = core;
+  section('(RF3) notJSON sees what JSON would change that a walk by keys missed: holes, undefined in an array, a property that isn\'t an index, a non-enumerable or symbol-keyed one (D146)');
+  {
+    const named = [1, 2];
+    named.turn = 'white';
+    const when = [1, 2];
+    when.when = new Date(0);
+    for (const [what, v, want] of [
+      ['an array with a hole (new Array(3))', { board: new Array(3) }, 'v.board[0] is a hole, not JSON (JSON writes null) — fill the array'],
+      ['undefined in an array', { list: [1, undefined] }, 'v.list[1] is undefined, not JSON (JSON writes null)'],
+      ["an array's named property", { moves: named }, "v.moves has a property that isn't an index, which JSON drops"],
+      ['a Date hung on an array (the second review\'s walk missed it)', { list: when }, "v.list has a property that isn't an index, which JSON drops"],
+      ['a non-enumerable property', { o: Object.defineProperty({}, 'hidden', { value: 7 }) }, "v.o has a property JSON doesn't see (non-enumerable, or keyed by a symbol)"],
+      ['a symbol-keyed property', { o: { [Symbol('s')]: 1 } }, "v.o has a property JSON doesn't see (non-enumerable, or keyed by a symbol)"],
+      ['plain JSON (undefined as an object\'s value passes)', { a: [1, { b: null, c: 'x' }], d: undefined, e: Object.create(null) }, ''],
+    ]) ok(notJSON(v, 'v') === want, `${what}: "${notJSON(v, 'v')}"`);
+    for (const [what, value, re] of [
+      ['a board made with new Array(64)', () => new Array(64), /t\.data\.v\[0\] is a hole/],
+      ["a list with a turn hung on it", () => Object.assign(['e4'], { turn: 'white' }), /t\.data\.v has a property that isn't an index/],
+      ['a hidden property', () => Object.defineProperty({}, 'h', { value: 7 }), /t\.data\.v has a property JSON doesn't see/],
+    ]) {
+      const L = lifecycle(PIPE());
+      L.enable(fake({}));
+      F.fn = (t) => { t.data.v = value(); };
+      const r = L.job(HOST, { t: 'rulesBtn', id: 'go' });
+      ok(re.test(r.out.error?.message || '') && !L.M.state.rules.enabled && !L.H.state.rules.enabled && L.same(), `${what} in t.data: the hook fails, naming it ("${r.out.error?.message}"), the rules off on both sides, the digests agree`);
+    }
+  }
+
+  section('(RF3) A function in t.data or t.public whose field\'s JSON didn\'t change fails the hook that wrote it (the patch won\'t carry it, so the Worker\'s failed post can\'t say it: D129, D146)');
+  {
+    const L = lifecycle(PIPE());
+    L.enable(fake({}));
+    F.fn = (t) => { t.data.n = 7; t.data.fmt = (x) => String(x); };
+    const r = quietly(() => L.M.job(HOST, { t: 'rulesBtn', id: 'go' })).value;
+    ok('data' in (r.patch.rules || {}) && L.M.guard() === null, "a function written with other changes: the job's patch carries t.data, so the guard after the job's microtasks leaves it to the post that will fail (D129)");
+    F.fn = null;
+    const T = rtable(PIPE(), {});
+    run(T, (t) => { t.data.fmt = (x) => String(x); });
+    ok(!T.state.rules.enabled && /t\.data\.fmt is a function, not JSON/.test(T.rulesError) && !('fmt' in T.state.rules.data), `a function alone (the JSON as it was): the hook fails ("${T.rulesError}")`);
+    const T2 = rtable(PIPE(), {});
+    run(T2, (t) => { t.public.n = 1; t.public.fmt = (x) => String(x); });
+    ok(T2.state.rules.enabled, 'with the JSON changed too, it is D129\'s: the gate lets it by, and a Worker\'s post of the patch fails');
+  }
+
+  section('(RF3) applyStatePatch checks a patch against who acted, in the host\'s realm: players, the rules\' code, counters, the catalog, log lines and effects as the engine writes them — and refuses the whole patch (D145)');
+  {
+    const L = lifecycle(PIPE(), { hands: HANDS });
+    L.enable(fake({ onAction(t, a) { if (a.t === 'rot') t.say('turned'); } }));
+    const rec = (p, o = {}) => ({ ...json(L.H.state.players[p]), ...o });
+    /** Job (p, a) on the mirror, then its patch and effects forged by `forge`, to a host that must refuse it whole. */
+    const refused = (what, p, a, forge, re) => {
+      const r = quietly(() => L.M.job(p, a)).value, P = structuredClone(r.patch), O = structuredClone(r.out);
+      forge(P, O);
+      const before = stateOf(L.H);
+      let threw = null;
+      try { quietly(() => L.H.applyStatePatch(P, O, { p, a })); } catch (e) { threw = e; }
+      ok(threw && re.test(threw.message) && stateOf(L.H) === before, `${what}: refused (${threw?.message}), the table as it was`);
+      L.start(L.H.state.rules.code); // (a fresh mirror from the host's table: the refused job never happened there)
+    };
+    const ROT = { t: 'rot', id: 'm', rot: 90 }, BIG = 'x'.repeat(LOG_TXT_MAX + 1);
+    for (const [what, p, a, forge, re] of [
+      ['Alice and Bob swap names on her rot', HOST, ROT, (P) => { P.players = { [HOST]: rec(HOST, { name: 'Bob' }), [BOB]: rec(BOB, { name: 'Alice' }) }; }, /^the script renamed Alice$/],
+      ['a player who never joined', HOST, ROT, (P) => { P.players = { [EVE]: rec(BOB) }; }, /^the script added a player$/],
+      ["Bob's colour changed", HOST, ROT, (P) => { P.players = { [BOB]: rec(BOB, { color: '#000000' }) }; }, /^the script changed Bob's colour$/],
+      ['Carol taken offline on a rot of Alice\'s', HOST, ROT, (P) => { P.players = { [CAROL]: rec(CAROL, { online: false }) }; }, /^the script took Carol offline$/],
+      ['Bob renamed in his own rot', BOB, ROT, (P) => { P.players = { [BOB]: rec(BOB, { name: 'Robert' }) }; }, /^the script renamed Bob$/],
+      ['Bob renamed to another name than he asked', BOB, { t: 'name', name: 'Robert' }, (P) => { P.players[BOB].name = 'Bobby'; }, /^the script renamed Bob$/],
+      ['a player without a hand', HOST, ROT, (P) => { P.players = { [BOB]: { ...rec(BOB), hand: undefined } }; }, /^a patched player \(Bob\) is malformed: a player without a hand$/],
+      ['a pile without its cards', HOST, ROT, (P) => { P.items.zz000001 = { k: 'p', x: 300, y: 300, rot: 0, z: 50 }; }, /^a patched item \(zz000001\) is malformed: a pile without its cards$/],
+      ['an item that is a number', HOST, ROT, (P) => { P.items.zz000001 = 5; }, /is malformed: not an item$/],
+      ['the turned man, then a table that is none (nothing half-applied)', HOST, ROT, (P) => { P.table = { shape: 'hex' }; }, /^the patched table: /],
+      ["the rules' code rewritten", HOST, ROT, (P) => { P.rules = { ...P.rules, code: "({ name: 'Fair' })" }; }, /^the script rewrote the rules' code or name$/],
+      ["the rules' name of 10,000 characters", HOST, ROT, (P) => { P.rules = { ...P.rules, name: 'x'.repeat(10000) }; }, /^the patched rules are malformed$/],
+      ["the rules' name, in a rot", HOST, ROT, (P) => { P.rules = { ...P.rules, name: 'Fair' }; }, /^the script rewrote the rules' code or name$/],
+      ['the rules off, without a word', HOST, ROT, (P) => { P.rules = { ...P.rules, enabled: false }; }, /^the script turned the rules off without a word$/],
+      ['a field of the rules of its own', HOST, ROT, (P) => { P.rules = { ...P.rules, owner: 'me' }; }, /^the patched rules have an unknown field 'owner'$/],
+      ['a field of the patch of its own', HOST, ROT, (P) => { P.keys = { [BOB]: 'k' }; }, /^the patch has an unknown field 'keys'$/],
+      ["the guests' deck budget spent", HOST, ROT, (P) => { P.guestDeckChars = -1e300; }, /^the patch's guestDeckChars is out of bounds$/],
+      ["the guests' deck budget grown in a rot", HOST, ROT, (P) => { P.guestDeckChars = 1000; }, /^the script spent the guests' deck budget$/],
+      ['zMax going back', HOST, ROT, (P) => { P.zMax = -5; }, /^the patch's zMax is out of bounds$/],
+      ['a deck over a catalog entry', HOST, ROT, (P) => { P.decks = { [DK]: core.standardDeck(true) }; }, new RegExp(`^the patch rewrites the catalog's ${DK}$`)],
+      ['a box that says it came from nowhere', HOST, ROT, (P) => { P.boxes = { bx000009: { box: cleanBox(SPACE_BOX), src: 'mars', by: '<b>' } }; }, /^a patched box doesn't say where it came from$/],
+      ['a last setup that is no box', HOST, ROT, (P) => { P.lastSetup = 'nope'; }, /^the patch's last setup is no box$/],
+      ['a log line of 1,001 characters', HOST, ROT, (P) => { P.log.push({ p: RULES, txt: BIG, ts: 1 }); }, /^the script's log lines are malformed$/],
+      ['a log line with a field of its own', HOST, ROT, (P) => { P.log.push({ p: RULES, txt: 'x', ts: 1, style: 'red' }); }, /^the script's log lines are malformed$/],
+      ['a frozen name that is undefined (it counts as talk)', HOST, ROT, (P) => { P.log.push({ p: RULES, txt: 'x', ts: 1, n: undefined }); }, /^the script's log lines are malformed$/],
+      ['400 lines of the rules\' (more than the log keeps)', HOST, ROT, (P) => { P.log.push(...range(400).map((k) => ({ p: RULES, txt: `l${k}`, ts: 1 }))); }, /^the patch brings more log lines than the log keeps$/],
+      ['50 peeks on the record in a rot', HOST, ROT, (P) => { P.log.push(...range(50).map(() => ({ p: HOST, txt: 'peeked at a face-down card', ts: 1, k: 1 }))); }, /^the script put a peek on the record in Alice's name$/],
+      ["fifty renames in Bob's one", BOB, { t: 'name', name: 'Robert' }, (P) => { P.log.push(...range(50).map(() => ({ ...P.log[0] }))); }, /^the script renamed a line of Bob's to "Bob"$/],
+      ['a notice that is no text', HOST, ROT, (P, O) => { O.effects.push({ t: 'note', p: BOB, msg: 5 }); }, /^the script's effects are malformed$/],
+      ['an effect the engine never makes', HOST, ROT, (P, O) => { O.effects.push({ t: 'eval', code: '1' }); }, /^the script's effects are malformed$/],
+      ['a peek shown to Bob in a rot of Alice\'s', HOST, ROT, (P, O) => { O.effects.push({ t: 'peek', p: BOB, c: { d: DK, i: 0 } }); }, /^the script showed Bob's eyes a card in Alice's rot$/],
+      ['an error that is no error', HOST, ROT, (P, O) => { O.error = 'boom'; }, /^the script's error is malformed$/],
+    ]) refused(what, p, a, forge, re);
+    // what the engine does write goes in: a rename, a new player's join, a guest's deck, a peek, a Disable
+    for (const [p, a] of [[BOB, { t: 'name', name: 'Robert' }], [DAVE, { t: '_join', name: 'Dave' }], [BOB, { t: 'peek', id: 'p' }], [CAROL, { t: '_leave' }],
+      [BOB, { t: 'addDeck', deck: { name: 'Mini', cards: [{ n: 'A' }, { n: 'B' }] }, cost: 50 }], [HOST, { t: 'setRules', enabled: false }]]) {
+      const r = L.job(p, a);
+      ok(Object.keys(r.patch).length && L.same(), `${a.t} of ${p.slice(0, 4)}: applied (${J(Object.keys(r.patch))}), the digests agree`);
+    }
+    ok(L.H.state.players[DAVE]?.name === 'Dave' && L.H.state.players[BOB].name === 'Robert' && !L.H.state.players[CAROL].online && L.H.state.guestDeckChars >= 50, 'Dave joined, Bob is Robert, Carol is offline, the guests\' budget grew by Bob\'s deck');
+  }
+
+  section('(RF3) applyStatePatch keeps the asks as cleanAsk leaves them: a label is {label, value}, a prompt without control characters (D145)');
+  {
+    const H = quietly(() => createTable(state3b(PIPE()), { pid: HOST, now: () => 1.7e12, hooks: HOST_HOOKS })).value;
+    quietly(() => H.applyStatePatch(structuredClone({ rules: { code: '({})', name: 'X', enabled: true, data: {}, public: {}, asks: {}, secret: {} } }), { effects: [] }));
+    H.applyStatePatch(structuredClone({ rules: { asks: { [BOB]: [{ id: 'q', prompt: 'Pick\u001b[31m', options: ['yes', 'no'] }] } } }), { effects: [] });
+    H.takeDirty();
+    const ask = H.mine(BOB).ask;
+    ok(J(H.state.rules.asks[BOB]) === J([{ id: 'q', prompt: 'Pick[31m', options: [{ label: 'yes', value: 'yes' }, { label: 'no', value: 'no' }] }]) && J(ask?.[0]?.options) === J(['yes', 'no']),
+      `the host keeps the cleaned ask, and Bob is sent its labels (${J(ask)})`);
+  }
+
+  section('(RF3) A job\'s patch brings at most what the log keeps, and a line at most LOG_TXT_MAX (D147)');
+  {
+    const L = lifecycle(PIPE());
+    L.enable(fake({}));
+    F.fn = (t) => { for (let k = 0; k < 2000; k++) t.say(`line ${k}`); };
+    const r = L.job(HOST, { t: 'rulesBtn', id: 'go' });
+    const n = r.patch.log.length;
+    ok(n === LOG_CAPS.act && r.patch.log.at(-1).txt === 'line 1999' && L.same() && J(L.H.state.log) === J(L.M.state.log), `2,000 t.say lines: the patch brings the newest ${n} (LOG_CAPS.act), as the log keeps them; the host's log is the mirror's`);
+    const T = rtable(PIPE(), { validate: () => 'no: ' + 'z'.repeat(5000) });
+    const v = job(T, BOB, { t: 'rot', id: 'm', rot: 90 });
+    ok(v.rules.at(-1).length <= 320 && v.rules.at(-1).length < LOG_TXT_MAX && noted(v, BOB, `🚫 no: ${'z'.repeat(296)}`), `a veto's reason is a script's words: cut as t.say's are (${v.rules.at(-1).length} characters)`);
+  }
+
+  section('(RF3) A save with an item or a player the table can\'t show is loaded without it, loudly — one bad record never keeps a table from starting (D145)');
+  {
+    const s = state3b({ m: PC('man', 1500, 300), bad: { k: 'p', x: 1, y: 1, rot: 0, z: 1 }, odd: 5, worse: PILE([{ d: DK, i: 1 }, 'x'], 300, 300) });
+    s.players[DAVE] = { name: 'Dave', color: '#30bced', online: true };
+    s.players.junk = null;
+    const q = quietly(() => createTable(s, { pid: HOST, now: () => 1.7e12, hooks: HOST_HOOKS })), T = q.value;
+    const t = quietly(() => { T.takeDirty(); return [T.patchContent(T.takeDirty()), T.snapContent()]; });
+    ok(Object.keys(T.state.items).join() === 'm' && !(DAVE in T.state.players) && !('junk' in T.state.players) && q.error.filter((e) => /^the saved (item|player) .* is unreadable \(.*\): dropped$/.test(e)).length === 5 && !t.error.length,
+      `the pile without cards, the number, the pile with a stray card, Dave without a hand and a null player are dropped, each said (${q.error.length} errors); the table broadcasts`);
   }
 }
 
@@ -3268,5 +3422,6 @@ function testSecondReview() {
   await guard('(7) T.digest', testDigest);
   await guard('(RF) the 3B review fix-ups', testReviewFixups);
   await guard('(RF2) the second 3B review', testSecondReview);
+  await guard('(RF3) the third 3B review', testThirdReview);
   report();
 })().catch(crash);

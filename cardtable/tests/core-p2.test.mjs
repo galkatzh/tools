@@ -2381,7 +2381,7 @@ function testReviewFixes() {
     const trick = [[HOST, 1], [BOB, 0], [CAROL, 2], [DAVE, 3]]; // ♠2, ♠A, ♠3, ♠4: Bob's ace takes it
     const T = mk(Object.fromEntries(trick.map(([, i], k) => [`t${k}`, C(i, { x: 850 + 20 * k, y: 850 })])), { players: ps });
     T.state.rules = { name: 'Bridge', enabled: false, code: '', public: {},
-      data: { phase: 'play', seats: [HOST, BOB, CAROL, DAVE], trick: trick.map(([p, i]) => ({ p, d: DK, i })), tricks: [0, 0], sidePiles: [], declarer: HOST, dummy: CAROL, level: 1, trump: null, turn: null, dealerIdx: 0, firstLead: false } };
+      data: { phase: 'play', seats: [HOST, BOB, CAROL, DAVE], trick: trick.map(([p, i]) => ({ p, d: DK, i })), tricks: [0, 0], sidePiles: {}, declarer: HOST, dummy: CAROL, level: 1, trump: null, turn: null, dealerIdx: 0, firstLead: false } };
     run(T, HOST, { t: 'setRules', enabled: true, code: RULES_TEMPLATES.bridge });
     ok(T.state.rules.enabled && T.state.rules.data.phase === 'play', 'Bridge runs, mid-hand, its trick of four on the table');
     ok(happened(run(T, BOB, { t: 'seat', watch: true })) && T.state.players[BOB].seat === null, 'Bob, who won the trick, stands up to watch');

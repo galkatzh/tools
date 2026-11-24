@@ -358,9 +358,11 @@ function holdImages(assets) {
 function commit(changed, actor) {
   decks = T.state.decks; // the renderer's deck and box maps are the table's own (core may replace them)
   boxes = T.state.boxes;
-  const refusal = drain(actor);
-  if (changed) { scheduleBroadcast(); persist(); }
-  return refusal;
+  try {
+    return drain(actor);
+  } finally { // (an effect that fails is a bug, which throws on: the table changed all the same, so it goes out and is saved)
+    if (changed) { scheduleBroadcast(); persist(); }
+  }
 }
 
 /** Routes a local UI action: hosts queue it, guests send it to the host, and
@@ -485,20 +487,24 @@ function startWorker(code, job) {
 /** Worker `w`'s messages and failures, routed by what it is to the queue:
  *  starting, the running one, or gone (a terminated Worker's last messages
  *  are dropped: nothing it posts after that is applied). A failure's
- *  `message` is shown to the host; `engine`: it is the engine's own words
- *  (a rule of running broken), which the public log may carry too — the
- *  script's own (an error it threw) stay with the host (rulesDown);
- *  `env`: while starting, the Worker itself didn't load. */
+ *  `message` is shown to the host; `engine`: it is the engine's own fixed
+ *  words (a rule of running broken), which the public log may carry too —
+ *  the script's own (an error it threw) stay with the host (rulesDown), and
+ *  so does `detail` (what the engine says of the script's own state: which
+ *  value, under which key); `env`: while starting, the Worker itself didn't load. */
 function listen(w) {
-  const fail = (message, engine = true, env = false) => {
+  const fail = (message, engine = true, env = false, detail = '') => {
     if (current?.start === w) started(w, { type: 'evalError', message, env });
-    else if (worker?.w === w) rulesDown(engine ? `the script crashed: ${message}` : 'the script crashed', `Rules disabled — the script crashed: ${message}`, engine ? '' : message);
+    else if (worker?.w === w) {
+      const said = engine ? detail : message; // (for the host alone)
+      rulesDown(engine ? `the script crashed: ${message}` : 'the script crashed', `Rules disabled — the script crashed: ${message}${engine && detail ? ` (${detail})` : ''}`, said);
+    }
   };
   w.onmessage = ({ data: m }) => {
     if (current?.start === w) { started(w, m.type === 'fatal' ? { type: 'evalError', message: m.message } : m); return; }
     if (worker?.w !== w) return;
     if (m.type === 'done') done(m);
-    else if (m.type === 'digest') { digests.get(m.id)?.(m.digest); digests.delete(m.id); } else if (m.type === 'fatal') fail(String(m.message), m.engine === true);
+    else if (m.type === 'digest') { digests.get(m.id)?.(m.digest); digests.delete(m.id); } else if (m.type === 'fatal') fail(String(m.message), m.engine === true, false, m.detail ? String(m.detail) : '');
     else fail(`its Worker sent an unexpected ${String(m.type).slice(0, 20)} message`);
   };
   w.onerror = (e) => { e.preventDefault(); console.error('rules Worker error', e); fail(e.message || 'the rules Worker failed to load', !e.message, true); };
@@ -553,11 +559,13 @@ function toWorker({ p, a, resolve }) {
 /** A job's watchdog budget (spec §3f.5): RULES_TIMEOUT_MS, and 10 ms more per item a box's setup lays out. */
 const budget = (a) => RULES_TIMEOUT_MS + (a.t === 'loadBox' && a.setup === true && Array.isArray(a.box?.setup) ? 10 * countSetup(a.box.setup, Object.keys(T.state.players).length || 1) : 0);
 /** The running Worker's `done` {id, patch, out, ms} for the job in flight:
- *  the host's table takes the patch (applyStatePatch, which checks it
- *  against the job: who acted), carries out its effects, broadcasts and
- *  saves (commit). A job that disabled the rules (a hook failed) ends the
- *  Worker. A done for any other job — none the host posted, or one it
- *  posted before — means the Worker ran what the host never asked of it:
+ *  the host's table takes the patch (applyStatePatch, which checks all of
+ *  it first, against the job too: who acted), carries out its effects,
+ *  broadcasts and saves (commit); a failure there is a bug, said, and the
+ *  job resolves as failed while the queue goes on. A job that disabled the
+ *  rules (a hook failed) ends the Worker. A done for any other job — none
+ *  the host posted, or one it posted before — means the Worker ran what the
+ *  host never asked of it:
  *  its mirror can't be trusted, and the rules end. So do they when the
  *  table refuses the patch: the job is then dropped, or run again with the
  *  rules off, as rulesDown says. */
@@ -581,16 +589,17 @@ function done(m) {
   current = null;
   try {
     error = commit(changed, job.p);
-  } catch (err) { // (carrying out the job's effects failed: a bug — the table took the patch, so the rules may run on)
+    perf.lastRulesRoundtripMs = performance.now() - job.t0; // (B12: posted to the Worker, back, applied and carried out)
+    if (job.p === pid) flush(); // (the host's own move shows at once)
+    checkDigest();
+  } catch (err) { // (carrying out the job's effects, or broadcasting them, failed: a bug — the table took the patch, which went out and is saved)
     console.error('a rules job\'s effects failed', err);
     toast(`Error: ${err.message}`);
+    error = err.message;
   }
-  perf.lastRulesRoundtripMs = performance.now() - job.t0;
-  if (m.out.error) lastRulesError = T.rulesError;
+  if (m.out?.error) lastRulesError = T.rulesError;
   if (!T.state.rules?.enabled) stopWorker();
-  if (job.p === pid) flush(); // (the host's own move shows at once)
   job.resolve(error ? { ok: false, error } : { ok: changed });
-  checkDigest();
   pump();
 }
 /** The internal jobs a stop of the rules never drops (spec §3f.5, D134): a
@@ -601,8 +610,10 @@ const KEPT_JOBS = new Set(['_join', '_leave', '_name']);
  *  crashed, or the host's table refused its patch (done: the job is still
  *  in flight). `reason`: what the log says, publicly; `msg`: the host's toast;
  *  `detail`: what only the host is told beyond `reason` (in the 📜 dialog:
- *  the words of an error the script threw). The Worker goes, and the host's
- *  table switches the rules off (_rulesOff). A job in flight is dropped —
+ *  the words of an error the script threw, or which value of the script's
+ *  own state, under which key, the engine refused — D145). The Worker
+ *  goes, and the host's table switches the rules off (_rulesOff). A job in
+ *  flight is dropped —
  *  fail closed: its actor is told, and what it named re-sent — unless it
  *  is a KEPT_JOBS one, which runs again with the rules off. An Enable whose
  *  Worker is starting began from a copy of the table before that _rulesOff:
@@ -3752,7 +3763,7 @@ function becomeHost(saved, unsaved) {
     console.error("this table's last save could not be resumed:", saved.behind);
     toast(`Couldn't resume this table's last save (${saved.behind}) — resumed an older one`);
   }
-  const t = createTable(saved ? { ...saved.state, decks: saved.decks, boxes: saved.boxes, boxSrc: saved.boxSrc } : {}, { pid, test: !!window.CARDTABLE_TEST, hooks: pageHooks });
+  const t = createTable(saved ? { ...saved.state, decks: saved.decks, boxes: saved.boxes, boxSrc: saved.boxSrc } : {}, { pid, hooks: pageHooks });
   if (saved) t.resume(myName); // re-sanitizes the decks and boxes, everyone else waits offline
   else t.open(myName); // the host's seat and a standard deck
   if (window.CARDTABLE_TEST) { // the one-writer rule (spec §3f.1), asserted: with a rules Worker running, only its patches change the table

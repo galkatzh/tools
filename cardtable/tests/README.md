@@ -940,10 +940,11 @@ next section); core is the same there, in the page and in Node.
   `hint` and `sec` (null for none); `sharedText` refuses all three. The
   rules view gains `wants: ['select']` and `strict: true` while on.
 - **The Worker side**: `T.job(p, a)` → `{changed, patch, out: {effects,
-  error?}}` or `{fatal}`; `T.applyStatePatch(patch, out)` (true when
-  changed: it renumbers); `T.digest()`; `T.guard()` (why the script broke
-  the rules between jobs, or ''). With `env.test`, applyStatePatch
-  shape-asserts every item first.
+  error?}}` or `{fatal, detail?}`; `T.applyStatePatch(patch, out, job)`
+  (true when changed: it renumbers; it checks the whole patch first and
+  throws, applying nothing, on a field the engine wouldn't write — against
+  `job`, who acted, too); `T.digest()`; `T.guard()` (`{why, detail?}` when
+  the script broke the rules between jobs, or null).
 - **`core-p3.test.mjs` (3B sections)**: spec §3l core-p3 items 2, 3, 4
   and 7, with a fake script whose every hook hands over to a function of
   the test (`fake(hooks, flags)`, through `globalThis.__p3b`); `rtable`
@@ -962,7 +963,7 @@ next section); core is the same there, in the page and in Node.
   actions, (P) each player's own parts and a host reload mid-ask, (G) the
   live facade and guard(), (7) three seeded runs of 300 random jobs through
   a Worker-like mirror (`T.job`) and a host that only applies its
-  structured-cloned patches (`env.test`): the digests equal after every job,
+  structured-cloned patches: the digests equal after every job,
   the whole tables and logs equal, every effect delivered; applyStatePatch's
   gates and steps. Two traps for such checks: notices are flood-limited
   (10, then 5 a second) and the log collapses a repeated line, so a check
@@ -1181,6 +1182,59 @@ refuses the patch, the rules go off, nobody's log has the line).
 (the script defeats its own gate with `RegExp.prototype.test`) ends the
 rules and keeps the departure; a rot whose patch is refused is dropped,
 its player told, the pile as it was on both screens.
+
+**The third 3B review's regressions** (SPEC D145–D147; each fails on the
+app before it): `core-p3.test.mjs` (RF3) — `notJSON` sees a hole, an
+`undefined` in an array, a property hung on an array (a `Date` too), a
+non-enumerable or symbol-keyed property, and a hook that leaves one in
+`t.data` fails; a function in `t.data` whose JSON is unchanged fails the
+hook that wrote it; a real job's patch, forged as a Worker past its
+lockdown could forge it, is refused whole by `applyStatePatch` with the
+table as it was — names swapped, a player who never joined, a colour or
+`online` changed, a rename to another name, a player without a hand, a
+pile without cards, a bad table after a real change (nothing
+half-applied), the rules' code or name rewritten, the rules off without a
+word, a field of its own in the patch or the rules, the guests' deck
+budget spent or grown outside a guest's `addDeck`, `zMax` going back, a
+deck over a catalog entry, a box from nowhere, a last setup that is no
+box, a 1,001-character line, a line with a field of its own, a frozen name
+`undefined`, 400 lines, 50 peeks on the record in a rot, fifty renames in
+one, a notice that is no text, an unknown effect, a peek shown in a rot,
+an error that isn't one — while a rename, a new player's join, a peek, a
+departure, a guest's deck and a Disable go in; the host keeps the asks as
+`cleanAsk` leaves them; a patch brings at most the newest lines the log
+keeps, and a veto's reason is cut as `t.say`'s; a save with a broken item
+or player loads without it, loudly. RF2's `guard()` checks now read its
+`{why, detail}`: the script's key path only in `detail`, and (7)'s
+catalog check refuses the whole patch where it skipped a bad deck.
+`t-p3-attack.js`: the survey checks the allowlist (`navigator` is five
+plain values, `scheduler.postTask` throws the `t.schedule` message,
+`Notification`, `MessagePort`, `Request`… are gone) and uses each page
+API (a value whose every use throws: WebKit's inspector reads `document`
+off the global scope, and a getter that threw there took the page down
+whenever the Worker logged); the protocol section tries replacing
+`Function.prototype.call`, `Array.prototype.push`, `Object.entries`, an
+`Object.prototype` getter and setter, the arrays' iterator, the global
+`Object` and `JSON.stringify` (each throws a `TypeError`; a script's own
+`toString` and its error class's `name` still work), and the host's rot
+and chat then apply as hers (replacing the second review's two cases: the
+lockdown makes them throw). A new section, **a Worker that lies**, has the
+host page rewrite its Worker's next `done` (p3-lib `liar` / `forge`: a
+`Worker` subclass in the host's realm — what a script past the lockdown
+could post): Alice's and Bob's names swapped, a player who never joined,
+a pile without cards, a bad table after the turned stone, a notice that
+is no text — each refused, the rules off with the public line only, the
+stone as it was on both screens, the forged part nowhere. `t-p3b-review.js`
+section 10 now makes its refused patches with `forge` (the lockdown keeps
+a script from defeating its own gate); section 11: a `Map` over `{}`, and
+a cycle, written from a stray continuation under a key of the script's
+private `t.data` ("Alice: Q of hearts") — the host's dialog and toast name
+it, Bob's log says only "rules disabled — the script crashed: the script
+changed t.data outside a hook", and nothing Bob received names the key.
+The lockdown was also checked by hand in WebKit and Firefox (the
+reviewers' probes, and one that tries each replacement and lists the
+globals left): the same outcome as Chromium, the site's service workers
+untouched.
 
 ## Storage and images (Phase 1B)
 

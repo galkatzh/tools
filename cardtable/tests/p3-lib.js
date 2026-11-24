@@ -193,6 +193,25 @@ async function join(env, name, url, o = {}) {
   await p.evaluate(() => { window.__rtc.keep = true; });
   return p;
 }
+/** Makes host page p's rules Workers liars on demand: a Worker it makes from
+ *  now on hands app.js's onmessage its next `done` rewritten by forge() —
+ *  what a script that escaped its Worker's lockdown could post. (The host's
+ *  realm is the test's to change; the Worker's isn't.) */
+const liar = (p) => p.evaluate(() => {
+  const W = window.Worker;
+  window.Worker = class extends W {
+    set onmessage(f) {
+      super.onmessage = (e) => {
+        const g = window.__forge;
+        if (!g || e.data?.type !== 'done') return f(e);
+        window.__forge = null;
+        return f({ data: g(structuredClone(e.data)) });
+      };
+    }
+  };
+});
+/** The next `done` of page p's lying Worker (liar) is rewritten by `src`, run in the page with the message as `m`. */
+const forge = (p, src) => p.evaluate((src) => { window.__forge = new Function('m', `${src}\nreturn m;`); }, src);
 /** The live-drag fx in page p's recorded bodies (p1-lib's rtcHook, `keep`). */
 const liveFx = (p) => p.evaluate(() => window.__rtc.bodies.flatMap((b) => (Array.isArray(b.body.fx) ? b.body.fx : []).filter((f) => f && f.live)));
 /** Every live-drag fx anywhere in a list of bodies (a recursive scan). */
@@ -206,4 +225,4 @@ function scanLive(bodies) {
   return out;
 }
 
-module.exports = { R3, spotXY, addrOf, expectSpot, onTable, screenOf, tableOf, topAt, svgLocal, svgScreen, centreOf, preview, dist, steps, gesture, dragTo, actTap, join, liveFx, scanLive };
+module.exports = { R3, spotXY, addrOf, expectSpot, onTable, screenOf, tableOf, topAt, svgLocal, svgScreen, centreOf, preview, dist, steps, gesture, dragTo, actTap, join, liar, forge, liveFx, scanLive };

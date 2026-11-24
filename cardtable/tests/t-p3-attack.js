@@ -9,7 +9,10 @@
 // what is checked there is what the spec promises regardless: no page API,
 // no network but import(), no post of its own to the host, and nothing done
 // through the Worker's own message protocol that acts as a player or parts
-// the mirror from the host's table (§3f.1, §3f.3, §0.2 "Actor").
+// the mirror from the host's table (§3f.1, §3f.3, §0.2 "Actor"); the
+// built-ins the engine shares with the script frozen (D145); and a Worker
+// that lies anyway — the host page rewrites its next `done` (p3-lib liar) —
+// refused by the host, which checks every patch in its own realm.
 //
 // Alice hosts. Bob is an honest guest whose incoming bodies are recorded
 // (p3-lib join). Mallory is a raw peer (final-lib), seated with her own key.
@@ -485,14 +488,20 @@ const scanRaw = (page, o) => page.evaluate((o) => {
         'WebSocketStream', 'FontFace', 'fonts', 'SharedArrayBuffer', 'close', 'dispatchEvent', 'onmessage']) T('typeof ' + k, () => typeof self[k]);
       for (const k of ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'queueMicrotask', 'requestAnimationFrame']) T(k, () => globalThis[k](() => 0, 0));
       T('setTimeout (bare)', () => setTimeout(() => 0, 0));
-      for (const k of ['document', 'alert', 'localStorage', 'sessionStorage']) T(k, () => self[k]);
-      T('window.document', () => window.document);
+      T('document', () => document.title);
+      T('alert', () => alert('hi'));
+      T('localStorage', () => localStorage.getItem('k'));
+      T('sessionStorage', () => sessionStorage.length);
+      T('window.document', () => window.document.body);
       T('window === self', () => window === self);
       T('Function realm', () => Function('return this')() === self);
       T('Function fetch', () => Function('return typeof fetch')());
       T('eval fetch', () => (0, eval)('typeof fetch'));
       T('postMessage on the prototype chain', () => { const o = []; for (let p = self; p; p = Object.getPrototypeOf(p)) if (Object.getOwnPropertyNames(p).includes('postMessage')) o.push(String(p.constructor?.name)); return o.join(); });
       T('MessagePort postMessage on self', () => MessagePort.prototype.postMessage.call(self, { type: 'done' }));
+      T('navigator', () => Object.keys(navigator).join());
+      T('scheduler.postTask', () => scheduler.postTask(() => 0, { delay: 1 }));
+      for (const k of ['Notification', 'MessagePort', 'Request', 'Blob', 'WebGLRenderingContext', 'OffscreenCanvas']) T('typeof ' + k, () => typeof self[k]);
       T('crossOriginIsolated', () => self.crossOriginIsolated);
       T('Atomics.wait, plain memory', () => Atomics.wait(new Int32Array(4), 0, 0, 1));
       T('shared wasm memory', () => Object.prototype.toString.call(new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }).buffer));
@@ -509,7 +518,10 @@ const scanRaw = (page, o) => page.evaluate((o) => {
     ok(['document', 'alert', 'localStorage', 'sessionStorage', 'window.document'].every((k) => /^throws Error: \w+ is not available: rules now run in a Worker, away from the page/.test(s[k])), `§3f.7: the page APIs explain themselves (${s.localStorage})`);
     ok(s['window === self'] === true && s['Function realm'] === true && s['Function fetch'] === 'undefined' && s['eval fetch'] === 'undefined',
       'Function and eval: the same hardened global scope (window is the Worker\'s own), no fetch there either');
-    ok(s['postMessage on the prototype chain'] === '' && /^throws TypeError/.test(s['MessagePort postMessage on self']), `postMessage is on no prototype of the Worker's scope, and MessagePort's won't post for it (${s['MessagePort postMessage on self']})`);
+    ok(s['postMessage on the prototype chain'] === '' && /^throws ReferenceError/.test(s['MessagePort postMessage on self']), `postMessage is on no prototype of the Worker's scope, and MessagePort is gone (${s['MessagePort postMessage on self']})`);
+    ok(s.navigator === 'userAgent,language,languages,hardwareConcurrency,onLine' && /^throws Error: scheduler.postTask is not available to rules scripts — use t\.schedule/.test(s['scheduler.postTask'])
+      && ['Notification', 'MessagePort', 'Request', 'Blob', 'WebGLRenderingContext', 'OffscreenCanvas'].every((k) => s[`typeof ${k}`] === 'undefined'),
+      `D145: an allowlist — navigator is five plain values (${s.navigator}; no serviceWorker, storage, usb…), scheduler throws the t.schedule message, a platform name not on the list is gone (Notification, MessagePort, Request…)`);
     console.log(`  recorded: SharedArrayBuffer ${s['typeof SharedArrayBuffer']}, crossOriginIsolated ${s.crossOriginIsolated}, a shared WebAssembly.Memory's buffer ${s['shared wasm memory']}, Atomics.wait on plain memory: ${s['Atomics.wait, plain memory']}`);
     console.log(`  recorded: left in the Worker — WebSocketStream ${s['typeof WebSocketStream']}, FontFace ${s['typeof FontFace']} (self.fonts ${s['typeof fonts']}), navigator.storage.getDirectory ${s['navigator.storage.getDirectory']}, navigator.locks ${s['navigator.locks']}, close ${s['typeof close']}, dispatchEvent ${s['typeof dispatchEvent']}`);
   }
@@ -600,39 +612,65 @@ const scanRaw = (page, o) => page.evaluate((o) => {
     ok(d.off && /^the script crashed/.test(d.err), `a fake 'init' the script dispatches crashes its Worker, loudly ("${d.err}")`);
     ok(await enableProbe(), 'the host enables the probe again');
 
-    // The script shares its realm with the Worker's code and the engine: it can replace the built-ins they call
-    // (the second 3B review, D144). Function.prototype.call: the Worker reads each host message with what it
-    // took before any script ran, so the host's own move still reaches the engine as hers.
-    await run(`const apply = Reflect.apply;
-      Function.prototype.call = function (thisArg, ...args) {
-        const v = apply(this, thisArg, args);
-        if (thisArg instanceof MessageEvent && v && v.type === 'act' && v.a && v.a.t === 'rot') { v.p = ${J(BOB)}; v.a.rot = 135; }
-        return v;
-      };`);
+    // The lockdown (D145): before any script runs, the Worker freezes the built-ins it shares with the engine, all
+    // the way down, and pins the global names that hold them — the second 3B review replaced Function.prototype.call
+    // (the host's own move re-addressed to Bob) and Array.prototype.push (a line re-signed); the third,
+    // Object.entries and an Object.prototype getter and setter (Alice's and Bob's names swapped through the patch).
+    await run(`const r = {}, T = (k, f) => { try { f(); r[k] = 'replaced'; } catch (e) { r[k] = e.name; } };
+      T('Function.prototype.call', () => { Function.prototype.call = () => 0; });
+      T('Array.prototype.push', () => { Array.prototype.push = () => 0; });
+      T('Object.entries', () => { Object.entries = () => []; });
+      T('an Object.prototype getter', () => Object.defineProperty(Object.prototype, 'seatId', { get() { return 1; } }));
+      T('an Object.prototype setter', () => Object.defineProperty(Object.prototype, 'log', { set(v) {} }));
+      T("the arrays' iterator", () => { Object.getPrototypeOf([][Symbol.iterator]()).next = () => ({ done: true }); });
+      T('the global Object', () => { self.Object = {}; });
+      T('JSON.stringify', () => { JSON.stringify = () => '{}'; });
+      const o = {};
+      o.toString = () => 'mine';
+      class E extends Error { constructor() { super('m'); this.name = 'E'; } }
+      r.own = String(o) + ',' + new E().name;
+      console.log('QZLOCK ' + JSON.stringify(r));`);
+    const lock = JSON.parse((wlog.find((x) => x.startsWith('QZLOCK ')) || 'QZLOCK {}').slice(7));
+    ok(Object.keys(lock).length === 9 && Object.entries(lock).every(([k, v]) => (k === 'own' ? v === 'mine,E' : v === 'TypeError')),
+      `D145: each built-in the engine calls is frozen — every replacement throws, while a script's own objects still take a toString, its error class a name (${J(lock)})`);
     const rot4 = ((await P.viewOf(host, 'v.items[a].rot', ids.S1)) + 90) % 360;
     ts0 = await hostNow();
     const r4 = await host.evaluate(([id, rot]) => window.__ct.act({ t: 'rot', id, rot }), [ids.S1, rot4]);
-    const lines4 = (await logSince(ts0)).map((e) => [e.p === ALICE ? 'Alice' : e.p === BOB ? 'Bob' : e.p, e.txt]);
-    ok(r4.ok && (await P.viewOf(host, 'v.items[a].rot', ids.S1)) === rot4 && lines4.some(([p]) => p === 'Alice') && !lines4.some(([p]) => p === 'Bob') && await rulesOn(),
-      `Function.prototype.call replaced: the host's own rot applies as hers, at ${rot4}° (${J(lines4)}), the rules on`);
-    await mirrorEqual('with Function.prototype.call replaced');
-    // Array.prototype.push: the engine's log line is the script's to rewrite in the Worker — the host, in its own
-    // realm, refuses a patch whose line speaks for anyone but the job's player or the rules.
-    await run(`const push = Array.prototype.push, apply = Reflect.apply;
-      Array.prototype.push = function (...xs) {
-        for (const e of xs) if (e && typeof e === 'object' && e.p === ${J(ALICE)} && e.txt === 'qz hello') e.p = ${J(BOB)};
-        return apply(push, this, xs);
-      };`);
-    ts0 = await hostNow();
     const r5 = await host.evaluate(() => window.__ct.act({ t: 'chat', msg: 'qz hello' }));
-    const d5 = await disabled(ts0);
-    ok(d5.off && !r5.ok && d5.err === "the host could not apply the script's changes: the script put a line in Bob's name into Alice's chat",
-      `Array.prototype.push replaced, the host's chat re-signed by Bob: the host refuses the patch, the rules go off ("${d5.err}"; ${J(r5)})`);
-    ok(d5.line === "rules disabled — the host could not apply the script's changes", `the public log says only that ("${d5.line}")`);
-    await h.sleep(500);
-    const said = await bob.evaluate((ts) => window.__ct.log().filter((l) => l.ts >= ts && l.txt === 'qz hello').length, ts0);
-    ok(!(await logSince(ts0)).some((e) => e.txt === 'qz hello') && said === 0, 'nobody\'s log has the line, as Bob\'s or anyone\'s: the patch was not applied');
-    ok(await enableProbe(), 'the host enables the probe again');
+    const lines4 = (await logSince(ts0)).map((e) => [e.p === ALICE ? 'Alice' : e.p === BOB ? 'Bob' : e.p, e.txt]);
+    ok(r4.ok && r5.ok && (await P.viewOf(host, 'v.items[a].rot', ids.S1)) === rot4 && lines4.some(([p, t]) => p === 'Alice' && t === 'qz hello') && !lines4.some(([p]) => p === 'Bob') && await rulesOn(),
+      `after those attempts, the host's own rot and chat apply as hers (${J(lines4)}), the rules on`);
+    await mirrorEqual('after the attempts on the built-ins');
+  }
+
+  section('Escapes: a Worker that lies — the host checks every patch again, in its own realm, against who acted (D142, D144, D145)');
+  {
+    // What a script past the lockdown could make its Worker post: the test rewrites the host's next `done` (p3-lib liar).
+    await S.liar(host);
+    ok(await enableProbe(), "the probe runs in a Worker whose dones the test may rewrite");
+    const v0 = await P.viewOf(host, 'v.players');
+    const rec = (p, o = {}) => ({ name: v0[p].name, color: v0[p].color, online: v0[p].online, hand: [], seat: v0[p].seat, ...o });
+    for (const [what, src, re, check] of [
+      ["Alice and Bob swap names through the patch's players", `m.patch.players = ${J({ [ALICE]: rec(ALICE, { name: 'Bob' }), [BOB]: rec(BOB, { name: 'Alice' }) })};`, /: the script renamed Alice$/,
+        async () => (await bob.evaluate(([a, b]) => [window.__ct.view().players[a].name, window.__ct.view().players[b].name], [ALICE, BOB])).join() === 'Alice,Bob'],
+      ['a player who never joined, wearing Bob\'s name and colour', `m.patch.players = ${J({ cccccccccccccccc: rec(BOB) })};`, /: the script added a player$/,
+        async () => !(await bob.evaluate(() => 'cccccccccccccccc' in window.__ct.view().players))],
+      ['a pile without its cards (which bricked a production host)', "m.patch.items = { ...m.patch.items, zz9brick: { k: 'p', x: 300, y: 300, rot: 0, z: 50 } };", /: a patched item \(zz9brick\) is malformed: a pile without its cards$/,
+        async () => !(await bob.evaluate(() => 'zz9brick' in window.__ct.view().items)) && !(await P.viewOf(host, "'zz9brick' in v.items"))],
+      ['a table that is none, after the turned stone', "m.patch.table = { shape: 'hex' };", /: the patched table: /, null],
+      ['a notice that is no text (it threw in the effects, once the table had taken the patch)', `m.out.effects.push({ t: 'note', p: ${J(BOB)}, msg: 5 });`, /: the script's effects are malformed$/, null],
+    ]) {
+      const rot0 = await P.viewOf(host, 'v.items[a].rot', ids.S1);
+      await S.forge(host, src);
+      const t0 = await hostNow();
+      const r = await host.evaluate(([id, rot]) => window.__ct.act({ t: 'rot', id, rot }), [ids.S1, (rot0 + 90) % 360]);
+      const d = await disabled(t0);
+      ok(d.off && !r.ok && re.test(d.err) && d.line === "rules disabled — the host could not apply the script's changes", `${what}: refused, the rules off ("${d.err}"; the public line "${d.line}")`);
+      await h.sleep(400);
+      const rots = [await P.viewOf(host, 'v.items[a].rot', ids.S1), await bob.evaluate((id) => window.__ct.view().items[id].rot, ids.S1)];
+      ok(rots.every((x) => x === rot0) && (!check || await check()), `${what}: nothing of the job applied — the stone at ${rot0}° on both screens (${J(rots)})${check ? ', and the forged part nowhere' : ''}`);
+      ok(await enableProbe(), 'the host enables the probe again');
+    }
   }
 
   section('Escapes: a Worker kept from answering — it goes on, or the watchdog ends it loudly; never a silent hang');
