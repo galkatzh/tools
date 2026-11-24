@@ -148,8 +148,8 @@ const drawnKey = (d) => d.filter((x) => /\/[bw]$/.test(x.t)).map((x) => `${x.at}
     ok(J([...(grid?.marks || [])].sort()) === J([...STARS[N]].sort()), `its star points are marked: ${(grid?.marks || []).join(', ')}`);
     ok(s.bowl.b && s.bowl.w && v.items[s.bowl.b].owner === 'seat:black' && v.items[s.bowl.w].owner === 'seat:white',
       `two bowls (supplies), owned by seat:black and seat:white (${J([s.bowl.b, s.bowl.w].map((id) => id && v.items[id].owner))})`);
-    const stone = (c) => type(v.items[s.bowl[c]].t);
-    ok(stone('b')?.faces?.[0]?.color && stone('w')?.faces?.[0]?.color, 'each bowl holds stones of its colour');
+    const lum = (c) => { const hex = type(v.items[s.bowl[c]].t)?.faces?.[0]?.color || '#808080'; const [r, g, b] = [1, 3, 5].map((k) => parseInt(hex.slice(k, k + 2), 16) / 255); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+    ok(lum('b') < 0.3 && lum('w') > 0.7, `Black's bowl holds dark stones, White's light ones (luminance ${lum('b').toFixed(2)} / ${lum('w').toFixed(2)})`);
     ok(s.pid.b && s.pid.w && s.pid.b !== s.pid.w, `the two players sit at Black and White (Black: ${who(s.page.b)}, White: ${who(s.page.w)})`);
     for (const p of both) {
       const seats = await G.seatTexts(p);
@@ -174,9 +174,9 @@ const drawnKey = (d) => d.filter((x) => /\/[bw]$/.test(x.t)).map((x) => `${x.at}
   const g9 = Go(9);
   /** A move by real drag: colour c's player drags out of their own bowl onto
    *  `at`. When the referee allows it, both screens must show the result;
-   *  else the mover must be refused with a toast (matching `why`) and
+   *  else the mover must be refused with a toast (matching `why`, by default any "🚫") and
    *  nothing may change. Returns {lines: the log lines the move wrote, taken, toast}. */
-  async function move(c, at, why) {
+  async function move(c, at, why = /🚫/) {
     const p = s9.page[c], touch = p === bob, t0 = await G.mark(p), log0 = await alice.evaluate(() => window.__ct.log());
     ok(await P.waitView(p, 'v.rules.public.turn === me'), `${who(p)} sees it is their turn`);
     const want = g9.try(c, at);
@@ -205,7 +205,7 @@ const drawnKey = (d) => d.filter((x) => /\/[bw]$/.test(x.t)).map((x) => `${x.at}
   await b('F5');
 
   section('9 × 9: refusals — a taken point, a play out of turn');
-  await w('D5', /🚫/);
+  await w('D5');
   {
     const t0 = await G.mark(alice);
     await G.place(alice, s9.bowl.b, 'J9'); // (White to play)
