@@ -1528,6 +1528,61 @@ from the seats (go) or from the pile showing the dark face (reversi).
   `everywhere` (a view condition on every page).
 - Screenshots: `shots/p3-go9-*.png`, `shots/p3-go19-*.png`, `shots/p3-rev-*.png`.
 
+### The chess suites (3C tests)
+
+Every expectation is the laws of chess (FIDE) or the spec's (§3g "Draws",
+§3l); the template is only driven.
+
+- **`t-p3-chess.js`** (spec §3l t-p3-chess): Alice hosts on a desktop (the
+  mouse, reduced motion), Bob plays on an iPhone 13 upright (CDP touches,
+  motion on), Carol joins on one held sideways (motion on) and watches;
+  Alice picks Chess from 🎲, and which page is White is read from the seats.
+  Every move a player makes is a real drag of the piece from its drawn
+  centre to the square's, held still 120 ms before the release (a finger
+  let go mid-flick leaves Chrome flinging, and its next tap only stops the
+  fling: no click); a move counts once the piece stands there in every
+  view. A refusal must toast "🚫 …" on the mover's screen (an init script
+  records every toast, banner and confetti burst, as they replace each
+  other), the piece drawn back on its square on every screen (≤ 3 px), and
+  the board and the turn as they were. Five games, the first picked from
+  🎲, each other started by "♻ New game": (1) the start position on both screens, each player's own edge at
+  the bottom, the 📜 title strict, a tap's hint (f3, h3 for the g1 knight;
+  f6, h6 on the phone); off turn, an opponent's piece (a drag of it pans
+  the view and sends nothing, §3g; a forged `move` is refused), e2 → e4 and
+  e7 → e5 on both screens and in both logs, a blocked path (Ra1 → a4), a
+  pinned pawn (d2 → d4 under Bb4); O-O and O-O-O with their rooks; Carol
+  joins as a watcher (no seat, no buttons, her drag sends nothing, a forged
+  move is refused, her "New game" starts nothing); a draw offer is
+  Black's ask, lapses when White moves, then Black's offer accepted on the
+  desktop: a draw, no 🏆; (2) castling through check (Bh3 covers f1) and
+  out of check (Bb4+) refused, then Black resigns (after the confirming
+  ask): 🏆 for White; (3) fool's mate by drag: "Checkmate", 🏆 for Black,
+  a confetti burst on Bob's and Carol's screens, the winner's bigger; (4)
+  `a3 h5 a4 h4 g4`, h4 × g3 en passant, then h2 × g1: the promotion ask on
+  Bob's phone alone (♛ ♜ ♝ ♞), any move refused while it waits, a host
+  reload (the ask still on Bob's screen from the reloaded host's
+  snapshot), ♞ tapped: a black knight on g1; Bob's forged `del` gets "🚫
+  Not a move in this game"; the knights out and back twice: the draw by
+  repetition at the 8th half-move, not the 7th; (5) Loyd's stalemate, its
+  first 18 half-moves sent through `__ct.act` (set-up) and Qc8 → e6 by
+  drag: "Stalemate", a draw, no 🏆; at the end the Worker's digest equals
+  the host's. Screenshots: `shots/p3-chess-*.png`.
+- **`core-p3.test.mjs` (11)**: the chess template on a Worker-like mirror
+  (`T.job`, `guard()` included) whose structured-cloned patches a host
+  table applies with the job (`chessGame`); a host-only "plant" press,
+  wrapped around the template, lays out a position from inside a hook
+  (`globalThis.__chessPlant`). Threefold repetition (the knights out and
+  back twice: the 8th half-move, not the 7th; a rook out and back loses a
+  castling right, so the same pieces are another position; a position
+  where en passant is possible is another position; a double step no pawn
+  can take changes nothing, FIDE 9.2.2), the fifty-move rule (kings walking
+  cycles of 7 and 8 squares, so nothing repeats: the 100th half-move, not
+  the 99th; a pawn move restarts the count), and each insufficient-material
+  case of §3g reached by a capture (K v K, K+B v K, K+N v K either way
+  round, K+B v K+B on dark and on light squares) end the game as an
+  announced draw with no winner, the next move refused; K+B v K+B on
+  opposite colours plays on.
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores
