@@ -602,13 +602,21 @@ const scanRaw = (page, o) => page.evaluate((o) => {
   }
 
   section('Escapes: a Worker kept from answering — it goes on, or the watchdog ends it loudly; never a silent hang');
+  // (self.close() is taken away like the timers, after the 3B review: it throws at once, naming itself, where it
+  // used to end the Worker silently and leave the host to wait out the watchdog)
   for (const [what, code, then] of [
     ['a capture listener that stops every message', "globalThis.qzCap = 0; self.addEventListener('message', (e) => { globalThis.qzCap++; e.stopImmediatePropagation(); }, true);", true],
-    ['self.close()', 'self.close();', false],
+    ['self.close()', 'self.close();', 'throws'],
     ['Atomics.wait on a shared WebAssembly memory', 'Atomics.wait(new Int32Array(new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }).buffer), 0, 0, 60000);', false],
   ]) {
     const rot0 = await P.viewOf(host, 'v.items[a].rot', ids.HMK), t0 = Date.now();
     let r = await run(code);
+    if (then === 'throws') {
+      const took = Date.now() - t0, off = await P.waitView(host, '!v.rules?.enabled', null, 3000), err = await lastErr();
+      ok(off && /close is not available to rules scripts/.test(err) && took < 3000, `${what}: throws at once — the rules go off loudly, saying why, ${took} ms after it was sent ("${err}")`);
+      ok(await enableProbe(), 'the host enables the probe again');
+      continue;
+    }
     if (then) r = await host.evaluate((id) => window.__ct.act({ t: 'rot', id, rot: 300 }), ids.HMK);
     const took = Date.now() - t0, off = !!r.error && await P.waitView(host, '!v.rules?.enabled', null, 3000);
     const err = await lastErr(), rot = await P.viewOf(host, 'v.items[a].rot', ids.HMK);

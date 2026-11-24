@@ -636,6 +636,21 @@ sync and rendering, and the Worker together with `handle`.
      - A function left in `t.data` costs the rules, not the game: they go
        off, keeping the data's plain part, as a save that couldn't copy it
        did before.
+     - After the Worker's review: the host keeps every address exactly as
+       the Worker read it, and a new Worker starts with the host's table as
+       it is, highlights included, so the two never drift apart; the
+       script's state must be plain JSON (a typed array, a `Map` or a
+       `Date` fails its hook, saying so), and the host checks again what
+       the Worker sends. A script can't post its Worker a job of its own
+       (only the host's messages are read), and fonts, the site's file
+       system and locks are taken away too. A player's arrival, departure
+       or rename is never lost to a stuck script; a reconnect while the old
+       connection's departure waits is counted as a return. The running
+       rules crashing while new ones start begins the start again; a crash
+       is said to everyone as "the script crashed", its words to the host
+       alone. Enable evaluates a script once. Saved rules a reload can't
+       start because the page and the files disagree stay on in the save,
+       so the reload the toast asks for brings them back.
 4. **Game boxes.**
    - `game.json` plus `.zip` upload, declarative setup and reset.
    - Export with the current position.

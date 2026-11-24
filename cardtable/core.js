@@ -1168,27 +1168,78 @@ export function cleanAsk(spec) {
   } else if (min !== undefined || max !== undefined) bad("min and max go with pick 'number'");
   return o;
 }
+/** Why `v` (named `path`) is not plain JSON data, or '': a value JSON
+ *  would drop or change on its way through a save, a rollback or a patch —
+ *  a function, a symbol, a BigInt, a non-finite number, or an object that is
+ *  not a plain object or array (a Map, a Set, a typed array, an ArrayBuffer,
+ *  a Date: a class instance). `undefined` passes (JSON leaves the key out,
+ *  as an absent one), and so do functions and symbols with `uncloned`
+ *  (t.data and t.public: a value a Worker can't post at all fails as D129
+ *  says, keeping the JSON part). Run on a value JSON.stringify took, so it
+ *  has no cycle. */
+export function notJSON(v, path, uncloned = false) {
+  if (v === null || v === undefined || typeof v === 'string' || typeof v === 'boolean') return '';
+  if (typeof v === 'number') return Number.isFinite(v) ? '' : `${path} is ${v}, not JSON`;
+  if (uncloned && (typeof v === 'function' || typeof v === 'symbol')) return '';
+  if (typeof v !== 'object') return `${path} is a ${typeof v}, not JSON`;
+  const arr = Array.isArray(v), proto = Object.getPrototypeOf(v);
+  if (arr ? proto !== Array.prototype : proto !== Object.prototype && proto !== null) {
+    return `${path} is a ${String(proto?.constructor?.name || 'class instance').slice(0, 30)}, not JSON — keep it to plain objects, arrays, strings, numbers, true, false and null`;
+  }
+  for (const k of Object.keys(v)) {
+    const why = notJSON(v[k], arr ? `${path}[${k}]` : /^[A-Za-z_$][\w$]*$/.test(k) ? `${path}.${k}` : `${path}[${JSON.stringify(k.slice(0, 30))}]`, uncloned);
+    if (why) return why;
+  }
+  return '';
+}
 /** Why `v` can't be player p's t.secret entry ('' when it can): p must be a
- *  player id (PID_RE: never "__proto__"), v JSON of at most SECRET_MAX_CHARS. */
+ *  player id (PID_RE: never "__proto__"), v plain JSON (notJSON) of at most
+ *  SECRET_MAX_CHARS. */
 function secretProblem(p, v) {
   if (!PID_RE.test(p)) return `t.secret: ${JSON.stringify(p.slice(0, 30))} is not a player id`;
   let j;
   try { j = JSON.stringify(v); } catch (err) { return `t.secret[${p}] is not JSON (${err.message})`; }
   if (j === undefined) return `t.secret[${p}] is not JSON`;
-  return j.length > SECRET_MAX_CHARS ? `t.secret[${p}] is too large (${j.length.toLocaleString('en-US')} chars, max ${SECRET_MAX_CHARS.toLocaleString('en-US')})` : '';
+  if (j.length > SECRET_MAX_CHARS) return `t.secret[${p}] is too large (${j.length.toLocaleString('en-US')} chars, max ${SECRET_MAX_CHARS.toLocaleString('en-US')})`;
+  return notJSON(v, `t.secret[${p}]`);
+}
+/** Why hints `h` (rules.hints: {pid: {items, spaces}}) are not the engine's
+ *  shape (t.hint's), or '' — a rules Worker's patch is checked with it. */
+function hintsProblem(h) {
+  if (!isObj(h)) return 'the hints are not a map';
+  const strs = (l) => Array.isArray(l) && l.every((s) => typeof s === 'string' && s.length <= 100);
+  for (const [p, x] of Object.entries(h)) {
+    if (!PID_RE.test(p) || !isObj(x) || !strs(x.items ?? []) || !strs(x.spaces ?? []) || (x.items?.length || 0) + (x.spaces?.length || 0) > HINT_MAX) return `the hint of ${JSON.stringify(p.slice(0, 30))} is malformed`;
+  }
+  return '';
+}
+/** Why asks `asks` (rules.asks: {pid: Ask[]}) fail the engine's gate, or '':
+ *  player ids as keys, at most ASK_MAX each, one id once, each through cleanAsk. */
+function asksProblem(asks) {
+  if (!isObj(asks)) return 'the asks are not a map';
+  try {
+    for (const [p, list] of Object.entries(asks)) {
+      if (!PID_RE.test(p) || !Array.isArray(list) || list.length > ASK_MAX) throw new TypeError(`the asks of ${JSON.stringify(p.slice(0, 20))}: a list of at most ${ASK_MAX}`);
+      const ids = list.map((x) => cleanAsk(x).id);
+      if (new Set(ids).size < ids.length) throw new TypeError(`the asks of ${p}: an id twice`);
+    }
+  } catch (err) { return err.message; }
+  return '';
 }
 /** An object with no prototype holding o's own entries: t.secret is one, so
  *  `t.secret['__proto__'] = …` makes a key the gate refuses instead of
  *  quietly changing what the object inherits. */
 const nullProto = (o) => Object.assign(Object.create(null), isObj(o) ? o : {});
 /** The engine-state gates on a loaded rules state `r` (a save, an import:
- *  spec §3a, §3h), in place: the hints go (never kept), every ask passes
- *  cleanAsk (≤ ASK_MAX per player, one id once), every t.secret entry
- *  secretProblem, and data._timers gateTimers. A bad entry is dropped with
- *  console.error: a hand-edited or corrupted save can't plant engine state. */
-export function gateRules(r) {
+ *  spec §3a, §3h), in place: the hints go (never kept) — unless `live`: a
+ *  rules Worker's mirror of the host's running state, which must start equal
+ *  to it, hints and all (§3f.3) — every ask passes cleanAsk (≤ ASK_MAX per
+ *  player, one id once), every t.secret entry secretProblem, and
+ *  data._timers gateTimers. A bad entry is dropped with console.error: a
+ *  hand-edited or corrupted save can't plant engine state. */
+export function gateRules(r, live = false) {
   if (!isObj(r)) return;
-  delete r.hints;
+  if (!live) delete r.hints;
   gateTimers(r);
   const sec = nullProto(null);
   for (const [p, v] of Object.entries(isObj(r.secret) ? r.secret : {})) {
@@ -1578,7 +1629,7 @@ export function createTable(host, env = {}) {
   host.boxes ??= {};
   host.boxSrc ??= {};
   migrate(host);
-  gateRules(host.rules); // (every load: a hand-edited save can't plant an ask, a secret or a timer)
+  gateRules(host.rules, env.mirror); // (every load: a hand-edited save can't plant an ask, a secret or a timer)
   host.keys ??= {};
   try { host.table = cleanTable(host.table); } catch (err) {
     console.error('the saved table is unreadable: a small round one instead', err);
@@ -1788,8 +1839,10 @@ export function createTable(host, env = {}) {
   // nothing behind; commit() closes the journal and returns the StatePatch of
   // what the job changed (spec §3f.2) — what a rules Worker sends the host.
   // The cost is O(touched + |rules' state|) per job. Not journaled: the
-  // script object's own properties (`this`), and a pull's pending draw
-  // (drawFrom: D114, a veto must not redraw).
+  // script object's own properties (`this`). A pull's pending draws
+  // (drawFrom) are half journaled: a rollback puts back the ones a pull
+  // took since, and keeps the ones drawn since (D114, D135: a veto never
+  // redraws, even of a pull a script's handle() made itself).
   const ABSENT = Symbol('absent'); // the pre-image of something that wasn't there
   const clone = (v) => JSON.parse(JSON.stringify(v));
   /** Records under key k ('i:<id>', 'p:<pid>', 'd:<deck id>', 'b:<box id>')
@@ -1811,7 +1864,7 @@ export function createTable(host, env = {}) {
       pre: new Map(), json, rules: host.rules && { ...host.rules },
       table: host.table, seats: host.seats, zMax: host.zMax, boardSeq: host.boardSeq, guestDeckChars: host.guestDeckChars, lastSetup: host.lastSetup,
       log: null, dirtyLog: dirty.log.length, effects: effects.length, runs: runs.slice(), marks, draws, hooks: jobHooks.length,
-      spots: [spotTB, spotSig, respot],
+      spots: [spotTB, spotSig, respot], taken: [],
     };
   }
   /** Opens the journal (`json`: the rules' state as JSON, when just taken). */
@@ -1833,7 +1886,7 @@ export function createTable(host, env = {}) {
       for (let k = J.frames.length - 1; k >= token; k--) restore(J.frames[k]);
     } finally { restoring = false; }
     J.frames.length = token + 1;
-    Object.assign(J.frames[token], { pre: new Map(), log: null });
+    Object.assign(J.frames[token], { pre: new Map(), log: null, taken: [] });
     for (const [k, at] of J.first) if (at >= token) J.first.delete(k);
     partsVer++;
   }
@@ -1867,6 +1920,7 @@ export function createTable(host, env = {}) {
     runs = f.runs.slice();
     [marks, draws] = [f.marks, f.draws];
     [spotTB, spotSig, respot] = f.spots;
+    for (const [id, d] of f.taken.reverse()) drawn.set(id, d); // (a pull undone leaves the member it took pending — the first, if several: D135)
     tbSig = null; // (the boards are read again)
     tbVer++;
   }
@@ -2698,6 +2752,7 @@ export function createTable(host, env = {}) {
     if (hand ? !handRoom(actor, to) : !cap(actor)) return false;
     touch(id);
     const at = nextTo(bag), m = bag.of.splice(drawFrom(id, bag), 1)[0];
+    J?.frames.at(-1).taken.push([id, drawn.get(id)]); // (a rollback of this pull puts its draw back: see restore)
     drawn.delete(id);
     if (hand) {
       touchPlayer(to, { hand: true });
@@ -3615,23 +3670,22 @@ export function createTable(host, env = {}) {
     return bump();
   }
   /** Why the rules' state `json` (rulesJSON) fails the engine's gates (spec
-   *  §3a), or '': t.data at most DATA_MAX_CHARS; t.secret — when it changed
-   *  since `was` — keyed by player ids only, with no prototype of its own,
-   *  each entry JSON of at most SECRET_MAX_CHARS; the asks (only written by
+   *  §3a), or '': t.data at most DATA_MAX_CHARS; t.data and t.public — when
+   *  their JSON changed since `was` — plain JSON (notJSON: a typed array, a
+   *  Map or a Date would come back from a rollback or a save as something
+   *  else; a function is D129's, as a Worker can't post it); t.secret keyed
+   *  by player ids only, with no prototype of its own, each entry plain
+   *  JSON of at most SECRET_MAX_CHARS — every entry, every time (a function
+   *  JSON skips leaves the JSON as it was); the asks (only written by
    *  t.ask) through cleanAsk again when they changed. */
   function gateProblem(json, was) {
     const n = json.data.length;
     if (n > DATA_MAX_CHARS) return `t.data is too large (${n.toLocaleString('en-US')} chars, max ${DATA_MAX_CHARS.toLocaleString('en-US')})`;
     const r = host.rules;
-    if (json.secret !== was?.secret) {
-      if (!isObj(r.secret) || Object.getPrototypeOf(r.secret) !== null) return 't.secret was replaced or given a prototype — set and delete its entries instead';
-      for (const p of Object.keys(r.secret)) { const why = secretProblem(p, r.secret[p]); if (why) return why; }
-    }
-    if (json.asks !== was?.asks) {
-      try {
-        for (const [p, list] of Object.entries(r.asks)) if (!PID_RE.test(p) || list.length > ASK_MAX) throw new TypeError(`the asks of ${p.slice(0, 20)}`); else list.forEach(cleanAsk);
-      } catch (err) { return `t.ask: ${err.message}`; }
-    }
+    for (const k of ['data', 'public']) if (json[k] !== was?.[k]) { const why = notJSON(r[k], `t.${k}`, true); if (why) return why; }
+    if (!isObj(r.secret) || Object.getPrototypeOf(r.secret) !== null) return 't.secret was replaced or given a prototype — set and delete its entries instead';
+    for (const p of Object.keys(r.secret)) { const why = secretProblem(p, r.secret[p]); if (why) return why; }
+    if (json.asks !== was?.asks) { const why = asksProblem(r.asks); if (why) return `t.ask: ${why}`; }
     return '';
   }
   /** A job's final gates while the rules are on (spec §3f.4): the timers
@@ -3677,18 +3731,20 @@ export function createTable(host, env = {}) {
     if (draws) logOp(RULES, 'random', `used randomness (${draws} draw${draws > 1 ? 's' : ''})`, draws);
     draws = 0;
   }
-  /** The save couldn't copy the rules' state: t.data or t.public hold
-   *  something that isn't data (a function, a DOM node — they must stay
-   *  JSON). The rules disable loudly, and both keep their JSON part, which
+  /** The save (or a Worker's post) couldn't copy the rules' state: t.data or
+   *  t.public hold something that isn't data (a function, a DOM node — they
+   *  must stay JSON). The rules disable loudly, and both keep their JSON
+   *  part (t.secret too, though its gate keeps it JSON already), which
    *  is all a save ever kept of them. True: a change (renumbered). */
   function unsaveable(why) {
     if (!host.rules) return false;
-    for (const k of ['data', 'public']) {
+    for (const k of ['data', 'public', 'secret']) {
       try { host.rules[k] = JSON.parse(JSON.stringify(host.rules[k] ?? {})); } catch (err) {
         console.error(`t.${k} has no JSON form: emptied`, err);
         host.rules[k] = {};
       }
     }
+    host.rules.secret = nullProto(host.rules.secret);
     lastJSON = null;
     if (host.rules.enabled) hookFailed('t.data / t.public', new Error(`they hold a value that can't be saved (${why}) — keep them JSON`));
     return bump();
@@ -4390,30 +4446,46 @@ export function createTable(host, env = {}) {
   function refreshFor(p, a) {
     return flood(refusals, p, 10, 5) && touchNamed(p, a) ? bump() : false;
   }
+  /** Why the rules' fields of a Worker's patch `r` fail the engine's gates
+   *  (spec §3a: they run on every write, and the script shares the Worker's
+   *  realm, so its own gates are only as sound as the built-ins it left
+   *  alone), checked again here, in the host's realm — or ''. */
+  function patchRulesProblem(r) {
+    if ('secret' in r) {
+      if (!isObj(r.secret)) return 't.secret is not a map';
+      for (const [p, v] of Object.entries(r.secret)) { const why = secretProblem(p, v); if (why) return why; }
+    }
+    if ('asks' in r) { const why = asksProblem(r.asks); if (why) return `t.ask: ${why}`; }
+    if ('hints' in r) { const why = hintsProblem(r.hints); if (why) return `t.hint: ${why}`; }
+    if ('data' in r) {
+      if (!isObj(r.data)) return 't.data is not an object';
+      const t = r.data._timers;
+      if (t !== undefined && (!Array.isArray(t) || t.length > MAX_TIMERS || !t.every((x) => isObj(x) && Number.isFinite(x.at) && typeof x.tag === 'string' && x.tag.length <= TIMER_TAG_MAX))) return 't.data._timers is malformed';
+      if (JSON.stringify(r.data).length > DATA_MAX_CHARS) return 't.data is too large';
+    }
+    return '';
+  }
   /** Applies a rules Worker's StatePatch (spec §3f.6) to this table — the
-   *  host's, whose state the Worker's mirror ran the job on: items whole
-   *  (null: removed; in test builds, env.test, each is shape-asserted
-   *  first), players whole (keys stay here), new decks and boxes (gated
-   *  again: cleanDeck, cleanBox), the rules' fields, the table and the seats
-   *  (a table change reads every address again), the log lines to append,
-   *  the counters, and the refresh touches — all into the dirty sets. `out`
-   *  (T.job's): the job's effects, queued here as if this table had run it
-   *  (decks, boxes and the rules code apart: the patch brings those), and
-   *  its hook failure as T.rulesError. True when anything changed (renumbered). */
+   *  host's, whose state the Worker's mirror ran the job on: new decks and
+   *  boxes first (gated again: cleanDeck, cleanBox), then the boards, then
+   *  the other items, whole (null: removed; in test builds, env.test, each
+   *  is shape-asserted first), players whole (keys stay here), the rules'
+   *  fields (gated again: patchRulesProblem — a failure throws, and the
+   *  app ends the rules), the table and the seats, the log lines to append,
+   *  the counters, and the refresh touches — all into the dirty sets. The
+   *  addresses come as the Worker read them: its job ended reading every
+   *  piece a board's change concerned (syncSpots), and those pieces are in
+   *  the patch — so this table takes the boards as read (D128): it never
+   *  derives an address of its own while a Worker runs. `out` (T.job's):
+   *  the job's effects, queued here as if this table had run it (decks,
+   *  boxes and the rules code apart: the patch brings those), and its hook
+   *  failure as T.rulesError. True when anything changed (renumbered). */
   function applyStatePatch(s, out) {
     if (J) throw new Error('applyStatePatch: a journal is open');
+    const why = s.rules ? patchRulesProblem(s.rules) : '';
+    if (why) throw new Error(`the script's state fails the engine's gates: ${why}`);
     const items = Object.entries(s.items || {}).filter(([id]) => id !== '__proto__');
     if (env.test) for (const [id, it] of items) { const why = it === null ? '' : itemProblem(it); if (why) throw new Error(`a patched item (${id}) is malformed: ${why}`); }
-    for (const [id, it] of items) {
-      if (it === null) remove(id);
-      else put(id, it);
-    }
-    for (const [p, pl] of Object.entries(s.players || {})) {
-      if (p === '__proto__') continue;
-      const old = own(host.players, p);
-      touchPlayer(p, { hand: JSON.stringify(old?.hand) !== JSON.stringify(pl.hand) });
-      host.players[p] = pl;
-    }
     for (const [id, deck] of Object.entries(s.decks || {})) {
       if (id === '__proto__') continue;
       try {
@@ -4431,13 +4503,25 @@ export function createTable(host, env = {}) {
         emit({ t: 'box', id });
       } catch (err) { console.error(`patched box ${id} rejected`, err); }
     }
+    const board = ([id, it]) => (it ? it.z < 0 : boardIds.has(id)); // (the boards first: the pieces' zones are read against them)
+    for (const [id, it] of [...items.filter(board), ...items.filter((e) => !board(e))]) {
+      if (it === null) remove(id);
+      else put(id, it);
+    }
+    for (const [p, pl] of Object.entries(s.players || {})) {
+      if (p === '__proto__') continue;
+      const old = own(host.players, p);
+      touchPlayer(p, { hand: JSON.stringify(old?.hand) !== JSON.stringify(pl.hand) });
+      host.players[p] = pl;
+    }
     if (s.rules) {
       const was = host.rules;
       host.rules = { ...was, ...s.rules };
+      if ('secret' in s.rules) host.rules.secret = nullProto(s.rules.secret); // (a structured clone has a prototype: §3a wants none)
       if (host.rules.code !== was?.code || host.rules.enabled !== was?.enabled) emit({ t: 'rules' });
       [lastJSON, partsVer] = [null, partsVer + 1];
     }
-    if (s.table) { host.table = cleanTable(s.table); dirty.table = true; respot = true; }
+    if (s.table) { host.table = cleanTable(s.table); dirty.table = true; }
     if ('seats' in s) { host.seats = s.seats && cleanSeats(s.seats); dirty.seats = true; }
     if (Array.isArray(s.log)) {
       host.log = trimLog(host.log.concat(s.log));
@@ -4447,6 +4531,7 @@ export function createTable(host, env = {}) {
     if (typeof s.lastSetup === 'string') host.lastSetup = s.lastSetup;
     for (const id of s.refresh || []) refreshItem(id);
     for (const p of s.refreshHands || []) if (own(host.players, p)) refreshHand(p);
+    [spotTB, spotSig, respot] = [tb(), tbSig, false]; // (the boards as the Worker read them: see above)
     for (const e of out?.effects || []) if (e.t !== 'deck' && e.t !== 'box' && e.t !== 'rules') emit(e);
     if (out?.error) lastRulesError = `${out.error.hook}: ${out.error.message}`;
     return Object.keys(s).length ? bump() : false;
@@ -4529,6 +4614,9 @@ export function createTable(host, env = {}) {
     /** Every asset id the table's decks and boxes show: the only images the host serves (app.js). */
     assetRefs: () => assetRefs(host.decks, host.boxes),
     takeDirty, patchContent, snapContent, mine, refreshFor, applyStatePatch,
+    /** Reads the addresses a board's change concerns again now (syncSpots):
+     *  the host does before a rules Worker copies its state. */
+    syncSpots,
     // the journal (spec §3f.4), and a rules Worker's side (§3f.2, §3f.3, §3f.7)
     begin, savepoint, rollbackTo, rollback: () => rollbackTo(0), checkpoint: () => savepoint(), commit, job, guard, digest,
     /** The state as saved: all of it but the catalog (decks, boxes and where

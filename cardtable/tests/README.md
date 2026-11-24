@@ -1003,9 +1003,11 @@ E2E test:
   getter) the 📜 dialog's error: a hook's failure ("onAction(): …"), the
   watchdog's "the script took longer than 4 s (stopped)", "the script
   crashed: …" (a fatal: "… outside a hook", "the script changed t.data
-  outside a hook"), or an Enable's evaluation error ('' after a good
-  Enable); `jobs()` how many jobs wait in the host's queue or are in flight
-  (a Worker starting counts).
+  outside a hook", or the message of an error the script let escape — the
+  public log then says only "rules disabled — the script crashed"), or an
+  Enable's evaluation error ('' after a good Enable); `jobs()` how many
+  jobs wait in the host's queue or are in flight (a Worker starting
+  counts).
 - **`__ct.perf` (host)**: `workerStarts`, `workerStops` (every Worker ended:
   replaced, disabled, crashed, stopped by the watchdog, or by a demotion),
   `workerJobs` (jobs the Worker ran), `lastRulesRoundtripMs` (B12: the host
@@ -1015,9 +1017,11 @@ E2E test:
   digest with the Worker's every 50 jobs; a mismatch is also a
   console.error), `saves` (saves that reached IndexedDB: a demoted tab's
   count stops).
-- **The one-writer rule** (CARDTABLE_TEST): while a Worker runs, the host
-  table's `T.apply` throws (only the Worker's patches change the table);
-  `_rulesOff` and a Disable run on the host table after the Worker is gone.
+- **The one-writer rule** (CARDTABLE_TEST): while a Worker runs or starts,
+  the host table's `T.apply` throws (only the Worker's patches change the
+  table); `_rulesOff` and a Disable run on the host table after the Worker
+  is gone. A refused action's re-send (flood control, a full queue) is no
+  state change, and is made at once, outside the queue.
   The host table's script runner (`pageHooks`) throws if a hook is called.
 - **The watchdog** counts the host page's visible time: 4 s per job (+10 ms
   per item a box setup lays out), 10 s for a Worker to start; hidden or
@@ -1027,7 +1031,8 @@ E2E test:
   stops is dropped (the actor's notice "🚫 The rules stopped responding —
   your action was not applied", what it named re-sent), the rules go off
   ("rules disabled — the script took longer than 4 s (stopped)", a toast),
-  and the queue goes on.
+  and the queue goes on. A `_join`, `_leave` or `_name` in flight is not
+  dropped: it runs again on the host's table, with the rules off.
 - **The wire**: a guest's actions beyond `MAX_QUEUE` (500) waiting jobs
   are refused ("🚫 The table is busy — try again"); `_join` is queued (the
   seat key binds at once, on receipt); `hello`, `snap` and `need` never
@@ -1039,6 +1044,11 @@ E2E test:
   was updated — reload this page to run rules" (a test can route
   `rules-worker.js` to a copy exporting another `MODULE_V`).
 - **The benches** (t-p1-bench, on the 1,000-card table): B12, B14, B15.
+  B12 is the round trip of a host move on an otherwise idle host (each
+  move paced 60 ms and a frame apart): a `done` that lands behind a
+  guest's move, its broadcast and sealing, or a burst, waits for the main
+  thread (14–23 ms p95 in the 3B review's probe), while the Worker's own
+  share stays under 0.5 ms.
 - **Existing suites changed for 3B part 2** (mechanism changes, no check
   dropped): `t-engine.js` (its Probe ran `window.TEST(t)`, a page function,
   from `onButton`; now a press of "run" carries the code, which `onAction`
@@ -1119,8 +1129,35 @@ act of Bob's with the next job's id, and one with an id never posted), a
 fake `init`, and three ways to keep the Worker from answering (a capture
 listener, `self.close()`, `Atomics.wait` on a shared WebAssembly memory —
 `SharedArrayBuffer` is undefined, but such a memory still gives one): each
-must go on, or end loudly through the watchdog. The Worker's console
-reaches the host page's (`QZ…` lines).
+must go on, or end loudly through the watchdog — `self.close()` now throws
+at once, naming itself (the 3B fix-up took it away; this entry checked the
+silent hang before: a mechanism change, no check dropped). The Worker's
+console reaches the host page's (`QZ…` lines).
+
+**The 3B fix-up's regressions** (the reviews of 3B; SPEC D132–D143):
+`core-p3.test.mjs` (RF) replays app.js's Worker lifecycle in Node — a host
+table that only applies patches, and a mirror built from its state on each
+Enable as `rules-worker.js` builds it (`lifecycle()`): the hints an Enable
+clears reach the host; the host keeps the addresses the Worker read (an
+explicit one under a newer board, then a new felt, a table resize or a
+board under it moved — with no read on the host between two patches); a
+pull a script's `handle` made itself, then vetoed, leaves the same member
+next; a typed array, a `Map`, a `Date`, `NaN` or a class instance in
+`t.data` / `t.public` fails its hook, naming it; `applyStatePatch` throws
+on a patch's bad secret key, ask, hint or timer and applies nothing.
+**`t-p3b-review.js`** (Alice hosts, Bob and Carol play, Mallory floods):
+hints after an Enable; the running rules crashing while new ones start
+(the start begins again and ends with the rules on; a top level that never
+ends still fails at its start's 10 s); a reconnect while its `_leave`
+waits behind slow hooks (online at the end; the suite prints whether the
+race happened); an `onLeave` that never ends (the departure is kept);
+Mallory's flood during a 3 s hook (the host's queue peaks at what flood
+control lets through, ~90 jobs, not her 8,000 actions); a crash's words
+(one line for the host, "rules disabled — the script crashed" for
+everyone); one evaluation per Enable (a 4.5 s top level enables); a host
+reload that meets a skewed `rules-worker.js` (the rules stay on in the
+save, and the next reload runs them); an explicit address under a newer
+board kept across a new felt.
 
 ## Storage and images (Phase 1B)
 

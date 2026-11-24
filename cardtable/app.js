@@ -213,17 +213,17 @@ const perf = {
 
 // --- the host's action queue ------------------------------------------------
 // Every state change on the host runs through one FIFO, in arrival order
-// (spec §3f.5): a player's action; core's internal jobs (spec §3c: `_join`, a
-// player's first action while not online; `_leave`, their last connection
-// closed; `_tick`, the rules' timers that are due; `_name`, the rename a new
-// connection brings; `_rulesOff`); and the app's own (JOBS): `_refuse` (an
-// action turned away before it ran: re-send what it named). With the rules
-// off, a job runs on the host's table, synchronously: one on an empty queue
-// runs at once, in the caller's task, and the host's own clicks feel
-// instant. With the rules on, the rules Worker runs every job (below), one at
-// a time: the queue waits for its `done` — or for a Worker that is starting
+// (spec §3f.5): a player's action, and core's internal jobs (spec §3c:
+// `_join`, a player's first action while not online; `_leave`, their last
+// connection closed; `_tick`, the rules' timers that are due; `_name`, the
+// rename a new connection brings; `_rulesOff`). With the rules off, a job
+// runs on the host's table, synchronously: one on an empty queue runs at
+// once, in the caller's task, and the host's own clicks feel instant. With
+// the rules on, the rules Worker runs every job (below), one at a time: the
+// queue waits for its `done` — or for a Worker that is starting
 // (`current`). Asynchronous preprocessing (deck ingestion) runs before a job
-// enters the queue (submit).
+// enters the queue (submit). An action turned away before it ran changes
+// nothing, and never queues: what it named is re-sent at once (refused).
 const MAX_QUEUE = 500;
 const queue = [];
 let current = null; // the job the queue waits for: {p, a, resolve, id (posted to the Worker) | start (the Worker starting for it)}
@@ -238,13 +238,21 @@ function enqueue(p, a) {
   if (queue.length >= MAX_QUEUE && p !== pid && a.t[0] !== '_') {
     console.warn(`the queue holds ${MAX_QUEUE} jobs: refused`, a.t, 'from', p);
     tell(p, '🚫 The table is busy — try again');
-    enqueue(p, { t: '_refuse', a }); // (their optimistic move snaps back)
+    refused(p, a);
     return Promise.resolve({ ok: false, error: 'the table is busy' });
   }
   return new Promise((resolve) => {
     queue.push({ p, a, resolve });
     pump();
   });
+}
+/** Player p's action `a` was turned away before it ran (flood control, a
+ *  full queue): what it named is re-sent, so their optimistic move snaps
+ *  back — at once, outside the queue: a re-send changes no state (core's
+ *  refreshFor has its own flood bucket), so a flood never grows the queue
+ *  while a slow hook holds it. */
+function refused(p, a) {
+  if (T.refreshFor(p, a)) scheduleBroadcast();
 }
 /** Runs the queued jobs in order while none is in flight. */
 function pump() {
@@ -256,17 +264,17 @@ function pump() {
 }
 /** Whether a `t` job of player p waits in the queue or is in flight. */
 const waiting = (p, t) => (current?.p === p && current.a?.t === t) || queue.some((j) => j.p === p && j.a.t === t);
-/** The host's internal jobs, by type (never from the wire: PUBLIC_ACTIONS). */
-const JOBS = {
-  _refuse: (p, a) => T.refreshFor(p, a.a),
-};
+/** The last presence job (`_join`, `_leave`) queued or in flight for player
+ *  p — what p's presence will be once the queue has run — or undefined. */
+const lastPresence = (p) => [current, ...queue].filter((j) => j?.p === p && (j.a?.t === '_join' || j.a?.t === '_leave')).at(-1)?.a.t;
 /** Hands job `job` to whoever runs it: the rules Worker while the rules are
  *  on (an Enable starts a new one; a Disable ends it, then the host's table
  *  takes it), else the host's table. */
 function runJob(job) {
   const { p, a } = job;
+  if (a.t === 'setRules' && p === pid) rulesHeld = false; // (the host decides about the rules now: see started)
   if (a.t === 'setRules' && p === pid && a.enabled) { startWorker(a.code, job); return; }
-  if (worker && !own(JOBS, a.t)) {
+  if (worker) {
     if (a.t !== 'setRules' || p !== pid) { toWorker(job); return; }
     stopWorker(); // Disable: no Worker, and the host's table switches the rules off
   }
@@ -276,7 +284,7 @@ function runJob(job) {
 function hostJob({ p, a, resolve }) {
   let changed = true; // a job that threw may have changed something: broadcast and save it
   try {
-    changed = own(JOBS, a.t) ? JOBS[a.t](p, a) : T.apply(p, a);
+    changed = T.apply(p, a);
   } catch (err) {
     console.error('action failed', a, err);
     toast(`Error: ${err.message}`);
@@ -422,6 +430,11 @@ const RULES_TIMEOUT_MS = 4000, RULES_INIT_MS = 10000;
 const WORKER_GLOBALS = ['CAH_CARDS'];
 let worker = null; // the running rules' Worker: {w, ready: {name, wants, strict}}
 let lastRulesError = ''; // the host's last rules error, for the 📜 dialog ('' after a good Enable)
+// The saved rules couldn't start on a resume for a reason that isn't the
+// script's (this page and the deployed files disagree, the Worker didn't
+// load): they are off on this page, yet saved as on — the reload the toast
+// asks for runs them again — until the host enables or disables rules.
+let rulesHeld = false;
 let jobSeq = 0; // ids of the messages the host posts to Workers
 const digests = new Map(); // id → the resolve of a digest asked of the Worker
 let rulesCodeDirty = false; // code changed -> resend on next broadcast
@@ -455,12 +468,13 @@ function startWorker(code, job) {
   } catch (err) {
     console.error('could not start a rules Worker', err);
     current = { ...job };
-    started(null, { type: 'evalError', message: "this browser can't run rules scripts (module workers unsupported)" });
+    started(null, { type: 'evalError', message: "this browser can't run rules scripts (module workers unsupported)", env: true });
     return;
   }
   perf.workerStarts++;
   current = { ...job, start: w, t0: performance.now() };
   listen(w);
+  T.syncSpots(); // (the addresses as of now: the mirror takes them as they stand)
   const { keys, decks, boxes, boxSrc, ...state } = T.state; // (the seat keys never leave the page)
   w.postMessage({
     type: 'init', proto: PROTO, mv: MODULE_V, hostId: pid, code, globals: Object.fromEntries(WORKER_GLOBALS.map((k) => [k, window[k]])),
@@ -470,24 +484,33 @@ function startWorker(code, job) {
 }
 /** Worker `w`'s messages and failures, routed by what it is to the queue:
  *  starting, the running one, or gone (a terminated Worker's last messages
- *  are dropped: nothing it posts after that is applied). */
+ *  are dropped: nothing it posts after that is applied). A failure's
+ *  `message` is shown to the host; `engine`: it is the engine's own words
+ *  (a rule of running broken), which the public log may carry too — the
+ *  script's own (an error it threw) stay with the host (rulesDown);
+ *  `env`: while starting, the Worker itself didn't load. */
 function listen(w) {
-  const fail = (message) => {
-    if (current?.start === w) started(w, { type: 'evalError', message });
-    else if (worker?.w === w) rulesDown(`the script crashed: ${message}`, `Rules disabled — the script crashed: ${message}`);
+  const fail = (message, engine = true, env = false) => {
+    if (current?.start === w) started(w, { type: 'evalError', message, env });
+    else if (worker?.w === w) rulesDown(engine ? `the script crashed: ${message}` : 'the script crashed', `Rules disabled — the script crashed: ${message}`, engine ? '' : message);
   };
   w.onmessage = ({ data: m }) => {
     if (current?.start === w) { started(w, m.type === 'fatal' ? { type: 'evalError', message: m.message } : m); return; }
     if (worker?.w !== w) return;
     if (m.type === 'done') done(m);
-    else if (m.type === 'digest') { digests.get(m.id)?.(m.digest); digests.delete(m.id); } else fail(m.type === 'fatal' ? m.message : `an unexpected ${m.type} message`);
+    else if (m.type === 'digest') { digests.get(m.id)?.(m.digest); digests.delete(m.id); } else if (m.type === 'fatal') fail(String(m.message), m.engine === true);
+    else fail(`its Worker sent an unexpected ${String(m.type).slice(0, 20)} message`);
   };
-  w.onerror = (e) => { e.preventDefault(); console.error('rules Worker error', e); fail(e.message || 'the rules Worker failed to load'); };
+  w.onerror = (e) => { e.preventDefault(); console.error('rules Worker error', e); fail(e.message || 'the rules Worker failed to load', !e.message, true); };
   w.onmessageerror = () => { console.error('a rules Worker message could not be read'); fail('a message could not be read'); };
 }
 /** How Worker `w` (null: none could be made) answered its `init`: `ready`
- *  ({name, wants, strict}), or an evalError {message} (the code didn't
- *  evaluate, a version mismatch, a crash or a timeout while starting). */
+ *  ({name, wants, strict}), or an evalError {message, env?} (the code didn't
+ *  evaluate, a version mismatch, a crash or a timeout while starting; `env`:
+ *  the Worker itself couldn't load or be made). A resume that fails for a
+ *  reason that isn't the script's — a version mismatch, or `env` — keeps
+ *  the rules on in the save (rulesHeld): the reload its toast asks for runs
+ *  them again. */
 function started(w, m) {
   watchStop();
   const job = current;
@@ -508,7 +531,8 @@ function started(w, m) {
     toast(skew ? 'Card Table was updated — reload this page to run rules' : `Rules error: ${msg}${worker ? ' — the running rules are unchanged' : ''}`);
     job.resolve({ ok: false, error: msg });
   } else { // a resume: the saved rules go off, loudly
-    toast(skew ? 'Card Table was updated — reload this page to run rules' : `Saved rules failed to load: ${msg}`);
+    rulesHeld = skew || !!m.env;
+    toast(skew ? 'Card Table was updated — reload this page to run rules' : `Saved rules failed to load: ${msg}${rulesHeld ? ' — reload this page to try again' : ''}`);
     commit(T.apply(RULES, { t: '_rulesOff', reason: `the saved script failed to load: ${msg}` }));
   }
   pump();
@@ -531,10 +555,16 @@ const budget = (a) => RULES_TIMEOUT_MS + (a.t === 'loadBox' && a.setup === true 
 /** The running Worker's `done` {id, patch, out, ms} for the job in flight:
  *  the host's table takes the patch (applyStatePatch), carries out its
  *  effects, broadcasts and saves (commit). A job that disabled the rules (a
- *  hook failed) ends the Worker. */
+ *  hook failed) ends the Worker. A done for any other job — none the host
+ *  posted, or one it posted before — means the Worker ran what the host
+ *  never asked of it: its mirror can't be trusted, and the rules end. */
 function done(m) {
   const job = current;
-  if (job?.id !== m.id) { console.error('a rules Worker answered a job not in flight', m.id, job?.id); return; }
+  if (job?.id !== m.id) {
+    console.error('a rules Worker answered a job not in flight', m.id, job?.id);
+    rulesDown('the script crashed: its Worker ran a job the host never sent', 'Rules disabled — the script crashed: its Worker ran a job the host never sent');
+    return;
+  }
   watchStop();
   current = null;
   perf.lastRulesWorkerMs = m.ms;
@@ -542,11 +572,11 @@ function done(m) {
   try {
     changed = T.applyStatePatch(m.patch, m.out);
     error = commit(changed, job.p);
-  } catch (err) { // (a bug, or a malformed patch in a test build: the two states may now differ, so the rules go)
+  } catch (err) { // (a patch that fails the engine's gates, or a bug: the two states may now differ, so the rules go)
     console.error('applying a rules patch failed', err);
     commit(changed);
     job.resolve({ ok: false, error: err.message });
-    rulesDown(`the host could not apply the script's changes: ${err.message}`, `Rules disabled — ${err.message}`);
+    rulesDown('the host could not apply the script\'s changes', `Rules disabled — ${err.message}`, err.message);
     return;
   }
   perf.lastRulesRoundtripMs = performance.now() - job.t0;
@@ -557,27 +587,44 @@ function done(m) {
   checkDigest();
   pump();
 }
-/** The running rules stop (spec §3f.5): the watchdog fired (`reason`, the
- *  log's; `msg`, the host's toast), or the Worker crashed. The Worker goes,
- *  and the host's table switches the rules off (_rulesOff); a job in flight
- *  is dropped — fail closed: its actor is told, and what it named re-sent.
- *  The queue goes on, on the free table. */
-function rulesDown(reason, msg) {
-  console.error(`rules: ${reason}`);
+/** The internal jobs a stop of the rules never drops (spec §3f.5, D134): a
+ *  registration, a departure or a rename is kept, as when onJoin or onLeave
+ *  fails — they run again on the host's table, where the rules are off. */
+const KEPT_JOBS = new Set(['_join', '_leave', '_name']);
+/** The running rules stop (spec §3f.5): the watchdog fired, or the Worker
+ *  crashed. `reason`: what the log says, publicly; `msg`: the host's toast;
+ *  `detail`: what only the host is told beyond `reason` (in the 📜 dialog:
+ *  the words of an error the script threw). The Worker goes, and the host's
+ *  table switches the rules off (_rulesOff). A job in flight is dropped —
+ *  fail closed: its actor is told, and what it named re-sent — unless it
+ *  is a KEPT_JOBS one, which runs again with the rules off. An Enable whose
+ *  Worker is starting began from a copy of the table before that _rulesOff:
+ *  it starts again from the table as it now is. The queue goes on. */
+function rulesDown(reason, msg, detail = '') {
+  const error = detail ? `${reason}: ${detail}` : reason;
+  console.error(`rules: ${error}`);
   stopWorker();
-  watchStop();
-  const job = current?.id ? current : null;
+  const job = current?.id ? current : null, start = current?.start ? current : null;
+  if (start) { start.start.terminate(); perf.workerStops++; } // (an Enable starting: see below)
   if (job) {
-    current = null;
-    tell(job.p, '🚫 The rules stopped responding — your action was not applied');
-    job.resolve({ ok: false, error: reason });
+    watchStop();
+    if (!KEPT_JOBS.has(job.a.t)) {
+      if (job.p !== RULES) tell(job.p, '🚫 The rules stopped responding — your action was not applied');
+      job.resolve({ ok: false, error });
+    }
   }
-  lastRulesError = reason;
+  current = null;
+  lastRulesError = error;
   toast(msg);
   let changed = T.apply(RULES, { t: '_rulesOff', reason });
-  if (job) changed = T.refreshFor(job.p, job.a) || changed;
+  if (job && KEPT_JOBS.has(job.a.t)) {
+    const ran = T.apply(job.p, job.a);
+    job.resolve({ ok: ran });
+    changed ||= ran;
+  } else if (job) changed = T.refreshFor(job.p, job.a) || changed;
   commit(changed);
-  pump();
+  if (start) startWorker(start.a.code, start); // (it began from a copy of the table before that _rulesOff: again, from the table as it now is)
+  else pump();
 }
 /** Ends the running rules' Worker, if any: nothing it may still post is applied. */
 function stopWorker() {
@@ -1373,7 +1420,7 @@ function connect() {
     if (reason) { refuse(peer, reason); return; }
     if (!T.mayAct(p)) {
       refuse(peer, 'Too many actions — slow down');
-      enqueue(p, { t: '_refuse', a: action }); // what it named goes out again (rate-limited): the guest's optimistic move snaps back
+      refused(p, action); // what it named goes out again (rate-limited): the guest's optimistic move snaps back
       return;
     }
     // Register/refresh the sender on EVERY action, not just hello — if the
@@ -1382,11 +1429,14 @@ function connect() {
     // pass; keys never reach a rules Worker); the registration — seated,
     // named, "joined the table", onJoin — is a job (_join) when they are new,
     // back or nameless, ahead of their action. The tick after it commits
-    // sends a newly registered peer a snapshot with its hand.
-    const newConn = peerPid[peer] !== p, known = own(T.state.players, p);
+    // sends a newly registered peer a snapshot with its hand. Whether they
+    // are "back" is what the queue will leave them as, not what it has
+    // committed so far: a `_leave` of their last connection may still wait
+    // behind a slow hook (lastPresence).
+    const newConn = peerPid[peer] !== p, known = own(T.state.players, p), will = lastPresence(p);
     peerPid[peer] = p;
     if (T.bindKey(p, key)) persist();
-    if ((!known?.online || !known.name) && !waiting(p, '_join')) enqueue(p, { t: '_join', name });
+    if (will === '_leave' || (!will && (!known?.online || !known.name))) enqueue(p, { t: '_join', name });
     else if (newConn) scheduleBroadcast(); // a second tab of a seated player: its first snapshot
     // (the catalog went out with this connection's first snapshot: sendCatalog)
     // Every action carries the sender's current name: a rename the host
@@ -1627,8 +1677,10 @@ async function doSave(leaving) {
 function snap() {
   if (role !== 'host') throw new Error('this tab is no longer the host');
   const { decks: d, boxes: b, boxSrc } = T.state, fresh = (all) => Object.keys(all).filter((id) => !savedCatalog.has(id));
+  const state = T.snapshot();
+  if (rulesHeld && state.rules) state.rules = { ...state.rules, enabled: true }; // (off here, for a reason that isn't the script's: see started)
   return {
-    state: T.snapshot(),
+    state,
     catalog: [...fresh(d).map((id) => ({ id, kind: 'deck', deck: d[id] })), ...fresh(b).map((id) => ({ id, kind: 'box', box: b[id], ...(boxSrc[id] || { src: 'host' }) }))],
   };
 }
@@ -3698,7 +3750,7 @@ function becomeHost(saved, unsaved) {
   else t.open(myName); // the host's seat and a standard deck
   if (window.CARDTABLE_TEST) { // the one-writer rule (spec §3f.1), asserted: with a rules Worker running, only its patches change the table
     const apply = t.apply;
-    t.apply = (p, a) => { if (worker) throw new Error(`the one-writer rule broken: ${a.t} ran on the page while a rules Worker runs`); return apply(p, a); };
+    t.apply = (p, a) => { if (worker || current?.start) throw new Error(`the one-writer rule broken: ${a.t} ran on the page while a rules Worker ${worker ? 'runs' : 'starts'}`); return apply(p, a); };
   }
   T = t;
   role = 'host';

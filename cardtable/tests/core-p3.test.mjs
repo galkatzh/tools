@@ -2990,6 +2990,143 @@ function testDigest() {
   ok(d1 === d0 && d2 !== d0 && d3 !== d0, `seq and log: the same digest; an item or t.data: another (${d0}, ${d1}, ${d2}, ${d3})`);
 }
 
+// =============================================================================
+// (RF) The 3B review fix-ups (SPEC D132–D143): app.js's Worker lifecycle in
+// Node — a host table that only applies patches, and a mirror built from the
+// host's state on each Enable exactly as rules-worker.js init builds it
+// (structured clone minus the keys, the script loaded first, mirror: true).
+// =============================================================================
+/** {H, M (the running mirror), clk, start(code), job(p, a, read = true), enable(code), same()}:
+ *  `read` false leaves the host unread between two patches (no takeDirty, no digest). */
+function lifecycle(items, o = {}) {
+  const clk = { t: 1.7e12 };
+  let ready = null;
+  const pageHooks = { // (app.js's)
+    load: () => '', has: (h) => h === 'onSelect' && !!ready?.wants.includes('select'),
+    flag: (k) => (k === 'strict' ? ready?.strict : undefined), call(h) { throw new Error(`${h}() ran on the page`); },
+  };
+  const H = quietly(() => createTable(state3b(items, o.hands), { pid: HOST, now: () => clk.t, hooks: pageHooks, test: true })).value;
+  H.takeDirty();
+  const L = { H, clk, M: null };
+  L.start = (code) => {
+    H.syncSpots();
+    const { keys, decks, boxes, boxSrc, ...state } = H.state, m = structuredClone({ state, decks, boxes, boxSrc }), hk = scriptHooks();
+    const name = hk.load(code);
+    L.M = quietly(() => createTable({ ...m.state, decks: m.decks, boxes: m.boxes, boxSrc: m.boxSrc }, { pid: HOST, now: () => clk.t, hooks: hk, mirror: true })).value;
+    ready = { name, wants: hk.has('onSelect') ? ['select'] : [], strict: hk.flag('strict') === true };
+  };
+  L.job = (p, a, read = true) => {
+    const r = quietly(() => L.M.job(p, a)).value;
+    if (r.fatal) throw new Error(`fatal: ${r.fatal}`);
+    quietly(() => H.applyStatePatch(structuredClone(r.patch), structuredClone(r.out)));
+    H.drain();
+    L.M.drain();
+    if (read) H.takeDirty();
+    return r;
+  };
+  L.enable = (code) => { L.start(code); return L.job(HOST, { t: 'setRules', enabled: true, code }); };
+  L.same = () => H.digest() === L.M.digest();
+  return L;
+}
+const atOf = (T, id) => T.state.items[id]?.at ?? null;
+
+function testReviewFixups() {
+  section('(RF) D121 across a fresh mirror (D139): an Enable clears every hint on the host too (the mirror starts with the host\'s hints, so the clear is in the patch)');
+  {
+    const code = fake({ onSelect(t, p, id) { t.hint(p, { items: [id] }); } });
+    const L = lifecycle(PIPE());
+    L.enable(code);
+    L.job(BOB, { t: 'select', id: 'm' });
+    ok(J(L.H.state.rules.hints?.[BOB]?.items) === J(['m']) && L.H.mine(BOB).hint && L.same(), `Bob selects m: his hint, on both sides (${J(L.H.mine(BOB).hint)})`);
+    const r = L.enable(code);
+    ok('hints' in (r.patch.rules || {}) && !L.H.state.rules.hints?.[BOB] && !L.H.mine(BOB).hint && L.same(), `Enable again (a fresh mirror): the patch clears the hints, Bob is sent none, the digests agree (${J(Object.keys(r.patch.rules || {}))})`);
+    L.job(BOB, { t: 'select', id: 'n' });
+    L.M = null;
+    quietly(() => L.H.apply(HOST, { t: 'setRules', enabled: false })); // (a Disable: the host's own job, no Worker)
+    L.H.takeDirty();
+    L.enable(code);
+    ok(!L.H.state.rules.hints?.[BOB] && !L.H.mine(BOB).hint && L.same(), 'a hint, a Disable, an Enable: no hint left, the digests agree');
+  }
+
+  section('(RF) Addresses: the host takes them as the Worker read them (D128, D132) — never re-reading by containment what the Worker left alone');
+  {
+    const code = fake({ setup(t) { if (F.lay) F.lay(t); } });
+    // the map (primary), the rack over its top rows (c9 among them), the chess board elsewhere
+    const L = lifecycle({ MP: BRD('map', 100, 100), RK: BRD('rack', 100, 100), CB: BRD('chess', 2000, 100), M: PC('man', 100, 3000), N: PC('man', 300, 3000) });
+    L.enable(code);
+    F.fn = (t) => t.move('M', 'map:c9');
+    L.job(HOST, { t: 'rulesBtn', id: 'go' });
+    ok(atOf(L.H, 'M') === 'MP:c9' && L.same(), `t.move(M, 'map:c9') under the rack: MP:c9 on both sides (${atOf(L.H, 'M')})`);
+    L.job(HOST, { t: 'table', shape: 'rect', w: 5000, h: 3600, felt: '#224466' });
+    ok(atOf(L.H, 'M') === 'MP:c9' && atOf(L.M, 'M') === 'MP:c9' && L.same(), `a new felt alone: the host keeps MP:c9, as the Worker does (host ${atOf(L.H, 'M')}, Worker ${atOf(L.M, 'M')})`);
+    for (const [what, a] of [['a table resize', { t: 'table', shape: 'rect', w: 5200, h: 3600 }], ['the rack nudged (a board under the piece)', { t: 'move', id: 'RK', x: 110, y: 100 }]]) {
+      L.job(HOST, a, false);
+      F.fn = (t) => t.move('N', 'map:d9'); // (under the rack too)
+      L.job(HOST, { t: 'rulesBtn', id: 'go' }, false); // (no read on the host between the two patches)
+      ok(atOf(L.H, 'N') === atOf(L.M, 'N') && atOf(L.H, 'N') === 'MP:d9' && L.same(), `${what}, then t.move(N, 'map:d9'), no host read between: the same address and digest (host ${atOf(L.H, 'N')}, Worker ${atOf(L.M, 'N')})`);
+      F.fn = (t) => t.move('N', { x: 300, y: 3000, free: true });
+      L.job(HOST, { t: 'rulesBtn', id: 'go' });
+    }
+    const L2 = lifecycle({});
+    F.lay = (t) => { t.spawn(ref('chess'), { at: { x: 1000, y: 1000 } }); const s = t.spot('chess:e4'); t.spawn(ref('man'), { at: { x: s.x - 40, y: s.y - 40, free: true } }); };
+    L2.enable(code);
+    const man = (T) => Object.keys(T.state.items).find((id) => T.state.items[id].t === ref('man'));
+    ok(man(L2.H) && atOf(L2.H, man(L2.H)) === null && atOf(L2.M, man(L2.M)) === null && L2.same(), `a setup that spawns a board, then a free man on its e4: no address on either side (host ${atOf(L2.H, man(L2.H))})`);
+  }
+
+  section('(RF) A pull a script\'s handle() made itself, then vetoed or failed: the bag\'s next pull is the same member (D114, D135)');
+  for (const [what, handle] of [
+    ['a veto on a.pick', (t, a) => (a.t === 'pull' ? `no: ${a.pick}` : undefined)],
+    ['handle t.pull()s it, then vetoes', (t, a) => { if (a.t !== 'pull') return undefined; const it = t.item(t.pull(a.id, { at: { x: a.x, y: a.y } })); return `no: ${it.t}/${it.f}`; }],
+  ]) {
+    const T = rtable({ bg: BAG([{ t: 'gem', f: 0 }, { t: 'gem', f: 1 }, { t: 'gem', f: 2 }, { t: 'tile', f: 0 }, { t: 'tile', f: 1 }, 'man', 'stone', 'big'], 2700, 300) }, { handle });
+    const said = [];
+    for (let k = 0; k < 10; k++) said.push(job(T, BOB, { t: 'pull', id: 'bg', x: 1000, y: 1000 }).notes.find((n) => n.p === BOB)?.msg);
+    ok(T.state.items.bg.of.length === 8 && said.every((m) => m && m === said[0]), `${what}: 10 refusals, the bag still holds 8, every one names the same member (${said[0]})`);
+  }
+
+  section('(RF) The engine\'s gates refuse what JSON would change on its way: a typed array, a Map, a Date, NaN in t.data or t.public — loudly, naming it (D133)');
+  for (const [what, fn, re] of [
+    ['a Uint8Array in t.data', (t) => { t.data.board = new Uint8Array(4); }, /t\.data\.board is a Uint8Array/],
+    ['a Map in t.public', (t) => { t.public.seen = new Map(); }, /t\.public\.seen is a Map/],
+    ['a Date deep in t.data', (t) => { t.data.log = [{ at: new Date(0) }]; }, /t\.data\.log\[0\]\.at is a Date/],
+    ['NaN in t.data', (t) => { t.data.score = 0 / 0; }, /t\.data\.score is NaN/],
+    ['an object of a class in t.data', (t) => { t.data.p = new (class Point {})(); }, /t\.data\.p is a Point/],
+  ]) {
+    const T = rtable(PIPE(), {});
+    const r = run(T, fn);
+    ok(!T.state.rules.enabled && re.test(T.rulesError) && !Object.keys(T.state.rules.data).length && !Object.keys(T.state.rules.public).filter((k) => k !== 'buttons').length,
+      `${what}: the hook fails, nothing of it kept, the rules off ("${T.rulesError}")`);
+  }
+  {
+    const T = rtable(PIPE(), {});
+    run(T, (t) => { t.data.n = 1; t.data.fmt = (x) => String(x); });
+    ok(T.state.rules.enabled, 'a function in t.data passes the gate: it is D129\'s — the Worker can\'t post it, which disables the rules there, keeping the JSON part');
+  }
+
+  section('(RF) applyStatePatch checks the rules\' state a patch brings, in the host\'s realm (D142): a bad secret key, ask, hint or timer throws, and nothing is applied');
+  const H = quietly(() => createTable(state3b(PIPE()), { pid: HOST, now: () => 1.7e12, hooks: HOST_HOOKS, test: true })).value;
+  quietly(() => H.applyStatePatch(structuredClone({ rules: { code: '({})', name: 'X', enabled: true, data: {}, public: {}, asks: {}, secret: {} } }), { effects: [] }));
+  H.takeDirty();
+  for (const [what, rules] of [
+    ['a secret keyed "constructor"', { secret: { constructor: { text: 'x' } } }],
+    ['a secret keyed with markup', { secret: { '<img src=x onerror=alert(1)>': 1 } }],
+    ['a secret too large', { secret: { [BOB]: 'x'.repeat(9000) } }],
+    ['an ask of 30 options', { asks: { [BOB]: [{ id: 'q', prompt: 'P', options: range(30).map(String) }] } }],
+    ['asks that are not a list', { asks: { [BOB]: 'q' } }],
+    ['nine asks for one player', { asks: { [BOB]: range(9).map((k) => ({ id: `q${k}`, prompt: 'P', options: ['a'] })) } }],
+    ['a timer that is not one', { data: { _timers: [{ at: 'soon', tag: 'x' }] } }],
+    ['a hint of 600 items', { hints: { [BOB]: { items: range(600).map(() => 'm'), spaces: [] } } }],
+  ]) {
+    const before = stateOf(H);
+    let threw = null;
+    try { quietly(() => H.applyStatePatch(structuredClone({ rules, items: { m: { ...H.state.items.m, x: 999 } } }), { effects: [] })); } catch (e) { threw = e; }
+    ok(threw && stateOf(H) === before, `${what}: throws (${threw?.message}), and the table is as it was`);
+  }
+  quietly(() => H.applyStatePatch(structuredClone({ rules: { secret: { [BOB]: { text: 'ok' } }, asks: { [BOB]: [{ id: 'q', prompt: 'P', options: [{ label: 'a', value: 1 }] }] } } }), { effects: [] }));
+  ok(H.state.rules.secret[BOB]?.text === 'ok' && Object.getPrototypeOf(H.state.rules.secret) === null && H.state.rules.asks[BOB]?.length === 1, 'a good secret and ask go in (the secret map with no prototype, as §3a has it)');
+}
+
 (async () => {
   await guard('(1) grid.js addresses', testGridAddresses);
   await guard('(1) grid.js centres', testGridCentres);
@@ -3041,5 +3178,6 @@ function testDigest() {
   await guard('(P) per-recipient parts', testParts);
   await guard('(G) hooks must be synchronous', testGuards);
   await guard('(7) T.digest', testDigest);
+  await guard('(RF) the 3B review fix-ups', testReviewFixups);
   report();
 })().catch(crash);

@@ -156,8 +156,13 @@ they are off, no Worker exists.
   (its player gets "🚫 The rules stopped responding — your action was not
   applied"), and the table goes on without rules. The host's page never
   freezes: the loop runs in the Worker. A Worker that crashes is handled
-  the same way ("the script crashed: …"). Enabling again starts a fresh
-  Worker from the table as it now is.
+  the same way: the log says "rules disabled — the script crashed" for
+  everyone, and the host's toast and dialog add the error's message (one
+  line, never a stack). A player's arrival, departure or rename that was
+  in flight is kept — it runs again with the rules off — so a stuck
+  `onLeave` never leaves a ghost at the table. Enabling again starts a
+  fresh Worker from the table as it now is (and evaluates the script once:
+  its top level has the start's 10 seconds, not an action's 4).
 - **No async code.** Hooks must be synchronous, and three guards make that
   a rule rather than advice:
   1. a hook that returns a Promise or any thenable (an `async` hook) counts
@@ -177,28 +182,44 @@ they are off, no Worker exists.
   and `onTimer` are the script's clock (and survive a host reload).
 - **What a script can reach.** Before it evaluates the script, the Worker
   removes the network (`fetch`, `XMLHttpRequest`, `WebSocket`,
-  `EventSource`, `WebTransport`), storage (`indexedDB`, `caches`), other
-  Workers and channels (`Worker`, `SharedWorker`, `BroadcastChannel`,
-  `MessageChannel`, `importScripts`) and its own `postMessage`: calling one
-  fails ("fetch is not defined"). That is defence in depth, not a sandbox
-  — a script sees every hidden card and can tell it in game (`t.tell`), so
-  enabling one is an act of trust, and dynamic `import()` can't be taken
-  away (README, honest limits). `Date`, `Math`, `JSON`, `crypto` and
-  `console` are there (`console.log` goes to the Worker's console in
-  devtools); `window` is the Worker's global scope, with the page globals a
-  template needs copied in — today `window.CAH_CARDS`, the CAH card texts
-  (`WORKER_GLOBALS` in `app.js`).
+  `WebSocketStream`, `EventSource`, `WebTransport`, and `FontFace` /
+  `fonts`, which load from URLs), storage (`indexedDB`, `caches`,
+  `navigator.storage` — the origin's private file system —
+  `navigator.storageBuckets`, `navigator.locks` and the old `webkit…`
+  file system), other Workers and channels (`Worker`, `SharedWorker`,
+  `BroadcastChannel`, `MessageChannel`, `importScripts`), its own
+  `postMessage`, and `close` (which throws: it would end the Worker
+  silently): calling one fails ("fetch is not defined"). The Worker reads
+  only the host's own messages — one a script makes and dispatches to its
+  Worker ends the rules — and a script can't hook the promises or events
+  the Worker's own code relies on (their prototypes are frozen). That is
+  defence in depth, not a sandbox — a script sees every hidden card and can
+  tell it in game (`t.tell`), so enabling one is an act of trust, and
+  dynamic `import()` can't be taken away (README, honest limits). `Date`,
+  `Math`, `JSON`, `crypto` and `console` are there (`console.log` goes to
+  the Worker's console in devtools); `window` is the Worker's global scope,
+  with the page globals a template needs copied in — today
+  `window.CAH_CARDS`, the CAH card texts (`WORKER_GLOBALS` in `app.js`).
 - **State on `this` is not journaled**: `this.x = …` survives a rollback,
   and is lost on a host reload or a new Worker (every Enable starts one).
-  Keep game state in `t.data`, which is journaled and saved. `t.data` and
-  `t.public` must stay JSON: one left holding a function disables the
-  rules, keeping its JSON part.
+  Keep game state in `t.data`, which is journaled and saved. `t.data`,
+  `t.public` and `t.secret` must stay plain JSON — objects, arrays,
+  strings, finite numbers, `true`, `false`, `null`: a rollback or a save
+  would hand back something else. A hook that leaves a typed array, a
+  `Map`, a `Set`, a `Date`, `NaN` or an object of a class in one fails
+  ("onAction(): t.data.board is a Uint8Array, not JSON — …"), as does a
+  function in `t.secret`; a function in `t.data` or `t.public` disables
+  the rules when its action is sent to the host, keeping their JSON part.
 - **A host reload** starts a new Worker over the saved table: the rules go
   on where they were — `t.data`, `t.public`, the asks, `t.secret` and the
   pending timers are saved — without running `setup` again. A saved script
   that no longer loads disables the rules loudly ("Saved rules failed to
-  load: …"), and one saved by another version of Card Table asks for a
-  reload.
+  load: …"). One that can't start for a reason that isn't the script's —
+  a page of another version of Card Table than the files it loads
+  ("Card Table was updated — reload this page to run rules"), a Worker
+  that didn't load — is off on that page but stays on in the save, so the
+  reload the toast asks for runs it again (until the host enables or
+  disables rules).
 - **Live drags are not validated** — only the drop is. While a guest drags
   a piece, the others see it glide, and nothing changes until the drop:
   the `move` the rules see.

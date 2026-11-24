@@ -226,7 +226,9 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   page" notice instead of misreading the table. Every module import carries
   the code version (`core.js?v=1`), and the page stops with a "reload" banner
   if a cached module of another version slipped in; a rules Worker of
-  another version refuses to start ("reload this page to run rules").
+  another version refuses to start ("reload this page to run rules") —
+  on a host's reload, the saved rules stay on in the save, so that reload
+  runs them again.
 - **Identity**: players get a persistent random id in `localStorage`, so a
   reloaded guest reclaims their hand (WebRTC peer ids change per page load).
   Every guest action carries that id + nickname, and the host registers the
@@ -417,7 +419,9 @@ action on it, one at a time, and sends back what each changed (Enable says
 "Starting…" for that moment). A **watchdog** gives each action 4 s of the
 host tab's visible time (a phone that hides the tab stops the clock): a
 script stuck in a loop is stopped, the action dropped, and the rules
-disabled, while the host's page stays responsive throughout. Hooks must be
+disabled, while the host's page stays responsive throughout (a player's
+arrival or departure in flight is kept, never dropped; a crash is said to
+everyone as "the script crashed", and its message to the host). Hooks must be
 synchronous — an `async` hook fails, and so does `t` used from a promise
 callback — and `t.schedule` is the only timer. Live drags are not
 validated, only the drop. A script error disables the rules loudly rather than wedging
@@ -581,8 +585,12 @@ refuse the `https → http://127.0.0.1` fetch.
 - Rules scripts are trusted code on the host's machine, and a dishonest
   host could run different code than displayed — the same trust tier as the
   host already holding all hands. The rules Worker takes the network and
-  storage APIs away from a script, as defence in depth rather than a
-  sandbox: dynamic `import()` can't be removed without headers GitHub Pages
+  storage APIs away from a script — `fetch`, `XMLHttpRequest`,
+  `WebSocket`, `WebSocketStream`, `EventSource`, `WebTransport`,
+  `FontFace`, `indexedDB`, `caches`, the origin's file system and storage
+  buckets, Web Locks, other Workers and channels (ENGINE.md lists them) —
+  and reads only the host's own messages, as defence in depth rather than
+  a sandbox: dynamic `import()` can't be removed without headers GitHub Pages
   can't set, so a script could still load code or reach a server. A
   runaway loop no longer freezes the host's tab (the watchdog stops it
   within about 5 s). A script sees every hidden card and
