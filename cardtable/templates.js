@@ -1127,12 +1127,13 @@ export const RULES_TEMPLATES = {
     strict: true,
     setup(t) {
       if (t.data.ready) return; // enabled again: the game goes on where it was
+      const box = t.newBox(chessBox());
+      clearOthers(t, box);
       t.setTable({ shape: 'rect', w: 1000, h: 1360 }); // (room by each edge for a seat label and its player's buttons)
       t.setSeats([
         { id: 'white', name: 'White', color: '#f5f5f4', edge: 'bottom' },
         { id: 'black', name: 'Black', color: '#1c1917', edge: 'top' },
       ]);
-      const box = t.newBox(chessBox());
       if (!t.find({ type: box + '/board' }).length) t.spawn(box + '/board', { at: 'center' });
       Object.assign(t.data, { ready: true, box });
       newGame(t);
@@ -1153,8 +1154,8 @@ export const RULES_TEMPLATES = {
       if (g.over) return 'The game is over — press New game for another';
       if (!side) return 'Only the two players move the pieces';
       if (P.b[from].c !== side) return "That's not your piece";
+      if (g.promo) return side === g.turn ? 'Choose what your pawn becomes first' : SIDE[g.turn] + ' is choosing what the pawn becomes';
       if (side !== g.turn) return "It's not your turn";
-      if (g.promo) return 'Choose what your pawn becomes first';
       if (!a.to) return 'Drop the piece on a square of the board';
       const to = index(a.to);
       if (to === from) return true; // put back where it was: no move
@@ -1173,6 +1174,7 @@ export const RULES_TEMPLATES = {
       } else if (id === 'draw' && g.offer) {
         if (v === 'Accept') return finish(t, null, 'Draw agreed');
         t.say(SIDE[other(g.offer)] + ' declines the draw');
+        tellSide(t, g.offer, SIDE[other(g.offer)] + ' declines your draw offer');
         g.offer = null;
       } else if (id === 'resign' && v === 'Resign' && c && !g.over) {
         finish(t, other(c), SIDE[c] + ' resigns — ' + SIDE[other(c)] + ' wins');
@@ -1182,7 +1184,7 @@ export const RULES_TEMPLATES = {
     buttons(t) {
       const g = t.data, out = [];
       if (!g.ready) return out;
-      if (g.over) return [{ id: 'new', label: '♻ New game' }];
+      if (g.over) return newButtons(t, occupant(t, 'w'), occupant(t, 'b'));
       for (const c of ['w', 'b']) {
         const pid = occupant(t, c);
         if (!pid) continue;
@@ -1193,7 +1195,7 @@ export const RULES_TEMPLATES = {
     },
     onButton(t, id, p) {
       const g = t.data, c = id.slice(-1), them = occupant(t, other(c));
-      if (id === 'new') return sideOf(t, p) || p === t.hostId ? newGame(t) : t.tell(p, 'Only the players start a new game');
+      if (id.startsWith('new-')) return newGame(t); // (offered to the players and the host alone)
       if (id === 'draw-' + c && them) {
         g.offer = c;
         t.ask(them, { id: 'draw', prompt: SIDE[c] + ' offers a draw', options: ['Accept', 'Decline'] });
@@ -1234,6 +1236,13 @@ export const RULES_TEMPLATES = {
   const sideOf = (t, p) => ({ white: 'w', black: 'b' })[t.players().find((x) => x.id === p)?.seatId] ?? null;
   /** Lights the seat of whoever is to move (nobody's once the game is over). */
   function showTurn(t) { t.public.turn = t.data.ready && !t.data.over ? occupant(t, t.data.turn) : null; }
+  /** Tells the player at side c's seat msg (a toast on their screen alone), if anyone sits there. */
+  function tellSide(t, c, msg) { const p = occupant(t, c); if (p) t.tell(p, msg); }
+  /** "♻ New game" for each of the players pids and the host: a button each (a watcher has none). */
+  const newButtons = (t, ...pids) => [...new Set([...pids, t.hostId].filter(Boolean))].map((pid) => ({ id: 'new-' + pid, label: '♻ New game', pid }));
+  /** Takes every item that isn't of this game's box off the table, in one log line: the game lays
+   *  out the whole table, and another game's board would stay the primary one (its addresses, not ours). */
+  function clearOthers(t, box) { t.remove(t.items().filter((it) => !it.t?.startsWith(box + '/')).map((it) => it.id)); }
 
   /** The game's box: a drawn 8 × 8 board, and the twelve pieces as glyphs
    *  on round tokens that read upright on both players' screens. */
@@ -1374,8 +1383,9 @@ export const RULES_TEMPLATES = {
     g.half = piece.k === 'P' || m.cap >= 0 ? 0 : g.half + 1;
     if (g.offer) { // a move answers a draw offer: it lapses
       for (const x of t.players({ all: true })) t.cancelAsk(x.id, 'draw');
-      g.offer = null;
       t.say('The draw offer lapses');
+      tellSide(t, g.offer, 'Your draw offer lapses: ' + SIDE[g.turn] + ' moved');
+      g.offer = null;
     }
     if (m.promo) {
       g.promo = { id: piece.id, at: square(m.to) };
@@ -1394,7 +1404,7 @@ export const RULES_TEMPLATES = {
     if (deadPosition(P.b)) return finish(t, null, 'Neither side can checkmate any more — a draw');
     if (g.half >= 100) return finish(t, null, 'Fifty moves without a capture or a pawn move — a draw');
     if (seen >= 3) return finish(t, null, 'The same position for the third time — a draw');
-    if (check) t.say(SIDE[g.turn] + ' is in check');
+    if (check) t.announce(SIDE[g.turn] + ' is in check'); // (a banner: a phone's log is out of sight)
   }
   /** Counts position P in t.data.seen and returns how often it has come up.
    *  Its key: the pieces, the side to move, the castling rights, and the
@@ -1444,12 +1454,13 @@ export const RULES_TEMPLATES = {
     strict: true,
     setup(t) {
       if (t.data.ready) return; // enabled again: the game goes on where it was
+      const box = t.newBox(reversiBox()), disc = box + '/disc';
+      clearOthers(t, box);
       t.setTable({ shape: 'rect', w: 1000, h: 1360 }); // (room by each edge for a seat label and its player's buttons)
       t.setSeats([
         { id: 'dark', name: 'Dark', color: '#1c1917', edge: 'bottom' },
         { id: 'light', name: 'Light', color: '#f5f5f4', edge: 'top' },
       ]);
-      const box = t.newBox(reversiBox()), disc = box + '/disc';
       if (!t.find({ type: box + '/board' }).length) t.spawn(box + '/board', { at: 'center' });
       // a pile for each player, by their own edge of the table (a supply: it never runs out)
       for (const [c, x, y] of [[DARK, 858, 1188], [LIGHT, 58, 88]]) {
@@ -1469,7 +1480,7 @@ export const RULES_TEMPLATES = {
     // A disc taken from a pile and dropped on the board: placed if it outflanks, else refused.
     handle(t, a) {
       const g = t.data, it = t.item(a.id);
-      if (!it || !it.t.startsWith(g.box + '/')) return; // not this game's (strict refuses it)
+      if (!it?.t?.startsWith(g.box + '/')) return; // not this game's — a card, a pile, a bag too (strict refuses it)
       if (a.t !== 'take' || it.k !== 's') return a.t === 'move' && it.k === 'g' ? 'A disc stays where it is played' : undefined;
       const c = sideOf(t, a.p);
       if (g.over) return 'The game is over — press New game for another';
@@ -1482,13 +1493,13 @@ export const RULES_TEMPLATES = {
       const turned = flips(B.cells, s, c);
       if (!turned.length) return 'A disc must outflank: close a line of the other colour';
       t.spawn(g.box + '/disc', { at: a.to, f: c, lock: true });
-      for (const x of turned) t.setFace(B.ids[x], c);
+      t.setFace(turned.map((x) => B.ids[x]), c); // (one log line for the lot)
       nextTurn(t);
       return true;
     },
-    buttons: (t) => (t.data.over ? [{ id: 'new', label: '♻ New game' }] : []),
-    onButton(t, id, p) {
-      if (id === 'new') return sideOf(t, p) !== null || p === t.hostId ? newGame(t) : t.tell(p, 'Only the players start a new game');
+    buttons: (t) => (t.data.over ? newButtons(t, occupant(t, DARK), occupant(t, LIGHT)) : []),
+    onButton(t, id) {
+      if (id.startsWith('new-')) newGame(t); // (offered to the players and the host alone)
     },
     onJoin: (t) => show(t),
     onAction: (t) => show(t), // (after every action — a move, a button, a seat taken or left)
@@ -1516,6 +1527,11 @@ export const RULES_TEMPLATES = {
     for (const c of [DARK, LIGHT]) { const p = occupant(t, c); if (p) badges[p] = n[c] + (n[c] === 1 ? ' disc' : ' discs'); }
     Object.assign(t.public, { turn: g.ready && !g.over ? occupant(t, g.turn) : null, badges });
   }
+  /** "♻ New game" for each of the players pids and the host: a button each (a watcher has none). */
+  const newButtons = (t, ...pids) => [...new Set([...pids, t.hostId].filter(Boolean))].map((pid) => ({ id: 'new-' + pid, label: '♻ New game', pid }));
+  /** Takes every item that isn't of this game's box off the table, in one log line: the game lays
+   *  out the whole table, and another game's board would stay the primary one (its addresses, not ours). */
+  function clearOthers(t, box) { t.remove(t.items().filter((it) => !it.t?.startsWith(box + '/')).map((it) => it.id)); }
 
   /** The game's box: a green 8 × 8 board, and one disc with two faces. */
   function reversiBox() {
@@ -1582,7 +1598,7 @@ export function goTemplate(n) {
   // Go on a ${n} × ${n} board, as a script (ENGINE.md). Each player drags
   // stones from their own bowl onto the points. handle() takes the drop:
   // the point must be free, the stone takes every group of the other colour
-  // it leaves without a liberty (four or more stones: one log line), it may not end
+  // it leaves without a liberty (one log line, however many stones), it may not end
   // with no liberty itself (suicide), and it may not bring back the position
   // before the other player's last move (ko). Pass, Resign, and after two
   // passes in a row, Count: area scoring (stones plus the empty points only
@@ -1598,12 +1614,13 @@ export function goTemplate(n) {
     setup(t) {
       if (t.data.ready) return; // enabled again: the game goes on where it was
       const board = 2 * MARGIN + (N - 1) * CELL, W = board + 80, H = board + 2 * BAND, x = 50 + STONE / 2;
+      const box = t.newBox(goBox(board));
+      clearOthers(t, box);
       t.setTable({ shape: 'rect', w: W, h: H });
       t.setSeats([
         { id: 'black', name: 'Black', color: '#1c1917', edge: 'bottom' },
         { id: 'white', name: 'White', color: '#f5f5f4', edge: 'top' },
       ]);
-      const box = t.newBox(goBox(board));
       if (!t.find({ type: box + '/board' }).length) t.spawn(box + '/board', { at: 'center' });
       // a bowl for each player, by their own edge of the table (a supply: it never runs out)
       for (const [c, cx, cy] of [['b', W - x, H - BAND / 2], ['w', x, BAND / 2]]) {
@@ -1616,7 +1633,7 @@ export function goTemplate(n) {
     // Every stone played from a bowl: placed if it may be, else refused with the reason.
     handle(t, a) {
       const g = t.data, it = t.item(a.id);
-      if (!it || !it.t.startsWith(g.box + '/')) return; // not this game's (strict refuses it)
+      if (!it?.t?.startsWith(g.box + '/')) return; // not this game's — a card, a pile, a bag too (strict refuses it)
       if (a.t !== 'take' || it.k !== 's') return a.t === 'move' && it.k === 'g' ? 'A stone stays where it is played' : undefined;
       const c = it.t.at(-1), side = sideOf(t, a.p);
       if (g.over) return 'The game is over — press New game for another';
@@ -1636,7 +1653,7 @@ export function goTemplate(n) {
       if (!group(cells, s).libs.size) return 'Suicide: that stone would have no liberty';
       if (key(cells) === g.prev) return 'Ko: play elsewhere before you take back';
       t.spawn(g.box + '/' + side, { at: a.to, lock: true });
-      for (const x of taken) t.remove(B.ids[x]); // (four or more removals are one log line)
+      t.remove(taken.map((x) => B.ids[x])); // (a capture is one log line, however many stones)
       Object.assign(g, { prev: key(B.cells), passes: 0, turn: other(side) });
       return true;
     },
@@ -1645,14 +1662,14 @@ export function goTemplate(n) {
       const it = t.item(id), B = readBoard(t), s = it && it.k === 'g' && it.at ? index(it.at) : -1;
       if (s < 0 || !B.cells[s]) return t.hint(p, null);
       const grp = group(B.cells, s);
-      t.hint(p, { items: grp.stones.length + grp.libs.size <= 500 ? grp.stones.map((x) => B.ids[x]) : [], spaces: [...grp.libs].map(point) });
+      t.hint(p, { items: grp.stones.map((x) => B.ids[x]), spaces: [...grp.libs].map(point) }); // (at most N × N ≤ 361 in all)
     },
-    // Pass for the player to move, Resign for both, and Count once both have passed.
+    // Pass for the player to move, Resign for both; once both have passed, Count (or play on: no third pass).
     buttons(t) {
       const g = t.data, out = [], mover = occupant(t, g.turn);
       if (!g.ready) return out;
-      if (g.over) return [{ id: 'new', label: '♻ New game' }];
-      if (mover) out.push({ id: 'pass', label: '⏭ Pass', pid: mover });
+      if (g.over) return newButtons(t, occupant(t, 'b'), occupant(t, 'w'));
+      if (mover && g.passes < 2) out.push({ id: 'pass', label: '⏭ Pass', pid: mover });
       for (const c of ['b', 'w']) {
         const pid = occupant(t, c);
         if (pid && g.passes >= 2) out.push({ id: 'count-' + c, label: '🧮 Count', pid });
@@ -1662,11 +1679,10 @@ export function goTemplate(n) {
     },
     onButton(t, id, p) {
       const g = t.data;
-      if (id === 'new') return sideOf(t, p) || p === t.hostId ? newGame(t) : t.tell(p, 'Only the players start a new game');
-      if (id === 'pass' && sideOf(t, p) === g.turn) {
+      if (id.startsWith('new-')) return newGame(t); // (offered to the players and the host alone)
+      if (id === 'pass' && sideOf(t, p) === g.turn && g.passes < 2) {
         Object.assign(g, { prev: key(readBoard(t).cells), passes: g.passes + 1, turn: other(g.turn) });
-        t.say(COLOR[other(g.turn)] + ' passes');
-        if (g.passes >= 2) t.announce('Both players passed — press Count to score, or play on');
+        t.announce(g.passes >= 2 ? 'Both players passed — press Count to score, or play on' : COLOR[other(g.turn)] + ' passes — ' + COLOR[g.turn] + ' to play');
       }
       if (id.startsWith('count-') && g.passes >= 2) count(t);
       if (id.startsWith('resign-')) t.ask(p, { id: 'resign', prompt: 'Resign this game?', options: ['Resign', 'Keep playing'] });
@@ -1712,6 +1728,11 @@ export function goTemplate(n) {
   const sideOf = (t, p) => ({ black: 'b', white: 'w' })[t.players().find((x) => x.id === p)?.seatId] ?? null;
   /** Lights the seat of whoever is to move (nobody's once the game is over). */
   function showTurn(t) { t.public.turn = t.data.ready && !t.data.over ? occupant(t, t.data.turn) : null; }
+  /** "♻ New game" for each of the players pids and the host: a button each (a watcher has none). */
+  const newButtons = (t, ...pids) => [...new Set([...pids, t.hostId].filter(Boolean))].map((pid) => ({ id: 'new-' + pid, label: '♻ New game', pid }));
+  /** Takes every item that isn't of this game's box off the table, in one log line: the game lays
+   *  out the whole table, and another game's board would stay the primary one (its addresses, not ours). */
+  function clearOthers(t, box) { t.remove(t.items().filter((it) => !it.t?.startsWith(box + '/')).map((it) => it.id)); }
 
   /** The game's box: a drawn board of points (go's coordinates, its star
    *  points) and a stone of each colour. */

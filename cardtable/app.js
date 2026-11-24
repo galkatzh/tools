@@ -2266,11 +2266,15 @@ function placeSeats() {
   // the notices move into the left one and the button row into the right
   // one, so neither covers the cards (CSS .gutters).
   const gutter = (W - feltW) / 2, gutters = H < 500 && gutter >= 180;
-  const spots = `${rowBottom}|${noticeTop}|${watchTop}|${gutters}|${gutter | 0}`;
+  const spots = `${rowBottom}|${noticeTop}|${watchTop}|${gutters}|${gutter | 0}|${H}`;
   if (spots === seatSpots) return;
   seatSpots = spots;
-  // Moved by `translate` from their CSS spots, for the same reason.
+  // Moved by `translate` from their CSS spots, for the same reason. The
+  // button row (with the secret card above it) keeps to the room above its
+  // spot: the card shrinks and scrolls, its head on screen (a phone held
+  // sideways with an ask open leaves the table area about 100 px).
   $('rules-row').style.translate = `0 ${12 - rowBottom}px`;
+  $('rules-row').style.setProperty('--row-room', `${Math.max(0, H - rowBottom - 4)}px`);
   $('notices').style.translate = `0 ${noticeTop - 10}px`;
   $('watch-box').style.translate = `0 ${watchTop - 8}px`;
   $('main').classList.toggle('gutters', gutters);
@@ -2503,7 +2507,7 @@ $('rules-btns').addEventListener('click', (e) => {
 const askEl = $('ask');
 const marked = { hint: new Set(), offer: new Set() }; // the item ids carrying .hint / .offer
 let hintSig = '', hintLayers = []; // what the hint layers show; their elements (one per board)
-let askMin = false, askSig = '', askId = null, askSent = null; // the ask panel folded to its chip; what it shows; its ask's id; {id, at}: an answer on its way
+let askMin = false, askSig = '', askId = null, askSent = null, askJSON = ''; // the ask panel folded to its chip; what it shows; its ask's id; {id, at}: an answer on its way; the asks it last drew
 const ASK_WAIT_MS = 3000; // how long an answer's buttons wait for the host before they work again (a refusal)
 const handPick = new Set(); // the hand indices a hand ask has picked (of the hand `pickOf`: another hand has other indices)
 let pickOf = '';
@@ -2560,7 +2564,8 @@ function renderHints() {
 
 /** The `v` an answer to ask `q` (this player's) sends for `x` (spec §3c,
  *  §3i) — the panel's typed values and the terminal's text alike: an
- *  option's index (a number, or a label in any case), an offered item's id,
+ *  option's index (a number: the panel's button; text: a label in any case
+ *  first — "3" is the option labelled 3 when there is one —, else an index), an offered item's id,
  *  an offered address (any form), hand indices ([0, 3] or "0,3": those
  *  cards, as the host matches them), a whole number in [min, max]. {v}, or
  *  {why} saying what is offered: the host checks again, and refuses
@@ -2568,7 +2573,8 @@ function renderHints() {
 function answerV(q, x) {
   const s = String(x ?? '').trim(), why = (w) => ({ why: `${q.id}: ${w}` });
   if (q.options) {
-    const k = /^\d+$/.test(s) ? +s : q.options.findIndex((l) => l.toLowerCase() === s.toLowerCase());
+    const byLabel = typeof x === 'number' ? -1 : q.options.findIndex((l) => l.toLowerCase() === s.toLowerCase());
+    const k = byLabel >= 0 ? byLabel : /^\d+$/.test(s) ? +s : -1;
     return k >= 0 && k < q.options.length ? { v: k } : why(`answer ${q.options.map((l, j) => `[${j}] ${l}`).join(' ')}`);
   }
   switch (q.pick) {
@@ -2603,7 +2609,8 @@ function answerAsk(q, x) {
 function renderAsk() {
   const q = view.ask[0];
   if (q?.id !== askId) { handPick.clear(); askSent = null; askMin = false; askId = q?.id ?? null; } // (another question: shown, unfolded)
-  const sig = q ? `${askMin}|${JSON.stringify(view.ask)}` : '';
+  const json = JSON.stringify(view.ask), sig = q ? `${askMin}|${json}` : '';
+  if (json !== askJSON) { askJSON = json; askSent = null; } // (the asks changed: the answer was taken — the same id asked again works at once)
   if (sig === askSig) return;
   askSig = sig;
   askEl.classList.toggle('hidden', !q);
@@ -2723,10 +2730,18 @@ function tapSelect(id) {
   select(id);
   wantSelect(id);
 }
+/** Why the host would drop a `select` of item `id` now (spec §3c), or '':
+ *  no such item, rules that take no selections, a piece hidden from this
+ *  player (it shows only its back: §2d). */
+function noSelect(id) {
+  const it = id && view.items[id];
+  if (!it) return 'no such item';
+  if (!(view.rules?.enabled && view.rules.wants?.includes('select'))) return 'the rules take no selections';
+  return (it.k === 'g' || it.k === 's') && !('t' in it) ? 'that piece is hidden from you' : '';
+}
 /** Sends `select` of item `id` when the rules want it (tapSelect; a drag's start too). */
 function wantSelect(id) {
-  const it = id && view.items[id], hidden = it && (it.k === 'g' || it.k === 's') && !('t' in it); // (a hidden piece shows only its back: spec §2d)
-  if (it && !hidden && view.rules?.enabled && view.rules.wants?.includes('select')) act({ t: 'select', id });
+  if (!noSelect(id)) act({ t: 'select', id });
 }
 
 // --- table cues: your-turn alert (UX-I2) and win celebration (UX-I4) --------
@@ -3401,6 +3416,28 @@ function updatePinch() {
   pinch.rest = setTimeout(pinchRest, PINCH_REST_MS);
 }
 
+/** A finger's reach (CSS px, D170): a supply drawn smaller than twice this —
+ *  go's bowl on a 19 × 19 board is 16 px wide on a phone held upright — is
+ *  taken by a press this near its centre, as a 44 px target would be. Only
+ *  supplies (a game's few bowls and piles, where every move starts): on a
+ *  crowded table zoomed out, small pieces everywhere would leave a finger no
+ *  felt to pan by. */
+const TOUCH_REACH = 22;
+/** The supply a touch at table point p that took nothing means: the nearest
+ *  one this player may drag (dragMode, for event e) drawn under 2 ×
+ *  TOUCH_REACH px whose centre is within TOUCH_REACH px of p — or null. */
+function nearTouch(p, e) {
+  let best = null, bd = TOUCH_REACH / scale;
+  for (const [id, it] of Object.entries(view.items)) {
+    if (it.k !== 's') continue;
+    const { w, h } = sizeOf(it, boxes);
+    if (Math.max(w, h) * scale >= 2 * TOUCH_REACH) continue;
+    const o = fanPos.get(id) || it, d = Math.hypot(o.x + w / 2 - p.x, o.y + h / 2 - p.y);
+    if (d <= bd && dragMode(id, it, e)) [best, bd] = [id, d];
+  }
+  return best;
+}
+
 tableEl.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || e.target.closest('#action-bar')) return;
   closeSeatMenu();
@@ -3410,8 +3447,13 @@ tableEl.addEventListener('pointerdown', (e) => {
   tPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (tPtrs.size === 2) { e.preventDefault(); startPinch(); return; }
   if (tPtrs.size > 2 || pinch) return;
-  const hit = e.target.closest('.item')?.dataset.id, id = hit && topOf(hit), el = id && itemEls.get(id), it = id && view.items[id];
-  const mode = it && dragMode(id, it, e);
+  const hit = e.target.closest('.item')?.dataset.id;
+  let id = hit && topOf(hit), it = id && view.items[id], mode = it && dragMode(id, it, e);
+  // A finger that took nothing it may drag takes a small supply right by it
+  // (an ask's table pick reads the tap itself, as it was).
+  const near = !mode && e.pointerType !== 'mouse' && !askOpen()?.among && nearTouch(toTable(e), e);
+  if (near) [id, it, mode] = [near, view.items[near], dragMode(near, view.items[near], e)];
+  const el = id && itemEls.get(id);
   if (mode) e.preventDefault();
   const p = mode && toTable(e);
   // An item drag, or a pan: felt, and items this player may not drag (spec
@@ -3753,7 +3795,7 @@ function pickGame(k) {
   // Another game's state (chips, scores, a hand) is discarded by setRules —
   // even while the rules are off ("Free table" keeps it for re-enabling).
   // setRules keeps the state of a script with the same name: compare names too.
-  const tplName = /\bname: (['"])(.*?)\1/.exec(RULES_TEMPLATES[k] || '')?.[2], rules = T?.state.rules;
+  const tplName = scriptName(RULES_TEMPLATES[k]), rules = T?.state.rules;
   if (RULES_TEMPLATES[k] && rules && rules.name !== tplName && !confirm(rules.enabled
     ? `Stop ${rules.name}? Its game state (chips, scores, the hand in progress) will be lost.`
     : `Discard the kept ${rules.name} game state (chips, scores)?`)) return;
@@ -3772,20 +3814,22 @@ function pickGame(k) {
  *  up) or a rules game that builds its own board (`clear`: chess, go,
  *  reversi, §3g — the table cleared, then the rules enabled afresh, their
  *  setup laying the game out). On a table with items or a rules state, only
- *  once the host agrees to discard them. */
+ *  once the host agrees to discard them. The last act()'s promise, or null
+ *  when the host keeps the table. */
 function pickCleared(game) {
-  if ((Object.keys(T.state.items).length || T.state.rules) && !confirm(`Clear the table and set up ${game.title}? The current game is discarded.`)) return;
+  if ((Object.keys(T.state.items).length || T.state.rules) && !confirm(`Clear the table and set up ${game.title}? The current game is discarded.`)) return null;
   askGame = false;
   $('games-dialog').close();
   if (game.box) {
     if (T.state.rules?.enabled) act({ t: 'setRules', enabled: false });
-    act({ t: 'loadBox', box: BOXES[game.box], setup: true, clear: true });
-    return;
+    return act({ t: 'loadBox', box: BOXES[game.box], setup: true, clear: true });
   }
   act({ t: 'clear' });
   $('rules-code').value = RULES_TEMPLATES[game.k]; // the 📜 dialog shows what runs
-  act({ t: 'setRules', code: RULES_TEMPLATES[game.k], enabled: true, reset: true });
+  return act({ t: 'setRules', code: RULES_TEMPLATES[game.k], enabled: true, reset: true });
 }
+/** The script name `code` gives itself (its `name: '…'`), as setRules keeps a game's state by it. */
+const scriptName = (code) => /\bname: (['"])(.*?)\1/.exec(code || '')?.[2];
 
 $('game-strip').querySelector('.games').innerHTML = GAMES.map((g) =>
   `<button data-game="${g.k}" title="${esc(`${g.title}: ${g.pitch}`)}">${g.emoji} ${g.short || g.title}</button>`).join('');
@@ -3837,16 +3881,21 @@ $('rules-tpl').addEventListener('change', () => {
 // Enable starts a rules Worker, then runs the script's setup there: "Starting…"
 // until it is done; the dialog then closes, or stays open showing what went
 // wrong (the code didn't evaluate, setup threw), the running rules unchanged.
+// A game that lays out the whole table (chess, go, reversi: GAMES `clear`)
+// starts as 🎲 starts it, on a cleared table once the host agrees — unless
+// it is the game this table holds (its state kept, or reset by the box), D169.
 $('rules-form').addEventListener('submit', async (e) => {
   if (e.submitter?.id !== 'rules-enable') return; // Close button
   e.preventDefault();
-  const btn = $('rules-enable');
+  const btn = $('rules-enable'), code = $('rules-code').value;
+  const game = GAMES.find((g) => g.clear && RULES_TEMPLATES[g.k] === code), fresh = game && T.state.rules?.name !== scriptName(code);
   btn.disabled = true;
   btn.textContent = 'Starting…';
   $('rules-err').textContent = '';
-  const r = await act({ t: 'setRules', code: $('rules-code').value, enabled: true, reset: $('rules-reset').checked });
+  const r = await (fresh ? pickCleared(game) : act({ t: 'setRules', code, enabled: true, reset: $('rules-reset').checked }));
   btn.disabled = false;
   btn.textContent = 'Enable';
+  if (!r) return; // (the host kept the table)
   if (r.ok && !lastRulesError) $('rules-dialog').close();
   else {
     updateRulesDialog();
@@ -4269,7 +4318,12 @@ function cliExec(c) {
         act({ t: 'answer', id: q.id, v: r.v });
         break;
       }
-      case 'select': act({ t: 'select', id: cliItem(c.id) }); break; // (the rules' hint comes back in the next state)
+      case 'select': { // (the rules' hint comes back in the next state; what the host would drop is said here)
+        const id = cliItem(c.id), why = noSelect(id);
+        if (why) throw new Error(`select ${id}: ${why}`);
+        act({ t: 'select', id });
+        break;
+      }
       case 'asks': for (const line of view.ask.length ? view.ask.map(cliAsk) : ['❓ no questions wait for you']) cliMsgs.push(line); break;
       case 'place': { // onto a board's spot (spec §3i): an item moves there, centred; a supply (id or type name) hands one out there
         const B = boardsNow(), r = resolveAddr(B, String(c.at ?? ''));
@@ -4303,7 +4357,7 @@ function cliConnect() {
     try {
       const snap = cliSnapshot();
       const s = JSON.stringify(snap);
-      if (s === last) return;
+      if (s === last && !snap.msgs.length) return; // (a message again in the same words is news all the same)
       const r = await call('/state', { method: 'POST', body: s, headers: { 'Content-Type': 'text/plain' } });
       if (!r.ok) throw new Error(`bridge rejected state (${r.status})`);
       last = s;

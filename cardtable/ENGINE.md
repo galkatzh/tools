@@ -213,7 +213,10 @@ they are off, no Worker exists.
   `templates.js`, and fixes the global names that hold the built-ins:
   `Array.prototype.push = …`, `Object.defineProperty(Object.prototype, …)`
   or a change to an imported `core.js` export throws a `TypeError`. That
-  is what keeps a script from rewriting what the engine writes. A script's own objects still take what
+  is what keeps a script from rewriting what the engine writes.
+  `RegExp.prototype.compile` is gone too: it rewrites a regex in place,
+  a frozen one's pattern included, so an imported `PID_RE` or `CTRL` could
+  have been re-pointed. A script's own objects still take what
   scripts commonly give them: `obj.toString = …`, `this.name = 'MyError'`
   in an error class, a function's own `call`, any key on a plain object
   (`tally[word] = 1`, even for the word `__lookupGetter__`). And the host
@@ -224,8 +227,10 @@ they are off, no Worker exists.
   appears only by joining, a name changes only by its player's rename, a
   colour never, the rules' code only in the host's Enable; each log line
   and name bulb speaks for the action's player or the rules, a chat line
-  only that player's own words, in their own chat; a guest's deck and its
-  line ("added deck …") only as the host itself cleans what they sent. A
+  only that player's own words, in their own chat; a player's added deck
+  only as the host itself cleans what they sent, said once in their name
+  ("added deck …") — a script that handles someone's `addDeck` by adding
+  a deck of its own instead is refused too. A
   change that fails is refused whole and ends the rules ("rules disabled —
   the host could not apply the script's changes"): a script can't sign
   Bob's name to someone else's action, nor put words in anyone's chat.
@@ -548,7 +553,15 @@ setups. `{x, y, free: true}` skips it.
 - **Their log lines aggregate**: in one action, four or more consecutive
   📜 Rules lines of the same kind — placed, removed, turned, counted,
   locked, unlocked, owner, used randomness — become one: "📜 Rules removed
-  30 pieces: D4, E4, D5, …" (the first 8 addresses, or names).
+  30 pieces: D4, E4, D5, …" (the first 8 addresses, or names; turns that
+  all went between the same two faces say which: "turned 4 pieces from
+  Light disc to Dark disc: d4, …").
+- **One call, one line**: `t.remove(ids)` and `t.setFace(ids, f)` also take
+  a list, and log it as one line from two items on, whatever the count —
+  a go capture of two stones is "📜 Rules removed 2 pieces: A1, B1", a
+  reversi move's flips one "turned … pieces" line. True when every item
+  was there (the others are still done; one that is gone is `false` and a
+  `console.warn`, as ever).
 - **`t.data._timers`** is the engine's own key in `t.data`: what
   `t.schedule` keeps (at most 1,000 timers, tags of at most 100
   characters). Don't write it; a save holding a malformed one loses the bad
@@ -750,13 +763,19 @@ Three more own their rules outright (Phase 3: `strict`, `handle`, `t.ask`,
 calls a function, so its rules read first and its helpers are plain
 functions below them; each builds its board in `setup` (`t.setTable`,
 `t.setSeats`, `t.newBox`, `t.spawn`, guarded by `t.data.ready` so a
-re-enable goes on where it was), reads the position from the pieces where
+re-enable goes on where it was), taking first every item of another game
+off the table (another game's board would stay the primary one, and its
+addresses would be read as this game's), reads the position from the pieces where
 they stand (`t.find`: the table and the rules can't drift apart), keeps
 in `t.data` only what a board can't show, plays every move itself in
 `handle` (returning `true`) or refuses it with the reason, sets
-`public.turn` to the player to move, and ends with `t.win` or an
-announced draw and a *New game* button. The 🎲 picker starts them on a
-cleared table with a fresh state (`clear: true` in `GAMES`).
+`public.turn` to the player to move, says on every screen what a phone's
+hidden log would otherwise keep (`t.announce`: check, a pass; `t.tell`: a
+declined or lapsed draw offer), and ends with `t.win` or an announced draw
+and a *New game* button for each seated player and the host (a button of
+their own each, `pid`: a watcher has none). The 🎲 picker — and the 📜
+dialog, over another game — starts them on a cleared table with a fresh
+state (`clear: true` in `GAMES`), once the host agrees.
 
 6. **Chess** — legal moves for every piece, with check: `onSelect` hints
    the squares of the piece picked up, `handle` plays the drop (captures,
@@ -770,13 +789,14 @@ cleared table with a fresh state (`clear: true` in `GAMES`).
    tokens of an `upright` type.
 7. **Go** (`goTemplate(9)`, `goTemplate(19)`) — stones taken from a bowl
    (a supply) onto the points; `handle` places them, removes every group
-   left without a liberty, refuses suicide and ko (the position before the
-   opponent's last move, kept in `t.data.prev`); Pass, Resign, and Count
-   after two passes in a row (area scoring, komi 6.5). `onSelect` shows a
+   left without a liberty (`t.remove(ids)`: one log line), refuses suicide
+   and ko (the position before the opponent's last move, kept in
+   `t.data.prev`); Pass, Resign, and after two passes in a row Count or a
+   stone played on (no third pass): area scoring, komi 6.5. `onSelect` shows a
    tapped stone's group and liberties. No dead-stone marking: players
    capture dead stones before they pass.
 8. **Reversi** — discs from each player's own pile; `handle` places one
-   only where it outflanks, turns the closed lines with `t.setFace`, passes
+   only where it outflanks, turns the closed lines with `t.setFace(ids, f)` (one line), passes
    for a player with no move (announced) and counts at the end;
    `onSelect` on your pile hints where a disc may go; the counts are seat
    badges (`public.badges`).
@@ -843,8 +863,10 @@ cleared table with a fresh state (`clear: true` in `GAMES`).
   `renderPlayers`; scripted-buttons row; each player's own parts — the
   ask panel (`renderAsk`, `answerV`: one conversion for the panel and the
   terminal), the hints (`renderHints`), the secret card (`renderSecret`),
-  `select` on a tap (`tapSelect`) — and the terminal's `answer`, `select`
-  and `asks`.
+  `select` on a tap (`tapSelect`, `noSelect`: what the host would drop) —
+  and the terminal's `answer`, `select` and `asks`; a game that lays out
+  the whole table started on a cleared one (`pickCleared`, from 🎲 or the
+  📜 dialog); a fingertip's reach for small supplies (`nearTouch`).
 - `cardtable/pieces.js`: the hint layer's SVG (`hintSVG`, numbers only).
 - `cardtable/index.html` / `style.css`: Rules button + dialog (editor,
   examples select, enable/disable, error line), buttons row, seat glow,

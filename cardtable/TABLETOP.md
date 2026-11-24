@@ -715,6 +715,26 @@ sync and rendering, and the Worker together with `handle`.
        arbiter); a draw offer is the opponent's question, resigning asks
        first. Go has no dead-stone marking: players capture dead stones
        before passing, and Count scores what is on the board.
+     - After play's review: a go capture is one log line however many
+       stones it takes (a script removing a list at once writes one line),
+       and a reversi move's flips are one, naming the two faces. Chess, go
+       and reversi take the whole table: started from the 📜 dialog over
+       another game they clear it first, as 🎲 does, once the host agrees,
+       and a card pile left under their rules is refused like any other
+       foreign item, never a script error. What a phone's hidden log would
+       keep is said on the screen — a check and a pass as a banner, a
+       declined or lapsed draw offer to the player who made it, why a move
+       waits on the opponent's promotion — and "New game" is the players'
+       and the host's own button, never a watcher's; after two passes go
+       offers Count or a stone, not a third pass. A bowl smaller than a
+       fingertip is taken by a press beside it. On a phone held sideways
+       the secret card keeps its head on screen; the question's fold button
+       never takes a row of its own; a question asked again works at once.
+       The terminal says an error again in the same words, says a select
+       the rules would drop, and reads a typed number as an option's label
+       first. A script can no longer re-point a frozen regex of the engine
+       (`compile` is gone), and the host checks every deck a player's
+       action adds against what they sent, whatever the patch's lines say.
 4. **Game boxes.**
    - `game.json` plus `.zip` upload, declarative setup and reset.
    - Export with the current position.
@@ -794,3 +814,11 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
 - **Upright glyphs on request:** a piece type may ask for its label to read
   upright on every screen (chess); every other face still lies as it lies
   on the table (§2).
+- **One call, one line:** a script that removes or turns a list of pieces at
+  once (a go capture, a reversi move) writes one log line for it; separate
+  calls merge from four on, as before (§5).
+- **A game that lays out the whole table clears it first**, however it is
+  started, once the host agrees (§7).
+- **A fingertip's reach for small supplies only:** a bowl or a pile drawn
+  smaller than a fingertip takes a press beside it; small pieces don't, so a
+  finger on a crowded table still pans (§2).

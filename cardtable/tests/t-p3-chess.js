@@ -287,10 +287,14 @@ function cues() {
     const m = await mark(B);
     await drag(B, 'a7', 'a6');
     ok(await cue(B, m, 'toasts', /🚫/) && posText(await position(alice)) === posText(before), 'a move after the end is refused');
+    // A watcher has no "New game" of her own (D163: a seated player or the host); a forged press of a
+    // player's is refused by the engine — the button isn't hers.
     const old = await position(alice), mc = await mark(carol);
-    await button(carol, 'New game');
+    ok(await carol.evaluate(() => ![...document.querySelectorAll('#rules-btns button')].some((b) => /New game/.test(b.textContent))), 'the watcher is offered no "New game"');
+    const theirs = await P.viewOf(alice, '(v.rules.public.buttons || []).find((x) => /New game/.test(x.label) && x.pid === a)?.id', W.pid);
+    await carol.evaluate((id) => window.__ct.act({ t: 'rulesBtn', id }), theirs);
     await h.sleep(1500);
-    ok(posText(await position(alice)) === posText(old) && (await since(carol, mc, 'toasts')).length > 0, `the watcher's "New game" starts nothing (${J(await since(carol, mc, 'toasts'))})`);
+    ok(theirs && posText(await position(alice)) === posText(old) && (await since(carol, mc, 'toasts')).some((x) => /🚫/.test(x)), `the watcher's forged press of White's "New game" starts nothing (${J(await since(carol, mc, 'toasts'))})`);
   }
 
   /** Presses "New game" on page p: the start position everywhere, White to move. */

@@ -200,20 +200,24 @@ body.nohand #hand-bar { display: none; }
   position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 9500;
   display: flex; flex-direction: column; align-items: center; gap: 6px;
   width: max-content; max-width: calc(100% - 8px); pointer-events: none;
+  max-height: var(--row-room, none); /* the room above its spot (placeSeats): the secret card gives way */
 }
-#rules-row > * { pointer-events: auto; max-width: 100%; }
+#rules-row > * { pointer-events: auto; max-width: 100%; flex: none; }
 #rules-btns {
   display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
   background: #0f172ad9; padding: 7px; border-radius: 12px; box-shadow: 0 2px 10px #000a;
 }
 /* t.secret (app.js renderSecret, spec §3g): what the rules tell this player
    alone, as text (textContent, pre-wrap); a tap on its head folds it away */
-#secret {
-  width: max-content; max-width: min(360px, 100%); max-height: 34vh; overflow-y: auto;
+/* a column whose text shrinks and scrolls (#rules-row's room, 34vh at most):
+   its head, which folds it, always shows */
+#rules-row > #secret {
+  flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column;
+  width: max-content; max-width: min(360px, 100%); max-height: 34vh;
   background: #1e1b4bf2; border: 1.5px solid #a78bfa; border-radius: 12px; box-shadow: 0 2px 10px #000a;
 }
-#secret-head { display: block; width: 100%; background: none; color: #ddd6fe; font-weight: 700; text-align: left; padding: 6px 12px; }
-#secret-text { padding: 0 12px 10px; font-size: 14px; line-height: 1.35; color: #ede9fe; white-space: pre-wrap; overflow-wrap: anywhere; }
+#secret-head { flex: none; display: block; width: 100%; background: none; color: #ddd6fe; font-weight: 700; text-align: left; padding: 6px 12px; }
+#secret-text { min-height: 0; overflow-y: auto; padding: 0 12px 10px; font-size: 14px; line-height: 1.35; color: #ede9fe; white-space: pre-wrap; overflow-wrap: anywhere; }
 #secret.shut #secret-text { display: none; }
 #secret.shut #secret-head::after { content: ' ▸'; color: #a78bfa; }
 #rules-btns button { background: #7c3aed; }
@@ -541,7 +545,7 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
   flex: none; display: flex; justify-content: center; align-items: center;
   padding: 6px 10px; background: #1a1433; border-top: 2px solid #7c3aed; z-index: 10;
 }
-#ask-card { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; width: min(720px, 100%); }
+#ask-card { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; width: min(720px, 100%); padding-right: 40px; }
 #ask-head { flex: 1 1 12em; min-width: 0; display: flex; align-items: center; gap: 8px; }
 #ask-prompt { font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
 #ask-prompt::before { content: "❓ "; }
@@ -558,13 +562,13 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 }
 #ask-v:invalid { border-color: #f87171; }
 #ask-min, #ask-chip { background: none; color: #c4b5fd; }
-#ask-min { margin-left: auto; } /* (last: the card's far right, on the options' row when it wraps) */
+#ask-min { position: absolute; right: 0; top: 50%; translate: 0 -50%; } /* (in the card's right edge, which it keeps: never a row of its own) */
 #ask-body.glyphs button { font-size: 26px; line-height: 1; min-width: 52px; } /* one-glyph options (♕ ♖ ♗ ♘) read at a glance */
 #ask-chip { font-weight: 600; }
 #ask.min #ask-card, #ask:not(.min) #ask-chip { display: none; }
 #ask.sent #ask-body { opacity: 0.6; }
 #ask.min { padding-block: 0; }
-@media (pointer: coarse) { #ask button { min-height: 44px; min-width: 44px; } }
+@media (pointer: coarse) { #ask button { min-height: 44px; min-width: 44px; } #ask-card { padding-right: 48px; } }
 @media (max-height: 500px) { #ask { padding: 2px 8px; } #ask-prompt { font-size: 14px; } }
 
 /* ghost card that follows the pointer while dragging out of the hand */

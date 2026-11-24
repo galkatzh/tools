@@ -508,10 +508,10 @@ seats and a table shaped for a phone held upright.
   and *🏳 Resign* (asked to confirm). The glyphs read upright for both
   players.
 - **Go**, 9 × 9 or 19 × 19: drag stones from your bowl onto the points.
-  Captures (a group of four or more taken in one move is one log line),
-  suicide refused, ko (the position before the opponent's last move can't
-  come back). *Pass*, *Resign*, and once both players have passed in a row,
-  *Count*: area scoring, komi 6.5. Tap a stone to see its group's
+  Captures (one log line for the stones a move takes), suicide refused, ko
+  (the position before the opponent's last move can't come back). *Pass*
+  (said on every screen), *Resign*, and once both players have passed in a
+  row, *Count* or play on: area scoring, komi 6.5. Tap a stone to see its group's
   liberties. 361 stones stay quick (a move at stone 300 costs the rules
   under a millisecond).
 - **Reversi** (the 19th-century public-domain game): light on d4 and e5,
@@ -520,7 +520,10 @@ seats and a table shaped for a phone held upright.
   line it closes turns over, the seat labels count each side's discs, a
   player with no move passes (it's announced), and the most discs win.
 
-After a game, *♻ New game* sets the same game up again.
+After a game, *♻ New game* (the players' and the host's: a watcher has
+none) sets the same game up again. A check, a go pass and a declined or
+lapsed draw offer show on the screen too — on a phone the log is out of
+sight.
 
 ## Terminal bridge & bots (cli.js / cli.py)
 
@@ -557,8 +560,8 @@ Game pieces have their own commands (both REPLs; `help` lists them):
 | `claim <id>` / `release <id>` | makes an item yours, or nobody's |
 | `seat <id>` / `seat -` / `seat +` | sits in a named seat; stands up to watch; sits down again |
 | `asks` | lists the rules' questions waiting for you: `❓ promo: Promote to [0] ♕ [1] ♖ [2] ♗ [3] ♘`, and for a pick what to answer (an item, a spot, hand cards, a number) |
-| `answer <id> <value>` | answers one: an option's number or its label (any case), an offered item's id, an offered spot (`g7`), hand indices (`0,3`), a number. The tab checks it first: what wasn't offered is said, and nothing is sent |
-| `select <id>` | selects a piece, as a tap does: rules that want it answer with a hint |
+| `answer <id> <value>` | answers one: an option's label (any case) or its number — a label first, so `answer bid 3` means the option labelled 3 where there is one —, an offered item's id, an offered spot (`g7`), hand indices (`0,3`), a number. The tab checks it first: what wasn't offered is said, and nothing is sent |
+| `select <id>` | selects a piece, as a tap does: rules that want it answer with a hint. A select the host would drop (rules that take none, a piece hidden from you) is said as an error |
 
 New questions, a new hint (`💡 hint: e3, e4`) and a new `t.secret`
 (`🔒 for you: …`) print as they arrive, the same text in both REPLs (the
@@ -582,7 +585,7 @@ bridge as a small API — the same in both languages: `state`, `send`,
 `wait`, `on`, plus `chat`, `play`, `draw`, `btn`, `roll(*ids)`,
 `take(supply, x, y, hand)`, `place(ref, addr)`, `seat(id)` (`'-'`
 stands up, `'+'` sits down again), `answer(id, value)` (a value as the
-`answer` command takes it, or a list of hand indices) and `select(id)`.
+`answer` command takes it — a number is an option's index —, or a list of hand indices) and `select(id)`.
 The state also carries your own parts of the rules: `asks` (`[{id, prompt,
 options: [labels]} | {id, prompt, pick, among?, count?, min?, max?}]`),
 `hint` (`{items, spaces}` or null), `secret` (your whole `t.secret` entry,
@@ -676,10 +679,15 @@ refuse the `https → http://127.0.0.1` fetch.
   pass, and Count scores what is on the board. Chess's draws are automatic,
   never claimed (there is no arbiter at a casual table), and it has no
   clock; a move is logged as the rules' ("📜 Rules moved ♙ e2 → e4"), since
-  the script plays it. In go, capturing one to three stones logs a line
-  per stone (four or more are one line). On a phone held sideways the
-  boards are small (they are shaped for a phone held upright): pinch to
-  zoom.
+  the script plays it. On a phone held sideways the boards are small
+  (they are shaped for a phone held upright): pinch to zoom — go 19 × 19
+  wants a phone held upright, and zoomed in to play near the edges. Chess,
+  go and reversi each lay out the whole table: started over another game
+  (from 🎲 or the 📜 dialog), they clear it first, once the host agrees.
+- A bowl or a pile smaller than a fingertip (go 19 × 19's is 16 px wide on
+  an upright phone) is taken by a press up to 22 px from its centre; other
+  small pieces are not, so a finger on a crowded, zoomed-out table can
+  still pan.
 
 ## Testing
 
@@ -711,4 +719,11 @@ the rules Worker have `core-p3.test.mjs`, `t-p3-space.js` (snapping and
 addresses), `t-p3-worker.js` and `t-p3-attack.js` (the Worker, its watchdog
 and hardening, and an attacker's tries), `t-p3-ui.js` (asks, hints and the
 secret card on a desktop and on phones held upright and sideways) and
-`t-p3-cli.js` (the terminal's `asks`, `answer` and `select`).
+`t-p3-cli.js` (the terminal's `asks`, `answer` and `select`). Play has
+`t-p3-term.js` (two bot REPLs, cli.js and cli.py, answering and selecting
+line for line alike) and the three demos' suites: `t-p3-chess.js` (a
+desktop and two phones, every rule by real drags), `t-p3-go.js` (9 × 9 by
+hand and a 361-stone 19 × 19 fill; it runs in the serial batch for B13)
+and `t-p3-reversi.js`; `t-p3c-review.js` keeps the 3C review's fix-ups
+(the 📜 dialog's games, a fingertip's reach, the ask panel, the secret card
+on a phone held sideways).

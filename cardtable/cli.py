@@ -234,7 +234,7 @@ HELP = """commands:
   seat <id> | seat - | seat +   sit in a named seat; - stand up to watch; + sit down again
   btn <id>                press a rules button (see "buttons")
   asks                    the rules' questions waiting for you (new ones print as they come)
-  answer <id> <value>     answer one: an option's number or label, an item id, a spot, hand indices (0,3), a number
+  answer <id> <value>     answer one: an option's label or number, an item id, a spot, hand indices (0,3), a number
   select <id>             select a piece: the rules may hint where it can go
   chat <msg>              say something (also "!commands" for rules scripts)
   quit"""

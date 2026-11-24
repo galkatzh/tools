@@ -663,13 +663,19 @@ const scanRaw = (page, o) => page.evaluate((o) => {
       T('a function', () => { c.cleanDeck.cache = {}; });
       T('grid.parseAddr', () => { g.parseAddr.x = 1; });
       T('BOXES', () => { tp.BOXES.draughts.name = 'x'; });
-      r.text = c.str('Bobs\u0007 deck', 24) + '|' + 'a\u0007b'.replace(c.CTRL, '');
+      // RegExp.prototype.compile rewrites a regex in place — a frozen one's pattern too, before it throws (D168):
+      // the third review re-pointed PID_RE and turned CTRL into /not /g. A TypeError alone proves nothing here.
+      T('CTRL.compile', () => c.CTRL.compile('not ', 'g'));
+      T('PID_RE.compile', () => c.PID_RE.compile('.*'));
+      r.text = c.str('Bobs\u0007 deck', 24) + '|' + 'a\u0007b'.replace(c.CTRL, '') + '|' + c.str('Do not pass', 24);
+      r.src = [c.CTRL.source, c.CTRL_NL.source, c.PID_RE.source].join(' ') + ' ' + c.PID_RE.test('not a pid');
       console.log('QZIMP ' + JSON.stringify(r));
     }).catch((e) => console.log('QZIMP failed ' + e.message));`);
     await until(() => wlog.some((x) => x.startsWith('QZIMP ')), 5000);
     const imp = JSON.parse((wlog.find((x) => x.startsWith('QZIMP {')) || 'QZIMP {}').slice(6));
-    ok(Object.keys(imp).length === 11 && Object.entries(imp).every(([k, v]) => (k === 'text' ? v === 'Bobs deck|ab' : v === 'TypeError')),
-      `D148: core.js, grid.js and templates.js, imported by the script — every export it tries to change throws, and str() and CTRL still strip what they did (${J(imp)})`);
+    const SRC = String.raw`[\u0000-\u001f\u007f-\u009f] [\u0000-\u0009\u000b-\u001f\u007f-\u009f] ^[0-9a-f]{16}$ false`; // (each regex's source as core.js writes it)
+    ok(Object.keys(imp).length === 14 && Object.entries(imp).every(([k, v]) => (k === 'text' ? v === 'Bobs deck|ab|Do not pass' : k === 'src' ? v === SRC : v === 'TypeError')),
+      `D148, D168: core.js, grid.js and templates.js, imported by the script — every export it tries to change throws, compile included; the regexes keep their patterns (PID_RE refuses "not a pid"), and str() and CTRL still strip what they did (${J(imp)})`);
     ok(await rulesOn(), '(the rules are still on: the script caught each throw)');
     const rot4 = ((await P.viewOf(host, 'v.items[a].rot', ids.S1)) + 90) % 360;
     ts0 = await hostNow();

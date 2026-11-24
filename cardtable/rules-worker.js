@@ -201,6 +201,11 @@ function harden(roots) {
   }
 }
 {
+  // RegExp.prototype.compile (Annex B) rewrites a regex in place: a frozen
+  // one's pattern too, in every browser, before it throws on its read-only
+  // lastIndex — a script that import()ed core.js re-pointed its PID_RE, and
+  // its CTRL put words in a guest's deck. The engine never calls it (D168).
+  delete RegExp.prototype.compile;
   for (const [o, keys] of OVERRIDABLE) for (const k of keys) overridable(o, k);
   // the built-ins the syntax reaches without a global name: iterators (for…of,
   // spread), generators (the engine's own function*), async functions, %TypedArray%

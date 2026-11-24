@@ -194,6 +194,16 @@ const CTRL = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
   B.Carol.c.stdin.write('answer pair tails\n');
   ok(eq((await until(async () => !!(await ansOf('pair', pid.Carol)), 10000, 150)) && (await ansOf('pair', pid.Carol)).v, 'Tails'), '(the control: "answer pair tails" answers "Tails")');
 
+  section('options labelled with digits: a typed number is a label first, then an index (3C review)');
+  ok((await run(`for (const p of ${json([pid.Bob, pid.Carol])}) t.ask(p, { id: 'dig', prompt: 'How many tricks?', options: ['1', '2', '3', '4'] });`)).ok
+    && await until(() => ['Bob', 'Carol'].every((n) => snap(n)?.asks?.some((q) => q.id === 'dig')), 10000, 150), '(an ask whose options are 1, 2, 3, 4)');
+  for (const [n, line, want] of [['Bob', 'answer dig 3', '3'], ['Carol', 'answer dig 0', '1']]) {
+    B[n].c.stdin.write(`${line}\n`);
+    let got = null;
+    await until(async () => (got = await ansOf('dig', pid[n])), 10000, 150);
+    ok(eq(got?.v, want), `${B[n].lang} "${line}" → "${want}" (${want === '3' ? 'the option labelled 3, not index 3' : 'no option is labelled 0: index 0'}) (${json(got?.v)})`);
+  }
+
   section('`select`: the hint arrives in that bot\'s snapshot alone, and its REPL prints it');
   const hintLine = (n, at) => linesOf(B[n], at).find((l) => l.startsWith('  ✉ 💡 hint: '));
   let at = { Bob: B.Bob.c.buf.length, Carol: B.Carol.c.buf.length };
@@ -221,6 +231,16 @@ const CTRL = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
   ok((await host.evaluate(() => window.__ct.act({ t: 'setRules', enabled: false }))).ok, 'Alice disables the rules');
   ok(await until(() => ['Bob', 'Carol'].every((n) => snap(n)?.rules === null && snap(n).strict === false && eq(snap(n).asks, []) && snap(n).hint === null), 10000, 150), 'both snapshots: rules null, strict false, no asks, no hint');
   ok(['Bob', 'Carol'].every((n) => snap(n).secret?.gate), 'each secret is still there');
+  {
+    // a select the host would drop is said, never sent (3C review): the rules take none now
+    const at2 = { Bob: B.Bob.c.buf.length, Carol: B.Carol.c.buf.length }, n1 = await Promise.all(['Bob', 'Carol'].map((n) => B[n].tab.evaluate(() => window.__acts.length)));
+    for (const n of ['Bob', 'Carol']) B[n].c.stdin.write(`select ${stone('c3')}\n`);
+    const err = (n) => linesOf(B[n], at2[n]).find((l) => l.startsWith('  ✉ error: select '));
+    await until(() => err('Bob') && err('Carol'), 8000, 100);
+    const sent = await Promise.all(['Bob', 'Carol'].map((n, k) => B[n].tab.evaluate((j) => window.__acts.slice(j).map((x) => x.a.t), n1[k])));
+    ok(!!err('Bob') && err('Bob') === err('Carol') && /the rules take no selections/.test(err('Bob')) && sent.every((l) => !l.includes('select')),
+      `"select" with no rules running: "${(err('Bob') || '').trim()}" in both, and no select left either tab (${json(sent)})`);
+  }
   ok((await host.evaluate((c) => window.__ct.act({ t: 'setRules', code: c, enabled: true }), TERM)).ok, 'Alice enables it again, keeping the state');
   ok(await until(() => snap('Bob')?.strict === true && snap('Bob').asks.length === 5 && snap('Carol')?.asks.length === 4, 15000, 150), `the asks still pending are back: Bob's five, Carol's four (she answered "pair") (${json([snap('Bob')?.asks.map((q) => q.id), snap('Carol')?.asks.map((q) => q.id)])})`);
   ok((await run(`for (const p of ${json([pid.Bob, pid.Carol])}) t.cancelAsk(p);`)).ok && await until(() => ['Bob', 'Carol'].every((n) => eq(snap(n).asks, [])), 10000, 150), '(the script withdraws them)');

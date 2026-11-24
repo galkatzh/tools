@@ -36,7 +36,9 @@
 // select, internal actions, per-recipient parts, guards, T.digest) has its own
 // sections, after 3A's: see "Phase 3B" below; Phase 3C (a view's asks, the
 // hint layer, the demos' box fields `upright` and a face's `name`, and item
-// (11), chess's automatic draws played on the template) closes it.
+// (11), chess's automatic draws played on the template) closes it; and its
+// review's fix-ups: the demos started over another game's table, a card pile
+// under go's and reversi's rules, one log line a capture (D167, D169).
 // Every random sequence is seeded and every failure names its seed.
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -1352,6 +1354,24 @@ function testAggregation() {
   ok(r.rules.length === 1 && r.rules[0].startsWith('removed 4 items: ') && r.rules[0].endsWith(`${order[20]}, ${order[21]}`), `2 cards then 2 pieces: "removed 4 items: …" (D110) (${J(r.rules)})`);
   r = script(T, (t) => { for (let k = 0; k < 5; k++) t.random(); });
   ok(r.rules.length === 1 && /randomness/.test(r.rules[0]) && /\b5\b/.test(r.rules[0]), `t.random ×5 in one hook: one "used randomness" line (${J(r.rules)})`);
+
+  section('(5) aggregation: one call given a list is one line from two items on — a go capture, a reversi move\'s flips (D167)');
+  ({ T, order } = aggTable());
+  r = script(T, (t) => t.remove([`m_${order[0]}`, `m_${order[1]}`]));
+  ok(J(r.rules) === J([`removed 2 pieces: ${order[0]}, ${order[1]}`]), `t.remove([2 ids]): one line (${J(r.rules)})`);
+  r = script(T, (t) => t.remove([`m_${order[2]}`]));
+  ok(r.rules.length === 1 && r.rules[0].startsWith('removed Man') && r.rules[0].includes(order[2]), `t.remove([1 id]): the single line, as ever (${J(r.rules)})`);
+  r = script(T, (t) => { t.remove(`m_${order[3]}`); t.remove(`m_${order[4]}`); t.remove([`m_${order[5]}`, `m_${order[6]}`, `m_${order[7]}`]); });
+  ok(r.rules.length === 3 && r.rules[2] === `removed 3 pieces: ${order.slice(5, 8).join(', ')}`, `two removals, then a list of 3: the list's line stands alone, the two stay two (${J(r.rules)})`);
+  let back = null;
+  r = script(T, (t) => { back = t.remove([`m_${order[8]}`, 'gone', `m_${order[9]}`]); });
+  ok(back === false && !T.state.items[`m_${order[8]}`] && !T.state.items[`m_${order[9]}`] && J(r.rules) === J([`removed 2 pieces: ${order[8]}, ${order[9]}`]), `a list naming an item gone: the others removed, one line, false (${J(r.rules)})`);
+  r = script(T, (t) => t.setFace(['g0', 'g1', 'g2'], 1));
+  ok(J(r.rules) === J(['turned 3 pieces from A to B: B, B, B']), `t.setFace([3 ids], f): one line, saying from which face to which (${J(r.rules)})`);
+  r = script(T, (t) => { for (const id of ['g0', 'g1', 'g2', 'g3']) t.setFace(id, 2); });
+  ok(J(r.rules) === J(['turned 4 pieces: C, C, C, C']), `4 turns to one face from two: the plain merged line (${J(r.rules)})`);
+  r = script(T, (t) => { for (const id of ['g0', 'g1', 'g2', 'g3']) t.setFace(id, 1); });
+  ok(J(r.rules) === J(['turned 4 pieces from C to B: B, B, B, B']), `4 turns from one face to one: the merged line says which (reversi's flips read "from Light disc to Dark disc") (${J(r.rules)})`);
 
   section('(5) aggregation: flushed at every commit — setup, timers');
   ({ T, order } = aggTable());
@@ -3422,6 +3442,30 @@ function testFourthReview() {
     }
     const r = L.job(BOB, ADD), deck = Object.values(r.patch.decks || {})[0];
     ok(deck?.name === 'Bobs deck' && deck.cards[1].n === 'Ace of Bob' && L.same() && L.H.state.rules.enabled, 'the honest patch goes in, the deck as Bob sent it');
+
+    // D168: the check no longer waits for a line in Bob's name — a patch that adds a deck in his addDeck
+    // adds his, said once in his name; and the honest engine always writes that line (never folded).
+    for (const [what, forge] of [
+      ["the deck rewritten, Bob's line dropped", (P) => { Object.values(P.decks)[0].cards[0].n = 'I resign'; P.log = P.log.filter((e) => e.p !== BOB); }],
+      ["the deck rewritten, a Rules line in place of Bob's", (P) => { Object.values(P.decks)[0].cards[0].n = 'I resign'; for (const e of P.log) if (e.p === BOB) e.p = 'RULES'; }],
+      ["the deck as sent, Bob's line dropped", (P) => { P.log = P.log.filter((e) => e.p !== BOB); }],
+    ]) {
+      const r1 = quietly(() => L.M.job(BOB, ADD)).value, P = structuredClone(r1.patch);
+      forge(P);
+      const before = stateOf(L.H);
+      let threw = null;
+      try { quietly(() => L.H.applyStatePatch(P, structuredClone(r1.out), { p: BOB, a: ADD })); } catch (e) { threw = e; }
+      ok(threw?.message === "the script rewrote Bob's deck" && stateOf(L.H) === before, `${what}: refused (${threw?.message}), the table as it was`);
+      L.start(L.H.state.rules.code);
+    }
+    const again = L.job(BOB, ADD), lines = (again.patch.log || []).filter((e) => e.p === BOB);
+    ok(J(lines.map((e) => e.txt)) === J(['added deck "Bobs deck" (2 cards)']) && L.same() && L.H.state.rules.enabled,
+      `Bob adds the same deck again, right after: his line is written again, not folded, and the patch goes in (${J(lines)})`);
+    const r2 = quietly(() => L.M.job(BOB, ADD)).value, P2 = structuredClone(r2.patch);
+    Object.values(P2.decks)[0].cards[0].n = 'I resign';
+    let threw2 = null;
+    try { quietly(() => L.H.applyStatePatch(P2, structuredClone(r2.out), { p: BOB, a: ADD })); } catch (e) { threw2 = e; }
+    ok(threw2?.message === "the script rewrote Bob's deck", `a third upload, the same name and size, its deck rewritten: refused (${threw2?.message})`);
   }
 
   section('(RF4) The effects a job brings are rebuilt from the fields the engine writes: a field a Worker adds never reaches the host\'s queue; a marker without its item is refused; an action that names item "12" as a number marks "12" and keeps the indexes whole (D149)');
@@ -3770,6 +3814,171 @@ function testChessDraws() {
   });
 }
 
+
+// =============================================================================
+// (3C review) The demos on any table: each one's fresh setup takes every
+// item of another game off the table (D169) — enabled from the 📜 dialog over
+// another game's board, its addresses are its own board's —; under go's and
+// reversi's rules a card pile is an item like any other, refused by strict,
+// never a script error; a go capture of two stones is one log line, and a
+// reversi move's flips are one line (D167).
+// =============================================================================
+/** A table run as app.js runs one: each job on a Worker-like mirror M, its
+ *  patch applied on the host H (checked against the job). Alice and Bob sit.
+ *  {M, H, job(p, a) → {notes (texts to p), lines (the job's log lines)}, on, enable, off, same}. */
+function demoTable() {
+  const clk = { t: 1.7e12 };
+  const base = { v: 3, seq: 1, table: { shape: 'rect', w: 3000, h: 2000 }, seats: null, boardSeq: 0, zMax: 0, items: {}, keys: {}, log: [], rules: null,
+    guestDeckChars: 0, players: { [HOST]: player('Alice', 0), [BOB]: player('Bob', 180) }, decks: {}, boxes: {}, boxSrc: {} };
+  const M = quietly(() => createTable(json(base), { ...env(31), now: () => (clk.t += 250) })).value;
+  const pageHooks = { load: () => '', has: (k) => k === 'onSelect', flag: (k) => (k === 'strict' ? true : undefined), call(k) { throw new Error(`${k}() ran on the host`); } };
+  const H = quietly(() => createTable(json(base), { pid: HOST, now: () => clk.t, hooks: pageHooks })).value;
+  const D = { M, H };
+  D.job = (p, a) => {
+    const n = M.state.log.length, r = quietly(() => M.job(p, a)).value;
+    if (r.fatal || !r.patch) throw new Error(`the job failed: ${r.fatal || J(r)}`);
+    quietly(() => H.applyStatePatch(structuredClone(r.patch), structuredClone(r.out), { p, a }));
+    M.drain();
+    H.drain();
+    const fx = r.out?.effects || [];
+    return { notes: fx.filter((e) => e.t === 'note' && e.p === p).map((e) => e.msg), told: fx.filter((e) => e.t === 'note').map((e) => [e.p, e.msg]),
+      anns: fx.filter((e) => e.t === 'ann').map((e) => e.msg), lines: M.state.log.slice(n).map((e) => e.txt), error: r.out?.error };
+  };
+  /** The rules' buttons now: [id, label, pid]. */
+  D.buttons = () => (M.state.rules.public.buttons || []).map((b) => [b.id, b.label, b.pid]);
+  D.enable = (k, reset = true) => D.job(HOST, { t: 'setRules', enabled: true, code: templates.RULES_TEMPLATES[k], reset });
+  D.off = () => D.job(HOST, { t: 'setRules', enabled: false });
+  D.seat = (id) => Object.keys(M.state.players).find((p) => M.state.players[p].seatId === id);
+  D.same = () => H.digest() === M.digest();
+  D.ofBox = () => Object.values(M.state.items).every((it) => it.t?.startsWith(`${M.state.rules.data.box}/`));
+  /** The player to move (chess) drags the piece on `from` so that it lands centred on `to`. */
+  D.move = (p, from, to) => {
+    const id = M.api.at(from)[0]?.id, ty = M.api.type(M.state.items[id].t), c = M.api.spot(to);
+    return D.job(p, { t: 'move', id, x: c.x - ty.w / 2, y: c.y - ty.h / 2 });
+  };
+  /** Player p takes one from supply `id` onto address `at` (centred there, as a drop on the snap preview). */
+  D.take = (p, id, at) => {
+    const ty = M.api.type(M.state.items[id].t), c = M.api.spot(at);
+    return D.job(p, { t: 'take', id, x: c.x - ty.w / 2, y: c.y - (ty.h ?? ty.w) / 2 });
+  };
+  return D;
+}
+
+function testDemoReview() {
+  section('(3C review) a demo enabled over another game takes the table: the other game\'s board, pieces and decks go, in one log line; its own board is primary (D169)');
+  {
+    const D = demoTable();
+    D.enable('chess');
+    D.off(); // (a free table: the host adds a deck)
+    D.job(HOST, { t: 'addDeck', deck: { name: 'Odd', cards: [{ n: 'One' }, { n: 'Two' }] } });
+    ok(Object.values(D.M.state.items).some((it) => it.k === 'p') && D.same(), '(a chess game and a deck on the table)');
+    let r = D.enable('go9');
+    const goBoard = Object.values(D.M.state.items).filter((it) => it.t?.endsWith('/board'));
+    ok(D.ofBox() && goBoard.length === 1 && r.lines.some((l) => /^removed 34 items: /.test(l)) && D.same(),
+      `Go 9 × 9 over chess: only go's items are left — the chess board, its 32 pieces and the deck went in one line (${J(r.lines.filter((l) => /removed/.test(l)))})`);
+    const black = D.seat('black'), bowl = Object.keys(D.M.state.items).find((id) => D.M.state.items[id].k === 's' && D.M.state.items[id].owner === 'seat:black');
+    r = D.take(black, bowl, 'E5');
+    ok(!r.notes.length && D.M.api.at('E5').length === 1 && D.same(), `Black's stone on the centre point E5 is played (${J(r.notes)})`);
+    r = D.enable('chess');
+    const white = D.seat('white'), pawn = D.M.api.at('e2')[0]?.id;
+    ok(D.ofBox() && pawn && D.M.state.items[pawn].t.endsWith('/wP'), 'chess over go: the stones and the go board go, the chess pieces stand on the chess board\'s squares');
+    const ty = D.M.api.type(D.M.state.items[pawn].t), c = D.M.api.spot('e4');
+    r = D.job(white, { t: 'move', id: pawn, x: c.x - ty.w / 2, y: c.y - ty.h / 2 });
+    ok(!r.notes.length && D.M.api.where(pawn) === 'e4' && D.same(), `and 1. e4 is played (${J(r.notes)})`);
+    r = D.enable('reversi');
+    const dark = D.seat('dark'), pile = Object.keys(D.M.state.items).find((id) => D.M.state.items[id].k === 's' && D.M.state.items[id].owner === 'seat:dark');
+    r = D.take(dark, pile, 'd3');
+    ok(D.ofBox() && !r.notes.length && D.M.api.at('d3').length === 1 && D.same(), `reversi over chess: Dark's disc on d3 is played (${J(r.notes)})`);
+  }
+
+  section('(3C review) under go\'s and reversi\'s rules a card pile is not the game\'s: a move, a flip or a removal of it is refused ("Not a move in this game"), the rules stay on');
+  for (const k of ['go9', 'reversi']) {
+    const D = demoTable();
+    D.enable(k);
+    D.off();
+    D.job(HOST, { t: 'addDeck', deck: { name: 'Odd', cards: [{ n: 'One' }, { n: 'Two' }] } });
+    D.enable(k, false); // (enabled again, the game kept: its setup doesn't run, the deck stays)
+    const pile = Object.keys(D.M.state.items).find((id) => D.M.state.items[id].k === 'p');
+    ok(!!pile && D.M.state.rules.enabled, `${k}: re-enabled with a deck on the table`);
+    for (const a of [{ t: 'move', id: pile, x: 100, y: 100 }, { t: 'flip', id: pile }, { t: 'shuffle', id: pile }, { t: 'del', id: pile }]) {
+      const r = D.job(BOB, a);
+      ok(J(r.notes) === J(['🚫 Not a move in this game']) && !r.error && D.M.state.rules.enabled && D.M.state.items[pile] && D.same(), `${k}: Bob's ${a.t} of the pile — ${J(r.notes)}, the rules on`);
+    }
+  }
+
+  section('(3C review) go: a capture of two stones is ONE log line (B16 for any N, D167); reversi: a move\'s flips are one line, from which face to which');
+  {
+    const D = demoTable();
+    D.enable('go9');
+    const p = { b: D.seat('black'), w: D.seat('white') }, bowl = (c) => Object.keys(D.M.state.items).find((id) => D.M.state.items[id].k === 's' && D.M.state.items[id].owner === `seat:${c === 'b' ? 'black' : 'white'}`);
+    let r;
+    for (const [c, at] of [['b', 'A2'], ['w', 'A1'], ['b', 'B2'], ['w', 'B1'], ['b', 'E5'], ['w', 'J9']]) {
+      r = D.take(p[c], bowl(c), at);
+      if (r.notes.length) throw new Error(`${c} ${at} refused: ${r.notes}`);
+    }
+    r = D.take(p.b, bowl('b'), 'C1');
+    const removed = r.lines.filter((l) => /removed/.test(l));
+    ok(removed.length === 1 && /^removed 2 pieces: (A1, B1|B1, A1)$/.test(removed[0]) && D.M.api.at('A1').length === 0 && D.M.api.at('B1').length === 0 && D.same(), `Black's C1 takes A1 and B1: one line (${J(removed)})`);
+    const R = demoTable();
+    R.enable('reversi');
+    const dark = R.seat('dark'), pile = Object.keys(R.M.state.items).find((id) => R.M.state.items[id].k === 's' && R.M.state.items[id].owner === 'seat:dark');
+    r = R.take(dark, pile, 'd3');
+    ok(J(r.lines.filter((l) => /turned/.test(l))) === J(['turned Light disc to Dark disc on d4']), `one flip: its own line (${J(r.lines)})`);
+    const light = R.seat('light'), lpile = Object.keys(R.M.state.items).find((id) => R.M.state.items[id].k === 's' && R.M.state.items[id].owner === 'seat:light');
+    for (const [q, pl, at] of [[light, lpile, 'c3'], [dark, pile, 'c4']]) {
+      r = R.take(q, pl, at);
+      if (r.notes.length) throw new Error(`${at} refused: ${r.notes}`);
+    }
+    r = R.take(light, lpile, 'e3');
+    const turned = r.lines.filter((l) => /turned/.test(l));
+    ok(turned.length === 1 && /^turned \d+ pieces from Dark disc to Light disc: /.test(turned[0]) && R.same(), `a move that flips several: one line, saying from which face to which (${J(turned)})`);
+  }
+
+  section('(3C review) what a phone must see is a banner or a notice, never only a log line: check, a pass, a declined or lapsed draw offer, the opponent promoting');
+  {
+    const D = demoTable();
+    D.enable('chess');
+    const W = D.seat('white'), B = D.seat('black');
+    D.move(W, 'e2', 'e4');
+    D.move(B, 'f7', 'f6');
+    let r = D.move(W, 'd1', 'h5');
+    ok(J(r.anns) === J(['Black is in check']), `2. Qh5+: "Black is in check" on every screen (a banner) (${J(r.anns)})`);
+    D.move(B, 'g7', 'g6');
+    D.job(W, { t: 'rulesBtn', id: 'draw-w' });
+    r = D.job(B, { t: 'answer', id: 'draw', v: 1 });
+    ok(J(r.told) === J([[W, 'Black declines your draw offer']]), `Black declines White's offer: White is told (${J(r.told)})`);
+    D.job(B, { t: 'rulesBtn', id: 'draw-b' });
+    r = D.move(W, 'h5', 'h4');
+    ok(J(r.told) === J([[B, 'Your draw offer lapses: White moved']]) && !D.M.state.rules.asks[W]?.length, `Black offers a draw, White moves instead of answering: the offer lapses, Black is told (${J(r.told)})`);
+  }
+  {
+    const D = demoTable();
+    D.enable('chess');
+    const W = D.seat('white'), B = D.seat('black');
+    for (const [p, m] of [[W, 'a2a3'], [B, 'h7h5'], [W, 'a3a4'], [B, 'h5h4'], [W, 'g2g4'], [B, 'h4g3'], [W, 'b2b3'], [B, 'g3h2'], [W, 'b3b4'], [B, 'h2g1']]) {
+      const r = D.move(p, m.slice(0, 2), m.slice(2));
+      if (r.notes.length) throw new Error(`${m}: ${r.notes}`);
+    }
+    const r = D.move(W, 'b4', 'b5');
+    ok(J(r.notes) === J(['🚫 Black is choosing what the pawn becomes']), `while Black's promotion waits, White's move is refused with the reason (${J(r.notes)})`);
+  }
+  {
+    const D = demoTable();
+    D.enable('go9');
+    const b = D.seat('black'), w = D.seat('white');
+    let r = D.job(b, { t: 'rulesBtn', id: 'pass' });
+    ok(J(r.anns) === J(['Black passes — White to play']), `go: Black's pass is announced (${J(r.anns)})`);
+    r = D.job(w, { t: 'rulesBtn', id: 'pass' });
+    ok(J(r.anns) === J(['Both players passed — press Count to score, or play on']) && !D.buttons().some(([id]) => id === 'pass'), `after two passes: announced, and no third Pass offered (${J(D.buttons())})`);
+    r = D.job(b, { t: 'rulesBtn', id: 'pass' });
+    ok(J(r.notes) === J(['🚫 That button is not available to you right now']), `a forged third pass is refused (${J(r.notes)})`);
+    D.job(b, { t: 'rulesBtn', id: 'count-b' });
+    const fresh = D.buttons();
+    ok(J(fresh.map(([, l, p]) => [l, p]).sort()) === J([['♻ New game', HOST], ['♻ New game', BOB]].sort()) && new Set(fresh.map(([id]) => id)).size === fresh.length,
+      `the game over, "♻ New game" is each seated player's (and the host's) own button — a watcher has none (${J(fresh)})`);
+  }
+}
+
 (async () => {
   await guard('(1) grid.js addresses', testGridAddresses);
   await guard('(1) grid.js centres', testGridCentres);
@@ -3828,5 +4037,6 @@ function testChessDraws() {
   await guard('(3C) a view\'s asks and the hint layer', testViewAsks);
   await guard('(3C) the demos\' box fields', testDemoBoxFields);
   await guard('(11) chess: the draws', testChessDraws);
+  await guard('(3C review) the demos on any table', testDemoReview);
   report();
 })().catch(crash);

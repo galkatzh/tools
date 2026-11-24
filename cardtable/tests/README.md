@@ -1353,13 +1353,20 @@ a 🎲 entry with `clear: true` (`GAMES` keys `chess`, `go9`, `go19`,
 `pickCleared`) confirms "Clear the table and set up {title}? The current
 game is discarded." on a table with items or a rules state, then sends
 `clear` and `setRules {enabled: true, reset: true}`: a fresh game even when
-the same one runs. Each script is an IIFE whose hooks come first and its
+the same one runs. The 📜 dialog's Enable does the same for one of these
+four texts unless the rules state is that game's (`scriptName`: kept, or
+reset with Reset ticked), D169; and each one's fresh `setup` first removes
+every item not of its own box, in one log line (`clearOthers`), so no
+other board stays primary under it. Each script is an IIFE whose hooks come first and its
 helpers after; `strict: true`, no `allow`; every move is `handle` doing it
 with `t.*` ops and returning `true` (the log says "📜 Rules moved ♙ e2 →
 e4", "📜 Rules placed Black stone on D4"…). The pieces on the table are
 the position: each hook reads it from `t.find`, so a test can plant a
 position by moving pieces (see below). After the game a "♻ New game"
-button (`id: 'new'`, no `pid`: a seated player or the host) starts over.
+button for each seated player and the host (`id: 'new-<pid>'`, `pid`: a
+watcher has none) starts over. What a phone's hidden log would keep is said
+on the screen: a check and a go pass are banners (`t.announce`), a declined
+or lapsed draw offer a notice to the offerer (`t.tell`).
 
 - **Seats and table** (named seats, set in `setup`, guarded by
   `t.data.ready`): chess `white` (bottom) / `black`, reversi `dark`
@@ -1396,16 +1403,19 @@ button (`id: 'new'`, no `pid`: a seated player or the host) starts over.
   its player `{id: 'promo', prompt: 'Promote your pawn to', options:
   [{label: the side's glyph, value: 'Q' | 'R' | 'B' | 'N'}]}` (index 3 =
   the knight; the CLI's `answer promo 3`) and the turn waits for the
-  answer. Buttons per seated side: `draw-w` / `draw-b` ("½ Offer a draw",
+  answer (the opponent's moves meanwhile: "Black is choosing what the pawn
+  becomes"). Buttons per seated side: `draw-w` / `draw-b` ("½ Offer a draw",
   while no offer is pending and the other seat is taken: asks the other
   player `{id: 'draw', options: ['Accept', 'Decline']}`; any move lets it
-  lapse, "The draw offer lapses") and `resign-w` / `resign-b` ("🏳
+  lapse, "The draw offer lapses", and the offerer is told "Your draw offer
+  lapses: White moved"; a decline tells them "Black declines your draw
+  offer") and `resign-w` / `resign-b` ("🏳
   Resign": asks `{id: 'resign', options: ['Resign', 'Keep playing']}`
   first). Endings, announced (and `t.data.over`): "Checkmate — White
   wins" (🏆), "Stalemate — a draw", "Neither side can checkmate any more —
   a draw", "Fifty moves without a capture or a pawn move — a draw", "The
   same position for the third time — a draw", "Draw agreed", "White
-  resigns — Black wins". A check says "📜 Rules White is in check".
+  resigns — Black wins". A check is announced: "White is in check".
   Dead positions: no pawn, rook or queen, and at most one minor piece or
   only bishops all on one colour of square (K+B v K+B on opposite colours
   and K+N v K+N play on). Repetition keys count the en-passant square only
@@ -1426,11 +1436,11 @@ button (`id: 'new'`, no `pid`: a seated player or the host) starts over.
   not your turn", "Play from your own bowl", "That point is taken",
   "Suicide: that stone would have no liberty", "Ko: play elsewhere before
   you take back", "Put the stone on a point of the board", "Only the two
-  players play stones". Captured stones go by `t.remove`: four or more are
-  one log line ("📜 Rules removed 30 pieces: …", B16); one to three, a line
-  each (AGG_MIN). Buttons: `pass` (the player to move: "Black passes";
-  after two, the announcement "Both players passed — press Count to
-  score, or play on"), `count-b` / `count-w` (after two passes in a row:
+  players play stones". Captured stones go by one `t.remove(ids)`: one log
+  line however many ("📜 Rules removed 2 pieces: A1, B1"; B16's 30, D167).
+  Buttons: `pass` (the player to move, until two passes in a row; announced
+  "Black passes — White to play"; after two, "Both players passed — press
+  Count to score, or play on"), `count-b` / `count-w` (after two passes in a row:
   area scoring, komi 6.5: "Black 5 – White 8.5 (komi 6.5): White wins by
   3.5", 🏆), `resign-b` / `resign-w` (a `resign` ask first). A play after
   two passes resumes the game (passes back to 0). `onSelect` on a stone
@@ -1444,8 +1454,9 @@ button (`id: 'new'`, no `pid`: a seated player or the host) starts over.
   `seat:dark` / `seat:light`. `t.data`: `{ready, box, turn: 0 | 1, over}`.
   Start: light on d4 and e5, dark on d5 and e4, dark to move. A move is a
   `take` from your own pile with `a.to`; the disc is spawned locked, and
-  each bracketed disc turned with `t.setFace` ("📜 Rules turned Light disc
-  to Dark disc on d4"; four or more: one line). Refusals: "A disc must
+  the bracketed discs turned by one `t.setFace(ids, f)` ("📜 Rules turned
+  Light disc to Dark disc on d4"; two or more: "turned 3 pieces from Light
+  disc to Dark disc: c4, d4, e4"). Refusals: "A disc must
   outflank: close a line of the other colour", "That square is taken",
   "Play from your own pile", "It's not your turn". A side with no move
   passes: the announcement "Light has no move and passes — Dark plays
@@ -1496,8 +1507,7 @@ from the seats (go) or from the pile showing the dark face (reversi).
   a single capture, suicide, a two-stone group capture, a ko refused and
   then allowed after a move elsewhere by each, Pass and Pass (Count is
   offered only then), Count's score and 🏆. The group capture also checks
-  the task's "a capture of N stones is ONE log line", which D164 (one line
-  per stone below §3e's aggregation threshold of 4) does not meet. 19 × 19
+  the task's "a capture of N stones is ONE log line" (D167). 19 × 19
   through `__ct.act` as both players (the spec says so): 361 alternating
   legal placements (`fill19`: White's 30-stone group taken by Black's L3 at
   #61, B16, one log line; each side then fills its half but its eyes; #300
@@ -1553,7 +1563,8 @@ Every expectation is the laws of chess (FIDE) or the spec's (§3g "Draws",
   e7 → e5 on both screens and in both logs, a blocked path (Ra1 → a4), a
   pinned pawn (d2 → d4 under Bb4); O-O and O-O-O with their rooks; Carol
   joins as a watcher (no seat, no buttons, her drag sends nothing, a forged
-  move is refused, her "New game" starts nothing); a draw offer is
+  move is refused; after the draw she has no "New game", and her forged
+  press of White's is refused); a draw offer is
   Black's ask, lapses when White moves, then Black's offer accepted on the
   desktop: a draw, no 🏆; (2) castling through check (Bh3 covers f1) and
   out of check (Bb4+) refused, then Black resigns (after the confirming
@@ -1638,7 +1649,47 @@ own, beside the implementer's `t-p3-ui.js` and `t-p3-cli.js`.
   `select` and its printed hint, the printed secret, no control character
   on the terminal; then the Bridge API in both languages with the same
   tabs re-paired (`select`, `answer` with a number, a list, a label and a
-  spot, `place`).
+  spot, `place`). Since the 3C review it also checks an ask whose labels
+  are digits (`answer dig 3` is the option labelled 3; `answer dig 0`,
+  with no such label, index 0) and a `select` with no rules running: said
+  as `error: select …: the rules take no selections` in both, never sent.
+
+### The 3C review's fix-ups
+
+- **`t-p3c-review.js`** (D167–D171): Alice on a desktop, Bob on an iPhone
+  13 (upright, then sideways). (1) Chess from 🎲, then Go 9 × 9 from the
+  📜 dialog: Enable asks "Clear the table and set up Go 9 × 9?"; declined,
+  nothing changes and the dialog stays open; accepted, the go board alone
+  and a stone on E5. (2) Go 19 × 19: Bob's bowl is 16 px wide; a touch
+  press 12 px off its centre takes a stone (played on K10, no pan); one
+  85 px away pans. (3) The ask panel: ▾ beside the rows (never a row of its
+  own); a question asked again under the same id with its buttons working
+  within 2.5 s (they waited 3 s before). (4) Sideways, three cards in
+  hand, an ask open and a six-line `t.secret`: the 🔒 card's head below the
+  toolbar, a tap there reaching it, folding and opening the card.
+  Screenshots: `shots/p3c-*.png`.
+- **`core-p3.test.mjs`**: (5) one call given a list (`t.remove(ids)`,
+  `t.setFace(ids, f)`) is one line from two items on, standing apart from
+  the lines around it; a merged turn line names its two faces when they
+  are the same for all. (RF4, D168) an addDeck patch that adds a deck adds
+  the player's own and says so once in their name — a rewritten deck with
+  the line dropped, or a Rules line in its place, is refused; the same
+  deck added twice in a row writes its line twice (never folded). (3C
+  review) the demos over another game (go over chess and a deck, chess over
+  go, reversi over chess: only the new game's items, one log line, its
+  moves played), a card pile under go's and reversi's rules (move, flip,
+  shuffle, del: "Not a move in this game", the rules on), a two-stone
+  capture one line, reversi's flips one line, and the cues: check
+  announced, a declined and a lapsed draw offer told, the promotion's
+  reason, go's pass announced, no third Pass, "New game" per player.
+- **`t-p3-attack.js`**: D148's import case also calls `compile` on `CTRL`
+  and `PID_RE` and checks their sources unchanged and that `PID_RE`
+  refuses "not a pid" (a TypeError alone proved nothing: a frozen regex is
+  rewritten before compile throws).
+- **Mechanism change**: `t-p3-chess.js` section 4 — the watcher has no
+  "New game" (D163: a seated player or the host), so the check that her
+  press starts nothing presses, through `__ct.act`, White's own button
+  (refused: "🚫 That button is not available to you right now").
 
 ## Storage and images (Phase 1B)
 

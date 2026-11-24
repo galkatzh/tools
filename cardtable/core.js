@@ -2397,15 +2397,16 @@ export function createTable(host, env = {}) {
   /** An action that happened with no item to mark (a seat change): counts for onAction. */
   const took = () => { marks++; };
 
-  /** Appends to the shared log. Consecutive duplicates (drag/rotate spam) collapse.
+  /** Appends to the shared log. Consecutive duplicates (drag/rotate spam) collapse,
+   *  but a chat line or a `keep` one (a deck added: the host checks it is there, D168).
    *  Entries render the actor's CURRENT name, unless `as` freezes one (renames).
    *  `chat` marks a chat line (talk), `loud` an on-the-record one (a peek); the
    *  buckets are capped separately (LOG_CAPS, trimLog), and a line at LOG_TXT_MAX. */
-  function logEvent(p, txt, chat, as, loud) {
+  function logEvent(p, txt, { chat, as, loud, keep } = {}) {
     if (runs.length) flushRuns(); // (an aggregating run ends at any other line)
     txt = cut(txt);
     const last = host.log.at(-1);
-    if (!chat && last && last.p === p && last.txt === txt) return;
+    if (!chat && !keep && last && last.p === p && last.txt === txt) return;
     const e = { p, txt, ts: now(), ...(chat ? { c: 1 } : {}), ...(as ? { n: as } : {}), ...(loud ? { k: 1 } : {}) };
     if (J && !restoring) J.frames.at(-1).log ??= host.log.slice(); // (the journal keeps the log as this frame found it)
     host.log.push(e);
@@ -2417,28 +2418,50 @@ export function createTable(host, env = {}) {
   // counted, locked, unlocked, owner, used randomness — becomes one line
   // ("📜 Rules removed 30 pieces: D4, E4, D5, …"): a go capture or a setup
   // would otherwise flush the action log. The lines wait in `runs` until
-  // another line is written, or the action commits (flushRuns).
+  // another line is written, or the action commits (flushRuns). One call
+  // given a list (t.remove(ids), t.setFace(ids, f): a go capture, a reversi
+  // move's flips) is one line from two items on (`whole`, D167).
   let runs = [];
   /** Logs `txt` for an op of the kind `op` on item `it` (for 'random': the
-   *  number of draws): a person's at once, a script's into the run. */
-  function logOp(actor, op, txt, it) {
+   *  number of draws; for 'turned', `turn`: {from, to}, the labels it went
+   *  between): a person's at once, a script's into the run. */
+  function logOp(actor, op, txt, it, turn) {
     if (actor !== RULES) return logEvent(actor, txt);
-    runs.push({ op, txt, it: op === 'random' ? it : { at: addrNow(it), name: label(it), kind: isCard(it) ? 'cards' : it.k === 'g' ? 'pieces' : 'items' } });
+    runs.push({ op, txt, it: op === 'random' ? it : { at: addrNow(it), name: label(it), kind: isCard(it) ? 'cards' : it.k === 'g' ? 'pieces' : 'items', ...turn } });
+  }
+  /** The one line for `run` (entries of op `op`): "removed 3 pieces: B1, A1,
+   *  C2", naming the first AGG_NAMES addresses (or labels) — and, where every
+   *  piece turned between the same two faces, which ("turned 4 pieces from
+   *  Light disc to Dark disc: d4, …"). */
+  function aggLine(op, run) {
+    const kinds = new Set(run.map((r) => r.it.kind)), names = run.slice(0, AGG_NAMES).map((r) => r.it.at || r.it.name), [{ it }] = run;
+    const how = it.to && run.every((r) => r.it.from === it.from && r.it.to === it.to) ? ` from ${it.from} to ${it.to}` : '';
+    return `${AGG_VERB[op]} ${run.length} ${kinds.size === 1 ? [...kinds][0] : 'items'}${how}: ${names.join(', ')}${run.length > AGG_NAMES ? ', …' : ''}`;
   }
   /** Writes the waiting Rules lines: each run of AGG_MIN or more of one op
-   *  as one line naming the first AGG_NAMES addresses (or labels), the rest
-   *  line by line. */
+   *  as one line (aggLine), a `whole` entry (a list's line) as it is, the
+   *  rest line by line. */
   function flushRuns() {
     const all = runs;
     runs = [];
     for (let k = 0, j; k < all.length; k = j) {
-      for (j = k + 1; j < all.length && all[j].op === all[k].op;) j++;
+      for (j = k + 1; j < all.length && all[j].op === all[k].op && !all[j].whole && !all[k].whole;) j++;
       const run = all.slice(k, j), op = run[0].op;
       if (run.length < AGG_MIN) { for (const r of run) logEvent(RULES, r.txt); continue; }
       if (op === 'random') { const n = run.reduce((m, r) => m + r.it, 0); logEvent(RULES, `used randomness (${n} draws)`); continue; }
-      const kinds = new Set(run.map((r) => r.it.kind)), names = run.slice(0, AGG_NAMES).map((r) => r.it.at || r.it.name);
-      logEvent(RULES, `${AGG_VERB[op]} ${run.length} ${kinds.size === 1 ? [...kinds][0] : 'items'}: ${names.join(', ')}${run.length > AGG_NAMES ? ', …' : ''}`);
+      logEvent(RULES, aggLine(op, run));
     }
+  }
+  /** A facade call on one id, or on a list of them as ONE log line (D167):
+   *  `op(id)` for each; the lines the list's ops queued (logOp only: these
+   *  ops write no other line) become one `whole` entry from two on. True
+   *  when every op did; false when one found its item gone (said, as ever). */
+  function eachOf(name, ids, op) {
+    if (!Array.isArray(ids)) return op(ids);
+    if (ids.length > MAX_ITEMS) throw new TypeError(`${name}: at most ${MAX_ITEMS} ids at once`);
+    const k = runs.length, done = ids.map((id) => op(id) !== false).every(Boolean), mine = runs.slice(k);
+    if (mine.length >= 2 && mine.every((r) => r.op === mine[0].op)) runs.splice(k, mine.length, { op: mine[0].op, whole: true, txt: aggLine(mine[0].op, mine) });
+    return done;
   }
   function dropIfEmpty(pileId) {
     if (host.items[pileId]?.cards.length === 0) remove(pileId);
@@ -3434,7 +3457,7 @@ export function createTable(host, env = {}) {
           const old = pl.name;
           touchPlayer(p);
           pl.name = name;
-          logEvent(p, `is now known as "${name}"`, false, old); // shown under the OLD name
+          logEvent(p, `is now known as "${name}"`, { as: old }); // shown under the OLD name
         }
         break;
       }
@@ -3467,7 +3490,7 @@ export function createTable(host, env = {}) {
         const pile = { k: 'p', rot: 0, name: deck.name, cards: deck.cards.map((_, i) => ({ d: deckId, i, up: false })) };
         place(pile, num(a.x, host.table.w / 2 - CARD_W / 2), num(a.y, host.table.h / 2 - CARD_H / 2));
         const nid = put(mint(items), pile);
-        logEvent(p, `added deck "${deck.name}" (${deck.cards.length} cards)`);
+        logEvent(p, `added deck "${deck.name}" (${deck.cards.length} cards)`, { keep: true });
         mark(p, nid);
         break;
       }
@@ -3525,7 +3548,7 @@ export function createTable(host, env = {}) {
         const c = it?.k === 'c' ? !it.up && it : it?.k === 'p' && it.cards.at(-1);
         if (!c || !mayHandle(p, it)) break;
         const card = isCard(c);
-        logEvent(p, it.k === 'c' ? 'peeked at a face-down card' : `peeked at the top ${card ? 'card' : 'piece'} of ${label(it)}`, false, undefined, true);
+        logEvent(p, it.k === 'c' ? 'peeked at a face-down card' : `peeked at the top ${card ? 'card' : 'piece'} of ${label(it)}`, { loud: true });
         mark(p, a.id);
         emit({ t: 'peek', p, c: card ? { d: c.d, i: c.i } : { t: c.t, f: c.f } });
         break;
@@ -3562,7 +3585,7 @@ export function createTable(host, env = {}) {
       case 'clear': if (hostOnly(p, a)) clearTable(p); break;
       case 'chat': {
         const msg = chatLine(a.msg);
-        if (pl && msg) logEvent(p, msg, true);
+        if (pl && msg) logEvent(p, msg, { chat: true });
         then.push(['onChat', peerText(a.msg), p], ['onAction', A()]);
         break;
       }
@@ -4143,7 +4166,8 @@ export function createTable(host, env = {}) {
       return opMove(RULES, id, a, b);
     },
     rot: (id, deg) => opRot(RULES, id, deg),
-    remove: (id) => opRemove(RULES, id),
+    /** Removes item `id` — or each of a list of ids, as one log line (a go capture: D167). */
+    remove: (id) => eachOf('t.remove', id, (x) => opRemove(RULES, x)),
     /** Rolls die `id` (the crypto RNG): its new face index, or false (not a die, or gone). */
     roll(id) {
       const r = opRoll(RULES, [id]);
@@ -4368,21 +4392,24 @@ export function createTable(host, env = {}) {
     take(id, o = {}) { return scriptDraw('t.take', 's', id, o); },
     /** A random piece out of bag `id` (o = {at?, to?: pid}), as t.take. */
     pull(id, o = {}) { return scriptDraw('t.pull', 'b', id, o); },
-    /** Turns piece or supply `id` to face `f` (a die too: no roll). */
-    setFace(id, f) {
-      const it = scriptItem('t.setFace', id);
-      if (!it) return false;
-      if (it.k !== 'g' && it.k !== 's') throw new TypeError('t.setFace: only pieces and supplies have faces');
-      const ty = typeOf(it.t);
-      if (!ty) return no(RULES, "🚫 That piece's game box is missing");
-      scriptFace('t.setFace', ty, f);
-      if (it.f === f) return true;
-      const before = label(it);
-      touch(id);
-      it.f = f;
-      logOp(RULES, 'turned', `turned ${before}${it.up === false ? '' : ` to ${faceLabel(ty.faces[f], f)}`}${onAt(it)}`, it);
-      mark(RULES, id);
-      return true;
+    /** Turns piece or supply `id` — or each of a list of ids, as one log
+     *  line (a reversi move's flips: D167) — to face `f` (a die too: no roll). */
+    setFace(ids, f) {
+      return eachOf('t.setFace', ids, (id) => {
+        const it = scriptItem('t.setFace', id);
+        if (!it) return false;
+        if (it.k !== 'g' && it.k !== 's') throw new TypeError('t.setFace: only pieces and supplies have faces');
+        const ty = typeOf(it.t);
+        if (!ty) return no(RULES, "🚫 That piece's game box is missing");
+        scriptFace('t.setFace', ty, f);
+        if (it.f === f) return true;
+        const from = label(it), to = it.up === false ? undefined : faceLabel(ty.faces[f], f);
+        touch(id);
+        it.f = f;
+        logOp(RULES, 'turned', `turned ${from}${to ? ` to ${to}` : ''}${onAt(it)}`, it, to && { from, to });
+        mark(RULES, id);
+        return true;
+      });
     },
     /** Sets piece `id`'s count to n (0 to MAX_N: 0 removes it; 2 or more on a type that stacks by count). */
     setCount(id, n) {
@@ -4714,7 +4741,8 @@ export function createTable(host, env = {}) {
    *  name only in the host's Enable, that code; the rules turn on only there,
    *  and off only with a hook's failure, a Disable or _rulesOff; the guests'
    *  deck budget only grows, by a guest's addDeck; and who each line and
-   *  bulb speaks for (speakerProblem); a guest's deck as they sent it.
+   *  bulb speaks for (speakerProblem); a player's added deck as they sent
+   *  it, said once in their name.
    *  Returns what the apply step takes, cleaned — or throws, saying why,
    *  with nothing changed. */
   function checkPatch(s, out, job) {
@@ -4796,12 +4824,14 @@ export function createTable(host, env = {}) {
     if (out?.error !== undefined && !(isObj(out.error) && typeof out.error.hook === 'string' && typeof out.error.message === 'string')) no("the script's error is malformed");
     const said = job ? speakerProblem(log, effects, p, a) : '';
     if (said) no(said);
-    // A guest's deck, as the host's realm cleans what they sent: the line in their name says it, the catalog takes it as is (D148).
-    if (job && a.t === 'addDeck' && log.some((e) => e.p === p)) {
+    // A player's deck, as the host's realm cleans what they sent (D148, D168): an
+    // addDeck job that adds a deck, or says anything in their name, adds that
+    // very deck and says so once — whatever the patch's lines claim.
+    if (job && a.t === 'addDeck' && (decks.length || log.some((e) => e.p === p))) {
       let want;
       try { want = cleanDeck(a.deck); } catch (err) { no(`the script added ${who(p)}'s deck, which the engine refuses (${err.message})`); }
-      const line = `added deck "${want.name}" (${want.cards.length} cards)`;
-      if (!log.every((e) => e.p !== p || e.txt === line) || !decks.some(([, d]) => canon(d) === canon(want))) no(`the script rewrote ${who(p)}'s deck`);
+      const line = `added deck "${want.name}" (${want.cards.length} cards)`, theirs = log.filter((e) => e.p === p);
+      if (theirs.length !== 1 || theirs[0].txt !== line || !decks.some(([, d]) => canon(d) === canon(want))) no(`the script rewrote ${who(p)}'s deck`);
     }
     return { decks, boxes, items, asks, table, seats, effects };
   }
