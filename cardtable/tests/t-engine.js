@@ -207,7 +207,7 @@ const eveHand = async (E) => (await eveView(E)).hand.length;
   await run("t.schedule('soon', 'nan');");
   await toastHas(host, 't.schedule: seconds must be a number').then(() => ok(true, 'a NaN delay is a script error, not a silently dropped timer'), () => ok(false, 'a NaN delay is a script error, not a silently dropped timer'));
   const src = fs.readFileSync(path.join(h.APP_ROOT, 'cardtable/core.js'), 'utf8');
-  const at = src.indexOf('function runTimers('), loop = src.slice(at, src.indexOf('\n  }\n', at));
+  const at = src.indexOf("case '_tick':"), loop = src.slice(at, src.indexOf('break;', at)); // (the timers' job: core's internal _tick action, Phase 3)
   ok(at > 0 && count(loop, 'now()') === 1, 'the timer loop reads the clock once (no timer falls between the due/remaining filters)');
 
   section('ENG-12: a buttons() error disables the rules on the record');

@@ -892,6 +892,64 @@ raw peers import `PROTO` from `core.js` (`h.PROTO`), saves use `STATE_V`.
   it: dice never snap (D112), so B9's roll of 20 dice on the board is back
   under 3 KB.
 
+## Phase 3 (3B: the engine; the Worker comes in its part 2)
+
+What the 3B suites drive in core (spec §3c–§3f, §3h, §3j; decisions D121
+onward). Rules still run on the host's page until 3B's second part moves
+them into `rules-worker.js`; core is the same in both.
+
+- **The journal** (on a table): `T.begin()`, `T.savepoint()` → a token,
+  `T.rollbackTo(token)`, `T.rollback()` (to the begin), `T.checkpoint()`
+  (a savepoint), `T.commit()` → the StatePatch of §3f.2 (`items` — whole,
+  null when removed, sorted ids — `players`, `decks`, `boxes` (`{box, src,
+  by?}`), `rules` (the fields that changed), `table`, `seats`, `log` (the
+  lines appended), `zMax`, `boardSeq`, `guestDeckChars`, `lastSetup`,
+  `refresh`, `refreshHands`). Every write records a pre-image the first
+  time it touches an item, a player, a deck or a box; each savepoint keeps
+  `rules.data`, `public`, `asks`, `secret` and `hints` as JSON. The patch
+  holds the table's own objects: `structuredClone` it (as postMessage
+  would) before applying it to another table. `T.apply` inside an open
+  journal is a savepoint of it.
+- **The pipeline** (`T.apply`): handle → `strict` / `allow` → validate →
+  the default effect → a checkpoint → the hooks the action implies →
+  onAction (`a.handled` after a handled one) → buttons → the gates
+  (`t.data` ≤ `DATA_MAX_CHARS`, `t.secret`, asks). Hooks get a frozen deep
+  copy of `a`. `T.rulesError` names the failing hook ("handle(): …"); a
+  thenable from any hook counts as a throw. `T.inHook` is true while one runs.
+- **Internal actions**: `T.apply(p, {t: '_join', name})`, `_leave`,
+  `_tick` (p: `'RULES'`), `_rulesOff {reason}`, `_name {name}`; `T.join(p,
+  name, key)` is `T.bindKey(p, key)` plus a `_join` when p is new, offline
+  or unnamed; `T.leave(p)` and `T.runTimers()` are `_leave` and `_tick`.
+  `PUBLIC_ACTIONS` gains `answer` and `select`, never a `_` name.
+- **Asks, hints, secrets**: `cleanAsk(spec)` (exported: the normalized ask,
+  or a TypeError), `gateRules(r)` (the load gates: asks, secret, timers;
+  hints dropped), `t.ask`, `t.cancelAsk`, `t.asks`, `t.hint`, `t.secret`;
+  the caps `ASK_MAX` (8), `ASK_OPTIONS`, `ASK_AMONG`, `ASK_PROMPT`,
+  `ASK_LABEL`, `ASK_COUNT`, `ASK_RANGE`, `HINT_MAX`, `SECRET_MAX_CHARS`,
+  `SECRET_TEXT_MAX`, `SELECT_PER_SEC`, `STRICT_ACTIONS`. `{t: 'answer', id,
+  v}` (v: an option's index, an item id, an address, `[{idx, d, i} | {idx,
+  t, f}]`, a number) and `{t: 'select', id}` are ordinary actions
+  (`__ct.act` sends them).
+- **Each player's own parts**: `takeDirty()` gains `asks`, `hints` and
+  `secret` (sets of pids, found by comparison); `T.mine(to, d)` is what a
+  patch carries for `to` alone (`hand`, `ask`, `hint`, `sec` — those that
+  changed, null when cleared), `T.mine(to)` a snapshot's (the non-empty
+  ones); nothing for a peer that isn't a registered player. A view
+  (`viewFromSnap`, `applyViewPatch`) holds `ask` (a list, `[]` for none),
+  `hint` and `sec` (null for none); `sharedText` refuses all three. The
+  rules view gains `wants: ['select']` and `strict: true` while on.
+- **The Worker side**: `T.job(p, a)` → `{changed, patch, out: {effects,
+  error?}}` or `{fatal}`; `T.applyStatePatch(patch, out)` (true when
+  changed: it renumbers); `T.digest()`; `T.guard()` (why the script broke
+  the rules between jobs, or ''). With `env.test`, applyStatePatch
+  shape-asserts every item first.
+- **Existing suites changed for 3B part 1** (mechanism changes, no check
+  dropped): `core-p1.test.mjs` (a ruled move serializes `t.data` three
+  times — the journal's snapshot as the job begins, after validate, at the
+  end — where it was two), `core-p2.test.mjs` (`answer` and `select` in
+  `PUBLIC_ACTIONS`, and no `_` name), `t-engine.js` (its probe of the timer
+  loop reads core's `_tick` job, which replaced `runTimers`'s body).
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores

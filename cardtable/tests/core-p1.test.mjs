@@ -821,7 +821,7 @@ function quietly(fn) {
     let n = 0;
     JSON.stringify = function (v, ...rest) { if (v === data) n++; return js.call(this, v, ...rest); };
     try { T.apply(BOB, { t: 'move', id: pileOf(T), x: 300, y: 300 }); } finally { JSON.stringify = js; }
-    ok(n === 2, `a move runs validate, onAction and buttons, and measures t.data twice: after validate and at the end (${n} times)`);
+    ok(n === 3, `a move runs validate, onAction and buttons, and serializes t.data three times: the journal's snapshot as the job begins, after validate (its checkpoint) and at the end (${n} times)`);
     const seq = T.state.seq;
     quietly(() => T.apply(BOB, { t: 'rulesBtn', id: 'go' }));
     ok(!T.state.rules.enabled && /^onButton\(\), onAction\(\), buttons\(\): t\.data is too large \(4,000,0\d\d chars, max 4,000,000\)$/.test(T.rulesError),

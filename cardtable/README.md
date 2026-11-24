@@ -393,6 +393,19 @@ and a run of its own placements or removals is logged as one line
 ("📜 Rules removed 12 pieces: D4, E4, …"). Live drags never reach a script:
 only the drop does.
 
+A script can own the rules outright (Phase 3): `handle(t, a)` sees every
+gameplay action first and may veto it, let it through, or carry it out
+itself (`return true`: a castling king also moves its rook); with `strict:
+true` nothing happens that `handle` didn't take over, except the action
+types listed in `allow` (sitting down always works). Hooks are atomic: a
+veto, or a hook that throws, leaves none of the script's own moves behind.
+It can ask one player a question (`t.ask`: options, a piece, a space, cards
+from their hand, a number — answered through `onAnswer`, checked against
+what was offered, and asked again after a host reload), highlight legal
+moves for one player when they pick up a piece (`onSelect` → `t.hint`), and
+keep private per-player data (`t.secret[pid]`). Each of these reaches only
+its player, as a hand does.
+
 Scripts run **on the host only** — guests receive data, never code — and
 everyone can read the exact script being enforced (read-only view in the
 Rules dialog). A script error disables the rules loudly rather than wedging
@@ -552,7 +565,11 @@ refuse the `https → http://127.0.0.1` fetch.
 - Rules scripts are trusted code on the host's machine: a runaway loop can
   freeze the host's tab (refresh recovers via the save), and a dishonest
   host could run different code than displayed — the same trust tier as the
-  host already holding all hands.
+  host already holding all hands. A script sees every hidden card and
+  piece, so what it tells one player (`t.tell`, a hint, `t.secret`) may
+  reveal it: the engine refuses a selection of a piece hidden from the
+  player selecting it, but beyond that, what a script reveals is its
+  author's choice.
 
 ## Testing
 

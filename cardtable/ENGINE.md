@@ -42,6 +42,12 @@ A rules script is a JS object literal the host writes in a dialog:
     t.data.turn ??= t.players()[0].id;
     t.dealToAll(deckPileId, 2);
   },
+  handle(t, a) {        // (Phase 3) take the action over: before validate
+    // undefined → go on (validate, then the default effect); 'reason' → veto;
+    // true → handled: the script did what the action means (t.* ops), no default effect
+  },
+  strict: true,         // (Phase 3) a ruled action handle() doesn't return true for is refused…
+  allow: ['rot'],       // …unless it is listed here (seat never is refused)
   validate(t, a) {      // veto: return a string to block the action
     if (PLAY_ACTIONS.includes(a.t) && a.p !== t.data.turn)
       return "It's not your turn";
@@ -55,6 +61,8 @@ A rules script is a JS object literal the host writes in a dialog:
   onJoin(t, pid) { ... },           // player joins/rejoins mid-game (see below)
   onLeave(t, pid) { ... },          // player disconnects
   onTimer(t, tag) { ... },          // fired by t.schedule(seconds, tag)
+  onAnswer(t, pid, id, value) { ... }, // (Phase 3) a player answered t.ask
+  onSelect(t, pid, id) { ... },     // (Phase 3) a player picked up or selected an item: t.hint
 })
 ```
 
@@ -73,14 +81,37 @@ Hook semantics worth knowing:
 - **`onAction` only sees actions that took effect.** A no-op — playing a
   card that isn't in the hand, drawing from a pile that is gone — never
   reaches it, so the ids in `a` (`a.d`/`a.i` of a `play`, …) have been
-  matched against the host's state. (It also runs after `chat` and
-  accepted `rulesBtn` actions — a press the engine refuses, of a button
-  not offered to that player, reaches no hook at all.)
-- **`validate` fails closed**: if it throws, the action is blocked and
-  the rules disable themselves (an input that crashes the validator must
-  not slip through unvalidated). Hooks are synchronous: one that returns
-  a Promise (an `async` hook) counts as throwing, since its veto would
-  come too late.
+  matched against the host's state. It also runs after an action `handle`
+  took over (with `a.handled === true`: one place for "after every move"
+  bookkeeping — check `a.handled` to skip those), and after `chat`,
+  accepted `rulesBtn` presses and accepted `answer`s — a press the engine
+  refuses, of a button not offered to that player, reaches no hook at all.
+- **`a` is frozen**: hooks get a deep, frozen copy of the action (with
+  `p`, and the host's `to`, `from`, `pick`, `handled`), so a script can
+  never change the action the engine goes on to apply.
+- **`handle`, `validate` fail closed**: if either throws, the action is
+  blocked and the rules disable themselves (an input that crashes the
+  validator must not slip through unvalidated). Hooks are synchronous:
+  one that returns a Promise or any thenable (an `async` hook) counts as
+  throwing, since its veto would come too late — so an `async validate`
+  blocks the action instead of letting it pass.
+- **Hooks are atomic** (Phase 3). A veto takes back everything its hook
+  did first (`handle` moved a piece, then returned a reason: the piece
+  never moved). A hook that throws leaves none of its own ops behind: when
+  `handle` or `validate` throws, nothing of the action applies; when a
+  later hook throws (`onAction`, `onChat`, `onButton`, `onAnswer`,
+  `onSelect`, `onJoin`, `onLeave`, `onTimer`, `setup`, `buttons`), the
+  action's own effect stays (the move, the chat line, the timer taken off
+  the list) and everything after it is undone (`public.buttons` keeps its
+  last value). The engine journals each action: every item, player, deck
+  and box it touches, and `t.data`, `t.public`, the asks, `t.secret` and
+  the hints, so it can put them back.
+- **State on the script object is not journaled**: `this.x = …` survives
+  a rollback, and is lost on a host reload. Keep game state in `t.data`.
+- **The facade is live only while a hook runs** (Phase 3). A call from
+  anywhere else — the continuation of an `async` hook, a promise callback —
+  throws "t.say was called outside a hook — rules hooks must be
+  synchronous", and the rules disable as the next action starts.
 - **`onJoin` also fires on reconnect after a host reload**, without a
   preceding `onLeave`: a resumed host marks everyone offline, and each
   player's first message after the resume is a (re)join. A script that
@@ -94,10 +125,9 @@ rules). A script that fails
 to evaluate on Enable changes nothing — the running rules keep running
 and the error shows in the dialog. Any hook that throws: `console.error`
 + toast + log line + **auto-disable the rules** (fail loudly, never wedge
-the game). No worker/WASM sandbox in
-v1 — an infinite loop can freeze the host tab; documented limitation, with
-quickjs-emscripten (interrupt-handler loop protection) as the upgrade path
-if it ever matters.
+the game). Scripts still run on the host's page for now — an infinite
+loop can freeze the host tab — until the Worker part of Phase 3 moves
+them into a Web Worker with a watchdog.
 
 ## 2. The `t` facade (script API)
 
@@ -214,6 +244,44 @@ A thin wrapper over the table's existing ops (today in `core.js`):
   `buttons` (global, per-player, or host-only), and
   `t.schedule(seconds, tag)` → `onTimer` for turn clocks and reveal
   delays (timers persist in `t.data`; a non-numeric delay throws).
+- **Asking players** (Phase 3): `t.ask(pid, spec)` puts a question to
+  one player and returns nothing; their answer comes back through
+  `onAnswer(t, pid, id, value)`. Forms (`spec`): `{id, prompt, options:
+  ['♕', '♖', {label: 'Knight', value: 'N'}]}` (a plain label is its own
+  value) — or `{id, prompt, pick, …}` with `pick: 'item'` and `among: [ids]`,
+  `pick: 'space'` and `among: [addresses]`, `pick: 'hand'` and `count` (1
+  by default: that many cards of their hand, which stay there), or `pick:
+  'number'` with `min` and `max`. The value `onAnswer` gets: the chosen
+  option's value, the item id, the address (display form), the hand cards
+  as `[{d, i} | {t, f}]`, the number. The engine checks an answer the way
+  it checks a button: only the asked player, only a pending id, only a
+  value that was offered — anything else is refused ("🚫 That answer
+  wasn't offered") and runs no hook. An ask with the same `id` replaces
+  the pending one; at most 8 wait for a player (prompts ≤ 200 chars,
+  labels ≤ 30, ≤ 20 options, ≤ 200 `among`, `count` ≤ 20, a number range ≤
+  1,000,000). A malformed spec throws a `TypeError`. `t.cancelAsk(pid,
+  id?)` withdraws one (or all of a player's) → whether there was any;
+  `t.asks(pid)` → their pending asks, copied. Asks live in the engine's
+  own `rules.asks`, not in `t.data`: they are saved (a host reload asks
+  again), only the asked player sees them, and the log says only "Bob
+  answered", never what.
+- **Selections and hints** (Phase 3): a script with `onSelect(t, pid, id)`
+  hears when a player picks up or selects an item (a `select` action:
+  never one hidden from them, at most 5 a second each; it changes nothing
+  by itself). Its usual answer is `t.hint(pid, {items, spaces})` —
+  highlights for that player alone (≤ 500 items and addresses in all), or
+  `t.hint(pid, null)` to clear them. A player's next gameplay action
+  clears their hint (a vetoed one brings it back, so they can try again
+  with the highlights still shown). Hints are never saved.
+- **`t.secret`** (Phase 3): `t.secret[pid] = {text: 'Your target: Bob',
+  …}` is script data for that player alone — a secret objective, their own
+  score breakdown — the private counterpart of `t.public`; `delete
+  t.secret[pid]` clears it. Each entry is JSON of at most 8,000 characters
+  (their screen shows its `text`, at most 1,000; the terminal bridge gets
+  it whole). Its keys must be player ids: a hook that writes another key
+  (`t.secret['__proto__']`) or too much fails, and the rules disable. It
+  is saved, and still sent while the rules are off (it is that player's,
+  like a hand); asks and hints are sent only while they are on.
 - **Convenience utils** (pure functions, no engine state):
   `t.hostId` (the host's own player id — for host-only buttons
   `{pid: t.hostId}` and host-only chat commands), `t.geom()` →
@@ -328,11 +396,33 @@ setups. `{x, y, free: true}` skips it.
 
 ## 3. Enforcement path (the one structural change)
 
-In `apply(p, a)`: before the switch, if rules are enabled and `validate`
-returns a reason — and the actor is not the host-script itself — skip the
-mutation and send the actor a targeted `note` message (new tiny Trystero
-action) → toast on their screen (and, on a terminal-bridged tab, a
-`note: …` in the bridge's `msgs`). The veto re-sends the items the action
+In `apply(p, a)`, for a **ruled** action (every gameplay action: move,
+flip, deal, play, take, roll, seat, …) while the rules are on (Phase 3,
+spec §3f.4):
+
+1. the player's hint is cleared;
+2. `handle(t, a)` — a string vetoes, `true` handles it (no default
+   effect; what the action names is re-sent, so a drop the script left
+   alone snaps to where the script put the piece);
+3. under `strict: true`, an action `handle` didn't take over is refused
+   ("🚫 Not a move in this game") unless `allow` lists its type — `seat`
+   never is;
+4. `validate(t, a)` — a string vetoes;
+5. the default effect (the op switch);
+6. a checkpoint, then `onAction` (when the action took effect or was
+   handled) and `buttons()`;
+7. the engine's gates (`t.data` ≤ 4,000,000 chars, `t.secret`, the asks)
+   — a hook that broke them is undone and the rules disable.
+
+A veto is not an error: the actor gets a targeted `note` message → toast
+on their screen (and, on a terminal-bridged tab, a `note: …` in the
+bridge's `msgs`), and the log "📜 Rules blocked Bob: …". Any other action
+— chat, a rules button, an answer, a selection, and the host's own jobs
+(`_join` when a player arrives or comes back, `_leave`, `_tick` for due
+timers, `_rulesOff`, `_name`: never accepted from a guest) — runs its
+default effect, then the hooks it implies (`onChat`, `onButton`,
+`onAnswer`, `onSelect`, `onJoin`, `onLeave`, `onTimer`, `setup`), then
+`onAction` where §1 says, then `buttons()`. The veto re-sends the items the action
 named (`id`, `pile`, `onto`, `bag`, the first few `ids`) and, for a hand action, the
 actor's hand: the next patch carries their true state, and the actor's
 optimistic drag reverts. An action that changes nothing (its target vanished
@@ -360,10 +450,13 @@ with the table), so nobody can fill the host's browser storage.
 
 ## 4. Transparency & UI
 
-- `host.rules = { code, name, enabled, data, public }`. Broadcast to
-  everyone: `{ code, name, enabled, public }` — **not** `data`, which may
-  hold hidden information (e.g. a planned deal). Guests can **read the
-  exact code being enforced** in a read-only view — the same
+- `host.rules = { code, name, enabled, data, public, asks, secret, hints }`.
+  Broadcast to everyone: `{ code, name, enabled, public }` (and, while
+  enabled, `wants: ['select']` for a script with `onSelect`, `strict: true`
+  for a strict one) — **not** `data`, which may hold hidden information
+  (e.g. a planned deal). Each player's own asks, hint and `t.secret` entry
+  travel in the body addressed to them alone, like their hand. Guests can
+  **read the exact code being enforced** in a read-only view — the same
   everything-on-the-record philosophy as the table log.
 - `public` is script-controlled JSON for UI: `{ turn: pid }` (or a list
   of pids, when the game waits on several players at once — CAH's
@@ -463,24 +556,33 @@ the default.
 - A malicious host could run different code than displayed — the same trust
   tier as the host already holding all hands (see README's honest-limits
   section).
-- No loop protection in v1: a runaway script freezes the host's own tab;
-  a refresh recovers the game via the existing save/resume.
+- No loop protection yet (the Worker part of Phase 3 brings it): a
+  runaway script freezes the host's own tab; a refresh recovers the game
+  via the existing save/resume.
 
 ## Implementation map
 
-- `cardtable/core.js`, the DOM-free state core (the page, Node tests and,
-  later, a rules Worker run the same code): `createTable(state, env)` holds
+- `cardtable/core.js`, the DOM-free state core (the page, Node tests and
+  a rules Worker run the same code): `createTable(state, env)` holds
   the state and every op — `apply()` with its switch bodies as named op
-  helpers, the validate-veto, `join` / `leave`, `runTimers` (`t.schedule`),
-  the public view — plus the rules module: the hook runner (try/catch +
-  auto-disable), the `t` facade (`T.api`), the RULES actor id. Scripts are
-  evaluated by a runner (`env.hooks`, by default `scriptHooks()`; tests
-  inject their own). It is synchronous and same-thread: the table reads
-  `validate`'s answer inline, and a hook that returns a Promise counts as a
-  script error, so the veto fails closed. A rules Worker therefore wraps the
-  whole table, not the runner: it runs `createTable()` on a mirror of the
-  state, and the page sends it actions and gets back changes (a state
-  patch, `T.applyStatePatch()`) and effects. Time, randomness and new ids
+  helpers, the ruled-action pipeline (`handle`, `strict`, `validate`, the
+  hooks after the default effect), the internal jobs (`_join`, `_leave`,
+  `_tick`, `_rulesOff`, `_name`), the public view and each player's own
+  parts (`T.mine`) — plus the rules module: the journal (`T.begin`,
+  `savepoint`, `rollbackTo`, `commit`), the hook runner (atomic, with
+  auto-disable), the `t` facade (`T.api`), the engine-state gates
+  (`cleanAsk`, `gateRules`), the RULES actor id. Scripts are evaluated by
+  a runner (`env.hooks`, by default `scriptHooks()`, which hands the script
+  a facade that is live only inside its hooks; tests inject their own).
+  It is synchronous and same-thread: the table reads `validate`'s answer
+  inline, and a hook that returns a thenable counts as a script error, so
+  the veto fails closed. A rules Worker therefore wraps the whole table,
+  not the runner: it runs `createTable()` on a mirror of the state, one
+  `T.job(p, a)` per action, and the host applies what each job changed
+  (its state patch, `T.applyStatePatch()`) and its effects; `T.digest()`
+  proves both agree, and `T.guard()` catches a script that changed its
+  state between jobs. Until the Worker part of Phase 3 lands, the host's
+  own table runs the script on the page. Time, randomness and new ids
   are injectable too (`env.now`, `env.random`, `env.uid`), so a seeded
   table replays exactly. What used to touch the screen or the network
   (action markers, banners, private notes and peeks, new decks, the host's

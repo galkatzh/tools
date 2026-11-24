@@ -604,6 +604,23 @@ sync and rendering, and the Worker together with `handle`.
        moves nothing); a press on a piece drawn off its spot's centre takes
        that piece, and once a piece is put on such a spot, the spot fans
        them all, so none is drawn over another.
+     - The engine for full-rules scripts is built (the Worker itself is
+       next; until then scripts still run on the page): a script can take
+       an action over (`handle`), refuse whatever it didn't take over
+       (`strict`, but for the actions it `allow`s; sitting down always
+       works), ask one player a question (`t.ask`), highlight moves for
+       one player when they pick up a piece (`t.hint`), and keep data for
+       one player (`t.secret`). Each reaches only its player, as a hand
+       does.
+     - Hooks are atomic: a veto or an error leaves none of the script's
+       moves behind; a hook that fails after the move keeps the move and
+       drops only its own changes. Every action is journaled for this,
+       and what it changed is exactly what a Worker will send the host.
+     - A question and a hint show only while the rules run; a player's
+       secret shows even while they are off, like their hand.
+     - A script that touches the table from outside its hooks (an
+       `async` hook's continuation) turns the rules off at the next
+       action: hooks must be synchronous, and now they are made to be.
 4. **Game boxes.**
    - `game.json` plus `.zip` upload, declarative setup and reset.
    - Export with the current position.

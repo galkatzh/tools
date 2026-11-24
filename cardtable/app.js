@@ -208,10 +208,11 @@ const perf = { snaps: 0, patches: 0, gaps: 0, snapRequests: 0, lastApplyMs: 0, l
 
 // --- the host's action queue ------------------------------------------------
 // Every state change on the host runs through one FIFO, in arrival order: a
-// player's action, and the internal jobs (JOBS) `_leave` (a player's last
-// connection closed), `_tick` (the rules' timers), `_refuse` (an action
-// turned away before it ran: re-send what it named) and `_unsaveable` (the
-// save couldn't copy the rules' state). Jobs are synchronous today, so a job
+// player's action; core's internal jobs (spec §3c: `_leave`, a player's last
+// connection closed; `_tick`, the rules' timers that are due; `_name`, the
+// rename a new connection brings); and the app's own (JOBS): `_refuse` (an
+// action turned away before it ran: re-send what it named) and `_unsaveable`
+// (the save couldn't copy the rules' state). Jobs are synchronous today, so a job
 // on an empty queue runs at once, in the caller's task, and the host's own
 // clicks feel instant. Asynchronous preprocessing (deck ingestion) runs
 // before a job enters the queue (submit), and a rules Worker would make a
@@ -233,8 +234,6 @@ function enqueue(p, a) {
 }
 /** The host's internal jobs, by type (never from the wire: PUBLIC_ACTIONS). */
 const JOBS = {
-  _leave: (p) => T.leave(p),
-  _tick: () => T.runTimers(),
   _refuse: (p, a) => T.refreshFor(p, a.a),
   _unsaveable: (p, a) => T.unsaveable(a.why),
 };
@@ -373,8 +372,11 @@ function flushPending() {
 let rulesCodeDirty = false; // code changed -> resend on next broadcast
 let guestRules = { code: '', name: '' }; // guests: the script text, for reading
 
-// Fire due script timers (t.schedule; core.js runTimers()).
-setInterval(() => { if (role === 'host') enqueue(RULES, { t: '_tick' }); }, 700);
+// Fire the script's timers (t.schedule) once due: a `_tick` job, unless one waits in the queue already.
+setInterval(() => {
+  const timers = role === 'host' && T.state.rules?.enabled && T.state.rules.data?._timers;
+  if (Array.isArray(timers) && timers.some((x) => x.at <= Date.now()) && !queue.some((j) => j.a.t === '_tick')) enqueue(RULES, { t: '_tick' });
+}, 700);
 
 // --- host <-> guest sync (TABLETOP.md §3) -------------------------------------
 // The host keeps every peer's view in step with one coalesced broadcast tick:
@@ -481,7 +483,6 @@ function broadcast() {
   const patch = sharedText({ ...head, kind: 'patch', ...content });
   let snap = ''; // the snapshot's shared text, built once if anyone needs one this tick
   const snapText = () => (snap ||= sharedText({ ...head, kind: 'snap', ...T.snapContent(), fx: content.fx || [], ann: content.ann || [] }));
-  const hand = (p) => ({ hand: host.players[p].hand });
   for (const peer of room ? Object.keys(room.getPeers()) : []) {
     if (incompatible.has(peer)) continue;
     // Peers that haven't introduced themselves yet get the public view only.
@@ -489,17 +490,20 @@ function broadcast() {
     if (!st || st.to !== to || (st.needSnap && now - st.snapAt >= SNAP_MIN_MS)) {
       clearTimeout(st?.timer);
       if (!st) sendCatalog(peer); // a newcomer: the catalog first, in its lane, so its first snapshot draws every face
-      sendState(spliceBody({ to, tp: peer, ...(to && hand(to)) }, snapText()), peer);
+      sendState(spliceBody({ to, tp: peer, ...T.mine(to) }, snapText()), peer);
       sync.set(peer, { seq, to, snapAt: now, needSnap: false, timer: 0, asks: 0 });
-    } else if (!empty || (to && d.hands.has(to))) {
-      sendState(spliceBody({ to, tp: peer, base: st.seq, ...(to && d.hands.has(to) && hand(to)) }, patch), peer);
+    } else {
+      const parts = T.mine(to, d); // (its hand, asks, hint and secret, when they changed: no other peer's body carries them)
+      if (empty && !Object.keys(parts).length) continue; // nothing for this peer — its base stays put
+      sendState(spliceBody({ to, tp: peer, base: st.seq, ...parts }, patch), peer);
       st.seq = seq;
-    } // else: nothing for this peer — its base stays put
+    }
   }
   perf.lastTickMs = performance.now() - t0;
   // this screen, last: the peers' bodies are on their way first
-  if (view.boot !== hostBoot) receive(JSON.parse(spliceBody({ to: pid, ...hand(pid) }, snapText())));
-  else if (!empty || d.hands.has(pid)) receive(JSON.parse(spliceBody({ to: pid, base: view.seq, ...(d.hands.has(pid) && hand(pid)) }, patch)));
+  const parts = T.mine(pid, d);
+  if (view.boot !== hostBoot) receive(JSON.parse(spliceBody({ to: pid, ...T.mine(pid) }, snapText())));
+  else if (!empty || Object.keys(parts).length) receive(JSON.parse(spliceBody({ to: pid, base: view.seq, ...parts }, patch)));
 }
 
 /** Host: sends peer the whole public catalog — the decks, the game boxes
@@ -1099,7 +1103,7 @@ function connect() {
     // never received (made while it was away, or in another room) syncs on
     // the next connection, through the logged (and rate-limited) rename path.
     const nm = cleanName(name);
-    if (known && nm && nm !== known.name && newConn && action.t !== 'name') enqueue(p, { t: 'name', name: nm });
+    if (known && nm && nm !== known.name && newConn && action.t !== 'name') enqueue(p, { t: '_name', name: nm });
     // A keyed hello comes only from a guest that hasn't had a state addressed
     // to it (introduce): one that answers it may be lost, so it asks for one too.
     if (action.t === 'snap' || action.t === 'hello') wantSnap(peer);
@@ -3392,7 +3396,7 @@ function becomeHost(saved, unsaved) {
     console.error("this table's last save could not be resumed:", saved.behind);
     toast(`Couldn't resume this table's last save (${saved.behind}) — resumed an older one`);
   }
-  const t = createTable(saved ? { ...saved.state, decks: saved.decks, boxes: saved.boxes, boxSrc: saved.boxSrc } : {}, { pid });
+  const t = createTable(saved ? { ...saved.state, decks: saved.decks, boxes: saved.boxes, boxSrc: saved.boxSrc } : {}, { pid, test: !!window.CARDTABLE_TEST });
   if (saved) t.resume(myName); // re-sanitizes the decks and boxes, reloads the rules, everyone else waits offline
   else t.open(myName); // the host's seat and a standard deck
   T = t;
