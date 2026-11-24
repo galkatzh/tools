@@ -1244,7 +1244,7 @@ function v3save(extra = {}) {
 function testMigrate() {
   section('(6) MIGRATE[3]: v3 → v4');
   const s = v3save(), was = json(s.items), q = quietly(() => MIGRATE[3](s));
-  ok(s.v === 4 && STATE_V === 4 && PROTO === 4, `v = 4 (STATE_V ${STATE_V}, PROTO ${PROTO})`);
+  ok(s.v === 4 && STATE_V === 5 && PROTO === 5, `v = 4 (STATE_V ${STATE_V}, PROTO ${PROTO}: Phase 4's MIGRATE[4] lifts it on to 5)`);
   ok(isDeepStrictEqual(s.rules.secret, { [BOB]: { text: 'kept' } }) && isDeepStrictEqual(s.rules.asks, {}) && !('hints' in s.rules) && s.rules.data.score === 3 && s.rules.public.turn === 1,
     `rules.secret ||= {} (an existing one kept), rules.asks ||= {}, rules.hints deleted, the rest untouched (${J(Object.keys(s.rules))})`);
   ok(isDeepStrictEqual(s.rules.data._timers.map((x) => [x.at, x.tag]), [[1e12, 'a'], [2e12, 'b']]) && q.error.length >= 1,
@@ -1269,14 +1269,14 @@ function testMigrate() {
   {
     const s2 = v3save(), s3 = json(s2);
     s3.rules.data._timers = s2.rules.data._timers; // (JSON would turn NaN into null)
-    quietly(() => { MIGRATE[3](s2); migrate(s3); });
-    ok(isDeepStrictEqual(json(s2), json(s3)), 'migrate() runs MIGRATE[3] on a v3 save (the chain ends at STATE_V 4)');
+    quietly(() => { MIGRATE[4](MIGRATE[3](s2)); migrate(s3); });
+    ok(isDeepStrictEqual(json(s2), json(s3)), 'migrate() runs MIGRATE[3] on a v3 save (then MIGRATE[4]: the chain ends at STATE_V 5)');
   }
   section('(6) a v3 save resumed by createTable: addresses, indexes, the view');
   {
     const s2 = v3save(), xy = json(s2.items), qq = quietly(() => createTable(s2, env(5))), T = qq.value;
-    ok(T.state.v === 4 && T.byAt.get('CB:e4')?.has('on') && T.pub.get('on').at === 'e4' && T.pub.get('hid').at === 'h8' && Object.keys(xy).every((id) => T.state.items[id].x === xy[id].x && T.state.items[id].y === xy[id].y),
-      `v4, byAt built, the view's addresses in display form, nothing moved (${J([...T.byAt.keys()])})`);
+    ok(T.state.v === STATE_V && T.byAt.get('CB:e4')?.has('on') && T.pub.get('on').at === 'e4' && T.pub.get('hid').at === 'h8' && Object.keys(xy).every((id) => T.state.items[id].x === xy[id].x && T.state.items[id].y === xy[id].y),
+      `v${STATE_V}, byAt built, the view's addresses in display form, nothing moved (${J([...T.byAt.keys()])})`);
     ok(!('hints' in T.state.rules) && T.state.rules.data._timers.length === 2, 'the resumed rules: no hints, the gated timers');
   }
   section('(6) loading a v4 save runs the _timers gate; a saved address naming no spot is dropped (D106)');
@@ -2250,7 +2250,7 @@ function testPipelineAfterHooks() {
 function testStrict() {
   section('(3) strict: every ruled action but seat is refused ("Not a move in this game") unless handle returns true or allow lists it');
   const SPEC_RULED = ['move', 'rot', 'flip', 'shuffle', 'draw', 'deal', 'play', 'handPile', 'toHand', 'toPile', 'stack', 'merge', 'del', 'addDeck', 'peek',
-    'roll', 'face', 'split', 'join', 'take', 'pull', 'toBag', 'lock', 'owner', 'seat'];
+    'roll', 'face', 'split', 'join', 'take', 'pull', 'toBag', 'lock', 'owner', 'seat', 'addBox']; // (addBox: Phase 4, ruled like addDeck)
   ok(sameSet([...RULED_ACTIONS], SPEC_RULED) && sameSet([...STRICT_ACTIONS], SPEC_RULED.filter((t) => t !== 'seat')), 'RULED_ACTIONS is §10.1\'s list; STRICT_ACTIONS is it without seat');
   const seen = [];
   const T = rtable(PIPE(), { onAction(t, a) { seen.push(a.t); } }, { flags: { strict: true }, hands: HANDS });

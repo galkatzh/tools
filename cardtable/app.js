@@ -22,7 +22,7 @@ import {
   CARD_W, CARD_H, RANKS, RULES, playR, clampToTable, seatAt, seatAngles, sizeOf, flagsOf, typeAt, PID_RE, ASSET_RE, rand, clamp, own, num, peerText,
   cleanDeck, cleanDeckV1, cleanBox, isBuiltin, deckOverBudget, assetRefs, cleanName, standardDeck, cardName, pieceName, faceLabel, createTable,
   MODULE_V as CORE_V, PROTO, PUBLIC_ACTIONS, HOST_ACTIONS, MAX_ROLL, MAX_N, MAX_BAG, MAX_HAND, MAX_PILE, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch, roundTable, FELT,
-  tableBoards, snapTo, snapAt, snaps, displayAddr, resolveAddr, liveFx, countSetup,
+  tableBoards, snapTo, snapAt, snaps, displayAddr, resolveAddr, liveFx, countSetup, checkTransportBox, boxOverBudget, publicBox,
 } from './core.js?v=1';
 import { MODULE_V as GRID_V, turn, spotOf } from './grid.js?v=1';
 import * as pieces from './pieces.js?v=1';
@@ -289,11 +289,18 @@ function hostJob({ p, a, resolve }) {
     console.error('action failed', a, err);
     toast(`Error: ${err.message}`);
     commit(changed);
-    resolve({ ok: false, error: err.message });
+    resolve(outcome(false, err.message));
     return;
   }
   const error = commit(changed, p);
-  resolve(error ? { ok: false, error } : { ok: changed });
+  resolve(outcome(changed, error));
+}
+/** How a job ended, for its caller: {ok, error?}, and for an addBox the
+ *  box the catalog holds for it (`id`: the `added` effect, drain). */
+function outcome(changed, error) {
+  const id = addedBox;
+  addedBox = null;
+  return { ...(error ? { ok: false, error } : { ok: changed }), ...(id && { id }) };
 }
 
 const ingesting = new Map(); // host: player → the last of their decks in the works (a chain)
@@ -313,6 +320,7 @@ let reserved = 0; // host: the deck budget the guests' decks in the works will t
  *  budget) — and again at commit. A failure tells the actor and queues
  *  nothing. Resolves like enqueue(). */
 function submit(p, a) {
+  if (a.t === 'addBox') return submitBox(p, a);
   if (a.t !== 'addDeck') return enqueue(p, a);
   const refuse = (why) => {
     console.error('rejected a deck:', why);
@@ -340,14 +348,61 @@ function submit(p, a) {
   ingesting.set(p, run);
   return run;
 }
+/** Host: player p's game box (`addBox`, spec §4c) — as a deck is (submit):
+ *  checked on receipt, before anything is decoded (checkTransportBox: its
+ *  size, MAX_BOX_CHARS, and its whole structure; a guest's cost against the
+ *  guests' budget it shares with decks, minus what is in the works), then
+ *  ingested outside the queue, after the player's earlier decks and boxes
+ *  (store.js ingestBox: every image checked, re-hashed, at most
+ *  MAX_BOX_BYTES in all), then queued as {t: 'addBox', box (its images
+ *  asset ids, its decks catalog decks), cost}. All or nothing (spec §4h):
+ *  the host's own box's images are stored first (store.stash), and a box
+ *  whose images can't be stored is not added; a guest's are kept only once
+ *  their box committed (holdImages), saved with it. Resolves like enqueue(),
+ *  with `id`: the box the catalog now holds for it (new, or the same one
+ *  already there). */
+function submitBox(p, a) {
+  const refuse = (why) => {
+    console.error('rejected a box:', why);
+    tell(p, `🚫 Box rejected: ${why}`);
+    return { ok: false, error: why };
+  };
+  let cost;
+  try { cost = checkTransportBox(a.box); } catch (err) { return Promise.resolve(refuse(err.message)); }
+  if (p !== pid) {
+    const over = boxOverBudget((T.state.guestDeckChars || 0) + reserved, cost);
+    if (over) return Promise.resolve(refuse(over));
+    reserved += cost;
+  } else cost = 0;
+  const ingest = () => store.ingestBox(a.box);
+  const run = (ingesting.get(p) || Promise.resolve()).then(ingest, ingest).then(async ({ box, assets }) => {
+    if (role !== 'host') return { ok: false, error: 'this tab is no longer the host' };
+    if (p === pid) {
+      try { await store.stash(assets); } catch (err) {
+        console.error("the box's images could not be stored", err);
+        const why = `Couldn't store the box's images: ${err.name === 'QuotaExceededError' ? 'storage is full' : err.message}`;
+        toast(why);
+        return { ok: false, error: why };
+      }
+    }
+    const done = await enqueue(p, { t: 'addBox', box, cost });
+    holdImages(assets, p === pid);
+    return done;
+  }, (err) => refuse(err.message)).finally(() => {
+    reserved -= cost;
+    if (ingesting.get(p) === run) ingesting.delete(p);
+  });
+  ingesting.set(p, run);
+  return run;
+}
 /** Host: a deck's ingestion is over, and its job ran: of its images
  *  (`assets`), those the table now shows are held — drawn, served, and
  *  saved with the deck (store.js hold) — and any this table showed as
  *  missing show again (the deck was added again). The others go with the job. */
-function holdImages(assets) {
+function holdImages(assets, stored = false) {
   if (role !== 'host') return;
   const refs = T.assetRefs(), ids = [...assets.keys()].filter((h) => refs.has(h));
-  store.hold(new Map(ids.map((h) => [h, assets.get(h)])));
+  store.hold(new Map(ids.map((h) => [h, assets.get(h)])), stored);
   for (const h of ids) imgs.delete(h);
   if (ids.length) imagesArrived(ids);
 }
@@ -562,8 +617,13 @@ function toWorker({ p, a, resolve }) {
   }
   watchStart(budget(job.a), () => rulesDown('the script took longer than 4 s (stopped)', "Rules stopped — the script didn't answer within 4 seconds"));
 }
-/** A job's watchdog budget (spec §3f.5): RULES_TIMEOUT_MS, and 10 ms more per item a box's setup lays out. */
-const budget = (a) => RULES_TIMEOUT_MS + (a.t === 'loadBox' && a.setup === true && Array.isArray(a.box?.setup) ? 10 * countSetup(a.box.setup, Object.keys(T.state.players).length || 1) : 0);
+/** A job's watchdog budget (spec §3f.5, §4c): RULES_TIMEOUT_MS, and 10 ms
+ *  more per item a box's setup lays out (a loadBox's, a setup's, a reset's:
+ *  forEachSeat counted for every player). */
+function budget(a) {
+  const box = a.t === 'loadBox' ? a.setup === true && a.box : a.t === 'setup' ? own(T.state.boxes, a.box) : a.t === 'reset' ? own(T.state.boxes, T.state.lastSetup) : null;
+  return RULES_TIMEOUT_MS + (Array.isArray(box?.setup) ? 10 * countSetup(box.setup, Object.keys(T.state.players).length || 1) : 0);
+}
 /** The running Worker's `done` {id, patch, out, ms} for the job in flight:
  *  the host's table takes the patch (applyStatePatch, which checks all of
  *  it first, against the job too: who acted), carries out its effects,
@@ -603,9 +663,10 @@ function done(m) {
     toast(`Error: ${err.message}`);
     error = err.message;
   }
+  const res = outcome(changed, error);
   if (m.out?.error) rulesError(T.rulesError);
   if (!T.state.rules?.enabled) stopWorker();
-  job.resolve(error ? { ok: false, error } : { ok: changed });
+  job.resolve(res);
   pump();
 }
 /** The internal jobs a stop of the rules never drops (spec §3f.5, D134): a
@@ -771,19 +832,30 @@ function drain(actor) {
       case 'deck': dirtyDecks.add(e.id); break;
       case 'box': dirtyBoxes.add(e.id); break;
       case 'rules': rulesCodeDirty = true; break;
+      case 'added': addedBox = e.id; break; // (the box an addBox registered, or found: its caller hears of it, outcome)
+      case 'enable': enableBox(e.box, e.remap); break;
       default: console.error('unknown table effect', e);
     }
   }
   return refusal;
 }
-/** Host: box `id` as everyone may see it (spec §2b, PublicBox): the box
- *  without its setup (which may hold hidden information), plus what the
- *  host says of it — where it came from (`src`, `by`) and whether it is
- *  built in (by content: isBuiltin). Guests only display those. */
-function publicBox(id) {
-  const { setup, ...box } = T.state.boxes[id], info = T.state.boxSrc[id] || { src: 'host' };
-  return { ...box, src: info.src, ...(info.by && { by: info.by }), builtin: isBuiltin(T.state.boxes[id]) };
+let addedBox = null; // the box the job just run added or found (drain's `added`), for its caller (outcome)
+/** Host: a setup with rules (or a reset of the box whose rules run) just
+ *  committed — spec §4c, §4f: the box's rules start now, ahead of every job
+ *  that waits, on the box's exported state (`state`: its "@#k" and the ids
+ *  that had to change, `remap`, are core's to map, seedState), as the box's
+ *  (`box`: a later Reset restarts them). The host's own setRules, through
+ *  the queue: a new Worker starts from the table as the setup left it. A
+ *  failure to start is said as an Enable's is (started). */
+function enableBox(id, remap) {
+  const box = T.state.boxes[id];
+  const a = { t: 'setRules', enabled: true, reset: true, code: box.rules, box: id, remap, ...(box.rulesState && { state: box.rulesState }) };
+  queue.unshift({ p: pid, a, resolve: (r) => { if (!r.ok) console.warn(`the rules of «${box.name}» did not start`, r.error); } });
 }
+/** Host: box `id` as everyone may see it (core.js publicBox: no setup,
+ *  rules or rulesState, plus where it came from and whether it is built in
+ *  or has rules, for display). */
+const pubBox = (id) => publicBox(T.state.boxes[id], T.state.boxSrc[id]);
 /** Host: sends a private note (a notice, a peek answer) to each of player p's connections. */
 function noteTo(p, body) {
   for (const [peer, mapped] of Object.entries(peerPid)) {
@@ -819,7 +891,7 @@ function broadcast() {
     dirtyDecks.clear();
   }
   if (dirtyBoxes.size) { // the same for game boxes
-    if (room) sendBoxes(Object.fromEntries([...dirtyBoxes].map((id) => [id, publicBox(id)])));
+    if (room) sendBoxes(Object.fromEntries([...dirtyBoxes].map((id) => [id, pubBox(id)])));
     dirtyBoxes.clear();
   }
   if (rulesCodeDirty) {
@@ -867,7 +939,7 @@ function broadcast() {
  *  snapshot. Everything sent later to everyone is a delta. */
 function sendCatalog(peer) {
   sendDecks(decks, peer);
-  sendBoxes(Object.fromEntries(Object.keys(boxes).map((id) => [id, publicBox(id)])), peer);
+  sendBoxes(Object.fromEntries(Object.keys(boxes).map((id) => [id, pubBox(id)])), peer);
   if (T.state.rules) sendRules({ code: T.state.rules.code, name: T.state.rules.name }, peer);
 }
 
@@ -4503,6 +4575,8 @@ if (window.CARDTABLE_TEST) {
   window.__ct = {
     act, view: () => view, hand: () => view.hand, log: () => view.log, boxes: () => boxes, perf,
     workerDigest, digest: () => T?.digest() ?? null, jobs: () => queue.length + !!current,
+    /** The host's state, copied (its seat keys left out): the catalog with its boxes' setups and rules, boxSrc, lastSetup, rules.box. */
+    hostState: () => (T ? JSON.parse(JSON.stringify({ ...T.state, keys: undefined })) : null),
     get lastRulesError() { return lastRulesError; },
     resolve: (a) => { const r = resolveAddr(boardsNow(), a); return r && (r.ambiguous ? { ambiguous: r.ambiguous } : { at: displayAddr(boardsNow(), r.at), local: r.local, x: r.x, y: r.y }); },
     drawn(id) {

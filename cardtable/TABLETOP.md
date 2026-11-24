@@ -749,6 +749,23 @@ sync and rendering, and the Worker together with `handle`.
    - A box picker next to 🎲 Games.
    - *Demo:* a generated hex-map strategy skeleton: one map, 400 counters in
      ×N stacks, dice, a card deck and a turn script.
+   - *In progress.* Its engine (game boxes: state v5, wire version 5) is in;
+     the decisions taken on the way:
+     - A box's setup happens whole or not at all: everything it needs is
+       checked first — its decks, the seated players a "#k" names, the
+       room on the table — and a spot it names that the table doesn't have
+       undoes all of it.
+     - An exported game resumes in another room: its items, its box and
+       its decks keep their ids wherever they are free, a seated player
+       travels as their place at the table (the k-th clockwise from the
+       bottom), in owners and hands and in the script's saved state alike,
+       and the box's rules start on that state right after the setup.
+     - Where a box came from is the host's to say, never the box's: a
+       guest's box shuffles its face-down piles by default, whatever the
+       box or a script claims.
+     - The host's own box is added only once its images are stored; a
+       guest's leaves nothing in the host's storage until it is on the
+       table, within the budget it shares with decks.
 5. **Private material.**
    - `vis` (owner-visible pieces, dice under a cup), private areas beyond the
      hand (a tile rack, a screen), and peeking at any hidden piece.

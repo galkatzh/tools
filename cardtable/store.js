@@ -27,7 +27,7 @@
 // message for the app to show. Nothing falls back silently: without
 // IndexedDB the app runs unsaved, loudly, and images live in memory only.
 import {
-  ASSET_MAX_BYTES, IMG_MIMES, STATE_V, cleanDeck, cleanDeckV1, cleanBox, assetRefs, isImgURL, migrate, num,
+  ASSET_MAX_BYTES, IMG_MIMES, STATE_V, MAX_BOX_BYTES, cleanDeck, cleanDeckV1, cleanBox, assetRefs, isImgURL, migrate, num,
 } from './core.js?v=1';
 
 /** This file's code version (see core.js MODULE_V). */
@@ -176,6 +176,61 @@ export async function ingestDeck(raw) {
   const cards = d.cards.map(({ img, g, ...c }) => (img || g !== undefined ? { ...c, g: index(img || d.imgs[g]) } : c));
   const backImg = ids.get(d.back);
   return { deck: cleanDeck({ name: d.name, back: backImg ? null : d.back, backImg, imgs, cards }), get cost() { return JSON.stringify(d).length; }, assets };
+}
+/** Turns a game box in the transport shape (spec §4c, TransportBox: the
+ *  game.json format, its images as data URLs in `imgs`, its decks in the
+ *  upload shape, each with its `id`) into addBox's payload, in memory, as
+ *  ingestDeck does a deck: every image decoded, checked (checkImage: its
+ *  type, size and header, imageDims, before it is ever decoded as a
+ *  picture), hashed and named by its asset id; each deck ingested
+ *  (ingestDeck), keeping the id it asks for. The box's images and its decks'
+ *  together are at most MAX_BOX_BYTES. Resolves {box, assets: Map<asset id,
+ *  {mime, data}>}; nothing is stored. Rejects with a message naming the
+ *  image ("image 4: not a PNG/JPEG/WebP/GIF image") or the deck. (The box's
+ *  structure is core.js's to check: checkTransportBox, then addBox.) */
+export async function ingestBox(raw) {
+  let t0 = performance.now(), bytes = 0;
+  const assets = new Map(), imgs = [];
+  const count = (n) => {
+    bytes += n;
+    if (bytes > MAX_BOX_BYTES) throw new Error(`the box's images are too large (over ${MAX_BOX_BYTES / 1e6} MB)`);
+  };
+  for (const [k, url] of (Array.isArray(raw.imgs) ? raw.imgs : []).entries()) {
+    if (performance.now() - t0 > SLICE_MS) { await new Promise((r) => setTimeout(r)); t0 = performance.now(); } // (the page runs between slices)
+    if (url === null) { imgs.push(null); continue; }
+    try {
+      if (!isImgURL(url)) throw new Error('not a PNG/JPEG/WebP/GIF image');
+      const mime = url.slice(5, url.indexOf(';')), b = unb64(url.slice(url.indexOf(',') + 1));
+      checkImage(b, mime);
+      count(b.length);
+      const h = await sha256hex(b);
+      assets.set(h, { mime, data: b.buffer });
+      imgs.push(h);
+    } catch (err) { throw new Error(`image ${k + 1}: ${err.message}`); }
+  }
+  const decks = [];
+  for (const [k, d] of (Array.isArray(raw.decks) ? raw.decks : []).entries()) {
+    let ing;
+    try { ing = await ingestDeck(d); } catch (err) { throw new Error(`deck ${k + 1} («${String(d?.name || '').slice(0, 24)}»): ${err.message}`); }
+    for (const [h, a] of ing.assets) if (!assets.has(h)) { count(a.data.byteLength); assets.set(h, a); }
+    decks.push({ ...ing.deck, ...(d.id !== undefined && { id: d.id }) });
+  }
+  return { box: { ...raw, imgs, ...(raw.decks !== undefined && { decks }) }, assets };
+}
+/** Stores images `assets` (ingestBox's) in IndexedDB now, before what shows
+ *  them is added — a game box is added only once its images are stored
+ *  (spec §4h: all or nothing). When storage is full it makes room once (gc)
+ *  and tries again; then it rejects ("storing images: browser storage is
+ *  full", name QuotaExceededError). Without IndexedDB (the app said so at
+ *  boot) there is nothing to store. */
+export async function stash(assets) {
+  if (!db) return;
+  const list = [...assets].map(([h, a]) => [h, { ...a, size: a.data.byteLength }]);
+  try { await putImages(list); } catch (err) {
+    if (err.name !== 'QuotaExceededError') throw err;
+    await gc({ keep: opts.keep(), need: list.reduce((n, [, m]) => n + m.size, 0) });
+    await putImages(list);
+  }
 }
 function unb64(s) {
   const bin = atob(s), out = new Uint8Array(bin.length);
@@ -507,12 +562,13 @@ const memo = (h, mime, data, stored) => {
 };
 let cacheWarned = false;
 
-/** This page now holds images `assets` (ingestDeck's: already checked), to
- *  draw and serve; IndexedDB gets them with the save that first writes a
- *  deck naming them (writeSave). The host's way to keep a deck's images —
- *  only once the deck is on the table. */
-export function hold(assets) {
-  for (const [h, a] of assets) memo(h, a.mime, a.data, false);
+/** This page now holds images `assets` (ingestDeck's or ingestBox's: already
+ *  checked), to draw and serve; IndexedDB gets them with the save that first
+ *  writes a deck or box naming them (writeSave) — unless `stored`: stash put
+ *  them there already. The host's way to keep a deck's or a box's images —
+ *  only once it is on the table. */
+export function hold(assets, stored = false) {
+  for (const [h, a] of assets) memo(h, a.mime, a.data, stored);
 }
 /** A guest's own upload: holds images `assets` (ingestDeck's) and caches
  *  them in IndexedDB, as if pulled (putAsset). */

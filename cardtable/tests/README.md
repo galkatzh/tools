@@ -1708,6 +1708,52 @@ own, beside the implementer's `t-p3-ui.js` and `t-p3-cli.js`.
   press starts nothing presses, through `__ct.act`, White's own button
   (refused: "🚫 That button is not available to you right now").
 
+## Phase 4 (4A: game boxes — the engine)
+
+- **`core-p4.test.mjs`** (Node, §4l's core list but item 3, `group`, which
+  is 4B's): the authoring format through `boxOfDef` and `checkTransportBox`,
+  PublicBox, the setup grammar's refusals, every entry kind laid out, "#k",
+  the checks before any op (a refusal leaves the table's digest, its log and
+  `lastSetup` as they were), ids kept or re-minted, the guest box's shuffle,
+  export → import round trips (a varied position in a fresh room, ids
+  included; chess and Hold'em mid-game, then played on), deduplication,
+  `MIGRATE[4]` and Reset after a save/load, `setRules.state`'s gates (§4j
+  attacker case 11), addBox's budget and a forged built-in (case 10),
+  `store.ingestBox`, the Worker path and forged patches of box jobs, and
+  `t.boxes` / `t.box` / `t.layout`.
+  - **`room(pid, name, players, prefix)`** runs a table as app.js does: the
+    host table `H` (whose runner only answers the rules view), a mirror `M`
+    built from the host's state at each Enable (as rules-worker.js does),
+    and `job(p, a)` routing each job to whichever runs it, the mirror's
+    patch checked and taken by the host — then the host's `enable` effect
+    queues the box's setRules at once, as app.js's `enableBox` does. It
+    returns `{fx, notes, toasts, lines, error?, enabled?}`; `add(p, box)`
+    also gives the `id` of the `added` effect. `prefix` keeps two rooms'
+    minted ids apart (a fresh room never mints the ids an export carries).
+  - **`gameDef(o)`** is an ingested test box (images as asset ids) using
+    every entry kind; `position(R)` and `differ(a, b)` compare two rooms'
+    private states by seat ("#k"), positions within 0.5.
+- **`t-p4-wire.js`** (E2E, desktop): the same engine over the wire, through
+  `__ct.act` (the 📦 dialog is 4A part 2's): a guest's TransportBox (data
+  URL images, a deck with an image) registered only, its PublicBox and
+  pulled image on the guest's screen; the host's setup with rules (the
+  guest's deck shuffled, "@#1" mapped, the Worker's digest the host's); a
+  guest's setup and reset refused; the host's own addBox resolving its id;
+  Reset with the box's rules running, and after a host reload; a guest box
+  over the budget refused on receipt.
+- **`__ct` (Phase 4A, host)**: `hostState()` is a copy of the host's state
+  (its seat keys left out) — the catalog's boxes with their setups, rules
+  and rulesState, `boxSrc`, `lastSetup`, `rules.box`. On the host,
+  `act({t: 'addBox', box})` resolves `{ok, error?, id}`: `id` is the box
+  the catalog now holds for it (the same one when it was there already).
+- **Mechanism changes** to existing suites (Phase 4: PROTO 5, STATE_V 5,
+  `MIGRATE[4]`, §10.1's ruled `addBox`, §4a's address forms): core-p1's
+  migrate chain ends with `MIGRATE[4]`; core-p2's PROTO and STATE_V checks
+  say 5, and its cleanBox fuzz oracle accepts a `Where` that is an address
+  on one of the box's boards (read with grid.js's `parseAddr`), as §4a now
+  allows; core-p3's v4 save lifts on to v5 and its §10.1 ruled-action list
+  has `addBox`.
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores
