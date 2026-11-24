@@ -1353,11 +1353,13 @@ a 🎲 entry with `clear: true` (`GAMES` keys `chess`, `go9`, `go19`,
 `pickCleared`) confirms "Clear the table and set up {title}? The current
 game is discarded." on a table with items or a rules state, then sends
 `clear` and `setRules {enabled: true, reset: true}`: a fresh game even when
-the same one runs. The 📜 dialog's Enable does the same for one of these
-four texts unless the rules state is that game's (`scriptName`: kept, or
-reset with Reset ticked), D169; and each one's fresh `setup` first removes
-every item not of its own box, in one log line (`clearOthers`), so no
-other board stays primary under it. Each script is an IIFE whose hooks come first and its
+the same one runs. The 📜 dialog's Enable does the same — with the
+dialog's own text — for any text named as one of these four games
+(`scriptName`: an edited copy too) that would start afresh: unless the
+rules state is that game's and Reset is unticked (D169, D173); and each
+one's fresh `setup` first removes every item not of its own box, in one
+log line (`clearOthers`), so no other board stays primary under it (a copy
+renamed does that unasked, and leaves hand cards). Each script is an IIFE whose hooks come first and its
 helpers after; `strict: true`, no `allow`; every move is `handle` doing it
 with `t.*` ops and returning `true` (the log says "📜 Rules moved ♙ e2 →
 e4", "📜 Rules placed Black stone on D4"…). The pieces on the table are
@@ -1408,8 +1410,10 @@ or lapsed draw offer a notice to the offerer (`t.tell`).
   while no offer is pending and the other seat is taken: asks the other
   player `{id: 'draw', options: ['Accept', 'Decline']}`; any move lets it
   lapse, "The draw offer lapses", and the offerer is told "Your draw offer
-  lapses: White moved"; a decline tells them "Black declines your draw
-  offer") and `resign-w` / `resign-b` ("🏳
+  lapses: White moved"; the offerer's own move withdraws it, "White moved:
+  the draw offer is withdrawn" (the log, and a notice to the other player),
+  the offerer told "Your move withdrew your draw offer"; a decline tells
+  them "Black declines your draw offer") and `resign-w` / `resign-b` ("🏳
   Resign": asks `{id: 'resign', options: ['Resign', 'Keep playing']}`
   first). Endings, announced (and `t.data.over`): "Checkmate — White
   wins" (🏆), "Stalemate — a draw", "Neither side can checkmate any more —
@@ -1656,7 +1660,7 @@ own, beside the implementer's `t-p3-ui.js` and `t-p3-cli.js`.
 
 ### The 3C review's fix-ups
 
-- **`t-p3c-review.js`** (D167–D171): Alice on a desktop, Bob on an iPhone
+- **`t-p3c-review.js`** (D167–D175): Alice on a desktop, Bob on an iPhone
   13 (upright, then sideways). (1) Chess from 🎲, then Go 9 × 9 from the
   📜 dialog: Enable asks "Clear the table and set up Go 9 × 9?"; declined,
   nothing changes and the dialog stays open; accepted, the go board alone
@@ -1666,8 +1670,19 @@ own, beside the implementer's `t-p3-ui.js` and `t-p3-cli.js`.
   own); a question asked again under the same id with its buttons working
   within 2.5 s (they waited 3 s before). (4) Sideways, three cards in
   hand, an ask open and a six-line `t.secret`: the 🔒 card's head below the
-  toolbar, a tap there reaching it, folding and opening the card.
-  Screenshots: `shots/p3c-*.png`.
+  toolbar, a tap there reaching it, folding and opening the card. (5) Over
+  that card game (a pile, three cards in Bob's hand), chess's text with a
+  comment line added asks first too: declined, nothing changes; accepted,
+  "cleared the table (… 3 cards from hands)", chess alone, and the edited
+  text is what Bob's 📜 dialog shows running; Reset ticked on the running
+  chess asks again, and accepted clears the table for a fresh game. (6)
+  Playwright's iPhone 13 sideways (750 × 342, the browser's bars shown),
+  four buttons on two rows, a three-line secret, an ask, three cards: the
+  🔒 card's frame holds its head (below the toolbar, a tap reaching it,
+  nothing of the card under its frame), the buttons stay between the card
+  and the ask panel with their first row whole, a touch swipe scrolls
+  "Show my hand" into view and a tap presses it; the head folds the card.
+  Screenshots: `shots/p3c-*.png` (`p3c-squeeze-sideways-phone`).
 - **`core-p3.test.mjs`**: (5) one call given a list (`t.remove(ids)`,
   `t.setFace(ids, f)`) is one line from two items on, standing apart from
   the lines around it; a merged turn line names its two faces when they
@@ -1680,8 +1695,10 @@ own, beside the implementer's `t-p3-ui.js` and `t-p3-cli.js`.
   moves played), a card pile under go's and reversi's rules (move, flip,
   shuffle, del: "Not a move in this game", the rules on), a two-stone
   capture one line, reversi's flips one line, and the cues: check
-  announced, a declined and a lapsed draw offer told, the promotion's
-  reason, go's pass announced, no third Pass, "New game" per player.
+  announced, a declined and a lapsed draw offer told, an offer withdrawn
+  by the offerer's own move told to both (never "White moved" to White as
+  if the opponent had), the promotion's reason, go's pass announced, no
+  third Pass, "New game" per player.
 - **`t-p3-attack.js`**: D148's import case also calls `compile` on `CTRL`
   and `PID_RE` and checks their sources unchanged and that `PID_RE`
   refuses "not a pid" (a TypeError alone proved nothing: a frozen regex is

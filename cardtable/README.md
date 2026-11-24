@@ -504,7 +504,8 @@ seats and a table shaped for a phone held upright.
   threefold repetition, fifty moves without a capture or a pawn move and
   positions where neither side can mate any more end in a draw on their
   own (K+B v K+B with bishops on opposite colours plays on). Each player
-  has *½ Offer a draw* (the other player is asked; a move lets it lapse)
+  has *½ Offer a draw* (the other player is asked; a move lets it lapse,
+  and the offerer's own move withdraws it, both players told so)
   and *🏳 Resign* (asked to confirm). The glyphs read upright for both
   players.
 - **Go**, 9 × 9 or 19 × 19: drag stones from your bowl onto the points.
@@ -682,8 +683,15 @@ refuse the `https → http://127.0.0.1` fetch.
   the script plays it. On a phone held sideways the boards are small
   (they are shaped for a phone held upright): pinch to zoom — go 19 × 19
   wants a phone held upright, and zoomed in to play near the edges. Chess,
-  go and reversi each lay out the whole table: started over another game
-  (from 🎲 or the 📜 dialog), they clear it first, once the host agrees.
+  go and reversi each lay out the whole table: started afresh over another
+  game (from 🎲, or the 📜 dialog — an edited text still named "Chess",
+  "Go 9 × 9", … and Reset included), they clear the table and the hands
+  first, once the host agrees. A copy saved under a name of its own is a
+  script like any other: its setup takes every other item off the table
+  without asking, and leaves the cards in hands where they are.
+- With an ask open on a phone held sideways, the 🔒 card above the rules'
+  buttons may shrink to its head (tap ▾ to fold the ask: the card's text
+  and every button come back), and buttons that don't fit scroll.
 - A bowl or a pile smaller than a fingertip (go 19 × 19's is 16 px wide on
   an upright phone) is taken by a press up to 22 px from its centre; other
   small pieces are not, so a finger on a crowded, zoomed-out table can

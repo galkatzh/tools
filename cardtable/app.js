@@ -3813,10 +3813,11 @@ function pickGame(k) {
  *  spec §2g, played by hand — the rules are switched off, then the box set
  *  up) or a rules game that builds its own board (`clear`: chess, go,
  *  reversi, §3g — the table cleared, then the rules enabled afresh, their
- *  setup laying the game out). On a table with items or a rules state, only
- *  once the host agrees to discard them. The last act()'s promise, or null
- *  when the host keeps the table. */
-function pickCleared(game) {
+ *  setup laying the game out; `code`: its text, the 📜 dialog's perhaps
+ *  edited). On a table with items or a rules state, only once the host
+ *  agrees to discard them. The last act()'s promise, or null when the host
+ *  keeps the table. */
+function pickCleared(game, code = RULES_TEMPLATES[game.k]) {
   if ((Object.keys(T.state.items).length || T.state.rules) && !confirm(`Clear the table and set up ${game.title}? The current game is discarded.`)) return null;
   askGame = false;
   $('games-dialog').close();
@@ -3825,8 +3826,8 @@ function pickCleared(game) {
     return act({ t: 'loadBox', box: BOXES[game.box], setup: true, clear: true });
   }
   act({ t: 'clear' });
-  $('rules-code').value = RULES_TEMPLATES[game.k]; // the 📜 dialog shows what runs
-  return act({ t: 'setRules', code: RULES_TEMPLATES[game.k], enabled: true, reset: true });
+  $('rules-code').value = code; // the 📜 dialog shows what runs
+  return act({ t: 'setRules', code, enabled: true, reset: true });
 }
 /** The script name `code` gives itself (its `name: '…'`), as setRules keeps a game's state by it. */
 const scriptName = (code) => /\bname: (['"])(.*?)\1/.exec(code || '')?.[2];
@@ -3881,18 +3882,19 @@ $('rules-tpl').addEventListener('change', () => {
 // Enable starts a rules Worker, then runs the script's setup there: "Starting…"
 // until it is done; the dialog then closes, or stays open showing what went
 // wrong (the code didn't evaluate, setup threw), the running rules unchanged.
-// A game that lays out the whole table (chess, go, reversi: GAMES `clear`)
-// starts as 🎲 starts it, on a cleared table once the host agrees — unless
-// it is the game this table holds (its state kept, or reset by the box), D169.
+// A game that lays out the whole table (chess, go, reversi: GAMES `clear`,
+// known by its script name, so an edited copy too) starts afresh as 🎲 starts
+// it, on a cleared table once the host agrees — unless it is the game this
+// table holds, going on (D169, D173).
 $('rules-form').addEventListener('submit', async (e) => {
   if (e.submitter?.id !== 'rules-enable') return; // Close button
   e.preventDefault();
-  const btn = $('rules-enable'), code = $('rules-code').value;
-  const game = GAMES.find((g) => g.clear && RULES_TEMPLATES[g.k] === code), fresh = game && T.state.rules?.name !== scriptName(code);
+  const btn = $('rules-enable'), code = $('rules-code').value, name = scriptName(code), reset = $('rules-reset').checked;
+  const game = GAMES.find((g) => g.clear && scriptName(RULES_TEMPLATES[g.k]) === name), fresh = game && (reset || T.state.rules?.name !== name);
   btn.disabled = true;
   btn.textContent = 'Starting…';
   $('rules-err').textContent = '';
-  const r = await (fresh ? pickCleared(game) : act({ t: 'setRules', code, enabled: true, reset: $('rules-reset').checked }));
+  const r = await (fresh ? pickCleared(game, code) : act({ t: 'setRules', code, enabled: true, reset }));
   btn.disabled = false;
   btn.textContent = 'Enable';
   if (!r) return; // (the host kept the table)

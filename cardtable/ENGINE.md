@@ -678,6 +678,9 @@ with the table), so nobody can fill the host's browser storage.
     they refuse, over the very squares the hint marks.
   - **`t.secret`**: its `text` shows on a "🔒 For you" card above the
     rules' buttons (a tap on its head folds it), as text, line breaks kept.
+    Where the room above the buttons is short (a phone held sideways with
+    an ask open), the card gives way first, its text scrolling, down to its
+    head, which always shows inside its frame; then the buttons scroll.
   - The 📜 button's tooltip says "strict" while the rules are; the
     terminal bridge has `asks`, `answer <id> <value>` and `select <id>`,
     and prints each new ask, hint and secret as it arrives (README,
@@ -771,11 +774,15 @@ in `t.data` only what a board can't show, plays every move itself in
 `handle` (returning `true`) or refuses it with the reason, sets
 `public.turn` to the player to move, says on every screen what a phone's
 hidden log would otherwise keep (`t.announce`: check, a pass; `t.tell`: a
-declined or lapsed draw offer), and ends with `t.win` or an announced draw
+declined or lapsed draw offer, or one the offerer's own move withdrew — to
+both players), and ends with `t.win` or an announced draw
 and a *New game* button for each seated player and the host (a button of
 their own each, `pid`: a watcher has none). The 🎲 picker — and the 📜
-dialog, over another game — starts them on a cleared table with a fresh
-state (`clear: true` in `GAMES`), once the host agrees.
+dialog, for a text named as one of them (edited or not) that would start
+afresh: over another game, or with Reset ticked — starts them on a cleared
+table (and empty hands) with a fresh state (`clear: true` in `GAMES`), once
+the host agrees. A copy renamed is a script like any other: its fresh setup
+takes the other items off the table unasked, and leaves the hands alone.
 
 6. **Chess** — legal moves for every piece, with check: `onSelect` hints
    the squares of the piece picked up, `handle` plays the drop (captures,

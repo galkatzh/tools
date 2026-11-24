@@ -1,4 +1,4 @@
-// Phase 3C review fix-ups on real screens (D167–D171). Alice hosts on a
+// Phase 3C review fix-ups on real screens (D167–D175). Alice hosts on a
 // desktop; Bob plays on an iPhone 13 (a finger), upright and then sideways.
 //  1. The 📜 dialog starts chess, go and reversi as 🎲 does (D169): over
 //     another game, Enable asks to clear the table first — kept, nothing
@@ -12,6 +12,15 @@
 //  4. A phone held sideways, an ask open, the hand bar shown, a six-line
 //     t.secret (D171): the 🔒 card's head stays on screen, below the
 //     toolbar, and folds the card.
+//  5. An edited demo (D173): chess's text with a comment line added, from
+//     the 📜 dialog over a card game, asks first too — kept, nothing changes;
+//     agreed, the table and the hands are cleared and the edited chess runs.
+//     Reset ticked on the running chess asks again.
+//  6. Playwright's iPhone 13 held sideways (750 × 342, the browser's bars
+//     shown), an ask open, the hand bar shown, a secret and four buttons on
+//     two rows (D174): the 🔒 card's frame holds its head, which is tappable;
+//     the buttons scroll (a swipe brings the second row), and nothing
+//     reaches the ask panel.
 // Screenshots: shots/p3c-*.png.
 'use strict';
 const h = require('./h');
@@ -47,24 +56,30 @@ const rect = (p, sel) => p.evaluate((s) => { const el = document.querySelector(s
   /** The id of the supply owned by seat `seat`. */
   const bowlOf = (seat) => P.viewOf(alice, "Object.keys(v.items).find((id) => v.items[id].k === 's' && v.items[id].owner === 'seat:' + a)", seat);
 
+  /** Opens the 📜 dialog — on template `k` when given, its text then prefixed
+   *  with `edit`, Reset ticked when `reset` — and presses Enable, answering its
+   *  confirm `yes` or not: the confirm's text, or null. A kept table leaves
+   *  the dialog open (the caller closes it). */
+  async function dialogEnable(k, yes, { edit, reset } = {}) {
+    let asked = null;
+    const answer = (d) => { asked = d.message(); (yes ? d.accept() : d.dismiss()).catch((err) => console.error('confirm failed', err)); };
+    alice.on('dialog', answer);
+    try {
+      await alice.click('#rules-btn');
+      await alice.waitForSelector('#rules-dialog[open]');
+      if (k) await alice.selectOption('#rules-tpl', k);
+      if (edit) await alice.evaluate((e) => { const el = document.getElementById('rules-code'); el.value = e + el.value; }, edit);
+      if (reset) await alice.check('#rules-reset');
+      await alice.click('#rules-enable');
+      await alice.waitForFunction((y) => (y ? !document.querySelector('#rules-dialog[open]') : document.getElementById('rules-enable').textContent === 'Enable'), yes, { timeout: 20000 });
+    } finally { alice.off('dialog', answer); }
+    return asked;
+  }
+
   section('1. The 📜 dialog starts a game that lays out the whole table as 🎲 does: over another game, only once the host agrees to clear it (D169)');
   {
     await G.pickGame(alice, 'chess');
     ok(await P.waitView(alice, "v.rules?.name === 'Chess' && Object.values(v.items).filter((it) => it.at).length === 32", null, 30000), 'chess from 🎲: 32 pieces on the board');
-    /** Picks template `k` in the 📜 dialog and presses Enable, answering its confirm `yes` or not: the confirm's text, or null. */
-    async function dialogEnable(k, yes) {
-      let asked = null;
-      const answer = (d) => { asked = d.message(); (yes ? d.accept() : d.dismiss()).catch((err) => console.error('confirm failed', err)); };
-      alice.on('dialog', answer);
-      try {
-        await alice.click('#rules-btn');
-        await alice.waitForSelector('#rules-dialog[open]');
-        await alice.selectOption('#rules-tpl', k);
-        await alice.click('#rules-enable');
-        await alice.waitForFunction((y) => (y ? !document.querySelector('#rules-dialog[open]') : document.getElementById('rules-enable').textContent === 'Enable'), yes, { timeout: 20000 });
-      } finally { alice.off('dialog', answer); }
-      return asked;
-    }
     const kept = await dialogEnable('go9', false);
     ok(/Clear the table and set up Go 9 × 9\?/.test(kept || ''), `Go 9 × 9 from the 📜 dialog over chess asks first ("${kept}")`);
     await h.sleep(800);
@@ -166,6 +181,77 @@ const rect = (p, sel) => p.evaluate((s) => { const el = document.querySelector(s
     await bob.tap('#secret-head');
     const text = await rect(bob, '#secret-text');
     ok(await bob.evaluate(() => !document.getElementById('secret').classList.contains('shut')) && text.t >= bar.b - 0.5, `another opens it again, its text below the head, scrolling in the room left (${J(text)})`);
+  }
+
+  section('5. An edited demo from the 📜 dialog asks first too: the table and the hands are cleared only once the host agrees; Reset ticked on the running game asks again (D173)');
+  {
+    const EDIT = "// my club's chess\n";
+    const before = await P.viewOf(alice, "({ piles: Object.values(v.items).filter((it) => it.k === 'p').length, n: Object.keys(v.items).length })");
+    ok(before.piles >= 1 && await P.viewOf(bob, 'v.hand.length === 3'), `the card game of section 4 is on the table (${J(before)}), three cards in Bob's hand`);
+    const kept = await dialogEnable('chess', false, { edit: EDIT });
+    ok(/Clear the table and set up Chess\?/.test(kept || ''), `chess's text with a comment line added asks first ("${kept}")`);
+    await h.sleep(800);
+    ok(await alice.evaluate(() => !!document.querySelector('#rules-dialog[open]')) && await P.viewOf(alice, "v.rules?.name === 'Secret' && Object.keys(v.items).length === a", before.n) && await P.viewOf(bob, 'v.hand.length === 3'),
+      'kept: still the card game, every item on the table, Bob\'s three cards, the dialog open');
+    await alice.evaluate(() => document.getElementById('rules-dialog').close());
+    ok(!!await dialogEnable('chess', true, { edit: EDIT }), 'asked again, the host agrees');
+    ok(await G.everywhere(both, "v.rules?.name === 'Chess' && Object.keys(v.items).length === 33 && Object.values(v.items).filter((it) => it.at).length === 32 && !v.hand.length", null, 30000),
+      'on both screens: chess, its board and 32 pieces alone, no card in any hand');
+    const lines = await P.viewOf(alice, 'v.log.map((e) => e.txt)');
+    await bob.click('#rules-btn'); // (a guest's 📜 dialog shows the script the host runs)
+    const runs = await bob.evaluate(() => document.getElementById('rules-code').value);
+    await bob.evaluate(() => document.getElementById('rules-dialog').close());
+    ok(lines.some((x) => /^cleared the table \(\d+ items, 3 cards from hands\)$/.test(x)) && runs.startsWith(EDIT),
+      `the table cleared, Bob's cards with it ("${lines.findLast((x) => /^cleared/.test(x))}"), and the edited text is what runs (${J(runs.slice(0, 30))}…)`);
+    const n0 = lines.filter((x) => /^cleared the table/.test(x)).length;
+    const again = await dialogEnable(null, false, { reset: true });
+    ok(/Clear the table and set up Chess\?/.test(again || ''), `Reset ticked on the running chess asks too ("${again}")`);
+    await alice.evaluate(() => document.getElementById('rules-dialog').close());
+    ok(!!await dialogEnable(null, true, { reset: true }) && await P.waitView(alice, "v.log.filter((e) => /^cleared the table/.test(e.txt)).length === a + 1 && v.rules?.name === 'Chess' && Object.values(v.items).filter((it) => it.at).length === 32", n0, 30000),
+      'agreed: a fresh chess on a cleared table');
+  }
+
+  section('6. Playwright\'s iPhone 13 held sideways (750 × 342: the browser\'s bars shown), an ask open, the hand bar shown, a secret and four buttons on two rows: the 🔒 card holds its head, on screen and tappable; the buttons scroll (D174)');
+  {
+    const SQUEEZE = `({ name: 'Squeeze',
+      setup(t) { t.addStandardDeck({ x: 60, y: 60 }); },
+      buttons: (t) => ['Deal me in', 'Bid two clubs', 'Pass the turn', 'Show my hand'].map((label, i) => ({ id: 'b' + i, label })),
+      onButton(t, id, p) {
+        if (id === 'b3') t.say('A hand is shown');
+        if (id !== 'b0') return;
+        t.draw(p, t.piles()[0].id, 3);
+        t.secret[p] = { text: 'You are the spy.\\nYour contact wears red.\\nYour target: Carol.' };
+        t.ask(p, { id: 'plan', prompt: 'Which plan do you follow tonight, now that the guards have changed their rounds and the dogs are loose?', options: ['The roof', 'The cellar', 'The front door', 'Wait it out'] });
+      },
+    })`;
+    await h.enableRules(alice, { code: SQUEEZE });
+    ok(await P.waitView(bob, "v.rules?.name === 'Squeeze'", null, 15000), 'a script with four buttons that deals, tells a secret and asks');
+    await bob.setViewportSize({ width: 390, height: 664 });
+    await h.sleep(500);
+    await bob.locator('#rules-btns button:has-text("Deal me in")').tap();
+    ok(await bob.waitForFunction(() => !document.getElementById('secret').classList.contains('hidden') && !document.getElementById('ask').classList.contains('hidden') && document.querySelectorAll('#hand .hcard').length === 3, null, { timeout: 10000 }).then(() => true, () => false),
+      'Bob: three cards, the 🔒 card and the question open');
+    await bob.setViewportSize({ width: 750, height: 342 }); // (sideways, the browser's bars shown)
+    await h.sleep(900);
+    const m = await bob.evaluate(() => {
+      const r = (el) => { const b = el.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom }; }, $ = (id) => document.getElementById(id);
+      const head = r($('secret-head')), card = r($('secret')), btns = $('rules-btns'), first = r(btns.firstElementChild), at = (x, y) => document.elementFromPoint(x, y);
+      return { bar: r($('toolbar')).b, ask: r($('ask')).t, head, card, box: r(btns), first, over: btns.scrollHeight - btns.clientHeight,
+        headHit: at((head.l + head.r) / 2, (head.t + head.b) / 2)?.id, below: !!at((card.l + card.r) / 2, card.b + 2)?.closest('#secret') };
+    });
+    ok(m.head.t >= m.card.t - 0.5 && m.head.b <= m.card.b + 0.5 && m.head.t >= m.bar - 0.5, `the card's frame holds its head, below the toolbar (head ${J(m.head)}, card ${J(m.card)}, toolbar bottom ${m.bar})`);
+    ok(m.headHit === 'secret-head' && !m.below, `nothing covers the head (${m.headHit}), and nothing of the card shows below its frame`);
+    ok(m.box.t >= m.card.b && m.box.b <= m.ask + 0.5, `the buttons stay between the card and the ask panel (box ${J(m.box)}, ask top ${m.ask})`);
+    ok(m.over > 10 && m.first.t >= m.box.t && m.first.b <= m.box.b + 0.5, `they scroll (${m.over} px more), the first row in full view (${J(m.first)})`);
+    await shot(bob, 'p3c-squeeze-sideways-phone');
+    const mid = { x: (m.box.l + m.box.r) / 2, y: m.box.b - 6 };
+    await S.gesture(bob, [mid, ...S.steps(mid, { x: mid.x, y: mid.y - 60 }, 10, 16).slice(1), { x: mid.x, y: mid.y - 60, wait: 300 }], { touch: true });
+    const shown = await bob.evaluate(() => { const b = document.getElementById('rules-btns'), x = b.lastElementChild.getBoundingClientRect(); return { top: b.scrollTop, hit: document.elementFromPoint((x.left + x.right) / 2, (x.top + x.bottom) / 2) === b.lastElementChild }; });
+    ok(shown.top > 0 && shown.hit, `a swipe up scrolls the buttons: "Show my hand" in full view (${J(shown)})`);
+    await bob.locator('#rules-btns button:has-text("Show my hand")').tap();
+    ok(await P.waitView(alice, "v.log.some((e) => e.txt === 'A hand is shown')", null, 10000), 'and a tap on it presses it');
+    await bob.tap('#secret-head');
+    ok(await bob.evaluate(() => document.getElementById('secret').classList.contains('shut')), 'a tap on the 🔒 head folds the card');
   }
 
   await env.done();

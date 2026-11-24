@@ -735,6 +735,13 @@ sync and rendering, and the Worker together with `handle`.
        first. A script can no longer re-point a frozen regex of the engine
        (`compile` is gone), and the host checks every deck a player's
        action adds against what they sent, whatever the patch's lines say.
+     - After its second look: the 📜 dialog asks before an edited chess,
+       go or reversi (still under its name), or one reset, clears the table
+       and the hands; a script renamed takes the table's other items
+       unasked, as any script may. The secret card's frame always holds
+       its head, which gives way last, and buttons that don't fit scroll. A
+       player whose own move withdraws their draw offer is told so, and
+       the opponent, whose question vanished, is told why.
 4. **Game boxes.**
    - `game.json` plus `.zip` upload, declarative setup and reset.
    - Export with the current position.
@@ -817,8 +824,9 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
 - **One call, one line:** a script that removes or turns a list of pieces at
   once (a go capture, a reversi move) writes one log line for it; separate
   calls merge from four on, as before (§5).
-- **A game that lays out the whole table clears it first**, however it is
-  started, once the host agrees (§7).
+- **A game that lays out the whole table clears it first**, from 🎲 or
+  the 📜 dialog, once the host agrees — known by its name, so an edited
+  copy asks too; a copy renamed is a script like any other (§7).
 - **A fingertip's reach for small supplies only:** a bowl or a pile drawn
   smaller than a fingertip takes a press beside it; small pieces don't, so a
   finger on a crowded table still pans (§2).

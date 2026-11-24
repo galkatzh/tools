@@ -3950,6 +3950,12 @@ function testDemoReview() {
     D.job(B, { t: 'rulesBtn', id: 'draw-b' });
     r = D.move(W, 'h5', 'h4');
     ok(J(r.told) === J([[B, 'Your draw offer lapses: White moved']]) && !D.M.state.rules.asks[W]?.length, `Black offers a draw, White moves instead of answering: the offer lapses, Black is told (${J(r.told)})`);
+    D.move(B, 'g6', 'g5');
+    D.job(W, { t: 'rulesBtn', id: 'draw-w' });
+    r = D.move(W, 'h4', 'h3');
+    ok(J(r.told) === J([[W, 'Your move withdrew your draw offer'], [B, 'White moved: the draw offer is withdrawn']]) && !D.M.state.rules.asks[B]?.length
+      && r.lines.includes('White moved: the draw offer is withdrawn') && D.same(),
+    `White offers a draw on White's own turn, then moves: the offer is withdrawn — White is told so (never "White moved" as if the opponent had), and Black, whose question vanished, is told why (${J(r.told)})`);
   }
   {
     const D = demoTable();

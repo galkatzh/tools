@@ -1381,10 +1381,16 @@ export const RULES_TEMPLATES = {
     for (const s of [m.from, m.to]) for (const r of LOSES[s] || '') g.castle = g.castle.replace(r, '');
     g.ep = m.double ? square((m.from + m.to) / 2) : null;
     g.half = piece.k === 'P' || m.cap >= 0 ? 0 : g.half + 1;
-    if (g.offer) { // a move answers a draw offer: it lapses
+    if (g.offer) { // a move answers a draw offer, or withdraws the mover's own: it lapses
       for (const x of t.players({ all: true })) t.cancelAsk(x.id, 'draw');
-      t.say('The draw offer lapses');
-      tellSide(t, g.offer, 'Your draw offer lapses: ' + SIDE[g.turn] + ' moved');
+      if (g.offer === g.turn) { // (the asked player's question vanished: both are told why)
+        t.say(SIDE[g.turn] + ' moved: the draw offer is withdrawn');
+        tellSide(t, g.turn, 'Your move withdrew your draw offer');
+        tellSide(t, other(g.turn), SIDE[g.turn] + ' moved: the draw offer is withdrawn');
+      } else {
+        t.say('The draw offer lapses');
+        tellSide(t, g.offer, 'Your draw offer lapses: ' + SIDE[g.turn] + ' moved');
+      }
       g.offer = null;
     }
     if (m.promo) {
