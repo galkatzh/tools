@@ -820,11 +820,13 @@ function broadcast() {
     rulesCodeDirty = false;
     if (room) sendRules({ code: host.rules?.code || '', name: host.rules?.name || '' });
   }
-  const d = T.takeDirty(), content = T.patchContent(d), fx = liveFx(fxQueue, d); // (a live drag this tick's commit overtook stays home)
-  if (fx.length) content.fx = fx;
-  if (annQueue.length) content.ann = annQueue;
+  // (the queues are taken first: a tick that throws can't leave behind what made it throw, to throw again on every tick after)
+  const fxs = fxQueue, anns = annQueue;
   fxQueue = [];
   annQueue = [];
+  const d = T.takeDirty(), content = T.patchContent(d), fx = liveFx(fxs, d); // (a live drag this tick's commit overtook stays home)
+  if (fx.length) content.fx = fx;
+  if (anns.length) content.ann = anns;
   // boot: this host instance's epoch, host: whose seat the host is.
   const head = { v: PROTO, boot: hostBoot, seq, host: pid };
   const empty = !Object.keys(content).length;
@@ -1427,8 +1429,8 @@ function connect() {
     // learns who the authenticated host is before revealing its identity.
     if (a._pid == null) { if (a.t === 'hello') wantSnap(peer); return; }
     const { _pid: p, _name: name, _key: key, _v, ...action } = a;
-    if (HOST_ACTIONS.has(action.t)) { refuse(peer, 'Only the host can do that'); return; }
-    if (!PUBLIC_ACTIONS.has(action.t)) { refuse(peer, 'Unknown action — reload this page'); return; }
+    if (HOST_ACTIONS.includes(action.t)) { refuse(peer, 'Only the host can do that'); return; }
+    if (!PUBLIC_ACTIONS.includes(action.t)) { refuse(peer, 'Unknown action — reload this page'); return; }
     const reason = p === pid ? 'This seat is already open in another tab'
       : typeof p !== 'string' || !PID_RE.test(p) ? 'Invalid player id' // (a crafted {"toString": 1} would make test() throw)
       : typeof key !== 'string' || key.length < 16 ? 'Missing seat key — please reload'
@@ -2381,7 +2383,7 @@ function handOrder() {
   const order = view.hand.map((_, k) => k);
   const key = (c) => {
     const x = decks[c.d]?.cards[c.i];
-    return x?.s ? SUIT_ORDER[x.s] * 100 - (x.r === 'A' ? 14 : [...RANKS].indexOf(x.r) + 1) : 1000;
+    return x?.s ? SUIT_ORDER[x.s] * 100 - (x.r === 'A' ? 14 : RANKS.indexOf(x.r) + 1) : 1000;
   };
   return sortHand ? order.sort((a, b) => key(view.hand[a]) - key(view.hand[b]) || a - b) : order;
 }

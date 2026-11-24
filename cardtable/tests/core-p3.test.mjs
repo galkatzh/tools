@@ -43,7 +43,7 @@ import { APP_ROOT, core, ok, section, report, crash, guard, rng, json, env, seed
 
 const grid = await import(pathToFileURL(path.join(APP_ROOT, 'cardtable/grid.js')));
 const pieces = await import(pathToFileURL(path.join(APP_ROOT, 'cardtable/pieces.js')));
-const { BOXES } = await import(pathToFileURL(path.join(APP_ROOT, 'cardtable/templates.js')));
+const templates = await import(pathToFileURL(path.join(APP_ROOT, 'cardtable/templates.js'))), { BOXES } = templates;
 const { createTable, cleanBox, MIGRATE, migrate, STATE_V, PROTO, BOARD_Z0, PUBLIC_ACTIONS, RULED_ACTIONS, liveFx, clampToTable, sharedText } = core;
 
 // --- small tools ----------------------------------------------------------------
@@ -1398,7 +1398,7 @@ function testDrag() {
   r = act(T, BOB, { t: 'drag', ids: ['al', 'lk'], dx: 5, dy: 5 });
   ok(!live(r).length && !r.notes.length, 'a group drag with no id Bob may handle: nothing relayed');
   ok(J(T.state) === state0 && !calls.length, 'after all of them the state is unchanged and no hook ran');
-  ok(PUBLIC_ACTIONS.has('drag') && !RULED_ACTIONS.has('drag'), 'drag is a public action, never a ruled one');
+  ok(PUBLIC_ACTIONS.includes('drag') && !RULED_ACTIONS.includes('drag'), 'drag is a public action, never a ruled one');
 
   section('(D) liveFx: a commit in the tick drops that item\'s live fx; one item keeps its last');
   const fx = [{ p: BOB, id: 'a', x: 1, y: 1, live: 1 }, { p: BOB, id: 'b', x: 2, y: 2, live: 1 }, { p: BOB, id: 'a', x: 3, y: 3, live: 1 }, { p: BOB, ids: ['a', 'c', 'e'], dx: 4, dy: 4, live: 1 },
@@ -2241,7 +2241,7 @@ function testStrict() {
     const d0 = T.digest(), r = job(T, BOB, { t, ...payload });
     ok(noted(r, BOB, '🚫 Not a move in this game') && J(r.rules) === J(['blocked Bob: Not a move in this game']) && T.digest() === d0 && T.state.rules.enabled, `strict refuses ${t} (${J(r.log)})`);
   }
-  const ruledSeen = () => seen.filter((x) => RULED_ACTIONS.has(x));
+  const ruledSeen = () => seen.filter((x) => RULED_ACTIONS.includes(x));
   ok(!ruledSeen().length, `no refused action reached onAction (${J(ruledSeen())})`);
   let r = job(T, BOB, { t: 'seat', watch: true });
   ok(T.state.players[BOB].seat === null && !noted(r, BOB, '🚫 Not a move in this game') && J(ruledSeen()) === J(['seat']), 'seat is never refused by strict: Bob stands up to watch (and onAction sees it)');
@@ -2649,8 +2649,8 @@ function testSelect() {
 // =============================================================================
 function testInternal() {
   section('(I) internal actions are never accepted from the wire: no _* name in PUBLIC_ACTIONS (answer and select are there)');
-  ok(![...PUBLIC_ACTIONS].some((t) => t.startsWith('_')) && ['_join', '_leave', '_tick', '_rulesOff', '_name'].every((t) => !PUBLIC_ACTIONS.has(t)), 'no _join, _leave, _tick, _rulesOff, _name, nor any _* name');
-  ok(['answer', 'select', 'drag'].every((t) => PUBLIC_ACTIONS.has(t)), 'answer, select and drag are public');
+  ok(![...PUBLIC_ACTIONS].some((t) => t.startsWith('_')) && ['_join', '_leave', '_tick', '_rulesOff', '_name'].every((t) => !PUBLIC_ACTIONS.includes(t)), 'no _join, _leave, _tick, _rulesOff, _name, nor any _* name');
+  ok(['answer', 'select', 'drag'].every((t) => PUBLIC_ACTIONS.includes(t)), 'answer, select and drag are public');
 
   section('(I) _tick fires the due timers (by the table\'s clock) in order, each onTimer(t, tag), then buttons(); the others wait');
   const ev = [];
@@ -2827,6 +2827,10 @@ const DIGEST_SCRIPT = `({ name: 'Digest',
     if (n % 37 === 0) t.hint(a.p, null);
     if (n % 41 === 0) t.cancelAsk(a.p);
     if (n % 6 === 0) { const g = t.find({ type: '${GEM}', kind: 'piece' })[0]; if (g) t.setFace(g.id, n % 3); }
+    // facade calls given odd arguments (D152): what the engine makes of each, the host must take
+    if (n % 7 === 2) for (const f of [() => t.tell(undefined, 'nobody'), () => t.tell(0, 'nobody'), () => t.tell('nobody', 'x'), () => t.tell(a.p, 7), () => t.say(5), () => t.announce({ toString: () => 'odd' })]) {
+      try { f(); } catch (e) { t.data.odd = (t.data.odd || 0) + 1; }
+    }
   },
   onAnswer(t, p, id, v) { t.data.answers = (t.data.answers || 0) + 1; t.public.last = id; },
   onSelect(t, p, id) { t.hint(p, { items: [id], spaces: ['e4'] }); },
@@ -2848,6 +2852,7 @@ const DIGEST_ITEMS = () => {
     p: PILE(range(12).map((i) => ({ d: DK, i: 30 + i, up: false })), 2300, 300), q: PILE([{ d: DK, i: 50, up: true }], 2300, 600), c1: CARD(1, 2100, 300), c2: CARD(2, 2100, 600, { up: false }) };
   for (const [k, sq] of ['a1', 'b2', 'c3', 'd4', 'e5', 'f6'].entries()) o[`m${k}`] = PC('man', 110 + 100 * (sq.charCodeAt(0) - 97) + 10, 110 + 100 * (8 - Number(sq[1])) + 10);
   for (let k = 0; k < 3; k++) o[`g${k}`] = PC('gem', 1500 + 100 * k, 900);
+  o[12] = PC('man', 1500, 1100); // (an id of digits, which an action may name as a number: D149)
   return o;
 };
 /** One random job for a seeded run: an actor and an action, valid or not
@@ -2863,8 +2868,10 @@ function randomJob(M, R) {
   };
   const hand = M.state.players[p].hand, asks = own(M.state.rules?.asks || {}, p) || [];
   switch (R.pick(['move', 'move', 'move', 'rot', 'rot', 'flip', 'deal', 'draw', 'play', 'toHand', 'toPile', 'take', 'pull', 'toBag', 'roll', 'shuffle', 'del', 'chat', 'rulesBtn', 'rulesBtn',
-    'answer', 'answer', 'select', 'select', '_tick', 'join', '_leave', 'seat', 'table', 'board', 'setRules', 'face', 'peek', 'owner', 'lock'])) {
+    'answer', 'answer', 'select', 'select', '_tick', 'join', '_leave', 'seat', 'table', 'board', 'setRules', 'face', 'peek', 'owner', 'lock', 'name', 'byNumber'])) {
     case 'move': return [p, { t: 'move', id: pick([...pieces, ...cards, ...piles]), ...xy() }];
+    case 'byNumber': return [p, R() < 0.5 ? { t: 'move', id: 12, ...xy() } : { t: R.pick(['rot', 'flip', 'roll']), id: 12, ids: [12], rot: 90 }]; // (an action naming item "12" as a number)
+    case 'name': return [p, { t: 'name', name: R.pick([0, 7, 'Robert', '', ' 📜Bob', null, 'Bob']) }]; // (odd names too: the engine's cleanName, the host's the same, D152)
     case 'rot': return [p, { t: 'rot', id: pick(pieces), rot: R.pick([0, 90, 180, 270]) }];
     case 'flip': return [p, { t: 'flip', id: pick([...cards, ...piles, ...pieces]) }];
     case 'deal': return [p, { t: 'deal', id: pick(piles), ...xy(), up: R() < 0.5 }];
@@ -2883,7 +2890,7 @@ function randomJob(M, R) {
     case 'answer': return [p, { t: 'answer', id: asks.length ? R.pick(asks).id : 'q0', v: R.int(3) }];
     case 'select': return [p, { t: 'select', id: pick(ids) }];
     case '_tick': return [RULES, { t: '_tick' }];
-    case 'join': { const q = R.pick([BOB, CAROL, DAVE]); return [q, { t: '_join', name: q === DAVE ? 'Dave' : 'X' }]; }
+    case 'join': { const q = R.pick([BOB, CAROL, DAVE]); return [q, { t: '_join', name: q === DAVE ? R.pick(['Dave', 0, '']) : 'X' }]; }
     case '_leave': return [R.pick([BOB, CAROL, DAVE].filter((q) => own(M.state.players, q))), { t: '_leave' }];
     case 'seat': return [p, R() < 0.5 ? { t: 'seat', watch: true } : { t: 'seat', sit: true }];
     case 'table': return [HOST, { t: 'table', shape: 'rect', w: R.pick([4800, 5000, 5200]), h: R.pick([3400, 3600]) }];
@@ -2906,7 +2913,7 @@ function testDigest() {
     const M = quietly(() => createTable(structuredClone(base), { pid: HOST, now: () => clk.t, random: rng(seed ^ 0x77), uid: () => `m${(++n).toString(16).padStart(7, '0')}`, hooks: scriptHooks() })).value;
     const H = quietly(() => createTable(structuredClone(base), { pid: HOST, now: () => clk.t, hooks: HOST_HOOKS })).value;
     const d0 = H.digest(), same0 = M.digest() === d0;
-    const seen = { items: 0, players: 0, rules: 0, decks: 0, log: 0, refresh: 0, refreshHands: 0, table: 0, seats: 0, error: 0, vetoes: 0 };
+    const seen = { items: 0, players: 0, rules: 0, decks: 0, log: 0, refresh: 0, refreshHands: 0, table: 0, seats: 0, error: 0, vetoes: 0, odd: 0, byNumber: 0, oddName: 0 };
     let first = null, fatal = null, threw = null, lost = null;
     const own3 = (e) => !['deck', 'box', 'rules'].includes(e.t); // (the effects the patch itself brings: the host makes its own)
     const step = (k, p, a) => {
@@ -2917,6 +2924,9 @@ function testDigest() {
       for (const key of Object.keys(seen)) if (key in r.patch) seen[key]++;
       if (r.out.error) seen.error++;
       if (r.patch.log?.some((e) => e.txt.startsWith('blocked '))) seen.vetoes++;
+      if (r.out.effects.some((e) => e.t === 'note' && e.msg === '7')) seen.odd++;
+      if (r.out.effects.some((e) => e.t === 'fx' && e.f.id === '12')) seen.byNumber++;
+      if (r.patch.players && (a.name === 0 || a.name === 7)) seen.oddName++;
       try { quietly(() => H.applyStatePatch(structuredClone(r.patch), structuredClone(r.out), { p, a })); } catch (e) { threw ||= `job ${k} (${a.t}): ${e.message}`; } // (the job: who acted, as app.js says)
       const fx = H.drain().filter(own3);
       if (!lost && J(fx) !== J(r.out.effects.filter(own3))) lost = `job ${k} (${a.t}): the host queued ${J(fx).slice(0, 120)}, the job ${J(r.out.effects.filter(own3)).slice(0, 120)}`;
@@ -2935,6 +2945,7 @@ function testDigest() {
     ok(!first && H.digest() === M.digest() && H.digest() !== d0, `seed ${seed}: the digests agree after every job, and at the end (${first || `${H.digest()}`}; it moved from ${d0})`);
     ok(sameTable(H) === sameTable(M) && J(H.state.log) === J(M.state.log), `seed ${seed}: the whole tables agree too — items, players, rules, table, seats, catalog, counters, log (${sameTable(H) === sameTable(M) ? 'yes' : stateDiff(stateOf(M), stateOf(H))})`);
     ok(seen.items && seen.players && seen.rules && seen.decks && seen.log && seen.refresh && seen.table && seen.seats && seen.error && seen.vetoes, `seed ${seed}: the run covered every kind of patch, hook failures and vetoes (${J(seen)})`);
+    ok(seen.odd && seen.byNumber && seen.oddName, `seed ${seed}: … and odd arguments — facade calls (t.tell(undefined), t.say(5)…), renames to 0 or 7, an item named by the number 12 — each patch taken by the host (${J({ odd: seen.odd, byNumber: seen.byNumber, oddName: seen.oddName })})`);
   }
 
   section('(7) applyStatePatch gates what a patch brings: decks (cleanDeck), boxes (cleanBox), "__proto__" keys, a malformed item — any one refuses the whole patch, nothing applied (D145)');
@@ -3230,7 +3241,7 @@ function testSecondReview() {
 // =============================================================================
 function testThirdReview() {
   const { notJSON, LOG_CAPS, LOG_TXT_MAX } = core;
-  section('(RF3) notJSON sees what JSON would change that a walk by keys missed: holes, undefined in an array, a property that isn\'t an index, a non-enumerable or symbol-keyed one (D146)');
+  section('(RF3) notJSON sees what JSON would change that a walk by keys missed: holes, undefined in an array, a non-enumerable or symbol-keyed property (D146); a property hung on an array passes, as JSON leaves it out (D153)');
   {
     const named = [1, 2];
     named.turn = 'white';
@@ -3239,15 +3250,14 @@ function testThirdReview() {
     for (const [what, v, want] of [
       ['an array with a hole (new Array(3))', { board: new Array(3) }, 'v.board[0] is a hole, not JSON (JSON writes null) — fill the array'],
       ['undefined in an array', { list: [1, undefined] }, 'v.list[1] is undefined, not JSON (JSON writes null)'],
-      ["an array's named property", { moves: named }, "v.moves has a property that isn't an index, which JSON drops"],
-      ['a Date hung on an array (the second review\'s walk missed it)', { list: when }, "v.list has a property that isn't an index, which JSON drops"],
+      ["an array's named property (JSON leaves it out, as an object's undefined: D153)", { moves: named }, ''],
+      ['a Date hung on an array (the same)', { list: when }, ''],
       ['a non-enumerable property', { o: Object.defineProperty({}, 'hidden', { value: 7 }) }, "v.o has a property JSON doesn't see (non-enumerable, or keyed by a symbol)"],
       ['a symbol-keyed property', { o: { [Symbol('s')]: 1 } }, "v.o has a property JSON doesn't see (non-enumerable, or keyed by a symbol)"],
       ['plain JSON (undefined as an object\'s value passes)', { a: [1, { b: null, c: 'x' }], d: undefined, e: Object.create(null) }, ''],
     ]) ok(notJSON(v, 'v') === want, `${what}: "${notJSON(v, 'v')}"`);
     for (const [what, value, re] of [
       ['a board made with new Array(64)', () => new Array(64), /t\.data\.v\[0\] is a hole/],
-      ["a list with a turn hung on it", () => Object.assign(['e4'], { turn: 'white' }), /t\.data\.v has a property that isn't an index/],
       ['a hidden property', () => Object.defineProperty({}, 'h', { value: 7 }), /t\.data\.v has a property JSON doesn't see/],
     ]) {
       const L = lifecycle(PIPE());
@@ -3369,6 +3379,141 @@ function testThirdReview() {
   }
 }
 
+// =============================================================================
+// (RF4) The fourth review of 3B (SPEC D148–D153)
+// =============================================================================
+function testFourthReview() {
+  const { Z_MAX } = core;
+  section("(RF4) Every export of the modules a rules Worker loads (core.js, grid.js, templates.js) is a primitive, a function, a regex or plain data — nothing whose contents a freeze leaves open (a Set, a Map, a Date, a typed array), so the Worker's lockdown holds them all (D148)");
+  {
+    const open = [], seen = new Set();
+    const walk = (v, at) => {
+      if (v === null || (typeof v !== 'object' && typeof v !== 'function') || seen.has(v)) return;
+      seen.add(v);
+      if ([Map, Set, WeakMap, WeakSet, Date, ArrayBuffer].some((C) => v instanceof C) || ArrayBuffer.isView(v)) open.push(at);
+      if (typeof v === 'object') for (const k of Reflect.ownKeys(v)) walk(Object.getOwnPropertyDescriptor(v, k).value, `${at}.${String(k)}`);
+    };
+    for (const [name, m] of [['core', core], ['grid', grid], ['templates', templates]]) for (const [k, v] of Object.entries(m)) walk(v, `${name}.${k}`);
+    ok(!open.length, `none (${open.join(', ') || 'none'})`);
+    ok([core.RULED_ACTIONS, core.STRICT_ACTIONS, core.PUBLIC_ACTIONS, core.HOST_ACTIONS, core.RANKS, core.SUITS, core.IMG_MIMES].every((l) => Array.isArray(l) && Object.isFrozen(l)),
+      'the lists the engine reads are frozen arrays (as Sets, a frozen one still took Set.prototype.add.call)');
+  }
+
+  section("(RF4) A guest's deck reaches the catalog as the host's realm cleans what they sent: a patch whose deck, or whose line in the guest's name, says otherwise is refused (D148)");
+  {
+    const L = lifecycle(PIPE());
+    L.enable(fake({}));
+    const ADD = { t: 'addDeck', deck: { name: 'Bobs deck', cards: [{ n: 'Two' }, { n: 'Ace of Bob' }] }, cost: 50 };
+    for (const [what, forge] of [
+      ['the deck renamed', (P) => { Object.values(P.decks)[0].name = 'I resign: Alice wins'; }],
+      ["a card's name rewritten", (P) => { Object.values(P.decks)[0].cards[1].n = 'nothing. I resign'; }],
+      ["Bob's line reworded, the deck as sent", (P) => { P.log.find((e) => e.p === BOB).txt = 'added deck "I resign: Alice wins" (2 cards)'; }],
+      ['a second line in Bob\'s name', (P) => { P.log.push({ ...P.log.find((e) => e.p === BOB), txt: 'resigned' }); }],
+    ]) {
+      const r = quietly(() => L.M.job(BOB, ADD)).value, P = structuredClone(r.patch);
+      forge(P);
+      const before = stateOf(L.H);
+      let threw = null;
+      try { quietly(() => L.H.applyStatePatch(P, structuredClone(r.out), { p: BOB, a: ADD })); } catch (e) { threw = e; }
+      ok(threw?.message === "the script rewrote Bob's deck" && stateOf(L.H) === before, `${what}: refused (${threw?.message}), the table as it was`);
+      L.start(L.H.state.rules.code);
+    }
+    const r = L.job(BOB, ADD), deck = Object.values(r.patch.decks || {})[0];
+    ok(deck?.name === 'Bobs deck' && deck.cards[1].n === 'Ace of Bob' && L.same() && L.H.state.rules.enabled, 'the honest patch goes in, the deck as Bob sent it');
+  }
+
+  section('(RF4) The effects a job brings are rebuilt from the fields the engine writes: a field a Worker adds never reaches the host\'s queue; a marker without its item is refused; an action that names item "12" as a number marks "12" and keeps the indexes whole (D149)');
+  {
+    const L = lifecycle(PIPE());
+    L.enable(fake({}));
+    const ROT = { t: 'rot', id: 'm', rot: 90 }, r = quietly(() => L.M.job(HOST, ROT)).value, O = structuredClone(r.out);
+    Object.assign(O.effects.find((e) => e.t === 'fx').f, { live: 1, ids: 'oops', html: '<b>x</b>' });
+    L.H.drain();
+    quietly(() => L.H.applyStatePatch(structuredClone(r.patch), O, { p: HOST, a: ROT }));
+    const fx = L.H.drain().filter((e) => e.t === 'fx');
+    ok(fx.length === 1 && J(Object.keys(fx[0].f)) === J(['p', 'id', 'x', 'y']) && fx[0].f.id === 'm' && L.same(), `a bulb with a live drag's fields hung on it: the host queues it as the engine writes it (${J(fx)})`);
+    const P2 = { t: 'rot', id: 'm', rot: 180 }, r2 = quietly(() => L.M.job(HOST, P2)).value, O2 = structuredClone(r2.out);
+    O2.effects.push({ t: 'fx', f: { p: HOST, x: 1, y: 1, live: true } });
+    const before = stateOf(L.H);
+    let threw = null;
+    try { quietly(() => L.H.applyStatePatch(structuredClone(r2.patch), O2, { p: HOST, a: P2 })); } catch (e) { threw = e; }
+    ok(threw?.message === "the script's effects are malformed" && stateOf(L.H) === before, `a bulb with no item (the review's live drag, which threw in every broadcast tick after): refused (${threw?.message})`);
+    L.start(L.H.state.rules.code);
+    const T = rtable({ ...PIPE(), 12: PC('man', 1100, 1100) }, {});
+    const j = job(T, BOB, { t: 'rot', id: 12, rot: 90 });
+    const k = job(T, BOB, { t: 'toBag', id: 12, bag: 'bg' }), m = job(T, HOST, { t: 'move', id: 'B', x: 160, y: 120 });
+    ok(J(j.effects.filter((e) => e.t === 'fx').map((e) => e.f.id)) === '["12"]' && !own(T.state.items, '12') && !m.error.length && !indexProblems(T).length,
+      `{t: 'rot', id: 12} marks "12"; once item "12" goes into the bag, a board move reads the indexes without a throw (${J(indexProblems(T))}; ${J(k.error.concat(m.error)).slice(0, 120)})`);
+  }
+
+  section('(RF4) z stays within Z_MAX: a patch past it is refused; a forged zMax at it is taken, and the card the host tops next survives a reload, renumbered with the rest in their order (D150); a patched address that isn\'t text is refused');
+  {
+    const ROT = { t: 'rot', id: 'm', rot: 90 };
+    const H = quietly(() => createTable(state3b({ m: PC('man', 1500, 300), c: CARD(4, 300, 300) }), { pid: HOST, now: () => 1.7e12, hooks: HOST_HOOKS })).value;
+    quietly(() => H.applyStatePatch({ rules: { code: '({})', name: 'X', enabled: true, data: {}, public: {}, asks: {}, secret: {} } }, { effects: [] }));
+    for (const [what, patch, re] of [
+      ['zMax past Z_MAX', { zMax: Z_MAX + 1 }, /^the patch's zMax is out of bounds$/],
+      ['an item with z past Z_MAX', { items: { m: { ...H.state.items.m, z: Z_MAX + 2 } } }, /^a patched item \(m\) is malformed: its z is past /],
+      ['an address that is an object (every later action on it threw)', { items: { m: { ...H.state.items.m, at: {} } } }, /^a patched item \(m\) is malformed: its address is not one$/],
+    ]) {
+      const before = stateOf(H);
+      let threw = null;
+      try { quietly(() => H.applyStatePatch(structuredClone(patch), { effects: [] }, { p: BOB, a: ROT })); } catch (e) { threw = e; }
+      ok(threw && re.test(threw.message) && stateOf(H) === before, `${what}: refused (${threw?.message})`);
+    }
+    quietly(() => H.applyStatePatch({ zMax: Z_MAX }, { effects: [] }, { p: BOB, a: ROT }));
+    quietly(() => H.apply(HOST, { t: 'move', id: 'c', x: 600, y: 600 }));
+    const top = H.state.items.c.z, order = Object.keys(H.state.items).sort((a, b) => H.state.items[a].z - H.state.items[b].z);
+    const T2 = quietly(() => createTable({ ...json(H.snapshot()), decks: H.state.decks, boxes: H.state.boxes, boxSrc: H.state.boxSrc }, { pid: HOST, now: () => 1.7e12, hooks: HOST_HOOKS })).value;
+    const q = quietly(() => T2.resume('Alice'));
+    const zs = Object.values(T2.state.items).map((it) => it.z).sort((a, b) => a - b);
+    ok(top === Z_MAX + 1 && J(Object.keys(T2.state.items).sort((a, b) => T2.state.items[a].z - T2.state.items[b].z)) === J(order) && J(zs) === J(range(order.length).map((k) => k + 1)) && T2.state.zMax === order.length
+      && q.error.some((e) => /^the saved z order reached \d+: \d+ items renumbered from 1, in their order$/.test(e)),
+      `a forged zMax of Z_MAX taken; the host's next move tops the card at ${top}; a reload keeps every item (${J(order)}), z 1–${order.length} in the same order, said once (${J(q.error.filter((e) => /z order/.test(e)))})`);
+  }
+
+  section("(RF4) A save's unreadable items and players are said to the host on resume, in one toast with what else it couldn't read (D151)");
+  {
+    const s = state3b({ m: PC('man', 1500, 300), bad: { k: 'p', x: 1, y: 1, rot: 0, z: 1 }, odd: 5 });
+    s.players[DAVE] = { name: 'Dave', color: '#30bced', online: true };
+    const T = quietly(() => createTable(s, { pid: HOST, now: () => 1.7e12, hooks: HOST_HOOKS })).value;
+    T.drain();
+    quietly(() => T.resume('Alice'));
+    const toasts = T.drain().filter((e) => e.t === 'toast').map((e) => e.msg);
+    ok(J(toasts) === J(["2 saved items and a saved player couldn't be read: dropped"]), `the host's toast: ${J(toasts)}`);
+    const s2 = state3b({ m: PC('man', 1500, 300), odd: 5 }), T3 = quietly(() => createTable(s2, { pid: HOST, now: () => 1.7e12, hooks: HOST_HOOKS })).value;
+    T3.drain();
+    quietly(() => T3.resume('Alice'));
+    ok(J(T3.drain().filter((e) => e.t === 'toast').map((e) => e.msg)) === J(["A saved item couldn't be read: dropped"]), 'one item: "A saved item couldn\'t be read: dropped"');
+  }
+
+  section('(RF4) A name the engine gives, the host takes: a rename to 0 is "0" on both sides, a join with the name 0 none, and the next join fills it (one expression each, shared: D152)');
+  {
+    const L = lifecycle(PIPE());
+    L.enable(fake({}));
+    for (const [p, a, want] of [[BOB, { t: 'name', name: 0 }, '0'], [BOB, { t: 'name', name: 7.5 }, '7.5'], [DAVE, { t: '_join', name: 0 }, ''], [DAVE, { t: '_join', name: 'Dave' }, 'Dave']]) { // (a nameless player's next join names them)
+      let err = null;
+      try { L.job(p, a); } catch (e) { err = e; }
+      ok(!err && L.H.state.players[p]?.name === want && L.M.state.players[p]?.name === want && L.H.state.rules.enabled && L.same(), `${J(a)} of ${p.slice(0, 4)}: "${L.H.state.players[p]?.name}" on both sides, the rules on (${err?.message || 'taken'})`);
+    }
+  }
+
+  section('(RF4) t.tell to nobody — undefined, null, 0, an id not at the table — throws a TypeError naming t.tell: the hook fails alike on both sides, never a patch the host refuses (D152)');
+  {
+    for (const who of [undefined, null, 0, 'nobody', EVE]) {
+      const L = lifecycle(PIPE());
+      L.enable(fake({ onButton: (t) => t.tell(who, 'hi') }));
+      let r = null, err = null;
+      try { r = L.job(BOB, { t: 'rulesBtn', id: 'go' }); } catch (e) { err = e; }
+      ok(!err && /^t\.tell: no player /.test(r.out.error?.message || '') && !L.H.state.rules.enabled && !L.M.state.rules.enabled && L.same(), `t.tell(${J(who) ?? 'undefined'}, …): "${r?.out.error?.message || err?.message}", the rules off on both sides`);
+    }
+    const L = lifecycle(PIPE());
+    L.enable(fake({ onButton: (t, id, p) => t.tell(p, 7) }));
+    const r = L.job(BOB, { t: 'rulesBtn', id: 'go' });
+    ok(r.out.effects.some((e) => e.t === 'note' && e.p === BOB && e.msg === '7') && L.H.state.rules.enabled, 't.tell(p, 7) tells Bob "7"');
+  }
+}
+
 (async () => {
   await guard('(1) grid.js addresses', testGridAddresses);
   await guard('(1) grid.js centres', testGridCentres);
@@ -3423,5 +3568,6 @@ function testThirdReview() {
   await guard('(RF) the 3B review fix-ups', testReviewFixups);
   await guard('(RF2) the second 3B review', testSecondReview);
   await guard('(RF3) the third 3B review', testThirdReview);
+  await guard('(RF4) the fourth 3B review', testFourthReview);
   report();
 })().catch(crash);

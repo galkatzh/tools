@@ -24,28 +24,34 @@
 // the timers and queueMicrotask throw, pointing at t.schedule; the page APIs a
 // script written for the page may still touch (document, alert, localStorage,
 // sessionStorage) throw saying the rules now run here. It then freezes the
-// built-ins the engine shares with the script (the lockdown, D145). Only the
-// host's own messages are read (isTrusted): a script can't hand its Worker a job. Hooks
-// must be synchronous: a facade call from a stray continuation throws
-// (scriptHooks), and once every microtask a job queued has run (drain), the
-// rules' state must be as the job committed it (T.guard), or the Worker
-// reports it — `fatal`, and the host disables the rules.
-import { MODULE_V as CORE_V, PROTO, createTable, scriptHooks, trimLog } from './core.js?v=1';
+// built-ins the engine shares with the script, and every export of the
+// engine's own modules, which a script can import() (the lockdown, D145,
+// D148). Only the host's own messages are read (isTrusted): a script can't
+// hand its Worker a job. Hooks must be synchronous: a facade call from a
+// stray continuation throws (scriptHooks), and once every microtask a job
+// queued has run (drain), the rules' state must be as the job committed it
+// (T.guard), or the Worker reports it — `fatal`, and the host disables the
+// rules.
+// (core.js imports these two by the very same URLs: one instance of each, the engine's)
+import * as core from './core.js?v=1';
+import * as grid from './grid.js?v=1';
+import * as templates from './templates.js?v=1';
+
+const { MODULE_V: CORE_V, PROTO, createTable, scriptHooks, trimLog } = core;
 
 /** This file's code version (see core.js MODULE_V): the host sends its own in `init`. */
 export const MODULE_V = 1;
 
 // What the Worker keeps for itself, taken before anything is removed or
-// evaluated. A message's data is read with the getter and the call taken
-// here; the engine (core.js) runs on this realm's built-ins, which the
-// lockdown below freezes before any script runs — and what it writes is
-// checked again on the host, in the host's realm (applyStatePatch).
+// evaluated: what the hardening below takes away (postMessage, the timers)
+// or leaves a script free to change (performance is a platform object, not
+// frozen). The rest — the engine (core.js) and a message's `data` getter,
+// `Promise` — runs on this realm's built-ins, which the lockdown below
+// freezes before any script runs; and what the engine writes is checked
+// again on the host, in the host's realm (applyStatePatch).
 const post = self.postMessage.bind(self);
 const later = self.setTimeout.bind(self); // drain()'s real timer
 const clock = performance.now.bind(performance);
-const call = Reflect.apply;
-const dataOf = Object.getOwnPropertyDescriptor(MessageEvent.prototype, 'data').get;
-const Prom = Promise;
 
 /** Reports a failure outside the job protocol to the host, which disables
  *  the rules. `message`: what the host shows its own player (the toast, the
@@ -69,10 +75,10 @@ self.addEventListener('messageerror', () => fatal('a message from the host could
 // next starts). Only the host's are taken: a MessageEvent a script makes and
 // dispatches to its own Worker is not trusted (isTrusted can't be forged),
 // and would run a job the host never asked for — the Worker reports it.
-let chain = Prom.resolve();
+let chain = Promise.resolve();
 self.addEventListener('message', (e) => {
   if (!e.isTrusted) { fatal('the script dispatched a message to its own Worker', { engine: true }); return; }
-  const m = call(dataOf, e, []);
+  const m = e.data;
   chain = chain.then(() => handle(m)).catch((err) => fatal(msgOf(err), { err }));
 }, true);
 
@@ -135,17 +141,23 @@ for (const [k, d] of Object.entries(DEFS)) {
 // built-in it replaced (Array.prototype.push, Function.prototype.call,
 // Object.entries, an Object.prototype getter or setter, an iterator's next)
 // would rewrite what the engine writes — a log line, a player, the patch
-// itself. Before any script runs, every built-in is frozen, all the way
+// itself. So would an export of the engine's own modules it changed: a
+// dynamic import() of the same URL hands a script the very instance the
+// engine runs (a Symbol.replace of its own on core.js's CTRL would put
+// words in str() and cleanDeck). Before any script runs, every built-in and
+// every export of core.js, grid.js and templates.js is frozen, all the way
 // down (the prototypes the syntax reaches too: iterators, generators), and
-// the global names that hold them can't be rebound. The methods a script
-// commonly assigns on its own objects (toString, constructor, an error's
-// name and message, a function's call) become accessors that define the
-// script's own property — the override mistake, worked around as SES does.
-// The host checks every patch again all the same (applyStatePatch).
-const ERRORS = ['Error', 'AggregateError', 'EvalError', 'RangeError', 'ReferenceError', 'SyntaxError', 'TypeError', 'URIError', 'SuppressedError'].filter((k) => k in self);
+// the global names that hold the built-ins can't be rebound. The data
+// properties a script commonly assigns on its own objects (every one of
+// Object.prototype's — a tally keyed by player text may meet
+// "__lookupGetter__" —, a function's call, an error's name and message)
+// become accessors that define the script's own property — the override
+// mistake, worked around as SES does. The host checks every patch again
+// all the same (applyStatePatch).
+const ERRORS = BUILTINS.filter((k) => k.endsWith('Error'));
 /** [object, keys]: data properties a script may still set on its own objects that inherit them. */
 const OVERRIDABLE = [
-  [Object.prototype, ['constructor', 'toString', 'toLocaleString', 'valueOf', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable']],
+  [Object.prototype, Object.getOwnPropertyNames(Object.prototype)],
   [Function.prototype, ['constructor', 'toString', 'call', 'apply', 'bind']],
   [Array.prototype, ['toString', 'toLocaleString']],
   [Promise.prototype, ['constructor']],
@@ -167,14 +179,20 @@ function overridable(o, k) {
   });
 }
 /** Freezes `roots` and everything reachable from them: prototypes, property
- *  values, getters and setters (never called). */
+ *  values, getters and setters (never called). A global or sticky regex
+ *  (core.js's CTRL) writes its own lastIndex as it runs, so it only takes
+ *  no new property (a Symbol.replace or an exec of a script's). What keeps
+ *  its contents outside its properties (a Set, a Map, a Date, a typed
+ *  array) no freeze protects: the engine exports none (core-p3 checks), and
+ *  one here is said. */
 function harden(roots) {
   const todo = [...roots], seen = new Set();
   while (todo.length) {
     const o = todo.pop();
     if (o === null || (typeof o !== 'object' && typeof o !== 'function') || seen.has(o)) continue;
     seen.add(o);
-    try { Object.freeze(o); } catch (err) { console.error('rules Worker: could not freeze a built-in', o, err); }
+    if ([Map, Set, WeakMap, WeakSet, Date, ArrayBuffer].some((C) => o instanceof C) || ArrayBuffer.isView(o)) console.error('rules Worker: frozen, yet its contents still change — the engine must share plain data', o);
+    try { (o instanceof RegExp && (o.global || o.sticky) ? Object.preventExtensions : Object.freeze)(o); } catch (err) { console.error('rules Worker: could not freeze', o, err); }
     todo.push(Object.getPrototypeOf(o));
     for (const k of Reflect.ownKeys(o)) {
       const d = Reflect.getOwnPropertyDescriptor(o, k);
@@ -188,7 +206,7 @@ function harden(roots) {
   // spread), generators (the engine's own function*), async functions, %TypedArray%
   const hidden = [function* () {}, async function () {}, async function* () {}, (async function* () {})(), [].values(), new Map().values(), new Set().values(),
     ''[Symbol.iterator](), /x/g[Symbol.matchAll](''), Object.getPrototypeOf(Int8Array), globalThis.Iterator?.from?.({ next: () => ({ done: true }) }), [].values().map?.((x) => x)];
-  harden([...BUILTINS.map((k) => self[k]), ...hidden]);
+  harden([...BUILTINS.map((k) => self[k]), ...hidden, ...[core, grid, templates].flatMap((m) => Object.values(m))]);
   for (const k of BUILTINS) { // (a name the engine reads can't be bound to something else)
     try { Object.defineProperty(self, k, { value: self[k], writable: false, configurable: false }); } catch (err) { console.error(`rules Worker: could not pin ${k}`, err); }
   }
@@ -209,7 +227,7 @@ async function handle(m) {
   if (r.fatal) return fatal(r.fatal, { engine: true, detail: r.detail });
   // drain(): every microtask the job's hooks queued runs before this timer;
   // one that called the facade, or wrote t.data, broke "hooks are synchronous".
-  await new Prom((res) => later(res, 0));
+  await new Promise((res) => later(res, 0));
   const broke = T.guard();
   if (broke) return fatal(broke.why, { engine: true, detail: broke.detail });
   send(m.id, r, clock() - t0);

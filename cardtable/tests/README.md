@@ -1185,8 +1185,8 @@ its player told, the pile as it was on both screens.
 
 **The third 3B review's regressions** (SPEC D145–D147; each fails on the
 app before it): `core-p3.test.mjs` (RF3) — `notJSON` sees a hole, an
-`undefined` in an array, a property hung on an array (a `Date` too), a
-non-enumerable or symbol-keyed property, and a hook that leaves one in
+`undefined` in an array, a non-enumerable or symbol-keyed property (a
+property hung on an array passes since D153, as JSON leaves it out), and a hook that leaves one in
 `t.data` fails; a function in `t.data` whose JSON is unchanged fails the
 hook that wrote it; a real job's patch, forged as a Worker past its
 lockdown could forge it, is refused whole by `applyStatePatch` with the
@@ -1235,6 +1235,36 @@ The lockdown was also checked by hand in WebKit and Firefox (the
 reviewers' probes, and one that tries each replacement and lists the
 globals left): the same outcome as Chromium, the site's service workers
 untouched.
+
+**The fourth 3B review's regressions** (SPEC D148–D153; each fails on the
+app before it): `core-p3.test.mjs` (RF4) — no export of `core.js`,
+`grid.js` or `templates.js` holds a Set, a Map, a Date or a typed array
+(the lockdown can freeze them all), and the lists the engine reads are
+frozen arrays; a guest's deck forged in the patch (renamed, a card
+renamed, their line reworded, a second line in their name) is refused,
+the honest one goes in; a name bulb with a live drag's fields hung on it
+reaches the host's queue as the engine writes it, one with no item is
+refused; `{t: 'rot', id: 12}` marks "12", and after item "12" goes into a
+bag a board move reads whole indexes; `zMax` or a `z` past `Z_MAX`, and
+an address that is an object, are refused; a forged `zMax` of `Z_MAX` is
+taken, the host's next move tops a card past it, and a reload keeps every
+item, renumbered 1…n in their order; a save's unreadable items and
+players are said in `resume()`'s toast; a rename to 0 (and 7.5) is taken
+by the host, a join named 0 leaves the name empty and the next join fills
+it; `t.tell` to undefined, null, 0, an unknown id or an id not at the
+table fails the hook alike on both sides ("t.tell: no player …"). The (7)
+digest run adds facade calls with odd arguments, renames and joins named
+0 or 7, and an action naming item "12" by the number: the host takes every
+patch, the digests agree. `t-p3-attack.js`: Mallory renames herself 0
+(the rules stay on); the lockdown section's tally takes the keys
+`__lookupGetter__` and `__defineSetter__`, and a script that imports
+core.js, grid.js and templates.js tries `CTRL`'s `Symbol.replace` and
+`exec`, `PID_RE`'s `exec`, pushing to `RULED_ACTIONS` (and adding to it
+as a Set), `LOG_CAPS`, `MIGRATE`, a function's property, grid's
+`parseAddr` and `BOXES` — each throws a `TypeError`, and `str()` still
+strips a control character; the lying Worker adds a name bulb with no item
+(refused) and one with a live drag's fields hung on it (taken as the
+engine writes it: Bob's screen follows both turns).
 
 ## Storage and images (Phase 1B)
 

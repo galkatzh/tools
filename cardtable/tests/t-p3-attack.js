@@ -305,6 +305,19 @@ const scanRaw = (page, o) => page.evaluate((o) => {
       `3: _leave, _name, _refuse, _unsaveable and _TICK change nothing either (still online and named ${me.name}; ${jobs1 - jobs0} Worker job; lines ${J(lines.map((e) => e.txt))})`);
   }
 
+  {
+    // A rename the engine makes, the host takes (D152): the engine names her "0" (cleanName of a number), and the
+    // host's check reads the rename's name with the very same expression — it once read 0 as no name, refused the
+    // honest patch and switched the rules off for everyone.
+    const ts0 = await hostNow();
+    await X.send({ t: 'name', name: 0 });
+    await X.barrier(ids.MKR);
+    const named = await P.viewOf(host, 'v.players[a].name', MPID), on = await rulesOn(), err = await lastErr();
+    ok(named === '0' && on && !(await logSince(ts0)).some((e) => /^rules disabled/.test(e.txt)), `D152: Mallory's {t: 'name', name: 0} renames her "0" — the rules stay on (${on ? 'on' : `off: ${err}`})`);
+    await X.send({ t: 'name', name: 'Mallory' });
+    await X.barrier(ids.MKR);
+    ok(await P.viewOf(host, 'v.players[a].name', MPID) === 'Mallory', '(and back to Mallory)');
+  }
   await mirrorEqual('after case 3');
 
   section("1: Mallory's answers that were not offered — each refused, no hook runs, the ask stays");
@@ -625,14 +638,39 @@ const scanRaw = (page, o) => page.evaluate((o) => {
       T("the arrays' iterator", () => { Object.getPrototypeOf([][Symbol.iterator]()).next = () => ({ done: true }); });
       T('the global Object', () => { self.Object = {}; });
       T('JSON.stringify', () => { JSON.stringify = () => '{}'; });
-      const o = {};
+      const o = {}, tally = {};
       o.toString = () => 'mine';
       class E extends Error { constructor() { super('m'); this.name = 'E'; } }
-      r.own = String(o) + ',' + new E().name;
+      tally.__lookupGetter__ = 1; // (a tally keyed by what players type: every name of Object.prototype's stays one a script may set)
+      tally.__defineSetter__ = 2;
+      r.own = String(o) + ',' + new E().name + ',' + Object.keys(tally).join('+');
       console.log('QZLOCK ' + JSON.stringify(r));`);
     const lock = JSON.parse((wlog.find((x) => x.startsWith('QZLOCK ')) || 'QZLOCK {}').slice(7));
-    ok(Object.keys(lock).length === 9 && Object.entries(lock).every(([k, v]) => (k === 'own' ? v === 'mine,E' : v === 'TypeError')),
-      `D145: each built-in the engine calls is frozen — every replacement throws, while a script's own objects still take a toString, its error class a name (${J(lock)})`);
+    ok(Object.keys(lock).length === 9 && Object.entries(lock).every(([k, v]) => (k === 'own' ? v === 'mine,E,__lookupGetter__+__defineSetter__' : v === 'TypeError')),
+      `D145: each built-in the engine calls is frozen — every replacement throws, while a script's own objects still take a toString, its error class a name, a tally the key "__lookupGetter__" (${J(lock)})`);
+    // D148: a dynamic import() of the engine's own URLs hands a script the very modules its Worker runs (the
+    // fourth review put words in Bob's line through a Symbol.replace of its own on core.js's CTRL, and RULED_ACTIONS
+    // was a Set that took Set.prototype.add.call): every export is frozen with the built-ins.
+    await run(`Promise.all(['core', 'grid', 'templates'].map((m) => import('/cardtable/' + m + '.js?v=1'))).then(([c, g, tp]) => {
+      const r = {}, T = (k, f) => { try { f(); r[k] = 'changed'; } catch (e) { r[k] = e.name; } };
+      T('CTRL[Symbol.replace]', () => Object.defineProperty(c.CTRL, Symbol.replace, { value: () => 'I resign' }));
+      T('CTRL.exec', () => { c.CTRL.exec = () => null; });
+      T('PID_RE.exec', () => Object.defineProperty(c.PID_RE, 'exec', { value: () => ({}) }));
+      T('RULED_ACTIONS', () => Array.prototype.push.call(c.RULED_ACTIONS, 'chat'));
+      T('RULED_ACTIONS as a Set', () => Set.prototype.add.call(c.RULED_ACTIONS, 'chat'));
+      T('LOG_CAPS', () => { c.LOG_CAPS.talk = 1e9; });
+      T('MIGRATE', () => { c.MIGRATE[4] = () => 0; });
+      T('a function', () => { c.cleanDeck.cache = {}; });
+      T('grid.parseAddr', () => { g.parseAddr.x = 1; });
+      T('BOXES', () => { tp.BOXES.draughts.name = 'x'; });
+      r.text = c.str('Bobs\u0007 deck', 24) + '|' + 'a\u0007b'.replace(c.CTRL, '');
+      console.log('QZIMP ' + JSON.stringify(r));
+    }).catch((e) => console.log('QZIMP failed ' + e.message));`);
+    await until(() => wlog.some((x) => x.startsWith('QZIMP ')), 5000);
+    const imp = JSON.parse((wlog.find((x) => x.startsWith('QZIMP {')) || 'QZIMP {}').slice(6));
+    ok(Object.keys(imp).length === 11 && Object.entries(imp).every(([k, v]) => (k === 'text' ? v === 'Bobs deck|ab' : v === 'TypeError')),
+      `D148: core.js, grid.js and templates.js, imported by the script — every export it tries to change throws, and str() and CTRL still strip what they did (${J(imp)})`);
+    ok(await rulesOn(), '(the rules are still on: the script caught each throw)');
     const rot4 = ((await P.viewOf(host, 'v.items[a].rot', ids.S1)) + 90) % 360;
     ts0 = await hostNow();
     const r4 = await host.evaluate(([id, rot]) => window.__ct.act({ t: 'rot', id, rot }), [ids.S1, rot4]);
@@ -659,6 +697,7 @@ const scanRaw = (page, o) => page.evaluate((o) => {
         async () => !(await bob.evaluate(() => 'zz9brick' in window.__ct.view().items)) && !(await P.viewOf(host, "'zz9brick' in v.items"))],
       ['a table that is none, after the turned stone', "m.patch.table = { shape: 'hex' };", /: the patched table: /, null],
       ['a notice that is no text (it threw in the effects, once the table had taken the patch)', `m.out.effects.push({ t: 'note', p: ${J(BOB)}, msg: 5 });`, /: the script's effects are malformed$/, null],
+      ['a name bulb with no item, as a live drag (every broadcast tick after it threw: D149)', `m.out.effects.push({ t: 'fx', f: { p: ${J(ALICE)}, x: 1, y: 1, live: true } });`, /: the script's effects are malformed$/, null],
     ]) {
       const rot0 = await P.viewOf(host, 'v.items[a].rot', ids.S1);
       await S.forge(host, src);
@@ -671,6 +710,18 @@ const scanRaw = (page, o) => page.evaluate((o) => {
       ok(rots.every((x) => x === rot0) && (!check || await check()), `${what}: nothing of the job applied — the stone at ${rot0}° on both screens (${J(rots)})${check ? ', and the forged part nowhere' : ''}`);
       ok(await enableProbe(), 'the host enables the probe again');
     }
+    // D149: what the host carries out of an effect is rebuilt from the fields the engine writes — a live drag's `ids`
+    // a lie hangs on the bulb never reach the broadcast tick, and every screen goes on following the table.
+    const rot0 = await P.viewOf(host, 'v.items[a].rot', ids.S1);
+    await S.forge(host, "m.out.effects.forEach((e) => { if (e.t === 'fx') Object.assign(e.f, { live: 1, ids: 5, html: '<b>x</b>' }); });");
+    const rs = [];
+    for (const k of [1, 2]) {
+      rs.push(await host.evaluate(([id, rot]) => window.__ct.act({ t: 'rot', id, rot }), [ids.S1, (rot0 + 90 * k) % 360]));
+      await h.sleep(300);
+    }
+    const want = (rot0 + 180) % 360, seen = await bob.waitForFunction(([id, r]) => window.__ct.view().items[id].rot === r, [ids.S1, want], { timeout: 5000 }).then(() => true, () => false);
+    ok(rs.every((r) => r.ok) && seen && await rulesOn(), `D149: a bulb with a live drag's fields hung on it is taken as the engine writes it (${J(rs)}); Bob's screen follows both turns (${seen ? `${want}°` : 'no'}), the rules on`);
+    await mirrorEqual('after a bulb with fields of its own');
   }
 
   section('Escapes: a Worker kept from answering — it goes on, or the watchdog ends it loudly; never a silent hang');

@@ -919,7 +919,7 @@ function testNewActions() {
       if (!mislabelled && r.log[0] !== `rolled ${f + 1}`) mislabelled = `face ${f} logged ${JSON.stringify(r.log)}`;
     }
     ok(d8.size === 8 && !mislabelled, `a d8 (1–6 as pips, 7 and 8 as labels): every face comes up, logged by its label (faces ${[...d8].sort()}) ${mislabelled}`);
-    ok(RULED_ACTIONS.has('roll') && PUBLIC_ACTIONS.has('roll'), 'roll is a ruled action guests may send');
+    ok(RULED_ACTIONS.includes('roll') && PUBLIC_ACTIONS.includes('roll'), 'roll is a ruled action guests may send');
   }
 
   section('(2) face: a piece or supply, not a die; f in range');
@@ -1024,7 +1024,7 @@ function testNewActions() {
     ok(happened(rt) && isDeepStrictEqual(T.state.players[BOB].hand.at(-1), { t: ref('tile'), f: 0, up: false }) && rt.log[0] === 'took a hidden piece into hand', `a hidden one goes in as {t, f, up: false}, logged hidden: ${JSON.stringify(rt.log)}`);
     ok(refusedBy(run(T, BOB, { t: 'take', id: 's', hand: true })), 'take {hand} of a type that is not for hands is refused');
     ok(refusedBy(run(T, BOB, { t: 'take', id: 'g' })), 'take from a piece (not a supply) is refused');
-    ok(RULED_ACTIONS.has('take') && PUBLIC_ACTIONS.has('take'), 'take is ruled');
+    ok(RULED_ACTIONS.includes('take') && PUBLIC_ACTIONS.includes('take'), 'take is ruled');
   }
 
   section('(2) pull: a random piece out of a bag, as it was put in');
@@ -1085,7 +1085,7 @@ function testNewActions() {
     ok(refusedBy(ra) && !items(T).alp.lock, `but not a piece Alice owns (attacker case 14) — ${why(ra)}`);
     ok(refusedBy(run(T, BOB, { t: 'lock', id: 'c', on: true })) && refusedBy(run(T, BOB, { t: 'lock', id: 'p', on: true })), 'cards and piles: only the host');
     ok(happened(run(T, HOST, { t: 'lock', id: 'c', on: true })) && happened(run(T, HOST, { t: 'lock', id: 'bp', on: false })), 'the host locks a card, and unlocks a piece Bob owns');
-    ok(RULED_ACTIONS.has('lock') && RULED_ACTIONS.has('owner') && RULED_ACTIONS.has('seat'), 'lock, owner and seat are ruled');
+    ok(RULED_ACTIONS.includes('lock') && RULED_ACTIONS.includes('owner') && RULED_ACTIONS.includes('seat'), 'lock, owner and seat are ruled');
   }
 
   section('(2) owner: the host gives anything; an owner passes it on or releases it; anyone claims what is free');
@@ -1135,7 +1135,7 @@ function testNewActions() {
     ok(T.state.table.felt === undefined, `a bad felt colour never reaches the state (${JSON.stringify(T.state.table)})`);
     run(T, HOST, { t: 'table', shape: 'rect', w: 1400, h: 1200, felt: '#224466' });
     ok(T.state.table.felt === '#224466', 'a good felt colour is kept');
-    ok(!RULED_ACTIONS.has('table') && !PUBLIC_ACTIONS.has('table') && !PUBLIC_ACTIONS.has('loadBox') && !PUBLIC_ACTIONS.has('clear') && !RULED_ACTIONS.has('loadBox') && !RULED_ACTIONS.has('clear'),
+    ok(!RULED_ACTIONS.includes('table') && !PUBLIC_ACTIONS.includes('table') && !PUBLIC_ACTIONS.includes('loadBox') && !PUBLIC_ACTIONS.includes('clear') && !RULED_ACTIONS.includes('loadBox') && !RULED_ACTIONS.includes('clear'),
       'table, loadBox and clear are neither ruled nor public');
   }
 
@@ -1542,7 +1542,7 @@ function testFacade() {
   r = run(T, BOB, { t: 'take', id: 's', x: 300, y: 300 });
   ok(!newIds(T, s0).length && r.notes.includes('🚫 not now'), 'and a take');
   const NEW = ['roll', 'face', 'split', 'join', 'take', 'pull', 'toBag', 'lock', 'owner', 'seat'];
-  ok(NEW.every((x) => RULED_ACTIONS.has(x)) && ['table', 'loadBox', 'clear', 'size', 'setRules'].every((x) => !RULED_ACTIONS.has(x)), 'RULED_ACTIONS: today\'s set plus roll, face, split, join, take, pull, toBag, lock, owner and seat; not table, loadBox or clear');
+  ok(NEW.every((x) => RULED_ACTIONS.includes(x)) && ['table', 'loadBox', 'clear', 'size', 'setRules'].every((x) => !RULED_ACTIONS.includes(x)), 'RULED_ACTIONS: today\'s set plus roll, face, split, join, take, pull, toBag, lock, owner and seat; not table, loadBox or clear');
   ok(isDeepStrictEqual(new Set(PUBLIC_ACTIONS), new Set([...RULED_ACTIONS, 'hello', 'snap', 'need', 'name', 'chat', 'rulesBtn', 'drag', 'answer', 'select'])) && [...PUBLIC_ACTIONS].every((x) => !x.startsWith('_')),
     'PUBLIC_ACTIONS: the ruled actions plus hello, snap, need, name, chat, rulesBtn and (Phase 3) drag, answer and select — never an internal _ job');
 }

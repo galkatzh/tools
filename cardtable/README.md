@@ -589,7 +589,8 @@ refuse the `https → http://127.0.0.1` fetch.
   ones (ENGINE.md lists them) — so a script has no network or storage API,
   no other Workers or channels, no notifications or devices, and none of
   the site's service workers; it freezes the built-ins the engine shares
-  with the script before the script runs; and it reads only the host's own
+  with the script, and the engine's own modules (which a script could
+  `import()`), before the script runs; and it reads only the host's own
   messages. That is defence in depth rather than a sandbox:
   dynamic `import()` can't be removed without headers GitHub Pages can't
   set, so a script could still load code or reach a server. The host's page checks
@@ -597,8 +598,9 @@ refuse the `https → http://127.0.0.1` fetch.
   them whole: every field as the engine writes it, the rules' state
   through the engine's gates, and against who acted — no player appears,
   is renamed or changes colour but by their own join or rename, the rules'
-  code changes only in the host's Enable, and every log line and chat line
-  speaks only for the player whose action it was (or for the rules). A
+  code changes only in the host's Enable, a guest's deck arrives as they
+  sent it, and every log line and chat line speaks only for the player
+  whose action it was (or for the rules). A
   runaway loop no longer freezes the host's tab (the watchdog stops it
   within about 5 s). A script sees every hidden card and
   piece, so what it tells one player (`t.tell`, a hint, `t.secret`) may

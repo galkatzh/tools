@@ -664,7 +664,7 @@ sync and rendering, and the Worker together with `handle`.
        player's move dropped with a notice.
      - After its third review: before a script runs, the Worker freezes
        every built-in it shares with the engine, so a script can't rewrite
-       what the engine writes at all — not a line's words, not a player's
+       what the engine writes through them — a line's words, a player's
        name; and it keeps only a short list of globals, so no browser's
        extra API (the site's service workers in Safari and Firefox, a real
        timer, notifications, devices) is left to it. The host still checks
@@ -675,6 +675,20 @@ sync and rendering, and the Worker together with `handle`.
        save with a broken record starts without it. When a script breaks a
        rule from outside a hook, everyone is told only that it did; which
        value, under which of its keys, goes to the host alone.
+     - After its fourth review: a script could still import the engine's
+       own files — the very modules its Worker runs — and change one of
+       their exports, putting its words in a guest's line about the deck
+       they added, and in the deck itself. Those exports are frozen now
+       too, and the host checks a guest's deck, and their line about it,
+       against what they sent. What the host carries out of a script's
+       changes (a name bubble, a notice) is rebuilt from the fields the
+       engine writes, so a malformed one can no longer stop every screen
+       from following the table; a guest who renames themselves "0" no
+       longer switches the rules off for everyone, and a `t.tell` to nobody
+       is the script's own error, naming `t.tell`; a lie about how high the pieces are stacked can no longer cost a
+       card on the next reload; the host is told what a reload couldn't
+       read; and checking the script's state no longer slows down with
+       long lists.
 4. **Game boxes.**
    - `game.json` plus `.zip` upload, declarative setup and reset.
    - Export with the current position.

@@ -211,13 +211,17 @@ const IMG_HEAD = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]/;
 export const isImgURL = (s) => typeof s === 'string' && IMG_HEAD.test(s) && !/[^A-Za-z0-9+/=]|=[^=]/.test(s.slice(s.indexOf(',') + 1));
 /** An image's asset id: the hex SHA-256 of its bytes. */
 export const ASSET_RE = /^[0-9a-f]{64}$/;
+// Lists the engine reads are frozen arrays, never Sets: a rules Worker
+// freezes every export of the modules it loads before a script runs (a
+// script can import() them), and a frozen Set still takes
+// Set.prototype.add.call (D148).
 /** The image types a deck may carry (as data URLs, isImgURL, or as assets). */
-export const IMG_MIMES = new Set(['image/webp', 'image/png', 'image/jpeg', 'image/gif']);
+export const IMG_MIMES = Object.freeze(['image/webp', 'image/png', 'image/jpeg', 'image/gif']);
 /** The largest image a peer stores or accepts, in bytes. */
 export const ASSET_MAX_BYTES = 2e6;
 export const COLOR_RE = /^(?:#[0-9a-f]{3,8}|[a-z]{3,20})$/i;
-export const RANKS = new Set(['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'JOKER']);
-export const SUITS = new Set(['♠', '♥', '♦', '♣', '🃏']);
+export const RANKS = Object.freeze(['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'JOKER']);
+export const SUITS = Object.freeze(['♠', '♥', '♦', '♣', '🃏']);
 export const MAX_DECK_BYTES = 24e6, MAX_DECK_CARDS = 5000;
 export const GUEST_DECK_CHARS = 1.5e6; // all decks guests add to one table, together (see apply 'addDeck')
 /** Why a guest's deck of `cost` chars doesn't fit a table whose guests used `used` already ('' if it fits). */
@@ -242,7 +246,7 @@ function deckParts(d, img, v1) {
   const cards = d.cards.map((c) => {
     const o = {};
     if (!c || typeof c !== 'object') return o;
-    if (RANKS.has(c.r) && SUITS.has(c.s)) Object.assign(o, { r: c.r, s: c.s, c: c.c === 'r' ? 'r' : 'b' });
+    if (RANKS.includes(c.r) && SUITS.includes(c.s)) Object.assign(o, { r: c.r, s: c.s, c: c.c === 'r' ? 'r' : 'b' });
     if (v1 && img(c.img)) o.img = c.img;
     if (Number.isInteger(c.g) && imgs[c.g]) o.g = c.g;
     for (const [k, n, strip] of [['n', 60], ['txt', 300, CTRL_NL]]) if (str(c[k], n, strip)) o[k] = str(c[k], n, strip);
@@ -300,6 +304,10 @@ export function assetRefs(decks, boxes = {}) {
 export const peerText = (v) => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '');
 /** Player names: plain text, bounded, and never dressed up as the 📜 Rules actor. */
 export const cleanName = (s) => peerText(s).replace(CTRL, '').replace(/^[\s📜]+/u, '').trim().slice(0, 24);
+/** The name a joining player's empty name takes ('' for none: `0` too, unlike
+ *  a rename's cleanName) — ensurePlayer's, and what checkPatch holds a
+ *  Worker's _join to: one expression, so the two can't drift apart (D152). */
+const joinName = (s) => (s ? cleanName(s) : '');
 
 export function standardDeck(jokers) {
   const cards = [];
@@ -429,6 +437,11 @@ export const MAX_CELLS = 4096, MAX_SPACES = 1000, MAX_ZONES = 100, MAX_POLY = 64
 export const MAX_SETUP_ENTRIES = 2000, MAX_SETUP_ITEMS = 3000, MAX_SEATS = 12, MAX_META_CHARS = 2000, MAX_BOX_DECKS = 50;
 /** Boards sit in a z band below every other item: BOARD_Z0 + boardSeq (newer above older). */
 export const BOARD_Z0 = -1e6;
+/** The highest z an item takes, and the counter (state.zMax) that tops
+ *  them: a Worker's patch stays within it (checkPatch), and a load past it
+ *  renumbers the items in their order (createTable) — so zTop() never
+ *  leaves the integers a number keeps exactly, whatever a lie left (D150). */
+export const Z_MAX = 2 ** 52;
 /** A setup's `at: 'seat'`: the item's centre this far from the seat toward the table. */
 export const SEAT_INSET = 120;
 /** Type ids, and the other ids a box declares (backs, seats, spaces, zones). */
@@ -1081,26 +1094,40 @@ export function clampShift(tb, cs, dx, dy) {
 // onTimer) through the same audited ops as human actions. The engine knows
 // no game concepts — all game semantics live in the script.
 export const RULES = 'RULES'; // synthetic actor id for script-performed ops
-export const RULED_ACTIONS = new Set(['move', 'rot', 'flip', 'shuffle', 'draw', 'deal', 'play', 'handPile', 'toHand', 'toPile', 'stack', 'merge', 'del', 'addDeck', 'peek',
+export const RULED_ACTIONS = Object.freeze(['move', 'rot', 'flip', 'shuffle', 'draw', 'deal', 'play', 'handPile', 'toHand', 'toPile', 'stack', 'merge', 'del', 'addDeck', 'peek',
   'roll', 'face', 'split', 'join', 'take', 'pull', 'toBag', 'lock', 'owner', 'seat']);
 /** The ruled actions a `strict` script refuses unless handle() returns true
  *  or its `allow` lists them (spec §3c): all but `seat` — players must
  *  always be able to sit down. */
-export const STRICT_ACTIONS = new Set([...RULED_ACTIONS].filter((t) => t !== 'seat'));
+export const STRICT_ACTIONS = Object.freeze(RULED_ACTIONS.filter((t) => t !== 'seat'));
 /** Every action type a guest may send: the host refuses anything else at the
  *  network boundary. The host's own actions (HOST_ACTIONS) and its internal
  *  jobs (_join, _leave, _tick, _rulesOff, _name: spec §3c) never come from the wire. */
-export const PUBLIC_ACTIONS = new Set([...RULED_ACTIONS, 'hello', 'snap', 'need', 'name', 'chat', 'rulesBtn', 'drag', 'answer', 'select']);
+export const PUBLIC_ACTIONS = Object.freeze([...RULED_ACTIONS, 'hello', 'snap', 'need', 'name', 'chat', 'rulesBtn', 'drag', 'answer', 'select']);
 /** The most items one action names at once: a group's live drag (Phase 4's group too). */
 export const MAX_GROUP = 200;
 /** Actions only the host may take: a guest's is refused with "🚫 Only the host can do that". */
-export const HOST_ACTIONS = new Set(['size', 'setRules', 'table', 'loadBox', 'clear']);
+export const HOST_ACTIONS = Object.freeze(['size', 'setRules', 'table', 'loadBox', 'clear']);
 /** Actions that take from or give to the actor's hand: a refusal re-sends it. */
 const HAND_ACTIONS = new Set(['play', 'handPile', 'toHand', 'draw']);
 /** How many of an action's `ids` a refusal re-sends. A small cap keeps a
  *  vetoed action from making the host re-send many items to everyone (a
  *  roll's dice need none: nothing changes them before the host does). */
 const NAMED_IDS = 8;
+/** Action `a` with the items it names (id, pile, onto, bag, ids) as text: a
+ *  peer may name item "12" as the number 12, which the item map reads alike
+ *  but the indexes and dirty sets (Sets) hold apart from "12" — and then
+ *  lose track of the item (a later board move throws on every action). A
+ *  script's facade calls take the ids the facade hands it, which are text:
+ *  one that passes a number confuses only its own Worker's mirror. */
+function textIds(a) {
+  const num = (v) => typeof v === 'number';
+  if (!['id', 'pile', 'onto', 'bag'].some((k) => num(a[k])) && !(Array.isArray(a.ids) && a.ids.some(num))) return a;
+  const o = { ...a };
+  for (const k of ['id', 'pile', 'onto', 'bag']) if (num(o[k])) o[k] = String(o[k]);
+  if (Array.isArray(o.ids)) o.ids = o.ids.map((v) => (num(v) ? String(v) : v));
+  return o;
+}
 /** Rules log aggregation (spec §3e): a run of AGG_MIN or more consecutive
  *  Rules lines of one op in an action becomes one line naming the first
  *  AGG_NAMES addresses or labels; AGG_VERB says what each op did. */
@@ -1175,17 +1202,20 @@ export function cleanAsk(spec) {
  *  a function, a symbol, a BigInt, a non-finite number, an object that is
  *  not a plain object or array (a Map, a Set, a typed array, an ArrayBuffer,
  *  a Date: a class instance), an array with a hole or `undefined` in it (JSON
- *  writes null) or with a property that isn't an index, and a property JSON
- *  doesn't see (non-enumerable, or keyed by a symbol: a structured clone
- *  drops it too). `undefined` as an object's value passes (JSON leaves the
- *  key out, as an absent one), and so do functions and symbols with
- *  `uncloned` (t.data and t.public, when a Worker posts them: one it can't
- *  post at all fails as D129 says, keeping the JSON part). A getter is read
- *  as its value, as JSON and a clone read it (one whose value moves outside
- *  a hook is guard()'s). Run on a value JSON.stringify took, so it has no
- *  cycle. The gates run it on every job (valueProblem), so the walk names
- *  the bad value's path only once it found one; it costs about 1.6
- *  JSON.stringify of the value (an own-keys list per object or array). */
+ *  writes null), and an object's property JSON doesn't see (non-enumerable,
+ *  or keyed by a symbol: a structured clone drops it too). `undefined` as an
+ *  object's value passes (JSON leaves the key out, as an absent one), and so
+ *  does a property hung on an array (`moves.turn = …`: JSON leaves it out
+ *  too, and finding it took a list of every index: 4 to 24 times the cost
+ *  of the JSON itself, on every job, D153); functions and symbols pass
+ *  with `uncloned` (t.data and t.public, when a Worker posts them: one it
+ *  can't post at all fails as D129 says, keeping the JSON part). A getter is
+ *  read as its value, as JSON and a clone read it (one whose value moves
+ *  outside a hook is guard()'s). Run on a value JSON.stringify took, so it
+ *  has no cycle. The gates run it on every job (valueProblem), so the walk
+ *  names the bad value's path only once it found one; it costs about one
+ *  JSON.stringify of the value or less (in Node: 1.1–1.2 for arrays of
+ *  numbers, 0.8 for records, 0.4 for a list of strings). */
 export function notJSON(v, path, uncloned = false) {
   const trail = []; // the keys down to the value looked at (a number: an array index)
   const walk = (v, inArray) => {
@@ -1209,7 +1239,7 @@ export function notJSON(v, path, uncloned = false) {
         if (why) return why;
         trail.pop();
       }
-      return Reflect.ownKeys(v).length > v.length + 1 ? "has a property that isn't an index, which JSON drops" : ''; // (its indexes and `length`, no more)
+      return '';
     }
     const keys = Object.keys(v);
     if (Object.getOwnPropertyNames(v).length !== keys.length || Object.getOwnPropertySymbols(v).length) return "has a property JSON doesn't see (non-enumerable, or keyed by a symbol)";
@@ -1407,15 +1437,16 @@ const memberProblem = (m) => (!isObj(m) ? 'not a card or a piece'
     : typeof m.t === 'string' && (m.f === undefined || Number.isInteger(m.f)) ? '' : 'neither a card nor a piece');
 /** Why `it` isn't shaped like a host item, or '': what the indexes, the
  *  public view (pubItem) and a reload read of it — a known kind; x, y, rot
- *  and z finite (z within the integers a number keeps exactly); a pile's
+ *  and z finite (how high is the load's and the patch's: Z_MAX); a pile's
  *  cards (≤ MAX_PILE) and a bag's members (≤ MAX_BAG) cards or pieces
  *  (memberProblem); a card's deck and index; a piece's or a supply's type;
- *  owner and name text (an address is the load's at gate's, and pubItem
- *  shows only a string). A rules Worker's patch is checked with it
- *  (applyStatePatch), and so is every saved item on load (createTable). */
+ *  owner and name text (an address is the load's at gate's — it drops a bad
+ *  one, keeping the item — and the patch's: checkPatch). A rules Worker's
+ *  patch is checked with it (applyStatePatch), and so is every saved item
+ *  on load (createTable). */
 function itemProblem(it) {
   if (!isObj(it) || !['c', 'p', 'g', 's', 'b'].includes(it.k)) return 'not an item';
-  if (!['x', 'y', 'rot', 'z'].every((k) => Number.isFinite(it[k])) || Math.abs(it.z) > Number.MAX_SAFE_INTEGER) return 'x, y, rot and z must be numbers';
+  if (!['x', 'y', 'rot', 'z'].every((k) => Number.isFinite(it[k]))) return 'x, y, rot and z must be numbers';
   const list = it.k === 'p' ? it.cards : it.k === 'b' ? it.of : null;
   if (list !== null) {
     if (!Array.isArray(list) || list.length > (it.k === 'p' ? MAX_PILE : MAX_BAG)) return it.k === 'p' ? 'a pile without its cards' : 'a bag without its pieces';
@@ -1706,11 +1737,13 @@ export function createTable(host, env = {}) {
   migrate(host);
   gateRules(host.rules, env.mirror); // (every load: a hand-edited save can't plant an ask, a secret or a timer)
   // Every load: an item or a player the table can't show or save again is
-  // dropped, loudly — one bad record must never keep the table from starting.
+  // dropped, loudly — one bad record must never keep the table from
+  // starting; resume() tells the host how many (D151).
+  const unread = { item: 0, player: 0 };
   for (const [what, map, problem] of [['item', host.items, itemProblem], ['player', host.players, playerProblem]]) {
     for (const [id, v] of Object.entries(map)) {
       const why = problem(v);
-      if (why) { console.error(`the saved ${what} ${id.slice(0, 30)} is unreadable (${why}): dropped`); delete map[id]; }
+      if (why) { console.error(`the saved ${what} ${id.slice(0, 30)} is unreadable (${why}): dropped`); delete map[id]; unread[what]++; }
     }
   }
   host.keys ??= {};
@@ -2315,7 +2348,7 @@ export function createTable(host, env = {}) {
     pl.online = true;
     // Only fill an empty name here — explicit renames go through the 'name'
     // action so they land in the log.
-    if (name && !pl.name) pl.name = cleanName(name);
+    if (!pl.name) pl.name = joinName(name);
     if (was === `${pl.seat}|${pl.seatId}|${pl.online}|${pl.name}`) return false;
     touchPlayer(p);
     return true;
@@ -2328,12 +2361,14 @@ export function createTable(host, env = {}) {
 
   // --- activity log (host-authored, broadcast to everyone) -------------------
   /** Tags an applied action with actor + item for the transient name bulbs every
-   *  other player sees (`extra`: {roll: [die ids]} for the dice tumble). Call BEFORE
-   *  deleting an item so the position survives. */
-  function mark(p, id, extra) {
+   *  other player sees (`roll`: the die ids, for the dice tumble). Call BEFORE
+   *  deleting an item so the position survives. Ids as text (an action may
+   *  name item "12" as 12): the host takes a Worker's marker in exactly this
+   *  shape, and no other (checkPatch, D149). */
+  function mark(p, id, roll) {
     const it = host.items[id];
     marks++;
-    emit({ t: 'fx', f: { p, id, x: it?.x ?? 0, y: it?.y ?? 0, ...extra } });
+    emit({ t: 'fx', f: { p, id: String(id), x: it?.x ?? 0, y: it?.y ?? 0, ...(roll && { roll: roll.map(String) }) } });
   }
   /** An action that happened with no item to mark (a seat change): counts for onAction. */
   const took = () => { marks++; };
@@ -2701,7 +2736,7 @@ export function createTable(host, env = {}) {
       touch(id);
       it.f = rint(ty.faces.length);
     }
-    mark(actor, dice[0][0], { roll: dice.map(([id]) => id) });
+    mark(actor, dice[0][0], dice.map(([id]) => id));
     logEvent(actor, `rolled ${dice.map(([, it, ty]) => (it.up === false ? 'a hidden die' : faceLabel(ty.faces[it.f], it.f))).join(' · ')}`);
     return dice.map(([, it]) => it.f);
   }
@@ -3136,6 +3171,7 @@ export function createTable(host, env = {}) {
    *  over flood control, a refused rules button, answer or select. An
    *  engine error rolls the job back whole, then throws. */
   function apply(p, a) {
+    a = textIds(a);
     if (a.t === 'hello' || a.t === 'snap' || a.t === 'need') return false;
     if (a.t === 'drag') { drag(p, a); return false; } // (no state: the app relays it outside the queue, T.drag)
     const stray = hooks.stray?.(); // (a facade call from outside a hook, in-page: guard() takes it in a Worker)
@@ -3309,7 +3345,7 @@ export function createTable(host, env = {}) {
     syncSpots(); // (an address read from here on is where each piece now lies: D106)
     if (J) J.cp = base;
     let A0; // (built once, when a hook first needs it: `a` is prepared by then)
-    const pl = own(host.players, p), ruled = RULED_ACTIONS.has(a.t), A = () => (A0 ??= frozen({ ...a, p }));
+    const pl = own(host.players, p), ruled = RULED_ACTIONS.includes(a.t), A = () => (A0 ??= frozen({ ...a, p }));
     let handled = false;
     if (ruled && host.rules?.enabled) {
       const h = host.rules.hints;
@@ -3323,7 +3359,7 @@ export function createTable(host, env = {}) {
       handled = r.v === true;
       if (!handled) {
         const allow = hooks.flag?.('allow');
-        if (hooks.flag?.('strict') === true && STRICT_ACTIONS.has(a.t) && !(Array.isArray(allow) && allow.includes(a.t))) return vetoed('Not a move in this game');
+        if (hooks.flag?.('strict') === true && STRICT_ACTIONS.includes(a.t) && !(Array.isArray(allow) && allow.includes(a.t))) return vetoed('Not a move in this game');
         r = tryHook('validate', A());
         if (r.err) return failClosed('validate()', r.err);
         if (typeof r.v === 'string' && r.v) return vetoed(r.v);
@@ -3647,8 +3683,10 @@ export function createTable(host, env = {}) {
    *  Saves may predate the sanitizers (and could hold a deck or a box a guest
    *  crafted), so their decks and boxes pass them again — the boxes first,
    *  then the items (spec §2h): a piece whose box didn't survive stays, drawn
-   *  as a "?", and is said. A saved rules script that no longer loads
-   *  disables the rules loudly rather than wedging the resume. */
+   *  as a "?", and is said, as is an item or a player createTable couldn't
+   *  read (dropped). A z order past Z_MAX starts again from 1, in its order.
+   *  A saved rules script that no longer loads disables the rules loudly
+   *  rather than wedging the resume. */
   function resume(name) {
     const decks = {}, boxes = {}; // fresh maps: a corrupt save may hold a string or an array here
     for (const [id, d] of Object.entries(host.decks)) {
@@ -3663,11 +3701,22 @@ export function createTable(host, env = {}) {
     boxIndex = null;
     // (store.js drops a box record it can't read before this: its pieces are counted here)
     const lost = Object.values(host.items).filter((it) => (it.k === 'g' || it.k === 's') && !typeOf(it.t)).length;
-    if (lost || dropped) {
-      const msg = lost ? `${lost === 1 ? 'A piece' : `${lost} pieces`} of this table belong${lost === 1 ? 's' : ''} to a game box that is missing or unreadable: shown as "?"`
-        : `${dropped === 1 ? 'A saved game box' : `${dropped} saved game boxes`} couldn't be read: dropped`;
+    const n = (k, one, many) => (k === 1 ? one : `${k} ${many}`);
+    const msgs = [
+      lost ? `${n(lost, 'A piece', 'pieces')} of this table belong${lost === 1 ? 's' : ''} to a game box that is missing or unreadable: shown as "?"`
+        : dropped && `${n(dropped, 'A saved game box', 'saved game boxes')} couldn't be read: dropped`,
+      (unread.item || unread.player) && `${[unread.item && n(unread.item, 'A saved item', 'saved items'), unread.player && n(unread.player, 'a saved player', 'saved players')].filter(Boolean).join(' and ')} couldn't be read: dropped`,
+    ].filter(Boolean);
+    if (msgs.length) {
+      const msg = msgs.map((m) => m[0].toUpperCase() + m.slice(1)).join(' — ');
       console.error(msg);
       emit({ t: 'toast', msg });
+    }
+    if (host.zMax > Z_MAX) { // (a lie's leftover, or a hand-edited save: the order stays, the numbers start again)
+      const tops = Object.values(host.items).filter((it) => it.z >= 0).sort((a, b) => a.z - b.z);
+      console.error(`the saved z order reached ${host.zMax}: ${tops.length} items renumbered from 1, in their order`);
+      tops.forEach((it, k) => { it.z = k + 1; });
+      host.zMax = tops.length;
     }
     if (host.rules?.code) {
       try {
@@ -4130,7 +4179,13 @@ export function createTable(host, env = {}) {
       host.rules.public.winSeq = (host.rules.public.winSeq || 0) + 1;
       this.announce(msg || 'Game over!');
     },
-    tell: (p, msg) => notify(p, String(msg)),
+    /** A private notice for player p (a toast on their screen alone). p must
+     *  be a player at the table: a notice to nobody (`t.tell(t.data.dealer, …)`
+     *  before there is one) is the script's bug, said where it happens (D152). */
+    tell(p, msg) {
+      if (!own(host.players, p)) throw new TypeError(`t.tell: no player ${String(JSON.stringify(p)).slice(0, 30)}`);
+      notify(p, String(msg));
+    },
     schedule(sec, tag) {
       if (!Number.isFinite(sec) || sec < 0) throw new Error(`t.schedule: seconds must be a number ≥ 0, got ${sec}`);
       const t = String(tag), list = (host.rules.data._timers ||= []);
@@ -4546,17 +4601,16 @@ export function createTable(host, env = {}) {
    *  then 5 per second): a flood can't make the host re-send the table to
    *  everyone. True when something was re-sent (renumbered). */
   function refreshFor(p, a) {
-    return flood(refusals, p, 10, 5) && touchNamed(p, a) ? bump() : false;
+    return flood(refusals, p, 10, 5) && touchNamed(p, textIds(a)) ? bump() : false;
   }
   /** Why the rules' fields of a Worker's patch `r` fail the engine's gates
    *  (spec §3a: they run on every write), checked again here, in the host's
-   *  realm — or ''. */
+   *  realm — or '' (the asks are checkPatch's: it keeps them cleaned). */
   function patchRulesProblem(r) {
     if ('secret' in r) {
       if (!isObj(r.secret)) return 't.secret is not a map';
       for (const [p, v] of Object.entries(r.secret)) { const why = secretProblem(p, v); if (why) return why; }
     }
-    if ('asks' in r) { const why = asksProblem(r.asks); if (why) return `t.ask: ${why}`; }
     if ('hints' in r) { const why = hintsProblem(r.hints); if (why) return `t.hint: ${why}`; }
     if ('data' in r) {
       if (!isObj(r.data)) return 't.data is not an object';
@@ -4601,12 +4655,21 @@ export function createTable(host, env = {}) {
   /** What a rules Worker's patch may set of the rules beyond their state (RULES_STATE): the host's setRules does. */
   const RULES_META = ['code', 'name', 'enabled'];
   const texty = (s) => typeof s === 'string' && s.length <= LOG_TXT_MAX;
-  /** Each effect a job may queue (see the top of this file): whether its fields are as the engine writes them. */
-  const EFFECT_OK = {
-    fx: (e) => isObj(e.f) && typeof e.f.p === 'string' && Number.isFinite(e.f.x) && Number.isFinite(e.f.y),
-    ann: (e) => texty(e.msg), toast: (e) => texty(e.msg), note: (e) => typeof e.p === 'string' && texty(e.msg),
-    peek: (e) => typeof e.p === 'string' && memberProblem(e.c) === '',
-    deck: (e) => typeof e.id === 'string', box: (e) => typeof e.id === 'string', rules: () => true,
+  /** Each effect a job may queue (see the top of this file), rebuilt from
+   *  the fields the engine writes, each as it writes it — or null. The host
+   *  carries out only these copies, so nothing a Worker adds to one (a live
+   *  drag's `ids`, which the broadcast tick reads) reaches it (D149). */
+  const EFFECTS = {
+    fx: ({ f }) => (isObj(f) && typeof f.p === 'string' && typeof f.id === 'string' && Number.isFinite(f.x) && Number.isFinite(f.y)
+      && (f.roll === undefined || (Array.isArray(f.roll) && f.roll.length <= MAX_ROLL && f.roll.every((id) => typeof id === 'string')))
+      ? { t: 'fx', f: { p: f.p, id: f.id, x: f.x, y: f.y, ...(f.roll && { roll: [...f.roll] }) } } : null),
+    ann: ({ msg }) => (texty(msg) ? { t: 'ann', msg } : null),
+    toast: ({ msg }) => (texty(msg) ? { t: 'toast', msg } : null),
+    note: ({ p, msg }) => (typeof p === 'string' && texty(msg) ? { t: 'note', p, msg } : null),
+    peek: ({ p, c }) => (typeof p === 'string' && memberProblem(c) === '' ? { t: 'peek', p, c: typeof c.d === 'string' ? { d: c.d, i: c.i } : { t: c.t, f: c.f } } : null),
+    deck: ({ id }) => (typeof id === 'string' ? { t: 'deck', id } : null),
+    box: ({ id }) => (typeof id === 'string' ? { t: 'box', id } : null),
+    rules: () => ({ t: 'rules' }),
   };
   /** Step 0 of applyStatePatch (spec §3f.6; D142, D144, D145): a rules
    *  Worker's patch `s` and effects `out` for `job` ({p, a}), checked in the
@@ -4627,8 +4690,9 @@ export function createTable(host, env = {}) {
    *  name only in the host's Enable, that code; the rules turn on only there,
    *  and off only with a hook's failure, a Disable or _rulesOff; the guests'
    *  deck budget only grows, by a guest's addDeck; and who each line and
-   *  bulb speaks for (speakerProblem). Returns what the apply step takes,
-   *  cleaned — or throws, saying why, with nothing changed. */
+   *  bulb speaks for (speakerProblem); a guest's deck as they sent it.
+   *  Returns what the apply step takes, cleaned — or throws, saying why,
+   *  with nothing changed. */
   function checkPatch(s, out, job) {
     const no = (why) => { throw new Error(why); };
     if (!isObj(s) || (out != null && !isObj(out))) no('the patch is not one');
@@ -4637,7 +4701,7 @@ export function createTable(host, env = {}) {
     const { p, a = {} } = job || {};
     const entries = (k) => (s[k] === undefined ? [] : isObj(s[k]) ? Object.entries(s[k]) : no(`the patch's ${k} are not a map`));
     const who = (q) => (own(host.players, q)?.name || 'a player');
-    const named = (x) => (x ? cleanName(x) : ''); // (the name a rename or a _join gives: ensurePlayer, effect 'name')
+    const named = a.t === '_join' ? joinName(a.name) : cleanName(a.name); // (the very name the engine gives: ensurePlayer's, effect 'name''s)
     // the catalog only grows: a deck or a box under an id it doesn't hold yet, gated again
     const fresh = (id) => isId(id) && !own(host.decks, id) && !own(host.boxes, id);
     const decks = entries('decks').map(([id, d]) => {
@@ -4649,12 +4713,13 @@ export function createTable(host, env = {}) {
       if (!isObj(r) || !['host', 'upload', 'script'].includes(r.src) || !(r.by === undefined || PID_RE.test(r.by))) no("a patched box doesn't say where it came from");
       try { return [id, { box: cleanBox(r.box), src: { src: r.src, ...(r.by && { by: r.by }) } }]; } catch (err) { return no(`a patched box: ${err.message}`); }
     });
-    const items = entries('items'), had = Object.keys(host.items).length;
+    const items = entries('items'), had = itemCount();
     let count = had;
     for (const [id, it] of items) {
       if (it === null) { count -= own(host.items, id) ? 1 : 0; continue; }
       if (!own(host.items, id)) { if (!isId(id)) no(`a patched item has the id ${JSON.stringify(id.slice(0, 30))}`); count++; }
-      const why = itemProblem(it);
+      // (an address as the Worker read it, D128 — but text: every read of one on this table takes it as such)
+      const why = itemProblem(it) || (Math.abs(it.z) > Z_MAX && `its z is past ${Z_MAX}`) || (it.at !== undefined && !(typeof it.at === 'string' && it.at.length <= 100) && 'its address is not one');
       if (why) no(`a patched item (${id.slice(0, 24)}) is malformed: ${why}`);
     }
     if (count > Math.max(had, MAX_ITEMS)) no(`the patch leaves more than ${MAX_ITEMS} items on the table`);
@@ -4662,11 +4727,11 @@ export function createTable(host, env = {}) {
       const why = playerProblem(pl), old = own(host.players, q), mine = q === p;
       if (why) no(`a patched player (${who(q)}) is malformed: ${why}`);
       if (!old) {
-        if (!PID_RE.test(q) || (job && !(mine && a.t === '_join' && pl.online && pl.name === named(a.name) && COLORS.includes(pl.color)))) no('the script added a player');
+        if (!PID_RE.test(q) || (job && !(mine && a.t === '_join' && pl.online && pl.name === named && COLORS.includes(pl.color)))) no('the script added a player');
         continue;
       }
       if (!job) continue;
-      if (pl.name !== old.name && !(mine && pl.name === named(a.name) && (a.t === 'name' || a.t === '_name' || (a.t === '_join' && !old.name)))) no(`the script renamed ${who(q)}`);
+      if (pl.name !== old.name && !(mine && pl.name === named && (a.t === 'name' || a.t === '_name' || (a.t === '_join' && !old.name)))) no(`the script renamed ${who(q)}`);
       if (pl.color !== old.color) no(`the script changed ${who(q)}'s colour`);
       if (pl.online !== old.online && !(mine && (a.t === '_join' ? pl.online : a.t === '_leave' && !pl.online))) no(`the script ${pl.online ? 'brought' : 'took'} ${who(q)} ${pl.online ? 'online' : 'offline'}`);
     }
@@ -4678,7 +4743,8 @@ export function createTable(host, env = {}) {
       if (extra !== undefined) no(`the patched rules have an unknown field '${extra.slice(0, 20)}'`);
       const why = patchRulesProblem(r);
       if (why) no(`the script's state fails the engine's gates: ${why}`);
-      if ('asks' in r) asks = cleanAsks(r.asks); // (normalized, as t.ask leaves them: what the host keeps and sends)
+      // (the asks as t.ask leaves them, normalized: what the host keeps and sends)
+      try { if ('asks' in r) asks = cleanAsks(r.asks); } catch (err) { no(`the script's state fails the engine's gates: t.ask: ${err.message}`); }
       if (('code' in r && typeof r.code !== 'string') || ('name' in r && !(typeof r.name === 'string' && r.name.length <= 40)) || ('enabled' in r && typeof r.enabled !== 'boolean')) no('the patched rules are malformed');
       const enable = a.t === 'setRules' && p === pid && !!a.enabled;
       if (job && ('code' in r || 'name' in r) && !(enable && (!('code' in r) || r.code === a.code))) no("the script rewrote the rules' code or name");
@@ -4695,18 +4761,25 @@ export function createTable(host, env = {}) {
       && (!('c' in e) || e.c === 1) && (!('k' in e) || e.k === 1) && (!('n' in e) || typeof e.n === 'string'))) no("the script's log lines are malformed");
     if (trimLog(log) !== log) no('the patch brings more log lines than the log keeps');
     const grows = (k, max) => s[k] === undefined || (Number.isFinite(s[k]) && s[k] >= num(host[k]) && s[k] <= max) || no(`the patch's ${k} is out of bounds`);
-    grows('zMax', Number.MAX_SAFE_INTEGER);
+    grows('zMax', Z_MAX);
     grows('boardSeq', -BOARD_Z0);
     grows('guestDeckChars', GUEST_DECK_CHARS);
     if (job && s.guestDeckChars !== undefined && !(a.t === 'addDeck' && p !== pid && s.guestDeckChars >= num(host.guestDeckChars) + num(a.cost))) no("the script spent the guests' deck budget");
     if (s.lastSetup !== undefined && !(typeof s.lastSetup === 'string' && (own(host.boxes, s.lastSetup) || boxes.some(([id]) => id === s.lastSetup)))) no("the patch's last setup is no box");
     for (const k of ['refresh', 'refreshHands']) if (s[k] !== undefined && !(Array.isArray(s[k]) && s[k].length <= MAX_ITEMS && s[k].every((x) => typeof x === 'string'))) no(`the patch's ${k} is malformed`);
-    const effects = out?.effects ?? [];
-    if (!Array.isArray(effects) || !effects.every((e) => isObj(e) && own(EFFECT_OK, e.t)?.(e))) no("the script's effects are malformed");
+    const raw = out?.effects ?? [];
+    const effects = Array.isArray(raw) ? raw.map((e) => (isObj(e) && own(EFFECTS, e.t)?.(e)) || no("the script's effects are malformed")) : no("the script's effects are malformed");
     if (out?.error !== undefined && !(isObj(out.error) && typeof out.error.hook === 'string' && typeof out.error.message === 'string')) no("the script's error is malformed");
     const said = job ? speakerProblem(log, effects, p, a) : '';
     if (said) no(said);
-    return { decks, boxes, items, asks, table, seats };
+    // A guest's deck, as the host's realm cleans what they sent: the line in their name says it, the catalog takes it as is (D148).
+    if (job && a.t === 'addDeck' && log.some((e) => e.p === p)) {
+      let want;
+      try { want = cleanDeck(a.deck); } catch (err) { no(`the script added ${who(p)}'s deck, which the engine refuses (${err.message})`); }
+      const line = `added deck "${want.name}" (${want.cards.length} cards)`;
+      if (!log.every((e) => e.p !== p || e.txt === line) || !decks.some(([, d]) => canon(d) === canon(want))) no(`the script rewrote ${who(p)}'s deck`);
+    }
+    return { decks, boxes, items, asks, table, seats, effects };
   }
   /** Applies a rules Worker's StatePatch (spec §3f.6) to this table — the
    *  host's, whose state the Worker's mirror ran the job on. Step 0 checks
@@ -4767,7 +4840,7 @@ export function createTable(host, env = {}) {
     for (const id of s.refresh || []) refreshItem(id);
     for (const p of s.refreshHands || []) if (own(host.players, p)) refreshHand(p);
     [spotTB, spotSig, respot] = [tb(), tbSig, false]; // (the boards as the Worker read them: see above)
-    for (const e of out?.effects || []) if (e.t !== 'deck' && e.t !== 'box' && e.t !== 'rules') emit(e);
+    for (const e of c.effects) if (e.t !== 'deck' && e.t !== 'box' && e.t !== 'rules') emit(e);
     if (out?.error) lastRulesError = `${out.error.hook}: ${out.error.message}`;
     return Object.keys(s).length ? bump() : false;
   }

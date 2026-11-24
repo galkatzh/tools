@@ -114,7 +114,7 @@ function gifDims(b, le16) {
  *  {w, h}; throws a readable Error ("image is 30000 × 30000 px (…)"). */
 export function checkImage(bytes, mime) {
   const b = u8(bytes), real = sniff(b);
-  if (!IMG_MIMES.has(mime) || !real) throw new Error('not a PNG/JPEG/WebP/GIF image');
+  if (!IMG_MIMES.includes(mime) || !real) throw new Error('not a PNG/JPEG/WebP/GIF image');
   if (real !== mime) throw new Error(`the image claims to be ${mime} but is ${real}`);
   if (b.length > ASSET_MAX_BYTES) throw new Error(`image is ${(b.length / 1e6).toFixed(1)} MB (max ${ASSET_MAX_BYTES / 1e6} MB)`);
   const { w, h } = imageDims(b, mime);
