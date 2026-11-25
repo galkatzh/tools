@@ -2468,6 +2468,30 @@ answer a press of the dialog's own buttons; nothing they test goes through
   (a member leaving the strip): the bar docks at the top again, held off;
   she moves one of his picks into the strip: over the toolbar, held off,
   over no token. On the base (f2bc379) this section fails 10 checks.
+  9 (fix-up 4, D247, D248): Eve again, five picked with ⬚: the row starts
+  at ✕ (scroll 0), 👜 Into bag ▸ beyond its faded end; a swipe just far
+  enough to show the toggle whole (`scrollLeft` set, as a swipe leaves it),
+  a tap on it: the toggle and "👜 Sack" both lie in the row's unfaded part
+  (`clear()`: inside the bar, past a 15% fade at each faded end); a second
+  tap closes it and the row is back where the swipe left it, `.less` set.
+  Eight picked, swiped to the row's end, 🗑 tapped: "🗑 Remove 8?" whole in
+  sight; a pinch of 1.4 about the table's middle brings the top row into
+  the strip, the bar jumps over the toolbar, and the ask is still whole and
+  unfaded there (a new parent's scroll had reset to 0); once it lapses the
+  row is back where the swipe left it (clamped to its room), `.less` while
+  scrolled. Dan (desktop host alone, «Many bags»: six tokens, a ×5 stack,
+  fourteen bags): two picked, 👜 Into bag ▸ open, the row wider than the
+  screen; a wheel over the bar scrolls it (240 px a turn), so does a
+  sideways one, the table's transform unchanged; wheeled on to its end, 🗑
+  in sight, and a click on it removes the two; a wheel over the open
+  inspector zooms nothing; with a token's own bar open, sixteen wheel turns
+  zoom the view and lay the page out at most 6 times (CDP `LayoutCount`; 1
+  here, 32 on the base), the bar still just above its token. Bob (desktop
+  guest) picks two, his bar at the top; Alice moves four tokens far from
+  his strip: `__ct.perf.dockScans` (dockTop's looks over the whole table)
+  does not change and the bar stays; one moved into the strip and out again
+  re-docks it both ways. On the base (42541bb) this section fails 10
+  checks.
   Screenshots `shots/p4-fix-desktop-dock.png`,
   `shots/p4-fix-iphone-corner.png`, `shots/p4-fix2-desktop-toolbar.png`,
   `shots/p4-fix2-desktop-top.png`, `shots/p4-fix2-iphone-toolbar.png`.
@@ -2567,6 +2591,34 @@ answer a press of the dialog's own buttons; nothing they test goes through
   (6–7 ms at CPU × 2), a turn's view-sheet rule change (about 1.5 ms), and
   Chrome's ad-detector hit tests (about one a second, 10 ms). A loaded
   machine can still push a row over — rerun the suite alone first.
+  (Amended by fix-up 4 below: with nothing selected only — a piece's bar
+  and the inspector, and a wheel zoom, still laid the page out each frame.)
+
+## Phase 4B fix-up 4 (the review's findings)
+
+- **`t-p4-fix.js` section 9** (D247, D248): see its entry under the Phase
+  4B fix-up above — the one-row bar's scroll (an opened list and the ask
+  brought into sight, kept through a re-dock, the row back where it was
+  after; `.less`), a wheel over the bar and the inspector, a wheel zoom's
+  layouts, and `perf.dockScans`.
+- **`t-p1-bench.js`, two more B4 rows** (D247): the 1,000-piece pan again
+  with a token's own bar open beside it (`tapOne`: the phone taps items
+  near the table area's middle, drawn on top of their spots, until one's
+  bar opens — a tap on a ×N badge opens the inspector instead, closed by
+  Esc), and the 6000 × 4000 twist with a stack's bar open. Each under B4's
+  budgets (no long task over 50 ms, the rAF p95, `B4_LAYOUTS`); the bar is
+  still open after, and after the twist still beside its stack. Before:
+  `placeBeside` read the bar's size and wrote its `left`/`top` in every
+  frame — 178–181 layouts a pan, 302–355 a twist, p95 33.3 ms (the
+  reviewers' probes); now 0–2.
+- **Mechanism changes, no check weakened:** `t-p2-review.js` moves the bar
+  over a label by `translate` (where the app now puts it) instead of
+  `left`/`top`. `t-p3b-review.js` section 11 waits (5 s) for Bob's "rules
+  disabled" line before reading it: it comes in the host's next broadcast,
+  and a loaded full run read it too early ("Bob's log says only
+  undefined"). `t-p1-bench.js` B11 times the cached `boardSVG` call three
+  times and keeps the fastest: one sample alone could hold a GC pause (2.9
+  ms once, every other board 0.000).
 
 ## Storage and images (Phase 1B)
 

@@ -831,8 +831,13 @@ sync and rendering, and the Worker together with `handle`.
        to pick. Any piece, anyone's, that comes into its strip moves it out
        of the way; it holds its buttons a moment whenever it appears or
        moves, and 🗑 of more than five asks first, the question scrolled
-       into sight. On a touch screen the bar's buttons are a fingertip tall
-       (44 px), as far as the toolbar's height allows.
+       into sight. The row scrolls by a swipe or a mouse's wheel (a wheel
+       over it, or over the inspector, never zooms the table); an end
+       fades while more lies beyond it; what it opens (👜 Into bag ▸, Give
+       ▸) or asks comes into sight, stays there as the bar moves, and once
+       it is gone the row is back where the player left it. On a touch
+       screen the bar's buttons are a fingertip tall (44 px), as far as the
+       toolbar's height allows.
      - What review found and fixed: a group member refused by the table
        leaves nothing of what the rules wrote for it; a group move sends
        each peer the members' new places alone (a third of the bytes); a
@@ -844,7 +849,9 @@ sync and rendering, and the Worker together with `handle`.
        repaint the seat labels, restyle the table twice a frame, or lay the
        page out (each layout made the browser hit-test the whole table for
        hover): what the seat labels' places resize waits for the fingers
-       to lift.
+       to lift or the wheel to rest, and a piece's bar or the inspector
+       open beside what the view moves follows it on the size it read
+       before.
      - A tap on a ×N badge or a spot's ×k opens the inspector (a long press
        on a phone, in place of the zoom, for a stack); ⋯ Inspect is in the
        bar of a stack or crowded piece the player may move. Take all arms
@@ -967,10 +974,17 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
   when a piece comes into its strip it moves away, its buttons wait a
   moment whenever it appears or moves, and 🗑 of more than a few asks
   first (§3, §4).
+- **A bar that scrolls keeps its place:** a one-row bar scrolls by a swipe
+  or a wheel, its ends fading while more lies beyond; what it opens or
+  asks is brought into sight and kept there wherever the bar moves, and
+  afterwards the row goes back where its player left it — it never
+  scrolls on its own otherwise (§3).
 - **A gesture's frames move things, never size them:** while fingers pan,
-  pinch or turn the view, what follows them moves by transform alone, and
-  whatever would lay the page out waits for the lift — a layout makes the
-  browser hit-test the whole table for hover (§2, §4).
+  pinch or turn the view, or a wheel zooms it, what follows the view — a
+  seat label, a piece's bar, the inspector — moves by transform alone, on
+  sizes read before, and whatever would lay the page out waits for the
+  lift or the wheel's rest — a layout makes the browser hit-test the whole
+  table for hover (§2, §4).
 - **A selection mode means selecting:** with ⬚ on, a drag draws a box
   wherever it starts (but on a picked piece, which carries the lot) and a
   click only picks — a double one never flips or rolls (§3).

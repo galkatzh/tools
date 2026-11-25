@@ -164,8 +164,11 @@ Playing on the free table:
   selection ring; drag any one of them and they all go, together — the
   others see them glide, one message every 60 ms however many there are —
   and land each on its own spot. While you pick, their bar docks where no
-  piece is drawn, in one row (**✕** first, then the count; on a phone it
-  scrolls sideways) — along the top of the table, or, when pieces lie
+  piece is drawn, in one row (**✕** first, then the count; wider than the
+  screen, it scrolls sideways by a swipe or the mouse's wheel, an end
+  faded while more lies beyond; a list it opens or "Remove 8?" comes into
+  sight, then the row goes back where you left it) — along the top of the
+  table, or, when pieces lie
   there, in the toolbar's place (✕ brings the toolbar back) — so it never
   covers a piece you are about to pick: when a piece, anyone's, comes into
   its strip, it moves out of the way, and wherever it appears or moves to,
@@ -930,7 +933,7 @@ quota, storage failures, the image pull and its checks), and
 `t-p1-flood.js` floods the host with image requests and big decks while
 asserting it never blocks for 50 ms. The benchmarks (`t-p1-bench.js`, `core-p1-bench.mjs`)
 assert the Phase 1 budgets on a 1,000-card table: bytes per move, apply and
-render times, phone panning (and no layout in a gesture's frames), snapshot size, indexed reads, the save's
+render times, phone panning (and no layout in a gesture's frames, a piece's bar open or not), snapshot size, indexed reads, the save's
 main-thread time and zero image bytes on a warm rejoin.
 Pieces have theirs: `core-p2.test.mjs` (game boxes, every piece action and
 refusal, the public view, seats; `core-p2-bench.mjs` times a 20-dice roll),
@@ -973,6 +976,7 @@ exported and resumed) — with their benches `t-p4-box-bench.js`,
 `t-p4-resume-bench.js` and `t-p4-hex-bench.js` (B18 and B19 on Hexfront) in
 the serial batch; `t-p4-fix.js` keeps the 4B review's fix-ups (the bar
 where no piece is drawn while picking — one row, re-docked when another
-player moves a piece into its strip —, ⬚'s corner, a double click that only
-picks, chess's group bar) and `t-p4-gflood.js`, in the serial batch, a
+player moves a piece into its strip, scrolled by a wheel, keeping what it
+opens or asks in sight —, ⬚'s corner, a double click that only picks,
+chess's group bar, a wheel zoom that lays the page out only at its rest) and `t-p4-gflood.js`, in the serial batch, a
 guest's flood of groups under a 3 MB rules state.

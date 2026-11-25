@@ -22,7 +22,14 @@
 //     than the strip found clear (a phone's wide group bar, a ⬚ single
 //     pick); "🗑 Remove 8?" whole on the screen; another player's move of a
 //     piece into the strip or out of it re-docks the bar, held off as it
-//     jumps (D245).
+//     jumps (D245);
+//  9. (fix-up 4) the row keeps what it shows in sight: an opened 👜 Into
+//     bag ▸ list; "🗑 Remove 8?" as the bar re-docks; then back where the
+//     player left it, its scrolled-off start faded; on a desktop a wheel over
+//     the bar scrolls it (no zoom), over the inspector zooms nothing, and a
+//     wheel zoom with a piece's bar open lays the page out only at its rest;
+//     other players' moves away from the strip don't make the bar look over
+//     the whole table (perf.dockScans) (D247, D248).
 'use strict';
 const h = require('./h');
 const { ok, section } = h;
@@ -419,6 +426,153 @@ const linesBy = async (p, who, n) => (await view(p)).log.slice(n).filter((e) => 
   await act(alice, { t: 'move', id: m1.id, x: Math.round(strip8.x - 30), y: Math.round(strip8.y - 30) });
   j8 = await jumped(k8, 'toolbar');
   ok(j8.at === 'toolbar' && j8.n > 0 && j8.off === j8.n && !(await underBar(bob)).length, `Alice moves one of Bob's picks into his strip: the bar jumps over the toolbar, held off (${j8.off} of ${j8.n}), over no token`);
+  await bob.keyboard.press('Escape');
+
+  section('9. (fix-up 4) the one-row bar keeps what it shows in sight and goes back where it was: 👜 Into bag ▸ opens its list in sight; "🗑 Remove 8?" stays whole as the bar re-docks, and once it lapses the row is back where the player left it; a wheel over the bar scrolls it, over the bar or the inspector zooms nothing; a wheel zoom lays the page out only at its rest; other players\' moves away from the strip don\'t make the bar look over the whole table (D247, D248)');
+  /** Page p's bar: its box, scroll (x of max), fades, parent, and the box of its first `cmd` button (client px). */
+  const rowOf = (p, cmd) => p.evaluate((cmd) => {
+    const b = document.getElementById('action-bar'), r = b.getBoundingClientRect(), q = cmd && b.querySelector(cmd)?.getBoundingClientRect();
+    return { l: r.left, r: r.right, w: r.width, y: r.top + r.height / 2, x: b.scrollLeft, max: b.scrollWidth - b.clientWidth, more: b.classList.contains('more'), less: b.classList.contains('less'),
+      at: b.parentNode.id, text: b.textContent, vw: innerWidth, q: q && { l: q.left, r: q.right, x: q.left + q.width / 2, y: q.top + q.height / 2 } };
+  }, cmd);
+  /** Whether box q lies wholly in row R's unfaded part (a faded end: 15% of its width). */
+  const clear = (R, q) => !!q && q.l >= Math.max(0, R.l + (R.less ? 0.15 * R.w : 0)) - 1 && q.r <= Math.min(R.vw, R.r - (R.more ? 0.15 * R.w : 0)) + 1;
+  /** Page p's row scrolled to x, as a swipe would leave it: its scroll then. */
+  const swipeTo = async (p, x) => { const at = await p.evaluate((x) => { const b = document.getElementById('action-bar'); b.scrollLeft = x; return b.scrollLeft; }, x); await h.sleep(150); return at; };
+  const BAG = '[data-cmd="bag"]', DEL = '[data-cmd="del"]';
+
+  // Eve's phone (section 8's table): five picked, the row starting at ✕
+  await eve.tap('#sel-mode');
+  for (const id of epick) await tap(eve, await P3.centreOf(eve, id), true);
+  await h.sleep(500); // (the bar's hold)
+  let R = await rowOf(eve, BAG);
+  ok(R.at === 'table-wrap' && R.x === 0 && R.max > 0 && !clear(R, R.q), `five picked: the row starts at ✕, 👜 Into bag ▸ beyond its faded end (x ${Math.round(R.q.l)}–${Math.round(R.q.r)} of ${R.vw})`);
+  // a swipe just far enough to show the toggle whole; a tap on it opens the list — in sight
+  const x1 = await swipeTo(eve, Math.ceil(R.q.r - (R.r - 0.15 * R.w)) + 4);
+  R = await rowOf(eve, BAG);
+  ok(clear(R, R.q), `swiped to ${x1}: the toggle in sight`);
+  await tap(eve, R.q, true);
+  await until(() => eve.evaluate(() => !!document.querySelector('#action-bar [data-cmd="bagTo"]')), 3000, 50);
+  await h.sleep(500);
+  R = await rowOf(eve, BAG);
+  const sack = await rowOf(eve, '[data-cmd="bagTo"]');
+  ok(clear(R, R.q) && clear(sack, sack.q), `👜 Into bag ▸ opens its list in sight: the toggle at x ${Math.round(R.q.l)}–${Math.round(R.q.r)} and "👜 Sack" at ${Math.round(sack.q.l)}–${Math.round(sack.q.r)} of ${R.vw}, out of the faded ends (scrolled ${x1} → ${R.x})`);
+  await shot(eve, 'p4-fix4-iphone-list');
+  await tap(eve, R.q, true);
+  await until(() => eve.evaluate(() => !document.querySelector('#action-bar [data-cmd="bagTo"]')), 3000, 50);
+  R = await rowOf(eve, BAG);
+  ok(Math.abs(R.x - x1) <= 1 && R.less, `closed again: the row is back where the swipe left it (${R.x}, it was ${x1}), its scrolled-off start faded`);
+  // three of the row join (eight); a swipe to the end shows 🗑; its tap asks — and the ask stays whole as the bar re-docks
+  await h.sleep(500);
+  for (const k of [0, 1, 2]) await tap(eve, rowAt[k], true);
+  await h.sleep(500);
+  R = await rowOf(eve, DEL);
+  const x2 = await swipeTo(eve, R.max);
+  R = await rowOf(eve, DEL);
+  ok((await shown(eve)).ids.length === 8 && clear(R, R.q), `eight picked; swiped to the row's end (${x2}): 🗑 in sight`);
+  await tap(eve, R.q, true);
+  await until(() => eve.evaluate(() => /Remove 8\?/.test(document.getElementById('action-bar').textContent)), 3000, 50);
+  R = await rowOf(eve, DEL);
+  ok(clear(R, R.q) && R.q.r <= R.vw - 4, `"🗑 Remove 8?" in sight (x ${Math.round(R.q.l)}–${Math.round(R.q.r)} of ${R.vw})`);
+  // (her table seen whole lies below the strip, its top row just under it: a pinch zooming in by 1.4 about the table's middle brings that row up into it)
+  const mid9 = await P3.screenOf(eve, 650, 500);
+  await pinch(eve, mid9, 100, 140);
+  ok(await until(async () => (await rowOf(eve)).at === 'toolbar', 5000, 50), 'a pinch brings the top row into the strip the bar docked in: the bar jumps over the toolbar');
+  await h.sleep(500);
+  R = await rowOf(eve, DEL);
+  ok(/Remove 8\?/.test(R.text) && clear(R, R.q) && R.q.r <= R.vw - 4, `"🗑 Remove 8?" is still whole in sight there (x ${Math.round(R.q.l)}–${Math.round(R.q.r)} of ${R.vw}; scroll ${R.x} of ${R.max}): a new parent's scroll of 0 no longer pushes it off the edge`);
+  await shot(eve, 'p4-fix4-iphone-ask-jump');
+  ok(await until(async () => !/Remove/.test((await rowOf(eve)).text), 8000, 100), 'the ask lapses unanswered');
+  await h.sleep(300);
+  R = await rowOf(eve, DEL);
+  ok(Math.abs(R.x - Math.min(x2, R.max)) <= 2 && R.less === R.x > 1 && Object.keys((await view(eve)).items).length === 14,
+    `then the row is back where the player left it (${R.x}; the swipe left ${x2}, the ask had it at its end), its start faded while scrolled off; nothing removed`);
+  await press(eve, '#action-bar [data-cmd="none"]', true);
+  await eve.tap('#sel-mode');
+  await eve.tap('#view-btn'); // (🧭: the whole table again)
+
+  // Dan's desktop (a host alone): fourteen bags, a ×5 stack
+  const BAGS = {
+    name: 'Many bags', imgs: [], table: { shape: 'rect', w: 1300, h: 1000 },
+    types: { tok: { kind: 'token', name: 'Token', w: 60, faces: [{ color: '#f59e0b', label: 'T' }, { color: '#0ea5e9', label: 'U' }] } },
+    setup: [{ piece: 'tok', count: 6, spread: [120, 0], at: [300, 450] }, { piece: 'tok', n: 5, at: [620, 640] },
+      ...Array.from({ length: 14 }, (_, k) => ({ bag: ['tok'], name: `Bag ${k + 1}`, at: [70 + 85 * k, 860] }))],
+  };
+  await act(dan, { t: 'loadBox', box: BAGS, setup: true, clear: true });
+  ok(await until(async () => Object.keys((await view(dan)).items).length === 21, 15000), 'Dan sets up six tokens, a ×5 stack and fourteen bags');
+  await h.sleep(400);
+  const dv = Object.entries((await view(dan)).items).map(([id, it]) => ({ id, ...it })), drow = dv.filter((it) => it.y === 450 && it.k === 'g' && !(it.n >= 2)).sort((a, b) => a.x - b.x);
+  const dstack = dv.find((it) => it.n === 5).id, tf = () => dan.evaluate(() => document.getElementById('table').style.transform);
+  await shift(dan, async () => { await tap(dan, await P3.centreOf(dan, drow[1].id)); await tap(dan, await P3.centreOf(dan, drow[2].id)); });
+  await h.sleep(500);
+  await dan.click(`#action-bar ${BAG}`);
+  await until(() => dan.evaluate(() => !!document.querySelector('#action-bar [data-cmd="bagTo"]')), 3000, 50);
+  await h.sleep(500);
+  let D = await rowOf(dan, DEL);
+  const tf0 = await tf();
+  ok(drow.length === 6 && D.max > 0 && D.more && !clear(D, D.q), `two picked, 👜 Into bag ▸ open on fourteen bags: the row is wider than the screen, 🗑 beyond its faded end (scroll ${D.x} of ${D.max}: the list brought into sight)`);
+  await dan.mouse.move((D.l + D.r) / 2, D.y);
+  await dan.mouse.wheel(0, 240);
+  await h.sleep(200);
+  const D1 = await rowOf(dan, DEL);
+  await dan.mouse.wheel(240, 0);
+  await h.sleep(200);
+  const D2 = await rowOf(dan, DEL);
+  ok(D1.x > D.x && D2.x > D1.x && (await tf()) === tf0, `a wheel over the bar scrolls it sideways (${D.x} → ${D1.x}), and so does a sideways one (→ ${D2.x}); the view does not zoom`);
+  for (let k = 0; k < 20 && (await rowOf(dan)).x < D.max - 1; k++) { await dan.mouse.wheel(0, 240); await h.sleep(60); }
+  D = await rowOf(dan, DEL);
+  ok(clear(D, D.q) && (await tf()) === tf0, `wheeled on to its end: 🗑 in sight (x ${Math.round(D.q.l)}–${Math.round(D.q.r)} of ${D.vw})`);
+  await shot(dan, 'p4-fix4-desktop-wheel');
+  await dan.mouse.click(D.q.x, D.q.y);
+  ok(await until(async () => { const w = await view(dan); return !w.items[drow[1].id] && !w.items[drow[2].id]; }, 8000), 'and a click on it removes the two');
+  // the inspector: a wheel over it zooms nothing either
+  await P.clickItem(dan, dstack);
+  await h.sleep(300);
+  if (!(await box(dan, '#inspector'))) await dan.click('#action-bar [data-cmd="inspect"]'); // (a click on its ×5 opens it at once)
+  const ib = await box(dan, '#inspector');
+  await dan.mouse.move((ib.l + ib.r) / 2, (ib.t + ib.b) / 2);
+  await dan.mouse.wheel(0, 300);
+  await h.sleep(200);
+  ok(!!ib && (await tf()) === tf0 && !!(await box(dan, '#inspector')), 'a wheel over the open inspector zooms nothing; it stays open');
+  await dan.keyboard.press('Escape');
+  // a wheel zoom with a token's own bar open: the page is laid out at its rest, not at every turn; the bar follows its token
+  await P.clickItem(dan, drow[4].id);
+  await h.sleep(300);
+  const at9 = await P3.centreOf(dan, drow[4].id);
+  await dan.mouse.move(at9.x, at9.y); // (the zoom keeps the point under the cursor: the token stays there)
+  const cdp9 = await dan.context().newCDPSession(dan);
+  await cdp9.send('Performance.enable');
+  const lay = async () => (await cdp9.send('Performance.getMetrics')).metrics.find((m) => m.name === 'LayoutCount').value, l0 = await lay();
+  for (let k = 0; k < 16; k++) { await dan.mouse.wheel(0, -40); await h.sleep(30); }
+  await h.sleep(600);
+  const laid = (await lay()) - l0;
+  await cdp9.detach();
+  const bar9 = await box(dan, '#action-bar'), tok9 = await P3.centreOf(dan, drow[4].id);
+  ok((await tf()) !== tf0 && laid <= 6, `sixteen turns of the wheel zoom the view and lay the page out ${laid} times (≤ 6: the sizes wait for the wheel's rest, the bar moves by translate)`);
+  ok(!!bar9 && Math.abs((bar9.l + bar9.r) / 2 - tok9.x) < 60 && bar9.b <= tok9.y, `the token's bar still stands just above it (bar ${Math.round(bar9.l)}–${Math.round(bar9.r)}, token at ${Math.round(tok9.x)})`);
+  await dan.keyboard.press('Escape');
+
+  // Bob (a desktop guest): his bar docked at his table area's top; Alice's moves elsewhere don't make him look over the whole table
+  const home9 = await P3.tableOf(bob, { x: (bw8.l + bw8.r) / 2, y: (bw8.t + bw8.b) / 2 });
+  await act(alice, { t: 'move', id: m1.id, x: Math.round(home9.x - 30), y: Math.round(home9.y - 30) }); // (section 8 left it in his strip)
+  await h.sleep(400);
+  const b9 = rowsOf(await onScreen(bob));
+  await shift(bob, async () => { await tap(bob, b9[2][1]); await tap(bob, b9[2][2]); });
+  ok(await until(async () => await atTop(bob), 3000, 100), 'Bob picks two: his bar docks at the table area\'s top');
+  const scans = () => bob.evaluate(() => window.__ct.perf.dockScans), sc0 = await scans(), far = b9.at(-1).slice(0, 4);
+  const to9 = {};
+  for (const [k, t] of far.entries()) {
+    const it = (await view(alice)).items[t.id];
+    to9[t.id] = { x: it.x + 10, y: it.y + 10 * (k + 1) };
+    await act(alice, { t: 'move', id: t.id, ...to9[t.id] });
+  }
+  await until(async () => { const w = await view(bob); return far.every((t) => w.items[t.id]?.x === to9[t.id].x && w.items[t.id].y === to9[t.id].y); }, 5000);
+  await h.sleep(500);
+  ok(typeof sc0 === 'number' && (await scans()) === sc0 && await atTop(bob), `Alice moves four tokens far from his strip: his bar stays, and he looks over the whole table no more (${sc0} → ${await scans()} looks)`);
+  await act(alice, { t: 'move', id: m1.id, x: Math.round(strip8.x - 30), y: Math.round(strip8.y - 30) });
+  ok(await until(async () => await overToolbar(bob), 5000, 50), 'one moved into his strip: his bar leaves it for the toolbar');
+  await act(alice, { t: 'move', id: m1.id, x: Math.round(home9.x - 30), y: Math.round(home9.y - 30) });
+  ok(await until(async () => await atTop(bob), 5000, 50), 'and moved out again: back at the top');
   await bob.keyboard.press('Escape');
   await env.done();
 })().catch(h.crash);

@@ -487,9 +487,11 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 
 /* --- action bar --- */
 /* max-content + wrap: on a narrow screen the bar wraps into rows instead of
-   running off the edge (placeBar() clamps it by its real size). */
+   running off the edge (placeBar() clamps it by its real size). It is moved
+   from the top-left corner by `translate` (app.js placeBeside: a pan frame
+   that moves it lays nothing out). */
 #action-bar {
-  position: absolute; display: flex; gap: 4px; padding: 5px;
+  position: absolute; left: 0; top: 0; display: flex; gap: 4px; padding: 5px;
   width: max-content; max-width: calc(100% - 8px); flex-wrap: wrap; justify-content: center;
   background: #0f172af0; border-radius: 10px; box-shadow: 0 2px 10px #000a;
   z-index: 100000; transform: translateX(-50%);
@@ -509,7 +511,8 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 #action-bar button:disabled { cursor: default; } /* (held off a moment after it shows or changes: app.js armBar) */
 /* A selection being built docks its bar (app.js placeBar, D240, D245) in
    ONE row wherever it docks: ✕ first, then the count; wider than its room,
-   it scrolls sideways, its end faded while more lies beyond (.more). At most
+   it scrolls sideways (a swipe, a wheel), an end faded while more lies
+   beyond it (.more the right, .less the left: app.js ROW_FADE). At most
    54 px tall (44 px buttons on touch and the padding): the strip of the
    table area it docks in is tested clear of pieces that deep (DOCK_H), so a
    bar that wrapped would lie on the row below. */
@@ -519,7 +522,12 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 }
 #action-bar.row::-webkit-scrollbar { display: none; }
 #action-bar.row button { flex: none; }
-#action-bar.row.more { mask-image: linear-gradient(90deg, #000 85%, #0000); -webkit-mask-image: linear-gradient(90deg, #000 85%, #0000); }
+#action-bar.row:is(.more, .less) {
+  mask-image: linear-gradient(90deg, var(--less, #000), #000 15%, #000 85%, var(--more, #000));
+  -webkit-mask-image: linear-gradient(90deg, var(--less, #000), #000 15%, #000 85%, var(--more, #000));
+}
+#action-bar.row.more { --more: #0000; }
+#action-bar.row.less { --less: #0000; }
 #action-bar.row [data-cmd="none"] { order: -2; }
 #action-bar.row .gn { order: -1; }
 /* Over the toolbar (no strip of the table area is clear), off the table:

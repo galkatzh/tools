@@ -282,6 +282,8 @@ const idle = (host, ms = 20000) => until(host, () => window.__ct.jobs() === 0, n
     const t0 = await mark(bob);
     await act(host, { t: 'chat', msg: 'arm' });
     ok(await until(host, () => !window.__ct.view().rules?.enabled), `${what}, from a stray continuation: the rules go off`);
+    // (Bob's line comes in the host's next broadcast: waited for, not read at once)
+    await until(bob, (t0) => window.__ct.log().some((l) => l.ts >= t0 && l.txt.startsWith('rules disabled')), t0, 5000);
     const err = await lastErr(host), line = (await since(bob, t0)).find((l) => l.startsWith('rules disabled'));
     ok(re.test(err) && (await toasts(host)).some((t) => t.includes('Alice: Q of hearts')), `${what}: the host's 📜 dialog and toast name it ("${err.slice(0, 160)}")`);
     await sleep(300);

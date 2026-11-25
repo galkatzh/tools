@@ -201,8 +201,8 @@ function noticeWatch() {
   await P.clickItem(host, ids.five);
   const over = await host.evaluate(([lx, ly]) => {
     const bar = document.getElementById('action-bar'), b = bar.querySelector('[data-cmd="all"]').getBoundingClientRect();
-    bar.style.left = `${parseFloat(bar.style.left) + lx - (b.left + b.width / 2)}px`;
-    bar.style.top = `${parseFloat(bar.style.top) + ly - (b.top + b.height / 2)}px`;
+    const [x, y] = bar.style.translate.split(' ').map(parseFloat); // (where the app put it: placeBeside moves it by translate)
+    bar.style.translate = `${x + lx - (b.left + b.width / 2)}px ${y + ly - (b.top + b.height / 2)}px`;
     const r = bar.querySelector('[data-cmd="all"]').getBoundingClientRect();
     return document.elementFromPoint(lx, ly)?.dataset.cmd === 'all' && Math.abs(r.left + r.width / 2 - lx) < 1;
   }, [southLabel.x, southLabel.y]);

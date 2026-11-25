@@ -30,7 +30,10 @@
 //        each layout the browser hit-tests the whole table for hover (2–6 ms
 //        at CPU × 2 with 1,000 pieces) — what placeSeats wrote in each frame
 //        laid it out 81–101 times a pan, 86–88 a twist: the 33 ms frames of
-//        D246
+//        D246. The 1,000-piece pan and the 6000 × 4000 twist run again with
+//        a piece's own bar open beside it (placeBeside, which read its size
+//        and wrote its left and top each frame: 178–181 layouts a pan,
+//        302–355 a twist, D247)
 //   B6   the host saves the 1,000-item table: every save's main-thread part ≤ 8 ms
 //        (__ct.perf.lastSaveSyncMs, around doSave's synchronous IndexedDB put): ten
 //        throttled saves (rapid play) and five unthrottled ones (a move 1.1 s
@@ -268,6 +271,34 @@ function placeholderWatch() {
     ok(full.p95 <= limit, `B4: rAF interval p95 ${full.p95.toFixed(1)} ms ≤ max(${B4_FLOOR}, 1.25 × ${base.p95.toFixed(1)}) = ${limit.toFixed(1)} ms`);
     ok(full.layouts <= B4_LAYOUTS, `B4: the pan lays the page out ${full.layouts} times in ${full.gaps.length} frames (≤ ${B4_LAYOUTS}: each is followed by the browser's hover hit test of the whole table)`);
   }
+  /** Where the phone's bar is: {open (shown, beside its piece: not a docked row), x, y (its centre, client px), text}. */
+  const barNow = () => phone.evaluate(() => {
+    const b = document.getElementById('action-bar'), r = b.getBoundingClientRect();
+    return { open: !b.classList.contains('hidden') && !b.classList.contains('row'), x: r.left + r.width / 2, y: r.top + r.height / 2, text: b.textContent };
+  });
+  /** The phone taps items of `ids` drawn on top of their spots near the
+   *  table area's middle, one after another, until one's own bar opens
+   *  beside it (a tap on a stack's ×N badge opens the inspector instead:
+   *  Esc closes it). Returns its id and the bar (barNow), or null. */
+  async function tapOne(ids) {
+    const qs = await phone.evaluate((ids) => {
+      const w = document.getElementById('table-wrap').getBoundingClientRect(), out = [];
+      for (const id of ids) {
+        const r = document.querySelector(`.item[data-id="${id}"]`)?.getBoundingClientRect(), x = r && r.left + r.width / 2, y = r && r.top + r.height / 2;
+        if (r && Math.abs(x - w.left - w.width / 2) < w.width / 5 && Math.abs(y - w.top - w.height / 2) < w.height / 5 && document.elementFromPoint(x, y)?.closest('.item')?.dataset.id === id) out.push({ id, x, y });
+      }
+      return out.slice(0, 12);
+    }, ids);
+    for (const q of qs) {
+      await phone.touchscreen.tap(q.x, q.y);
+      if (await L.until(async () => (await barNow()).open, 1500, 100)) return { id: q.id, ...(await barNow()) };
+      await phone.keyboard.press('Escape');
+      await h.sleep(300);
+    }
+    return null;
+  }
+  /** The phone puts its piece's bar away (Esc). */
+  const unselect = async () => { await phone.keyboard.press('Escape'); await L.until(async () => !(await barNow()).open, 5000, 100); };
   /** B6: host moves of `ids`, from (x0, y0), each followed by its save: once IndexedDB holds that
    *  seq, perf.lastSaveSyncMs is that save's main-thread part. Saves are throttled to one a second
    *  (app.js persist), so play takes two paths, both measured: ten moves made right after the last
@@ -401,6 +432,14 @@ function placeholderWatch() {
   section('§2k B4: panning the 1,000-piece table on the phone');
   await panB4(pbase, '1,000 pieces');
 
+  section('§2k B4: the same pan with a token\'s own bar open beside it — it follows the view by translate, on the size it read before (D247)');
+  let one = await tapOne(tokens);
+  ok(!!one, `the phone taps a token: its bar opens beside it ("${one?.text}")`);
+  await panB4(pbase, '1,000 pieces, a token\'s bar open');
+  let after = await barNow();
+  ok(after.open, `the bar is still open beside it after the pan ("${after.text}")`);
+  await unselect();
+
   section('§2k B6: the host saves the 1,000-piece table');
   await savesB6(tokens, 2500, 2900);
 
@@ -476,6 +515,17 @@ function placeholderWatch() {
   ok(tw.gaps.length > 30 && Math.abs(tw.turned - 180) < 20, `the scripted twist turns the view (${tw.turned.toFixed(1)}°, ${tw.gaps.length} frames)`);
   let b = await badges();
   ok(Math.abs(b.view - b.rot) < 0.01, `once the fingers lift, the badges turn back by the view's exact angle (${b.view}°, the view ${b.rot}°)`);
+
+  section('§2k B4: the twist with a stack\'s own bar open beside it, which turns about the view with its stack (D247)');
+  await refit();
+  one = await tapOne(await phone.evaluate(() => Object.keys(window.__ct.view().items)));
+  ok(!!one, `the phone taps a stack: its bar opens beside it ("${one?.text}")`);
+  const twb = await gestureB4('twist (half a turn), a stack\'s bar open', { turn: 1 });
+  after = await barNow();
+  const at = await P.itemXY(phone, one.id);
+  ok(twb.gaps.length > 30 && Math.abs(twb.turned - 180) < 20 && after.open && Math.hypot(after.x - at.x, after.y - at.y) < 160,
+    `the twist turns the view (${twb.turned.toFixed(1)}°), the bar still open beside its stack (${Math.round(Math.hypot(after.x - at.x, after.y - at.y))} px from it)`);
+  await unselect();
 
   section('§2k B4 (pinch): a pinch-zoom on the phone from the fit to 12×, over the same stacks (their size waits for a rest of the fingers, or the lift: D96)');
   const pz = await gestureB4('pinch', { from: 20, to: 240 });
@@ -601,14 +651,16 @@ function placeholderWatch() {
     } });
     const out = {};
     for (const [id, type] of Object.entries(box.types)) {
-      const t0 = performance.now(), svg = pieces.boardSVG(type), t1 = performance.now(), again = pieces.boardSVG(type), t2 = performance.now();
-      out[id] = { first: t1 - t0, cached: t2 - t1, same: again === svg, kb: svg.length / 1024, svg: svg.startsWith('<svg') && svg.includes('viewBox="0 0 6000 6000"') };
+      const t0 = performance.now(), svg = pieces.boardSVG(type), t1 = performance.now(), again = pieces.boardSVG(type);
+      // (the cached call timed three times, the fastest kept: one sample alone can hold a GC pause)
+      const cached = Math.min(...[0, 1, 2].map(() => { const t = performance.now(); pieces.boardSVG(type); return performance.now() - t; }));
+      out[id] = { first: t1 - t0, cached, same: again === svg, kb: svg.length / 1024, svg: svg.startsWith('<svg') && svg.includes('viewBox="0 0 6000 6000"') };
     }
     return out;
   }, h.MODULE_V);
   for (const [id, r] of Object.entries(b11)) console.log(`  ${id}: ${r.first.toFixed(2)} ms, then ${r.cached.toFixed(3)} ms (${r.kb.toFixed(0)} KB)`);
   ok(Object.keys(b11).length === 8 && Object.values(b11).every((r) => r.svg), 'eight 64 × 64 boards (square and hex, every draw mode, 4,096 fills, 64 marks) each draw an SVG over the board');
   ok(Object.values(b11).every((r) => r.first <= B11_MAX), `B11: each takes ≤ ${B11_MAX} ms the first time (max ${Math.max(...Object.values(b11).map((r) => r.first)).toFixed(2)} ms)`);
-  ok(Object.values(b11).every((r) => r.same && r.cached <= 1), `B11: and is cached: the second call returns the same string in ≤ 1 ms (max ${Math.max(...Object.values(b11).map((r) => r.cached)).toFixed(3)} ms)`);
+  ok(Object.values(b11).every((r) => r.same && r.cached <= 1), `B11: and is cached: the second call returns the same string, and a cached call takes ≤ 1 ms (the fastest of three; max ${Math.max(...Object.values(b11).map((r) => r.cached)).toFixed(3)} ms)`);
   await env.done();
 })().catch(h.crash);
