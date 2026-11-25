@@ -105,7 +105,7 @@
     <section id="box-builtin"><h4>Built in</h4><div id="box-builtins" class="box-rows"></div></section>
     <section>
       <h4>Upload a game</h4>
-      <p class="box-note">A <code>game.json</code> with its images (and <code>rules.js</code>), or one <code>.zip</code> of them — see Help.</p>
+      <p class="box-note">A <code>game.json</code> with its images (and <code>rules.js</code>), or one <code>.zip</code> of them — an example is in Help, <a href="https://github.com/galkatzh/tools/blob/main/cardtable/README.md#game-boxes" target="_blank" rel="noopener">the whole format</a> in the README.</p>
       <div class="box-line">
         <button id="box-up" type="button">⬆ Upload a game…</button>
         <label id="box-now-lbl" class="radio"><input type="checkbox" id="box-now" checked> Set up now</label>
@@ -203,7 +203,19 @@
     { "name": "Gold", "text": "Worth 1 coin", "color": "#eab308", "count": 20 }
   ] }</pre>
         Cards without a <code>file</code> render as text cards (no art needed). <code>meta</code> is free-form data that 📜 Rules scripts can read via <code>t.card(ref)</code>. Extra images not listed in the manifest still join, filename-named.</li>
-      <li><b>📦 Game boxes</b>: a whole game in one upload — a <code>game.json</code> (its board, pieces, decks, setup and rules) picked with its images, or one <code>.zip</code> of them (the format is in the README). Anyone may upload one; the host <b>sets it up</b> (that clears the table), <b>resets</b> it to its start, and <b>exports</b> the table as a box — the position, and with them the rules and their state — to keep it or go on in another room. A box's rules run only once the host agrees: a rules script sees every hand and hidden piece.</li>
+      <li><b>📦 Game boxes</b>: a whole game in one upload — a <code>game.json</code> (its board, pieces, decks, setup and rules) picked with its images, or one <code>.zip</code> of them. Anyone may upload one; the host <b>sets it up</b> (that clears the table), <b>resets</b> it to its start, and <b>exports</b> the table as a box — the position, and with them the rules and their state — to keep it or go on in another room. A box's rules run only once the host agrees: a rules script sees every hand and hidden piece. A small one:
+        <pre>{ "name": "Two Fleets", "players": [2, 2],
+  "seats": [{ "id": "red", "name": "Red", "edge": "bottom" },
+            { "id": "blue", "name": "Blue", "edge": "top" }],
+  "pieces": [
+    { "id": "sea", "kind": "board", "img": "sea.png", "w": 800, "h": 800,
+      "grid": { "type": "square", "cols": 8, "rows": 8, "cell": 100 } },
+    { "id": "ship", "kind": "token", "w": 60,
+      "faces": [{ "color": "#dc2626" }, { "color": "#2563eb" }] } ],
+  "setup": [
+    { "piece": "sea", "at": "center" },
+    { "forEachSeat": [{ "piece": "ship", "at": "seat", "owner": "seat" }] } ] }</pre>
+        Every field — decks, dice, hidden pieces, hands, rules — is in <a href="https://github.com/galkatzh/tools/blob/main/cardtable/README.md#game-boxes" target="_blank" rel="noopener">the README's Game boxes</a>.</li>
       <li><b>Copy invite</b> and send the link to friends — or tap <b>QR</b> so they can scan it with a phone. Everyone sees the table live over WebRTC (no server).</li>
       <li>The game lives in the host's browser tab — if the host closes it, reopening the same link on the host's browser resumes the game.</li>
     </ul>

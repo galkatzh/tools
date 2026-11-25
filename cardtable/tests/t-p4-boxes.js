@@ -48,7 +48,7 @@ const h = require('./h');
 const { ok, section } = h;
 const P = require('./p2t-lib');
 const A = require('./assets-lib');
-const { HOSTILE, zip, photoPNG } = require('./zip-lib');
+const { HOSTILE, zip, photoPNG, game } = require('./zip-lib');
 const { mallory } = require('./final-lib');
 const { shot } = require('./fun-lib');
 const { pickGame } = require('./stones-lib');
@@ -212,6 +212,14 @@ const harborAs = (name, more = {}) => [file('game.json', J({ ...HARBOR_JSON, nam
       return { size: f._data?.uncompressedSize, stream: typeof f.internalStream, unsafe: f.unsafeOriginalName, name: f.name };
     }, JSZIP_URL);
     ok(pin.size === 3 && pin.stream === 'function' && pin.unsafe === '../x.png', `the build boxio.js relies on: _data.uncompressedSize, internalStream, unsafeOriginalName (${J(pin)})`);
+    // (the 4A fix-up, D207) empty files in a zip — a README, a folder's .keep — are read as empty, not refused
+    const withEmpty = zip([...HARBOR.map((f) => ({ name: path.basename(f), data: fs.readFileSync(f) })), { name: 'README.txt', data: '' }, { name: 'notes/.keep', data: '', store: true }]);
+    const re = await upload(alice, file('empty.zip', withEmpty));
+    ok(re.progress === 'That box is already on this table' && !re.err, `a zip holding an empty README.txt and notes/.keep: read ("${re.progress || re.err}")`);
+    // a deck's back given as a colour's name ("navy", which export may write) is a colour, not a file
+    const rn = await upload(alice, harborAs('Harbor Navy', { decks: [{ ...HARBOR_JSON.decks[0], back: 'navy' }] }));
+    const navy = (await S()).decks[(await S()).boxes[(await named('Harbor Navy'))[0]]?.decks?.Tides];
+    ok(rn.progress === 'Added «Harbor Navy»' && navy?.back === 'navy', `a deck back "navy": a colour (${rn.progress || rn.err}, back ${navy?.back})`);
   }
 
   section('3 malformed uploads fail loudly — inline, naming the file or field, and in a toast; nothing registers');
@@ -226,7 +234,13 @@ const harborAs = (name, more = {}) => [file('game.json', J({ ...HARBOR_JSON, nam
       ['case 12, a 30,000 × 30,000 PNG', file('huge.zip', HOSTILE.huge()), /map\.png: the image is 30000 × 30000 px \(max 4096 px a side, 16 Mpx\)/],
       ['game.json that is no JSON', file('game.json', '{"name": "Broken",', 'application/json'), /game\.json is not valid JSON/],
       ['an image the game.json names, not picked', [file('game.json', J({ name: 'Gappy', pieces: [{ id: 'a', kind: 'token', img: 'a.png' }] }), 'application/json')], /game\.json: pieces\[0\]\.img names "a\.png", which isn't in the upload/],
-      ['a field the box refuses', [file('game.json', J({ name: 'Odd', pieces: [{ id: 'a', kind: 'blob' }] }), 'application/json')], /types\.a: kind must be one of/],
+      ['a field the box refuses', [file('game.json', J({ name: 'Odd', pieces: [{ id: 'a', kind: 'blob' }] }), 'application/json')], /pieces\[0\] \(«a»\): kind must be one of/],
+      // (the 4A fix-up: D207)
+      ['two game.json at its root, told apart by case alone', file('twice.zip', zip([{ name: 'GAME.JSON', data: game() }, { name: 'game.json', data: game() }, { name: 'map.png', data: photoPNG(8, 8) }])),
+        /twice\.zip has more than one game\.json at its root \(GAME\.JSON, game\.json\)/],
+      ['a game.json without its name', [file('game.json', J({ pieces: [{ id: 'a', kind: 'die' }] }), 'application/json')], /game\.json: "name" is required/],
+      ['a deck of 5,500 cards, 11 lines of "count": 500', [file('game.json', J({ name: 'Big deck', decks: [{ name: 'D', cards: Array.from({ length: 11 }, () => ({ name: 'x', count: 500 })) }] }), 'application/json')],
+        /decks\[0\] \(«D»\): a deck holds at most 5,000 cards \(cards\[10\] goes past it\)/],
     ];
     for (const [what, f, re] of cases) {
       const t0 = Date.now(), r = await upload(alice, f), ms = Date.now() - t0;
@@ -336,8 +350,8 @@ const harborAs = (name, more = {}) => [file('game.json', J({ ...HARBOR_JSON, nam
       `Set up asks: the table cleared, "Enable its rules" and "Shuffle face-down piles" ticked under Bob's name (${J(q)})`);
     await reply(alice, 'ok');
     q = await asked(alice, 'trust');
-    ok(q?.title === 'Enable the rules?' && q.text === '«Beacon Watch» comes with rules written by its author, added by Bob. A rules script sees every hand and hidden piece and can reveal them. Enable the rules?'
-      && J(q.buttons) === J(['Cancel', 'Set up without rules', 'Enable rules']), `the trust dialog: ${J(q)}`);
+    ok(q?.title === '«Beacon Watch» has rules' && q.text === '«Beacon Watch» comes with rules written by its author, added by Bob. A rules script sees every hand and hidden piece and can reveal them. Enable the rules?'
+      && J(q.buttons) === J(['Enable rules', 'Set up without rules', 'Cancel']), `the trust dialog: ${J(q)}`);
     await shot(alice, 'p4-boxes-trust-desk');
     await reply(alice, 'without');
     await settle();
@@ -349,10 +363,15 @@ const harborAs = (name, more = {}) => [file('game.json', J({ ...HARBOR_JSON, nam
   {
     const n0 = (await S()).log.length;
     await openBoxes(alice);
+    // A double click on the confirm's Set up answers the confirm only: the trust dialog that follows in the
+    // same element wakes half a second later, and Cancel stands where Set up was (D204)
     await press(alice, `.box-row[data-box="${beacon}"] [data-act="setup"]`);
     await asked(alice, 'setup');
-    await reply(alice, 'ok');
-    await asked(alice, 'trust');
+    await alice.dblclick('#box-ask-btns button[value="ok"]');
+    ok(!!await asked(alice, 'trust'), '(a double click on Set up: the trust dialog shows)');
+    await h.sleep(800);
+    let st0 = await S();
+    ok(!!await alice.$('#box-ask[open][data-kind="trust"]') && !st0.rules?.enabled && st0.log.length === n0, 'and still waits for its answer: nothing set up, no rules');
     await reply(alice, 'cancel');
     await h.sleep(400);
     ok((await S()).log.length === n0 && await alice.$('#box-dialog[open]'), 'Cancel: no line, no change; the 📦 dialog stays open');
@@ -432,6 +451,12 @@ const harborAs = (name, more = {}) => [file('game.json', J({ ...HARBOR_JSON, nam
     ok(J(names) === J(['game.json', 'images/0.webp', 'images/1.webp', 'images/2.webp', 'images/3.webp', 'images/deck1-0.webp', 'images/deck1-1.webp'])
       && game.id === hid && J(Object.values(game.setup.at(-1).hands || {}).map((l) => l.length)) === '[1]' && game.decks[0].id === st.boxes[hid].decks.Tides && game.setup.every((e) => e.hands || /^[0-9a-f]{8}$/.test(e.id)) && !game.rules,
       `the zip: game.json and its 6 images; the box's, the deck's and every item's id, Bob's hand by his "#k" (${J(names)}, hands ${J(game.setup.at(-1).hands && Object.keys(game.setup.at(-1).hands))}, id ${game.id})`);
+    // The export unzipped, its files picked: a picker gives no folders, so images/… are found by their own names (D207)
+    const unz = path.join(tmp, 'unzipped'), picked = [];
+    fs.mkdirSync(unz);
+    for (const n of names) { const f = path.join(unz, path.basename(n)); fs.writeFileSync(f, await z.file(n).async('uint8array')); picked.push(f); }
+    const rp = await upload(alice, picked);
+    ok(!rp.err && rp.progress === 'Added «Harbor Run»', `the export unzipped, its 7 files picked: read, its images/… by their own names ("${rp.progress || rp.err}")`);
     await alice.evaluate(() => window.__ct.act({ t: 'clear' }));
     await settle();
     const r = await upload(alice, out, true);
@@ -540,6 +565,60 @@ const harborAs = (name, more = {}) => [file('game.json', J({ ...HARBOR_JSON, nam
     const st = await S(), ids = (await named('Draughts', st)).filter((x) => st.boxSrc[x].by !== mPid);
     ok(ids.length === 1 && st.lastSetup === ids[0] && confirms.filter((c) => /set up Draughts/.test(c)).length === 2, `Draughts set up twice (each confirmed): one box (${J(ids)})`);
   }
+  section('13 a game running when a box is set up: its rules switched off first, and said; a strict game refuses an upload, saying what to do; the README\'s and Help\'s examples as written');
+  {
+    const [hid] = await named('Harbor Run');
+    await pickGame(alice, 'chess');
+    await settle();
+    let st = await S();
+    ok(st.rules?.enabled && st.rules.name === 'Chess' && !st.lastSetup, `🎲 chess cleared the table: no box is set up any more (lastSetup: ${st.lastSetup ?? 'none'}) (D200)`);
+    await openBoxes(alice);
+    ok(!(await alice.$('#box-list [data-act="reset"]')) && !(await row(alice, hid)).text.includes('set up'), 'so 📦 offers no Reset, and marks no box "set up"');
+    const r = await upload(alice, path.join(FX, 'harbor.zip'));
+    ok(/^Couldn't add the game: 🚫 Not a move in this game — the rules running \(«Chess»\) refused the box; the host can switch them off in 📜/.test(r.err), `a strict game refuses the host's upload, and the dialog says why and what to do ("${r.err}")`);
+    const rb = await upload(bob, [file('game.json', J({ name: 'Bob tiny', pieces: [{ id: 'a', kind: 'die' }] }), 'application/json')]); // (tiny: the guests' budget is nearly spent, section 9)
+    ok(/^🚫 Not a move in this game — the rules running \(«Chess»\) refused the box/.test(rb.err) && !rb.progress, `…and Bob's: his dialog stops waiting and says so ("${rb.err}")`);
+    await closeBoxes(bob);
+    await press(alice, `.box-row[data-box="${hid}"] [data-act="setup"]`);
+    const q = await asked(alice, 'setup');
+    ok(q?.text === 'This clears the table. The rules running now («Chess») are switched off.', `Set up says the game running stops (${J(q)})`);
+    await shot(alice, 'p4-boxes-stops-desk');
+    await reply(alice, 'ok');
+    await settle();
+    st = await S();
+    const [die] = Object.entries(st.items).find(([, it]) => it.t?.endsWith('/d6')) || [];
+    ok(st.lastSetup === hid && !st.rules.enabled && die, 'Harbor Run set up; the chess rules are off');
+    const l0 = st.log.length;
+    await bob.evaluate((id) => window.__ct.act({ t: 'move', id, x: 1300, y: 900 }), die);
+    await settle();
+    st = await S();
+    ok(st.items[die]?.x === 1300 && !st.log.slice(l0).some((e) => /blocked/.test(e.txt)), `Bob moves its die freely: no chess rules refuse it (D205) (${J(st.items[die] && [st.items[die].x, st.items[die].y])}, ${J(st.log.slice(l0).map((e) => e.txt))})`);
+    // README's game.json and Help's, uploaded as they are written (with images of the fixture's)
+    const dir = path.join(tmp, 'examples'), img = (f) => fs.readFileSync(path.join(FX, 'harbor', f));
+    fs.mkdirSync(dir);
+    const readme = fs.readFileSync(path.join(h.APP_ROOT, 'cardtable/README.md'), 'utf8'), html = fs.readFileSync(path.join(h.APP_ROOT, 'cardtable/index.html'), 'utf8');
+    const rj = JSON.parse(/## Game boxes[\s\S]*?```jsonc\n([\s\S]*?)```/.exec(readme)[1].replace(/\s*\/\/.*$/gm, ''));
+    const hj = JSON.parse(/<li><b>📦 Game boxes<\/b>[\s\S]*?<pre>([\s\S]*?)<\/pre>/.exec(html)[1]);
+    const files = (o, imgs) => [file('game.json', J(o), 'application/json'), ...Object.entries(imgs).map(([n, f]) => file(n, img(f), 'image/png'))];
+    const r1 = await upload(alice, [...files(rj, { 'board.png': 'board.png', 'boat-red.png': 'boat-red.png', 'boat-blue.png': 'boat-blue.png', 'crate.png': 'crate.png', 'calm.png': 'tide-calm.png', 'storm.png': 'tide-storm.png' }),
+      file('rules.js', "({ name: 'Harbor Run rules' })", 'text/javascript')], true);
+    ok(r1.ask === 'setup', `README's example: read, and Set up asks (${J(r1)})`);
+    await reply(alice, 'ok');
+    await asked(alice, 'trust');
+    await reply(alice, 'without');
+    await settle();
+    st = await S();
+    const first = Object.values(st.players).filter((pl) => pl.seat != null).sort((a, b) => ((a.seat - 90 + 360) % 360) - ((b.seat - 90 + 360) % 360))[0];
+    const pile = Object.values(st.items).find((it) => it.k === 'p');
+    ok(st.boxes[st.lastSetup]?.name === 'Harbor Run' && Object.keys(st.items).length === 5 && pile?.cards.length === 2 && first?.hand.length === 1 && st.seats?.length === 2,
+      `set up as written: the board, a boat a seat, the crate, a pile of 2 Tides and the third in #1's hand (${Object.keys(st.items).length} items)`);
+    const r2 = await upload(alice, files(hj, { 'sea.png': 'board.png' }), true);
+    if (r2.ask) await reply(alice, 'ok');
+    await settle();
+    st = await S();
+    ok(st.boxes[st.lastSetup]?.name === 'Two Fleets' && Object.keys(st.items).length === 3, `Help's example: set up as written (${Object.keys(st.items).length} items: the sea and a ship a seat)`);
+    await closeBoxes(alice);
+  }
   for (const p of [alice, bob, carol, M]) await p.context().close();
 
   section("8 resume elsewhere: chess and Hold'em exported mid-game, imported into a fresh room (its host on a phone), played on");
@@ -570,11 +649,18 @@ const harborAs = (name, more = {}) => [file('game.json', J({ ...HARBOR_JSON, nam
       await closeBoxes(host);
       return out;
     }
-    /** Fay imports file `f` from her phone's 📦 and sets it up with its rules, through the trust dialog. */
-    async function importGame(f, what) {
+    /** Fay imports file `f` from her phone's 📦 and sets it up with its rules, through the trust dialog; `twice`: her
+     *  Set up is a double tap, which must leave the trust dialog waiting (D204). */
+    async function importGame(f, what, twice) {
       await upload(fay, f, true);
       const q = await asked(fay, 'setup');
-      await reply(fay, 'ok');
+      if (twice) {
+        const b = await fay.locator('#box-ask-btns button[value="ok"]').boundingBox(), at = [b.x + b.width / 2, b.y + b.height / 2];
+        await fay.locator('#box-ask-btns button[value="ok"]').tap();
+        await fay.touchscreen.tap(...at);
+        await h.sleep(800);
+        ok(!!await fay.$('#box-ask[open][data-kind="trust"]') && (await st2()).rules?.name !== what, `a double tap on Set up on Fay's phone: the trust dialog still waits, «${what}» not started`);
+      } else await reply(fay, 'ok');
       const t = await asked(fay, 'trust');
       ok(q?.checks.rules && t?.text.startsWith(`«${what}» comes with rules written by its author.`), `Fay's phone: Set up (rules ticked), then the trust dialog for «${what}»`);
       await shot(fay, `p4-boxes-trust-phone-${what.replace(/\W+/g, '')}`);
@@ -606,11 +692,17 @@ const harborAs = (name, more = {}) => [file('game.json', J({ ...HARBOR_JSON, nam
     ok(await chessMove(room1, W, 'e2', 'e4') && await chessMove(room1, B, 'e7', 'e5') && await chessMove(room1, W, 'g1', 'f3'), 'room 1: 1. e4 e5 2. Nf3 — Black to move');
     const chessBox = (await st1()).rules.data.box, f1 = await exportGame(dave);
     ok(/\.json$/.test(f1) && JSON.parse(fs.readFileSync(f1, 'utf8')).rulesState.data.box === chessBox, `exported (no images: a .json) with the rules and their state, chess's box id ${chessBox} in it`);
-    await importGame(f1, 'Chess');
+    await importGame(f1, 'Chess', true);
     st = await st2();
     ok(st.rules?.enabled && st.rules.data.box === chessBox && st.boxes[chessBox] && st.rules.data.turn === 'b', 'room 2: set up with its rules, the box id kept (t.data.box finds it), Black to move');
     const B2 = await holder(room2, 'black');
     ok(B2 && await chessMove(room2, B2, 'b8', 'c6') && (await st2()).rules.data.turn === 'w' && !(await fay.evaluate(() => window.__ct.lastRulesError)), `${B2?.who} (Black now) plays Nc6: legal, no script error`);
+    // A guest whose host has gone hears so, rather than waiting on "Sent… to the host" for ever (D209)
+    gus.watchdogOK = true;
+    await fay.context().close();
+    await upload(gus, harborAs('Harbor for nobody')).catch((err) => console.error('upload with the host gone', err));
+    const gone = await gus.waitForFunction(() => document.getElementById('box-err').textContent, null, { timeout: 45000 }).then((x) => x.jsonValue(), () => '');
+    ok(/the host isn't here|The host left before answering|No answer from the host/.test(gone), `Gus's host left: his dialog says so ("${gone}")`);
 
   }
   fs.rmSync(tmp, { recursive: true, force: true });

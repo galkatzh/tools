@@ -588,7 +588,14 @@ out:
   the seated players, the room on the table — and a bad layout throws a
   `TypeError` ("t.layout: …"). An entry's `id` that an item on the table
   already holds is minted anew (`console.warn`). A script's own "Reset"
-  button: `t.remove` what it laid out, then `t.layout`.
+  button: `t.remove` what it laid out, then `t.layout`. The grammar is the
+  README's: `{board, at}` names a board an entry before it places;
+  `"off": [dx, dy]` beside an address sets a piece that far from the spot's
+  centre and keeps it on the spot while it lies in reach (as a board moved
+  under it leaves a piece); a `group` with `"shuffle": true` deals out the
+  identities of its face-down pieces that share a back among their places —
+  each item keeps its place, z and `id`, so an id names a place, never a
+  piece.
 
 **A box's rules and trust.** A box may bring its rules (the script's text)
 and its rules' saved state (`{data, public, asks, secret}`, written by an
@@ -596,7 +603,12 @@ export). They start only from the host's **Set up** with "Enable its rules",
 and only after the trust dialog ("«X» comes with rules written by its
 author … A rules script sees every hand and hidden piece and can reveal
 them") — for every box but a built-in one, whoever added it, the host
-included, and from the terminal too. They start right after the setup
+included, and from the terminal too (its buttons wake half a second after
+it shows, so the second click of a double click on the confirm's Set up
+never answers it). A clearing Set up — or a Reset — first switches off any
+other rules that run: the game they ran is cleared away with the table, as
+🎲's games are (a strict game's rules, chess's say, would otherwise refuse
+every move on the new layout). They start right after the setup
 commits, as an Enable with a reset: on the box's saved state, every
 `"@#k"` there read as the k-th seated player and every id the setup had to
 change replaced by its new one (a script that stored a pile's id finds it);
@@ -604,8 +616,9 @@ an entry that fails the engine's gates (an ask of 500 options, a timer
 whose `at` is no number, a secret keyed by no player) is dropped with
 `console.error` and one toast to the host. They run as the box's rules
 (`rules.box`), so **Reset** restarts them on that state; an Enable of any
-other text does not. A box's setup and saved state never reach a guest —
-only the host and the Worker read them.
+other text does not. A `clear` (🎲's games start with one) ends the box set
+up: no Reset is offered after it. A box's setup and saved state never reach
+a guest — only the host and the Worker read them.
 
 ## 3. Enforcement path (the one structural change)
 

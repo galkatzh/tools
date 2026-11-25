@@ -668,6 +668,7 @@ dialog ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 14px; }
 .box-btns [data-act="setup"], .box-btns [data-builtin], #box-up { background: #0f766e; }
 .box-btns [data-act="setup"]:hover, .box-btns [data-builtin]:hover, #box-up:hover { background: #0d9488; }
 .box-note { font-size: 13px; color: #94a3b8; margin: 0 0 8px; line-height: 1.4; }
+.box-note a, #help-dialog a { color: #5eead4; }
 .box-line { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; }
 #box-progress, #box-x-msg { font-size: 13px; color: #cbd5e1; margin-top: 6px; overflow-wrap: anywhere; }
 #box-progress:empty, #box-x-msg:empty { display: none; }
@@ -681,7 +682,7 @@ dialog ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 14px; }
 #box-ask menu { flex-wrap: wrap; }
 #box-ask .main { background: #059669; }
 #box-ask[data-kind="trust"] .main { background: #7c3aed; }
-@media (pointer: coarse) { #box-dialog button, #box-ask button { min-height: 44px; } }
+@media (pointer: coarse) { #box-dialog button, #box-ask button, #deck-to-box { min-height: 44px; } #deck-to-box { min-width: 44px; } }
 #box-dialog .box-err, #box-progress, #box-x-msg { scroll-margin: 12px 0 80px; } /* (scrolled into view above the sticky Close) */
 @media (max-height: 500px) { /* a phone held sideways: every line for the lists; the ✕ stays at the top, by a thumb */
   #box-dialog { padding: 0 14px 10px; }

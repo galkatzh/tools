@@ -1566,6 +1566,7 @@ function connect() {
     if (peer === hostPeer) { // the table is paused: say so (hint + host seat greyed), knock again when a host reappears
       hostPeer = null;
       registered = false;
+      if (boxWait) boxAnswer(`The host left before answering about «${boxWait.name}»: the box wasn't added — try again once they are back.`, false);
       renderAll();
     }
     if (role !== 'host') return;
@@ -3544,7 +3545,10 @@ tableEl.addEventListener('pointerdown', (e) => {
   // a press anywhere on the crowd takes its top piece, into the finger).
   let g;
   if (mode) {
-    const d0 = fanPos.get(id) || it, { w, h } = sizeOf(it, boxes), [dx, dy] = hit === id ? [p.x - d0.x, p.y - d0.y] : [w / 2, h / 2];
+    // (the grip: where the finger or the mouse took it — but a touch take from a supply drawn smaller than a fingertip
+    // holds the new piece by its centre, as nearTouch's does: by its corner, it would land off the spot the finger is on)
+    const d0 = fanPos.get(id) || it, { w, h } = sizeOf(it, boxes), tiny = mode === 'take' && e.pointerType !== 'mouse' && Math.max(w, h) * scale < 2 * TOUCH_REACH;
+    const [dx, dy] = hit === id && !tiny ? [p.x - d0.x, p.y - d0.y] : [w / 2, h / 2];
     g = drag = { id, el, mode, ghost: false, dx, dy, sx: p.x, sy: p.y, x: d0.x, y: d0.y, ox: it.x, oy: it.y, moved: false, last: 0 };
   } else g = feltDrag = { sx: e.clientX, sy: e.clientY, px: panX, py: panY, moved: false, tap: it ? id : null };
   // Touch long-press (≈450 ms without moving) zooms a face-up card, a pile's
@@ -3906,8 +3910,9 @@ function pickCleared(game, code = RULES_TEMPLATES[game.k]) {
   $('rules-code').value = code; // the 📜 dialog shows what runs
   return act({ t: 'setRules', code, enabled: true, reset: true });
 }
-/** The script name `code` gives itself (its `name: '…'`), as setRules keeps a game's state by it. */
-const scriptName = (code) => /\bname: (['"])(.*?)\1/.exec(code || '')?.[2];
+/** The script name `code` gives itself (its `name: '…'`, however spaced or
+ *  quoted: "name": "…", name:`…`), as setRules keeps a game's state by it. */
+const scriptName = (code) => /["']?\bname["']?\s*:\s*(['"`])(.*?)\1/.exec(code || '')?.[2];
 
 $('game-strip').querySelector('.games').innerHTML = GAMES.map((g) =>
   `<button data-game="${g.k}" title="${esc(`${g.title}: ${g.pitch}`)}">${g.emoji} ${g.short || g.title}</button>`).join('');
@@ -4022,12 +4027,11 @@ $('chat-form').addEventListener('submit', (e) => {
 // the export. Anyone may upload (a guest within the guests' budget); setting
 // a box up, resetting it and exporting are the host's. A box's rules never
 // run without the host's click in the trust dialog, unless the box is built
-// in — by its content (isBuiltin), never by anything a peer can send.
-const builtinOf = new WeakMap(); // box → isBuiltin(box): a box is written once, and canon() of a big one costs
-const builtIn = (b) => (builtinOf.has(b) ? builtinOf.get(b) : builtinOf.set(b, isBuiltin(b)).get(b));
+// in — by its content (isBuiltin, which keeps its answer per box), never by anything a peer can send.
 /** Every box on this table as the dialog and the terminal list it: {id,
  *  name, types, decks, src, by (a pid), builtin, rules} — and on the host
- *  `setup`, whether it lays anything out. A guest knows what the host says
+ *  `setup`, whether Set up has anything to do (a layout, or rules that lay
+ *  the table out themselves: t.layout). A guest knows what the host says
  *  of each (boxInfo). */
 function boxEntries() {
   const host = role === 'host';
@@ -4035,7 +4039,7 @@ function boxEntries() {
     const i = (host ? T.state.boxSrc[id] : boxInfo[id]) || { src: 'host' };
     return {
       id, name: b.name, types: Object.keys(b.types).length, decks: Object.keys(b.decks || {}).length, src: i.src, by: i.by,
-      builtin: host ? builtIn(b) : !!i.builtin, rules: host ? !!b.rules : !!i.hasRules, ...(host && { setup: !!b.setup?.length }),
+      builtin: host ? isBuiltin(b) : !!i.builtin, rules: host ? !!b.rules : !!i.hasRules, ...(host && { setup: !!b.setup?.length || !!b.rules }),
     };
   });
 }
@@ -4069,13 +4073,19 @@ $('box-btn').addEventListener('click', () => {
   renderBoxes();
 });
 $('deck-to-box').addEventListener('click', () => { $('deck-dialog').close(); $('box-btn').click(); });
+let setupUnderWay = false; // a Set up or Reset is under way (asking, or sent): a press meanwhile — a double click's second — starts nothing
+/** Runs a Set up or a Reset (`fn`: its promise of act()'s outcome, or null) — one at a time: null while another is under way. */
+async function oneSetup(fn) {
+  if (setupUnderWay) return null;
+  setupUnderWay = true;
+  try { return await fn(); } finally { setupUnderWay = false; }
+}
 $('box-dialog').addEventListener('click', async (e) => {
   const b = e.target.closest('button[data-act], button[data-builtin]');
   if (!b) return;
   $('box-msg').textContent = '';
-  const r = b.dataset.builtin ? await pickCleared({ box: b.dataset.builtin, title: BOXES[b.dataset.builtin].name })
-    : b.dataset.act === 'reset' ? await resetBox() : await setUpBox(b.closest('[data-box]').dataset.box);
-  boxDone(r);
+  boxDone(await oneSetup(() => (b.dataset.builtin ? pickCleared({ box: b.dataset.builtin, title: BOXES[b.dataset.builtin].name })
+    : b.dataset.act === 'reset' ? resetBox() : setUpBox(b.closest('[data-box]').dataset.box))));
 });
 /** After Set up or Reset (act()'s outcome, null when the host cancelled): the
  *  dialog closes on the table set up, or says why it wasn't. */
@@ -4087,11 +4097,16 @@ function boxDone(r) {
   } else if (r) show($('box-msg'), r.error || 'Nothing was set up');
 }
 
+/** How long a question's buttons stay disabled once it shows: the second
+ *  click of a double-click (or tap) that answered the dialog before must not
+ *  answer this one — the trust dialog follows the setup confirm in the same
+ *  element (D204). */
+const ASK_ARM_MS = 500;
 /** Asks the host in #box-ask (`kind`: setup, reset or trust, its data-kind):
  *  a title, then `body` — each a line of text, or a checkbox {id, label, on}
- *  — and the buttons [[value, label]], the last the main one. Resolves {v:
- *  the button's value ('cancel' on Esc), on: {checkbox id: ticked}}. Every
- *  text is set as text. */
+ *  — and the buttons [[value, label, main?]], left to right, each disabled
+ *  for ASK_ARM_MS. Resolves {v: the button's value ('cancel' on Esc), on:
+ *  {checkbox id: ticked}}. Every text is set as text. */
 function boxAsk(kind, title, body, btns) {
   const dlg = $('box-ask'), el = (tag, o) => Object.assign(document.createElement(tag), o);
   const check = ({ id, label, on }) => {
@@ -4104,57 +4119,79 @@ function boxAsk(kind, title, body, btns) {
   dlg.returnValue = '';
   $('box-ask-title').textContent = title;
   $('box-ask-body').replaceChildren(...body.map((x) => (typeof x === 'string' ? el('p', { textContent: x }) : check(x))));
-  $('box-ask-btns').replaceChildren(...btns.map(([v, label], k) => el('button', { value: v, textContent: label, className: k === btns.length - 1 ? 'main' : '' })));
+  const buttons = btns.map(([v, label, main]) => el('button', { value: v, textContent: label, className: main ? 'main' : '', disabled: true }));
+  $('box-ask-btns').replaceChildren(...buttons);
   dlg.showModal();
+  setTimeout(() => { for (const b of buttons) b.disabled = false; }, ASK_ARM_MS);
   return new Promise((resolve) => dlg.addEventListener('close', () => resolve({
     v: dlg.returnValue || 'cancel', on: Object.fromEntries([...dlg.querySelectorAll('[data-c]')].map((c) => [c.dataset.c, c.checked])),
   }), { once: true }));
 }
 /** Whether a setup would discard anything: items on the table, or cards in a hand. */
 const tableBusy = () => Object.keys(T.state.items).length > 0 || Object.values(T.state.players).some((pl) => pl.hand.length);
+/** "The rules running now («Chess») are switched off." */
+const stopLine = (name) => `The rules running now («${name}») are switched off.`;
 /** Host: sets box `id` up (spec §4g). From the dialog, it first asks what
- *  there is to decide — "This clears the table", "Enable its rules" (ticked),
- *  and for a guest's box "Shuffle face-down piles" (ticked) under "{Bob} added
- *  this box and knows its starting layout"; from the terminal `o` says it
- *  ({clear, rules}). Then, before the rules of any box that isn't built in,
- *  the trust dialog: Enable rules, Set up without rules, or Cancel. Resolves
- *  act()'s outcome, or null when the host cancelled. */
+ *  there is to decide — "This clears the table", the running rules it stops,
+ *  "Enable its rules" (ticked), and for a guest's box "Shuffle face-down
+ *  piles" (ticked) under "{Bob} added this box and knows its starting
+ *  layout"; from the terminal `o` says it ({clear, rules}). Then, before the
+ *  rules of any box that isn't built in, the trust dialog: Enable rules, Set
+ *  up without rules, or Cancel. A clearing setup stops the game that ran
+ *  (its rules switched off first, as 🎲 does: pickCleared) — the box's own
+ *  rules, when enabled, start after it (D205). Resolves act()'s outcome, or
+ *  null when the host cancelled. */
 async function setUpBox(id, o) {
   const box = T.state.boxes[id], src = T.state.boxSrc[id] || { src: 'host' };
   const by = src.src === 'upload' ? T.state.players[src.by]?.name || 'A guest' : '';
   let { clear = true, rules = !!box.rules, shuffle } = o || {};
-  if (!o && (tableBusy() || box.rules || by)) {
+  const stops = clear && T.state.rules?.enabled ? T.state.rules.name : '';
+  if (!o && (tableBusy() || box.rules || by || stops)) {
     const r = await boxAsk('setup', `Set up «${box.name}»?`, [
       ...(tableBusy() ? ['This clears the table.'] : []),
+      ...(stops ? [stopLine(stops)] : []),
       ...(box.rules ? [{ id: 'rules', label: 'Enable its rules', on: true }] : []),
       ...(by ? [`${by} added this box and knows its starting layout.`, { id: 'shuffle', label: 'Shuffle face-down piles', on: true }] : []),
-    ], [['cancel', 'Cancel'], ['ok', 'Set up']]);
+    ], [['cancel', 'Cancel'], ['ok', 'Set up', true]]);
     if (r.v !== 'ok') return null;
     ({ rules = false, shuffle } = r.on);
   }
-  if (rules && !builtIn(box)) {
-    const { v } = await boxAsk('trust', 'Enable the rules?', [
+  if (rules && !isBuiltin(box)) {
+    // (Cancel, never Enable rules, where the confirm's Set up was: a stray second click cancels)
+    const { v } = await boxAsk('trust', `«${box.name}» has rules`, [
       `«${box.name}» comes with rules written by its author${by ? `, added by ${by}` : ''}. A rules script sees every hand and hidden piece and can reveal them. Enable the rules?`,
-    ], [['cancel', 'Cancel'], ['without', 'Set up without rules'], ['enable', 'Enable rules']]);
+    ], [['enable', 'Enable rules', true], ['without', 'Set up without rules'], ['cancel', 'Cancel']]);
     if (v === 'cancel') return null;
     rules = v === 'enable';
   }
+  if (stops) act({ t: 'setRules', enabled: false });
   return act({ t: 'setup', box: id, clear, rules, ...(shuffle !== undefined && { shuffle }) });
 }
 /** Host: Reset (spec §4g) — the box last set up laid out again on a cleared
- *  table, its rules restarted when they are running; asked first. Resolves
+ *  table, its rules restarted when they are running, any other rules
+ *  switched off; asked first, unless from the terminal (`quiet`). Resolves
  *  act()'s outcome, or null. */
-async function resetBox() {
-  const name = T.state.boxes[T.state.lastSetup]?.name, again = T.state.rules?.enabled && T.state.rules.box === T.state.lastSetup;
-  const { v } = await boxAsk('reset', `Reset «${name}»?`, [`The table is cleared and «${name}» laid out again${again ? ', its rules started afresh' : ''}.`], [['cancel', 'Cancel'], ['ok', 'Reset']]);
-  return v === 'ok' ? act({ t: 'reset' }) : null;
+async function resetBox(quiet) {
+  const last = T.state.lastSetup, name = T.state.boxes[last]?.name, r = T.state.rules;
+  const stops = r?.enabled && r.box !== last ? r.name : '', again = r?.enabled && !stops; // (its own rules restart; any other stops)
+  if (!quiet) {
+    const { v } = await boxAsk('reset', `Reset «${name}»?`, [`The table is cleared and «${name}» laid out again${again ? ', its rules started afresh' : ''}.`, ...(stops ? [stopLine(stops)] : [])],
+      [['cancel', 'Cancel'], ['ok', 'Reset', true]]);
+    if (v !== 'ok') return null;
+  }
+  if (stops) act({ t: 'setRules', enabled: false });
+  return act({ t: 'reset' });
 }
 
 let boxRun = 0; // the upload in the works (closing the dialog drops it: its result is not added)
-let boxWait = null; // guest: the box it sent, {name}, until the host answers (note, takeBoxes)
+let boxWait = null; // guest: the box it sent, {name, timer}, until the host answers (note, takeBoxes) or BOX_WAIT_MS pass
+/** How long a guest waits for the host's answer to its box (it is a few seconds' transfer at most: the guests' budget is 1.5 M characters). */
+const BOX_WAIT_MS = 30000;
 /** Busy reading an upload: one at a time. */
 const boxBusy = (on) => { $('box-up').disabled = on; $('box-up').textContent = on ? 'Reading…' : '⬆ Upload a game…'; };
-$('box-dialog').addEventListener('close', () => { boxRun++; boxWait = null; boxBusy(false); });
+/** Guest: stops waiting for the host's answer (answered, timed out, or the dialog closed). */
+const unwait = () => { clearTimeout(boxWait?.timer); boxWait = null; };
+$('box-dialog').addEventListener('close', () => { boxRun++; unwait(); boxBusy(false); });
 $('box-up').addEventListener('click', () => $('box-files').click());
 $('box-files').addEventListener('change', () => {
   const files = [...$('box-files').files];
@@ -4166,12 +4203,20 @@ function show(el, msg) {
   el.textContent = msg;
   if (msg) el.scrollIntoView({ block: 'nearest' });
 }
-/** A guest hears how the box it sent went (note, takeBoxes): in the dialog. */
+/** A guest hears how the box it sent went (note, takeBoxes, the host
+ *  leaving, no answer within BOX_WAIT_MS): in the dialog, scrolled into
+ *  view — a toast lies under a modal's backdrop (D190). */
 function boxAnswer(msg, good) {
-  boxWait = null;
+  unwait();
   show($('box-progress'), good ? msg : '');
   show($('box-err'), good ? '' : msg);
+  if (!good) console.error('the box sent to the host was not added:', msg);
 }
+/** Refusal `msg` of an upload, with what to do about it when the running
+ *  rules (`rules`: {name, enabled}) made it — a strict game takes no new
+ *  boxes (D186) — rather than the engine's own gates ("🚫 Box rejected"). */
+const ruledOut = (msg, rules) => (rules?.enabled && msg && !/^🚫 Box rejected/u.test(msg)
+  ? `${msg} — the rules running («${rules.name}») refused the box; the host can switch them off in 📜, then it can be uploaded again` : msg);
 /** Reads an upload into a game box (boxio.readBox, which reports each file)
  *  and adds it. Progress and any failure show in the dialog (a failure as a
  *  toast too), naming the file or the field. The host's box is checked
@@ -4192,22 +4237,24 @@ async function uploadBox(files) {
       if (over) throw new Error(over);
       await store.cache((await store.ingestBox(tb)).assets);
       if (run !== boxRun) return;
-      boxWait = { name };
+      if (!hostPeer) throw new Error("the host isn't here (the table is paused): try again once they are back");
+      boxWait = { name, timer: setTimeout(() => boxAnswer(`No answer from the host about «${name}» — is their tab open? The box wasn't added: try again.`, false), BOX_WAIT_MS) };
       const r = await act({ t: 'addBox', box: tb });
       if (!r.ok) throw new Error(r.error);
       say(`Sent «${name}» to the host…`);
       return;
     }
     say(`Adding «${name}»…`);
-    const r = await act({ t: 'addBox', box: tb });
-    if (!r.id) throw new Error(r.error || 'the box was not added');
-    say(r.ok ? `Added «${name}»` : 'That box is already on this table');
+    const r = await act({ t: 'addBox', box: tb }), box = T.state.boxes[r.id];
+    if (!box) throw new Error(ruledOut(r.error, T.state.rules) || 'the box was not added');
+    const set = !!(box.setup?.length || box.rules); // (Set up has something to do: lay it out, or start its rules)
+    say(`${r.ok ? `Added «${name}»` : 'That box is already on this table'}${!set && $('box-now').checked ? ' — it has no layout to set up: its pieces are in the catalog' : ''}`);
     boxBusy(false);
-    if (run === boxRun && $('box-now').checked) boxDone(await setUpBox(r.id));
+    if (run === boxRun && set && $('box-now').checked) boxDone(await oneSetup(() => setUpBox(r.id)));
   } catch (err) {
     console.error('a game upload failed', err);
     if (run !== boxRun) return;
-    boxWait = null;
+    unwait();
     say('');
     show($('box-err'), `Couldn't add the game: ${err.message}`);
     toast(`Couldn't add the game: ${err.message}`);
@@ -4278,8 +4325,10 @@ $('deck-form').addEventListener('submit', async (e) => {
       const images = files.filter((f) => f !== mf);
       if (!mf && !images.length) { toast('Pick card images and/or a deck.json'); return; }
       if (mf) {
+        if (mf.size > boxio.FILE_MAX_BYTES) throw new Error(`${mf.name} is ${(mf.size / 1e6).toFixed(1)} MB (max ${boxio.FILE_MAX_BYTES / 1e6} MB)`);
         let m;
         try { m = JSON.parse(await mf.text()); } catch (err) { throw new Error(`${mf.name} is not valid JSON: ${err.message}`); }
+        if (m && (m.pieces !== undefined || m.setup !== undefined)) throw new Error(`${mf.name} is a game box (it has pieces or a setup): upload it from 📦`);
         deck = await boxio.manifestDeck(m, images);
       } else {
         deck = await boxio.filenameDeck(images);
@@ -4368,7 +4417,8 @@ const cliMsgs = []; // bridge-only feedback: command errors, peek results, notic
 function note(msg) {
   toast(msg);
   if (CLI) cliMsgs.push(`note: ${msg}`);
-  if (boxWait && /^(🚫 Box rejected|That box is already)/u.test(msg)) boxAnswer(msg, msg.startsWith('That'));
+  // (the guest waits on the box it sent — the dialog is modal: a refusal now is its answer, whatever refused it)
+  if (boxWait && /^(🚫|That box is already)/u.test(msg)) boxAnswer(ruledOut(msg, view.rules), msg.startsWith('That'));
 }
 
 function cliCardInfo(d, i) {
@@ -4577,16 +4627,17 @@ function cliExec(c) {
       case 'setup': { // (spec §4i) the trust dialog still asks on the page before the rules of a box that isn't built in
         if (role !== 'host') throw new Error('setup: only the host sets up a game');
         const id = cliBox(c.box), box = T.state.boxes[id];
+        if (!box.setup?.length && !box.rules) throw new Error(`setup: «${box.name}» has nothing to set up (no layout, no rules)`);
         if (c.rules && !box.rules) throw new Error(`setup: «${box.name}» has no rules`);
-        if (c.rules && !builtIn(box)) cliMsgs.push(`setup: «${box.name}» has rules — confirm them on the page (the host's click enables a box's rules)`);
-        setUpBox(id, { clear: !c.keep, rules: !!c.rules }).then((r) => { if (!r) cliMsgs.push(`setup: «${box.name}» was not set up (cancelled on the page)`); },
+        if (c.rules && !isBuiltin(box)) cliMsgs.push(`setup: «${box.name}» has rules — confirm them on the page (the host's click enables a box's rules)`);
+        oneSetup(() => setUpBox(id, { clear: !c.keep, rules: !!c.rules })).then((r) => { if (!r) cliMsgs.push(`setup: «${box.name}» was not set up (cancelled on the page, or another setup was under way)`); },
           (err) => { console.error('bridge setup failed', err); cliMsgs.push(`error: ${err.message}`); });
         break;
       }
       case 'reset':
         if (role !== 'host') throw new Error('reset: only the host resets a game');
         if (!T.state.boxes[T.state.lastSetup]) throw new Error('reset: no game box was set up on this table');
-        act({ t: 'reset' });
+        oneSetup(() => resetBox(true)).catch((err) => { console.error('bridge reset failed', err); cliMsgs.push(`error: ${err.message}`); }); // (other rules than the box's own are switched off, as on the page)
         break;
       case 'asks': for (const line of view.ask.length ? view.ask.map(cliAsk) : ['❓ no questions wait for you']) cliMsgs.push(line); break;
       case 'place': { // onto a board's spot (spec §3i): an item moves there, centred; a supply (id or type name) hands one out there

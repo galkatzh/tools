@@ -544,7 +544,7 @@ function testAddBox() {
 
   section('(8) a box that fails cleanBox: "🚫 Box rejected: {message}"');
   r = R2.add(BOB, { name: 'Bad', pieces: [{ id: 'x', kind: 'unicorn' }] });
-  ok(/^🚫 Box rejected: types\.x: kind must be one of/.test(r.notes[0] || ''), `"${r.notes[0]}"`);
+  ok(/^🚫 Box rejected: pieces\[0\] \(«x»\): kind must be one of/.test(r.notes[0] || ''), `named as its author wrote it: "${r.notes[0]}"`);
 
   section('(8) a forged built-in (§4j attacker case 10): src, by and the name buy nothing');
   const forged = { ...json(BOXES.draughts), src: 'builtin', by: HOST, builtin: true, types: { ...json(BOXES.draughts.types), light: { ...BOXES.draughts.types.light, name: 'Light mann' } } };
@@ -1563,6 +1563,136 @@ function indepWorker() {
   forged('a setup whose lastSetup is no box', HOST, { t: 'setup', box: t1 }, (P) => { P.lastSetup = 'ab0de999'; });
 }
 
+// -----------------------------------------------------------------------------
+// (F) The 4A fix-up's regressions (D196–D203)
+// -----------------------------------------------------------------------------
+function testFixup() {
+  section('(F) a shuffled group deals out the identities of its hidden pieces: the ids an uploader gave stay with the places (D196)');
+  {
+    const KINDS = ['general', 'scout', 'spy', 'miner'], IDS = ['0000000a', '0000000b', '0000000c', '0000000d'];
+    const veiled = {
+      name: 'Veiled Front', backs: [{ id: 'blue', color: '#1e3a8a' }], pieces: KINDS.map((k) => ({ id: k, kind: 'token', w: 50, back: 'blue', faces: [{ label: k }] })),
+      setup: [{ group: KINDS.map((k, i) => ({ piece: k, up: false, at: [200 + 100 * i, 300], id: IDS[i] })), shuffle: true }],
+    };
+    const T = hostTable({ seed: 61, players: [[BOB, 'Bob']] }), bid = act(T, BOB, { t: 'addBox', box: veiled, cost: 3000 }).id;
+    let declared = 0, places = true;
+    const kinds = IDS.map(() => new Set());
+    for (let n = 0; n < 40; n++) {
+      act(T, HOST, { t: 'setup', box: bid });
+      IDS.forEach((id, i) => {
+        const it = T.state.items[id];
+        places &&= !!it && it.x === 200 + 100 * i && it.y === 300 && it.up === false;
+        if (tid(it?.t) === KINDS[i]) declared++;
+        kinds[i].add(tid(it?.t));
+      });
+    }
+    ok(T.state.boxSrc[bid]?.src === 'upload' && places, "Bob's box, set up 40 times: each asked-for id stays at the place its entry gave it, face down");
+    ok(declared < 64 && kinds.every((s) => s.size >= 3), `and names no piece: ${declared} of 160 ids held the piece their entry declared (≈ 40 by chance; 160 before), each id held ${kinds.map((s) => s.size).join(', ')} of the 4 kinds`);
+  }
+
+  section('(F) a piece on its spot, off the centre: "off" keeps its address; an "off" out of reach is refused (D197)');
+  {
+    const T = hostTable({ seed: 62, players: [[BOB, 'Bob']] });
+    const set = (setup) => act(T, HOST, { t: 'setup', box: act(T, HOST, { t: 'addBox', box: tide({ id: undefined, name: `Off ${setup.length}${setup.at(-1).off}`, decks: [], setup }) }).id });
+    const r = set([{ piece: 'chart', at: 'center', id: 'feed3001' }, { piece: 'buoy', at: 'c3', off: [20, -12], id: 'feed3002' }]);
+    const chart = T.state.items.feed3001, buoy = T.state.items.feed3002, c3 = plus([chart.x, chart.y], chessXY(CHART, 'c3'));
+    ok(!r.notes.length && buoy?.at === 'feed3001:c3' && centredOn(buoy, 40, 40, plus(c3, [20, -12])), `on c3 by its address, its centre 20 right and 12 up of c3's (${J(buoy && [buoy.x, buoy.y, buoy.at])})`);
+    const far = set([{ piece: 'chart', at: 'center' }, { piece: 'buoy', at: 'c3', off: [300, 0] }]);
+    ok(/^🚫 Couldn't set up «.*»: "off" \[300,0\] takes the piece out of reach of its spot 'c3'$/.test(far.notes[0] || ''), `out of its spot's reach: refused, said (${far.notes[0]})`);
+    ok(/off is only for a piece whose "at" is an address/.test(thrown(() => boxOfDef(tide({ setup: [{ piece: 'buoy', at: [10, 10], off: [1, 1] }] })))), 'with "at" as [x, y]: refused by the box\'s gate');
+  }
+
+  section('(F) {board, at} names a board an entry BEFORE it places — checked when the box is read, not at Set up (D198)');
+  {
+    const why = thrown(() => boxOfDef(tide({ setup: [{ piece: 'buoy', at: { board: 'reef', at: '2,1' } }, { piece: 'reef', at: [100, 1300] }] })));
+    ok(/^setup\[0\]\.at: board "reef" is never placed by this setup before this entry/.test(why), `the board listed after the entry set on it: refused, naming the entry (${why})`);
+    ok(/is never placed by this setup before this entry/.test(thrown(() => boxOfDef(tide({ setup: [{ piece: 'reef', at: { board: 'reef', at: '2,1' } }] })))), 'a board set on itself: refused');
+    ok(!thrown(() => boxOfDef(tide({ setup: [{ piece: 'reef', at: [100, 1300] }, { piece: 'buoy', at: { board: 'reef', at: '2,1' } }] }))), 'listed first: fine');
+  }
+
+  section("(F) a saved state's key that names no player is invalid, not a player away (D199, §4j case 11)");
+  {
+    const T = hostTable({ seed: 63, players: [[BOB, 'Bob']] });
+    for (const [what, secret, want] of [
+      ['"__proto__"', JSON.parse('{"__proto__": {"text": "x"}}'), ['Some saved game state was invalid and was dropped']],
+      ['"mallory"', { mallory: { text: 'x' } }, ['Some saved game state was invalid and was dropped']],
+      ['a pid nobody has', { ['f'.repeat(16)]: { text: 'x' } }, ["Some saved state referred to players who weren't seated; it was dropped"]],
+      ['"@#3" with two seated', { '@#3': { text: 'x' } }, ["Some saved state referred to players who weren't seated; it was dropped"]],
+    ]) {
+      const b = act(T, HOST, { t: 'addBox', box: { ...skiff(), name: `Keys ${what}`, rulesState: { data: {}, public: {}, asks: {}, secret } } }).id;
+      const r = act(T, HOST, { t: 'setup', box: b, rules: true });
+      ok(J(r.enabled?.toasts) === J(want) && !Object.keys(T.state.rules.secret).length, `a secret keyed ${what}: dropped, "${want[0]}" (${J(r.enabled?.toasts)})`);
+    }
+    const b = act(T, HOST, { t: 'addBox', box: { ...skiff(), name: 'Keys asks', rulesState: { data: {}, public: {}, asks: { mallory: [{ id: 'q', prompt: 'Go?', options: ['yes'] }] }, secret: {} } } }).id;
+    ok(J(act(T, HOST, { t: 'setup', box: b, rules: true }).enabled?.toasts) === J(['Some saved game state was invalid and was dropped']), 'asks keyed "mallory": the invalid toast too');
+  }
+
+  section('(F) a clear ends the box set up: lastSetup goes — on the host and through a Worker patch, and only there (D200)');
+  {
+    const T = hostTable({ seed: 64, players: [[BOB, 'Bob']] }), b = act(T, HOST, { t: 'addBox', box: tide() }).id;
+    act(T, HOST, { t: 'setup', box: b });
+    act(T, HOST, { t: 'clear' });
+    ok(T.state.lastSetup === undefined && act(T, HOST, { t: 'reset' }).notes[0] === '🚫 Nothing to reset: no game box was set up', 'cleared: no box set up, nothing to reset');
+    const R = room(HOST, 'Alice', [[BOB, 'Bob']], 'a'), H = R.H, tb = R.add(HOST, tide({ rules: TIDE_RULES })).id;
+    R.job(HOST, { t: 'setup', box: tb, rules: true });
+    R.job(HOST, { t: 'clear' });
+    ok(H.state.lastSetup === undefined && R.same() && H.state.rules.enabled, 'a clear in the Worker: its patch says lastSetup: null, and the host takes it (digests agree)');
+    R.job(HOST, { t: 'setup', box: tb });
+    const r0 = quietly(() => R.M.job(BOB, { t: 'chat', msg: 'ahoy' })).value, P = structuredClone(r0.patch);
+    P.lastSetup = null;
+    let threw = '';
+    try { quietly(() => H.applyStatePatch(P, structuredClone(r0.out), { p: BOB, a: { t: 'chat', msg: 'ahoy' } })); } catch (e) { threw = e.message; }
+    ok(threw === 'the script set the last setup outside a setup' && H.state.lastSetup === tb, `a forged lastSetup: null in Bob's chat: refused (${threw})`);
+    // 🎲's demos clear, then start their rules: the chess game exported is chess's, not the box set up before it
+    R.job(HOST, { t: 'clear' });
+    R.job(HOST, { t: 'setRules', enabled: true, reset: true, code: RULES_TEMPLATES.chess });
+    const x = quietly(() => H.exportBox({})).value.box;
+    ok(H.state.lastSetup === undefined && x.name !== 'Tidewater' && x.id !== tb && !x.pieces.some((p) => p.id === 'chart'), `the export after 🎲 chess is chess's (${x.name}, ${x.pieces.length} piece types)`);
+  }
+
+  section('(F) a second set laid out with clear: false is said again (D201)');
+  {
+    const T = hostTable({ seed: 65, players: [[BOB, 'Bob']] }), b = act(T, HOST, { t: 'addBox', box: tide({ seats: undefined, setup: [{ piece: 'buoy', at: [400, 400] }] }) }).id;
+    const one = act(T, HOST, { t: 'setup', box: b }), two = act(T, HOST, { t: 'setup', box: b, clear: false });
+    ok(J(two.lines) === J(['set up «Tidewater» (1 item)']) && one.lines.includes('set up «Tidewater» (1 item)'), `the same line, twice (${J(two.lines)})`);
+  }
+
+  section('(F) a forged lastSetup in a loadBox job: only the box it lays out, only with its setup (D202)');
+  {
+    const L = room(HOST, 'Alice', [[BOB, 'Bob']], 'b'), LH = L.H, other = L.add(HOST, skiff()).id;
+    L.job(HOST, { t: 'setRules', enabled: true, reset: true, code: '({ name: "Plain" })' });
+    for (const [what, a] of [['set up', { t: 'loadBox', box: BOXES.draughts, setup: true, clear: true }], ['only added', { t: 'loadBox', box: BOXES.backgammon }]]) {
+      const r0 = quietly(() => L.M.job(HOST, a)).value, P = structuredClone(r0.patch);
+      P.lastSetup = other;
+      let threw = '';
+      const was = LH.state.lastSetup;
+      try { quietly(() => LH.applyStatePatch(P, structuredClone(r0.out), { p: HOST, a })); } catch (e) { threw = e.message; }
+      ok(threw === 'the script set the last setup outside a setup' && LH.state.lastSetup === was, `a loadBox (${what}) whose patch points lastSetup at another box: refused (${threw})`);
+      L.job(HOST, { t: 'setRules', enabled: true, reset: true, code: '({ name: "Plain" })' });
+    }
+    L.job(HOST, { t: 'loadBox', box: BOXES.draughts, setup: true, clear: true });
+    ok(isBuiltin(LH.state.boxes[LH.state.lastSetup]) && L.same(), 'the honest one: lastSetup is the draughts box it laid out');
+  }
+
+  section("(F) errors named as the author wrote the box; isBuiltin's quick no and its memo (D203)");
+  {
+    const grid = thrown(() => boxOfDef(tide({ pieces: tide().pieces.map((p) => (p.id === 'reef' ? { ...p, grid: { ...p.grid, cols: 99 } } : p)) })));
+    ok(/^pieces\[1\] \(«reef»\)\.grid: cols must be 1–64/.test(grid), `a board's grid: "${grid}"`);
+    const back = thrown(() => boxOfDef(tide({ backs: [{ id: 'fog', color: 'not a colour' }, { id: 'crate', img: 2 }] })));
+    ok(/^backs\[0\] \(«fog»\)/.test(back), `a back: "${back}"`);
+    ok(thrown(() => boxOfDef({ name: 'X', pieces: [{ id: 'a', kind: 'die' }, { kind: 'die' }] })) === 'pieces[1]: "id" is required (a text id)', 'a piece without an id: its index');
+    const big = { ...cleanBox(json(BOXES.draughts)), name: 'Big', rulesState: { data: { pad: 'x'.repeat(3e6) }, public: {}, asks: {}, secret: {} } };
+    let t0 = performance.now();
+    for (let k = 0; k < 50; k++) publicBox(big);
+    const quick = performance.now() - t0, dr = { ...big, name: 'Draughts' };
+    isBuiltin(dr);
+    t0 = performance.now();
+    for (let k = 0; k < 50; k++) publicBox(dr);
+    const memo = performance.now() - t0;
+    ok(quick < 25 && memo < 25 && !isBuiltin(dr), `a 3 M-char box: 50 publicBox calls in ${quick.toFixed(1)} ms (its name is no built-in's), ${memo.toFixed(1)} ms named "Draughts" once known`);
+  }
+}
+
 (async () => {
   await guard('(1) format', testFormat);
   await guard('(2) setup', testSetup);
@@ -1581,5 +1711,6 @@ function indepWorker() {
   await guard("(5′) dedup", indepDedup);
   await guard("(6′) MIGRATE[4], reset after a reload", indepMigrate);
   await guard("(W′) Worker contract", indepWorker);
+  await guard('(F) fix-up regressions', testFixup);
   report();
 })().catch(crash);

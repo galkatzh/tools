@@ -778,6 +778,15 @@ sync and rendering, and the Worker together with `handle`.
          skips it.
        - An export takes the rules and their state along by default only
          while they run.
+       - Setting a box up stops the game that ran: its rules are switched
+         off with the table they ruled (said in the confirm), as 🎲 does;
+         a clear ends the box set up, so Reset never lays out a box the
+         table no longer holds.
+       - A shuffle of hidden pieces deals out what they are, never where
+         they stand: the ids a box's author gave stay with the places.
+       - The trust dialog can't be answered by accident: its buttons wake
+         half a second after it shows, and Cancel stands where the
+         confirm's Set up was.
 5. **Private material.**
    - `vis` (owner-visible pieces, dice under a cup), private areas beyond the
      hand (a tile rack, a screen), and peeking at any hidden piece.
@@ -859,3 +868,9 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
 - **A fingertip's reach for small supplies only:** a bowl or a pile drawn
   smaller than a fingertip takes a press beside it; small pieces don't, so a
   finger on a crowded table still pans (§2).
+- **A new game box replaces the game that ran:** a clearing Set up switches
+  the running rules off (the box's own start after it, once the host
+  trusts them), and a clear forgets the box set up (§4, §7).
+- **An id names a place, never a hidden piece:** a shuffle of hidden pieces
+  trades their identities among the places, so ids a box's author chose
+  reveal nothing (§1, §4).

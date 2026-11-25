@@ -1880,8 +1880,10 @@ own, beside the implementer's `t-p3-ui.js` and `t-p3-cli.js`.
   and `#box-x-msg` ("Saved Harbor Run.zip"). The questions are one dialog,
   `#box-ask[data-kind]`: `#box-ask-title`, the lines and checkboxes
   (`[data-c=rules]`, `[data-c=shuffle]`) of `#box-ask-body`, the buttons of
-  `#box-ask-btns` (values `cancel` / `ok`; the trust dialog's `cancel`,
-  `without`, `enable`).
+  `#box-ask-btns` (values `cancel` / `ok`; the trust dialog's `enable`,
+  `without`, `cancel`, left to right). Every question's buttons are disabled
+  for half a second once it shows (`ASK_ARM_MS`): Playwright's `click` and
+  `tap` wait for them; a test that dispatches its own click must wait too.
 - **Mechanism changes**: `run-all.sh`'s serial batch adds `t-p4-bench`;
   `t-p3-term.js` keeps only the snapshots a tab sends to its bridge of the
   moment (see its entry). No assertion changed.
@@ -1997,6 +1999,35 @@ answer a press of the dialog's own buttons; nothing they test goes through
   rules, a turn played, then exported with its rules and state: the clock
   from the press of Export… to the download; the `.zip` holds game.json,
   rules.js and every image game.json names (an image by its bytes).
+
+### The 4A fix-up's regressions
+
+- **`core-p4.test.mjs` (F)**: a guest's shuffled group of face-down pieces
+  given ids, set up 40 times — each id stays at its place and names no
+  piece (D196); `"off"` keeps a piece on its spot off the centre, and one
+  out of reach is refused (D197); `{board, at}` before its board refused
+  when the box is read (D198); a saved secret or ask keyed by no player is
+  invalid, one keyed by an absent player is "away" (D199); a `clear` ends
+  `lastSetup`, on the host and through a Worker patch (`lastSetup: null`,
+  taken only in a clear), and an export after 🎲 chess is chess's (D200); a
+  second `--keep` setup is logged again (D201); a forged loadBox patch
+  pointing `lastSetup` at another box is refused (D202); errors named as the
+  author wrote the box, and `isBuiltin`'s quick no and memo (D203).
+- **`t-p4-boxes.js`**: in section 3, two root game.json told apart by case,
+  a game.json without a name, a deck of 5,500 cards; in section 2, a zip
+  holding empty files, a deck back named "navy"; in section 5, a double
+  click on Set up leaves the trust dialog waiting (D204); in section 7, the
+  export unzipped and picked as plain files; section 8, a double tap on a
+  phone, and a guest whose host leaves mid-upload (D209); section 13, a
+  game running when a box is set up (its rules switched off, said in the
+  confirm: D205), a strict game refusing an upload — the host's and a
+  guest's — with what to do, and README's and Help's examples uploaded and
+  set up as written. Screenshot: `shots/p4-boxes-stops-desk.png`.
+- **`t-p3c-review.js` section 2**: the press beside go's bowl moved from
+  12 to 14 px off its centre (clear of the bowl's own box: at 12 px it
+  touched the box's corner, and whether that was a hit was the engine's
+  rounding), and a touch on the bowl's own corner, dispatched to the bowl,
+  plays its stone where the finger ends (D206).
 
 ## Storage and images (Phase 1B)
 

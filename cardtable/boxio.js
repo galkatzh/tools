@@ -7,7 +7,7 @@
 // a .json. Nothing here trusts an upload: a zip is read within every limit
 // below whatever its directory says, a path is only ever a lookup key, and
 // an image leaves as what a canvas wrote. JSZip comes from the CDN on first use.
-import { ASSET_MAX_BYTES, MAX_RULES_CHARS, RANKS, SUITS } from './core.js?v=1';
+import { ASSET_MAX_BYTES, COLOR_RE, MAX_DECK_CARDS, MAX_RULES_CHARS, RANKS, SUITS } from './core.js?v=1';
 import { IMG_MAX_SIDE, IMG_MAX_PX, imageDims, imageType, sha256hex, has } from './store.js?v=1';
 
 /** This file's code version (see core.js MODULE_V). */
@@ -118,14 +118,17 @@ export async function encodeImage(src, { max = PIECE_PX, name = 'the image' } = 
 // --- decks -------------------------------------------------------------------
 /** A deck.json manifest `m` — the + Deck dialog's, and each deck of a
  *  game.json — as a deck in the upload shape (core.js cleanDeckV1): `name`,
- *  `back` (a colour "#…", or an image's file name) and `cards`: [{file?,
+ *  `back` (a colour — "#…", or a name like "navy" that no file of the
+ *  upload has, `has(fileName)` — or an image's file name) and `cards`: [{file?,
  *  name?, text?, color?, bg?, meta?, r?, s?, c?, count?}]. A card shows the
  *  image `file` (named after it unless it has a name), else its text: no art
  *  needed; `r` and `s` make it a standard card (rank, suit; `c` its colour,
- *  "r" or "b": an export writes a standard deck so). `img(fileName)` turns a
- *  file name into a data URL; an image several cards show is stored once.
- *  Resolves {deck, used: the file names it read}. */
-async function deckOf(m, img) {
+ *  "r" or "b": an export writes a standard deck so); `count` copies, at
+ *  most 500 a card and MAX_DECK_CARDS in all (said as soon as it is past,
+ *  before a list that size is made). `img(fileName)` turns a file name into
+ *  a data URL; an image several cards show is stored once. Resolves {deck,
+ *  used: the file names it read}. */
+async function deckOf(m, img, has = () => false) {
   if (!Array.isArray(m?.cards) || !m.cards.length) throw new Error('a deck needs a non-empty "cards" list');
   const imgs = [], gOf = new Map(); // file name → its index in imgs
   const idx = async (fn) => {
@@ -145,10 +148,12 @@ async function deckOf(m, img) {
       ...(e.bg && { b: String(e.bg).slice(0, 24) }),
       ...(e.meta !== undefined && { meta: e.meta }),
     };
-    for (let j = Math.min(Math.max(1, e.count | 0 || 1), 500); j > 0; j--) cards.push(card); // (copies share the object: never mutated)
+    const copies = Math.min(Math.max(1, e.count | 0 || 1), 500);
+    if (cards.length + copies > MAX_DECK_CARDS) throw new Error(`a deck holds at most ${MAX_DECK_CARDS.toLocaleString('en-US')} cards (cards[${k}] goes past it)`);
+    for (let j = copies; j > 0; j--) cards.push(card); // (copies share the object: never mutated)
   }
-  const deck = { name: String(m.name || 'Deck').slice(0, 24), back: null, imgs, cards };
-  if (m.back != null) deck.back = String(m.back).startsWith('#') ? String(m.back).slice(0, 24) : imgs[await idx(String(m.back))];
+  const deck = { name: String(m.name || 'Deck').slice(0, 24), back: null, imgs, cards }, back = m.back == null ? null : String(m.back);
+  if (back !== null) deck.back = back.startsWith('#') || (COLOR_RE.test(back) && !has(back)) ? back.slice(0, 24) : imgs[await idx(back)];
   return { deck, used: new Set(gOf.keys()) };
 }
 /** The + Deck dialog's deck from a deck.json manifest `m` and the images
@@ -160,7 +165,7 @@ export async function manifestDeck(m, images) {
     if (!byName.has(fn)) throw new Error(`deck.json references "${fn}" but no such image was uploaded`);
     return encodeImage(byName.get(fn), { name: fn });
   };
-  const { deck, used } = await deckOf(m, img);
+  const { deck, used } = await deckOf(m, img, (fn) => byName.has(fn));
   for (const f of images) {
     if (used.has(f.name)) continue;
     deck.cards.push({ g: deck.imgs.length, n: nameFromFile(f.name) });
@@ -179,8 +184,10 @@ export async function filenameDeck(images) {
 }
 
 // --- reading an upload ------------------------------------------------------------
-/** The files of an upload of plain files (no zip), by name: {size, read(limit, spent)}. */
+/** The files of an upload of plain files (no zip), by name: {size, read(limit, spent)}. A picker gives names without folders: two alike can't be told apart. */
 function plainFiles(list) {
+  const twice = list.find((f, k) => list.findIndex((g) => g.name === f.name) !== k);
+  if (twice) throw new Error(`two files are named "${twice.name}": pick one of them, or upload the game as a .zip`);
   return new Map(list.map((f) => [f.name, {
     size: f.size,
     async read(limit, spent) {
@@ -210,7 +217,8 @@ async function zipFiles(file) {
     const raw = f.unsafeOriginalName ?? f.name, path = raw.replace(/^(\.\/)+/, ''); // (JSZip resolves "..": its original name is the one to judge)
     if (raw.startsWith('/') || raw.split(/[\\/]/).includes('..')) throw new Error(`${file.name}: "${raw.slice(0, 80)}" points outside the zip — refused`);
     if (f.dir || path.startsWith('__MACOSX/')) continue;
-    const size = f._data?.uncompressedSize;
+    // (an entry that declares 0 bytes JSZip keeps as '' — a promise of it, never inflated: its size is 0)
+    const size = typeof f._data?.then === 'function' ? 0 : f._data?.uncompressedSize;
     if (!Number.isSafeInteger(size) || size < 0) throw new Error(`${file.name}: the zip reader can't tell how large "${path.slice(0, 80)}" is`);
     if (size > FILE_MAX_BYTES) throw new Error(`${path} is ${mb(size)} unzipped (max ${mb(FILE_MAX_BYTES)} a file)`);
     if ((declared += size) > IMPORT_MAX_BYTES) throw new Error(`${file.name} unzips to over ${mb(IMPORT_MAX_BYTES)}`);
@@ -266,8 +274,9 @@ export async function readBox(picked, progress = () => {}) {
   const zips = picked.filter((f) => /\.zip$/i.test(f.name));
   if (zips.length && picked.length > 1) throw new Error('pick the .zip on its own');
   const files = zips.length ? await zipFiles(zips[0]) : plainFiles(picked), spent = { n: 0 };
-  const jsons = [...files.keys()].filter((p) => (zips.length ? /^([^/]+\/)?game\.json$/i : /\.json$/i).test(p));
-  const main = zips.length ? jsons.find((p) => !p.includes('/')) ?? (jsons.length === 1 ? jsons[0] : null) : jsons.length === 1 ? jsons[0] : null;
+  const jsons = [...files.keys()].filter((p) => (zips.length ? /^([^/]+\/)?game\.json$/i : /\.json$/i).test(p)), roots = jsons.filter((p) => !p.includes('/'));
+  if (zips.length && roots.length > 1) throw new Error(`${zips[0].name} has more than one game.json at its root (${roots.join(', ')})`);
+  const main = zips.length ? roots[0] ?? (jsons.length === 1 ? jsons[0] : null) : jsons.length === 1 ? jsons[0] : null;
   if (!main) {
     throw new Error(zips.length ? `${zips[0].name} has ${jsons.length ? 'a game.json in more than one folder' : 'no game.json (at its root, or in its one folder)'}`
       : jsons.length ? `pick one .json file, the game's (got ${jsons.join(', ')})` : 'pick a game.json with its images, or a .zip');
@@ -278,13 +287,21 @@ export async function readBox(picked, progress = () => {}) {
   let def;
   try { def = JSON.parse(text); } catch (err) { throw new Error(`${main} is not valid JSON: ${err.message}`); }
   if (!isObj(def)) throw new Error(`${main} must hold one object: {"name": …, "pieces": […], …}`);
+  if (typeof def.name !== 'string' || !def.name.trim()) throw new Error(`${main}: "name" is required — the game's name, at most 40 characters`);
   if (def.cards !== undefined && def.pieces === undefined && def.decks === undefined) throw new Error(`${main} is a deck (it has "cards"): add it with + Deck`);
   if (def.types !== undefined && def.pieces === undefined) throw new Error(`${main}: list the piece types as "pieces": [{"id": …}, …], not "types"`);
-  /** The key of the file a field names (relative to game.json), checked: it must be in the upload. */
+  /** The key of the file `v` names (relative to game.json), or null: its
+   *  path; among plain files (a picker gives no folders) its own name when
+   *  no file has that path — an export's "images/0.webp", picked unzipped. */
+  const keyOf = (v) => {
+    const p = dir + v.replace(/^(\.\/)+/, ''), base = p.replace(/^.*\//, '');
+    return files.has(p) ? p : !zips.length && files.has(base) ? base : null;
+  };
+  /** keyOf(v) for the field at `at`, checked: it must be in the upload. */
   const file = (v, at) => {
     if (typeof v !== 'string' || !v) throw new Error(`${main}: ${at} must name a file of the upload`);
-    const p = dir + v.replace(/^(\.\/)+/, '');
-    if (!files.has(p)) throw new Error(`${main}: ${at} names "${v.slice(0, 80)}", which isn't in the upload`);
+    const p = keyOf(v);
+    if (!p) throw new Error(`${main}: ${at} names "${v.slice(0, 80)}", which isn't in the upload`);
     return p;
   };
   const list = (v) => (Array.isArray(v) ? v : []); // (any other shape is core's to refuse)
@@ -302,7 +319,7 @@ export async function readBox(picked, progress = () => {}) {
   });
   decks.forEach((d, k) => {
     for (const [j, c] of list(d?.cards).entries()) if (isObj(c) && c.file) deckImgs.add(file(c.file, `decks[${k}].cards[${j}].file`));
-    if (typeof d?.back === 'string' && !d.back.startsWith('#')) deckImgs.add(file(d.back, `decks[${k}].back`));
+    if (typeof d?.back === 'string' && !d.back.startsWith('#') && (keyOf(d.back) || !COLOR_RE.test(d.back))) deckImgs.add(file(d.back, `decks[${k}].back`)); // (else a colour: "navy")
   });
   // Each image read and encoded once per size (in a box's order, then the decks')
   const urls = new Map(), total = boxImgs.size + [...deckImgs].filter((p) => boxImgs.get(p) !== PIECE_PX).length;
@@ -324,14 +341,14 @@ export async function readBox(picked, progress = () => {}) {
     tb.decks = [];
     for (const [k, d] of decks.entries()) {
       try {
-        const { deck } = await deckOf(d, (fn) => encode(file(fn, 'file'), PIECE_PX));
+        const { deck } = await deckOf(d, (fn) => encode(file(fn, 'file'), PIECE_PX), (fn) => !!keyOf(fn));
         tb.decks.push({ ...deck, ...(d.id !== undefined && { id: d.id }) });
       } catch (err) { throw new Error(`${main}: decks[${k}]${d?.name ? ` («${String(d.name).slice(0, 24)}»)` : ''}: ${err.message.replace(`${main}: `, '')}`); }
     }
   }
   // The rules: a file of the upload, else the code itself
   const rf = typeof def.rules === 'string' && def.rules.trim();
-  if (rf && (files.has(dir + rf.replace(/^(\.\/)+/, '')) || /^[^\n(){};]{1,200}\.js$/i.test(rf))) {
+  if (rf && (keyOf(rf) || /^[^\n(){};]{1,200}\.js$/i.test(rf))) {
     const p = file(rf, 'rules');
     progress(`Reading ${rf}…`);
     tb.rules = utf8(await read(p, RULES_MAX_BYTES), p.slice(dir.length));

@@ -389,7 +389,7 @@ same file picker as the images:
   then redrawn at most 560 px on its long side as WebP (JPEG or PNG where the
   browser can't write WebP, as Safari may not) and stepped down to fit 2 MB.
 
-## Game boxes (📦)
+## Game boxes
 
 A **game box** is a whole game in one upload: its table, seats, boards,
 pieces, dice, decks, starting layout and, optionally, its rules. The **📦**
@@ -403,9 +403,10 @@ together, or as one **`.zip`** of them:
 
 ```jsonc
 {
-  "name": "Harbor Run", "players": [2, 4],
+  "name": "Harbor Run", "players": [2, 2],
   "table": { "shape": "rect", "w": 1600, "h": 1100, "felt": "#1d4e5f" },
-  "seats": [ { "id": "red", "name": "Red", "edge": "bottom" } ],        // optional: named seats
+  "seats": [ { "id": "red", "name": "Red", "edge": "bottom" },          // optional: named seats (without them,
+             { "id": "blue", "name": "Blue", "edge": "top" } ],         //  every player gets a seat of their own)
   "backs": [ { "id": "hold", "color": "#5b3a1e", "label": "?" } ],     // or "img": "back.png"
   "pieces": [
     { "id": "harbor", "kind": "board", "img": "board.png", "w": 600, "h": 400,
@@ -414,13 +415,14 @@ together, or as one **`.zip`** of them:
     { "id": "crate", "kind": "token", "w": 44, "img": "crate.png", "back": "hold" },
     { "id": "d6", "kind": "die" }
   ],
-  "decks": [ { "name": "Tides", "back": "#0e3a4a", "cards": [ { "file": "calm.png", "name": "Calm", "count": 3 } ] } ],
+  "decks": [ { "name": "Tides", "back": "#0e3a4a",
+               "cards": [ { "file": "calm.png", "name": "Calm", "count": 2 }, { "file": "storm.png", "name": "Storm" } ] } ],
   "setup": [
     { "piece": "harbor", "at": "center" },
     { "forEachSeat": [ { "piece": "boat", "at": "seat", "owner": "seat" } ] },
     { "piece": "crate", "at": "c2", "up": false },
-    { "deck": "Tides", "at": [1380, 760] },
-    { "hands": { "#1": [ { "deck": "Tides", "i": 5 } ] } }
+    { "pile": [ { "deck": "Tides", "i": 0 }, { "deck": "Tides", "i": 1 } ], "at": [1380, 760] },
+    { "hands": { "#1": [ { "deck": "Tides", "i": 2 } ] } }
   ],
   "rules": "rules.js",
   "meta": { "goal": "Bring three crates home" }
@@ -432,19 +434,30 @@ together, or as one **`.zip`** of them:
   file of the upload; `img` alone is the one-face shorthand) and its `back`
   (the face a hidden piece shows). A board carries its `grid`, `spaces`,
   `zones` and `links` (see *Pieces, dice and boards*). **Decks** are
-  `deck.json` manifests (above), each named. Every file a box names is
-  relative to `game.json`.
+  `deck.json` manifests (above), each named; a card's `count` makes copies,
+  so the deck above holds three cards: Calm (0 and 1) and Storm (2). Every
+  file a box names is relative to `game.json`; a game whose files lie in
+  folders goes up as a `.zip`, or as its files picked together (each is then
+  found by its own name, so two files may not share one).
 - **The setup** lays the game out: a `piece`, `supply` or `bag`; a `deck`
   (a face-down pile of the whole deck, `"shuffle": true` to shuffle it), a
   `pile` of cards or pieces, a `card`; `forEachSeat` (each seated player's
-  material, `"at": "seat"`, `"owner": "seat"`); `hands` dealt by seat
-  (`"#1"` is the first seated player clockwise from the bottom, or a named
-  seat). `at` is `"center"`, `[x, y]` (a top-left corner), `"seat"`, an
-  address on one of the box's boards (`"c2"`, `"harbor:c2"`), or
-  `{ "board": "harbor", "at": "c2" }`; `owner` may be `"seat:<id>"` or
-  `"#k"`. A setup is checked whole before anything moves — a deck or seat it
-  names, the players it needs, the room on the table — and happens whole or
-  not at all.
+  material, `"at": "seat"`, `"owner": "seat"`); `hands` by seat (`"#1"` is
+  the first seated player clockwise from the bottom, or a named seat). Every
+  entry makes what it names: a `deck` entry lays the whole deck, and a hand's
+  card is one more copy — to deal from a deck, lay a `pile` of the cards the
+  hands don't take, as above. `at` is `"center"`, `[x, y]` (a top-left
+  corner), `"seat"`, an address on one of the box's boards (`"c2"`,
+  `"harbor:c2"`), or `{ "board": "harbor", "at": "c2" }` (a board an entry
+  before it places); with an address, `"off": [dx, dy]` sets a piece that
+  far from the spot's centre, still on it (an export writes one a moved
+  board left so), and with `[x, y]`, `"free": true` sets it down without
+  snapping. `owner` may be `"seat:<id>"` or `"#k"`. In a `group` with
+  `"shuffle": true`, the face-down pieces that share a back are dealt out
+  among the group's places (an `id` stays with its place). A setup is
+  checked whole before anything moves — a deck or seat it names, the
+  players it needs, the room on the table — and happens whole or not at
+  all.
 - **`meta`** (at most 8 KB) is for scripts (`t.box(id).meta`), and **public**:
   every player can read it. So are a box's name, pieces and decks' names;
   its setup, rules and saved rules state never leave the host.
@@ -466,25 +479,33 @@ in the dialog and a toast, naming the file or the field ("map.png: not a
 PNG, JPEG, WebP or GIF image", "game.json: pieces[0].img names "gone.png",
 which isn't in the upload").
 
-**Set up and Reset** are the host's. *Set up* asks first what there is to
-decide: that it clears the table, "Enable its rules" (ticked), and for a box
-a guest added "Shuffle face-down piles" (ticked) under "{Bob} added this box
-and knows its starting layout" — whoever uploads a box knows the order of
-its face-down piles and which hands go where, so the host's table shuffles
-them by default. With "Set up now" ticked, the host's own upload is set up
-at once. *Reset* (offered on the box set up last, also after a reload) lays
-it out again on a cleared table and, when its rules were running, restarts
-them. Guests may upload too, within the 1.5 M-character budget they share
-with their decks; their box is only registered — setting it up is the
-host's call. The same box uploaded twice is one box.
+**Set up and Reset** are the host's. *Set up* (on a box with a layout, or
+with rules that lay the table out themselves) asks first what there is to
+decide: that it clears the table, that the rules running now are switched
+off (the game they ran is cleared away with the table, as 🎲 does), "Enable
+its rules" (ticked), and for a box a guest added "Shuffle face-down piles"
+(ticked) under "{Bob} added this box and knows its starting layout" —
+whoever uploads a box knows the order of its face-down piles and which
+hands go where, so the host's table shuffles them by default. With "Set up
+now" ticked, the host's own upload is set up at once (a box of pieces alone,
+with nothing to lay out, is only added). *Reset* (offered on the box set up
+last, also after a reload, until the table is cleared — 🎲's games clear it)
+lays it out again on a cleared table and, when its rules were running,
+restarts them; other rules are switched off. Guests may upload too, within
+the 1.5 M-character budget they share with their decks; their box is only
+registered — setting it up is the host's call. A strict game's rules (chess,
+go, reversi) take no new boxes while they run: the dialog says so, and the
+host switches them off in 📜 first. The same box uploaded twice is one box.
 
 **Trust.** A rules script sees every hand and hidden piece and can reveal
 them, so a box's rules never run without the host's click: before them, the
 **trust dialog** — "«X» comes with rules written by its author, added by
 Bob. … Enable the rules?" — offers *Enable rules*, *Set up without rules*
-or *Cancel*. Only a built-in box (by its content, never by anything a box
-can claim) skips it; the terminal's `setup <box> --rules` waits for the same
-click on the page.
+or *Cancel* (where the confirm's *Set up* was, and every button wakes half a
+second after the dialog shows, so a double click on *Set up* never answers
+it). Only a built-in box (by its content, never by anything a box can claim)
+skips it; the terminal's `setup <box> --rules` waits for the same click on
+the page.
 
 **Export and resuming elsewhere.** *Export this table* (the host's) writes the
 table as a box: its boards, pieces and decks, and a setup of the position
@@ -866,4 +887,9 @@ the setup grammar, addBox, setup, reset, export and import),
 uploads, every hostile zip, the trust dialog, Reset, export and re-import,
 chess and Hold'em resumed in another room), `t-p4-cli.js` (`boxes`,
 `setup`, `reset` in both REPLs) and `t-p4-bench.js` (a 64-photo zip
-imported, and a box exported, against the clock).
+imported, and a box exported, against the clock); the suites written from
+the spec apart from the code check the same again — `t-p4-box-ui.js` and
+`t-p4-box-files.js` (every upload, hostile file and dialog on a desktop and
+on phones), `t-p4-resume.js` (chess and Hold'em exported mid-game and
+played on in fresh rooms) — with their benches `t-p4-box-bench.js` and
+`t-p4-resume-bench.js` in the serial batch.

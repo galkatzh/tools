@@ -97,7 +97,7 @@ const rect = (p, sel) => p.evaluate((s) => { const el = document.querySelector(s
     await shot(alice, 'p3c-dialog-go-desk');
   }
 
-  section('2. A finger\'s reach (D170): go 19 × 19\'s bowl, 16 px wide on an upright phone, is taken by a press 12 px off its centre; bare felt far from it still pans');
+  section('2. A finger\'s reach (D170): go 19 × 19\'s bowl, 16 px wide on an upright phone, is taken by a press 14 px off its centre, and from its own corner by its centre; bare felt far from it still pans');
   {
     await G.pickGame(alice, 'go19');
     ok(await G.everywhere(both, "v.rules?.name === 'Go 19 × 19' && Object.values(v.items).filter((it) => it.k === 's').length === 2", null, 30000), 'Go 19 × 19 from 🎲');
@@ -109,11 +109,11 @@ const rect = (p, sel) => p.evaluate((s) => { const el = document.querySelector(s
     await bob.click('#view-btn');
     const bowl = await bowlOf(seat), box = await bob.evaluate((id) => { const r = document.querySelector(`.item[data-id="${id}"]`).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width }; }, bowl);
     ok(box.w < 30, `Bob's bowl is drawn ${box.w.toFixed(1)} px wide on his phone (well under a finger)`);
-    const press = { x: box.x - 8.5, y: box.y - 8.5 }; // (12 px off its centre, on bare felt)
+    const press = { x: box.x - 10, y: box.y - 10 }; // (14 px off its centre, on bare felt — clear of the bowl's own box, whatever an engine's hit-test rounds)
     const tf0 = await P.tf(bob), n0 = await bob.evaluate(() => window.__acts.length), to = await bob.evaluate(() => window.__ct.resolve('K10'));
     const end = await S.screenOf(bob, to.x, to.y);
     await S.gesture(bob, [press, ...S.steps(press, end, 12, 16).slice(1), { ...end, wait: 120 }], { touch: true });
-    ok(await P.waitView(alice, "Object.values(v.items).some((it) => it.k === 'g' && it.at === 'K10')", null, 10000), 'the press 12 px off the bowl took a stone, played on K10 (both screens)');
+    ok(await P.waitView(alice, "Object.values(v.items).some((it) => it.k === 'g' && it.at === 'K10')", null, 10000), 'the press 14 px off the bowl took a stone, played on K10 (both screens)');
     const tf1 = await P.tf(bob);
     ok(Math.hypot(tf1.px - tf0.px, tf1.py - tf0.py) < 1, `and the view did not pan (${J([tf0, tf1])})`);
     const sent = await bob.evaluate((n) => window.__acts.slice(n).map((x) => x.a.t), n0);
@@ -122,6 +122,21 @@ const rect = (p, sel) => p.evaluate((s) => { const el = document.querySelector(s
     await S.gesture(bob, [far, ...S.steps(far, { x: far.x + 40, y: far.y - 40 }, 6, 16).slice(1)], { touch: true });
     const tf2 = await P.tf(bob), sent2 = await bob.evaluate((n) => window.__acts.slice(n).map((x) => x.a.t), n1);
     ok(Math.hypot(tf2.px - tf1.px, tf2.py - tf1.py) > 20 && !sent2.includes('take'), `a press 85 px off it pans the view, as ever, and takes nothing (${J(sent2)})`);
+    // A touch right on the bowl's own corner (a direct hit, dispatched to the bowl so that no engine's hit-test decides it):
+    // the new stone is held by its centre, as nearTouch's is — by its corner it hung off the finger and missed the point (D206)
+    const other = await bowlOf(seat === 'black' ? 'white' : 'black');
+    await alice.evaluate((a) => { const c = window.__ct.resolve('T19'), s = window.__ct.view().items[a], T = window.__ct.boxes()[s.t.split('/')[0]].types[s.t.split('/')[1]]; return window.__ct.act({ t: 'take', id: a, x: c.x - T.w / 2, y: c.y - T.w / 2 }); }, other);
+    ok(await P.waitView(bob, "v.rules.public.turn === me", null, 10000), "(Alice plays T19: Bob's turn again)");
+    const k12 = await bob.evaluate(() => window.__ct.resolve('K12')), end2 = await S.screenOf(bob, k12.x, k12.y);
+    await bob.evaluate(async ({ id, end }) => {
+      const el = document.querySelector(`.item[data-id="${id}"]`), r = el.getBoundingClientRect(), from = { x: r.left + 1, y: r.top + 1 };
+      const ev = (type, pt, target) => target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, composed: true, pointerId: 41, pointerType: 'touch', isPrimary: true, button: 0, buttons: type === 'pointerup' ? 0 : 1, clientX: pt.x, clientY: pt.y }));
+      ev('pointerdown', from, el);
+      for (let k = 1; k <= 12; k++) { ev('pointermove', { x: from.x + ((end.x - from.x) * k) / 12, y: from.y + ((end.y - from.y) * k) / 12 }, window); await new Promise((res) => setTimeout(res, 16)); }
+      await new Promise((res) => setTimeout(res, 120));
+      ev('pointerup', end, window);
+    }, { id: bowl, end: end2 });
+    ok(await P.waitView(alice, "Object.values(v.items).some((it) => it.k === 'g' && it.at === 'K12')", null, 10000), "a touch on the bowl's own corner: its stone lands where the finger ends (K12), held by its centre");
     await shot(bob, 'p3c-go19-reach-phone');
   }
 

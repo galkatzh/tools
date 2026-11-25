@@ -738,14 +738,15 @@ const SETUP_KINDS = ['piece', 'supply', 'bag', 'deck', 'pile', 'card', 'hands', 
 /** A setup's `#k`: the k-th seated player, clockwise from the bottom of the table (spec §4a). */
 const SEAT_K_RE = /^#[1-9]\d?$/;
 /** A setup (SetupEntry[], spec §4a: the Phase 2 grammar, then Phase 4's
- *  `deck`, `pile`, `card` and `hands` entries, owners `#k`, entry `id`s and
- *  the `{board, at}` and address forms of `at`): its entries checked
+ *  `deck`, `pile`, `card` and `hands` entries, owners `#k`, entry `id`s,
+ *  the `{board, at}` (a board placed by an entry before it) and address
+ *  forms of `at`, a piece's `free` and `off`): its entries checked
  *  against the box's types, seats and decks (`deckNames`: the names its
  *  `decks` maps; a deck's cards are known only once it is in a table's
  *  catalog, so the card indices are the setup's to check: setupProblem). */
 function cleanSetup(list, types, seats, deckNames = []) {
   let entries = 0;
-  const seatIds = new Set((seats || []).map((s) => s.id)), ids = new Set(), boardRefs = [], boardsPlaced = new Set();
+  const seatIds = new Set((seats || []).map((s) => s.id)), ids = new Set(), boardsPlaced = new Set(); // (the board types placed so far, in the setup's order: as lay() places them)
   function where(R, at, inSeat) {
     const v = R.get('at');
     if (v === 'center') return v;
@@ -759,7 +760,7 @@ function cleanSetup(list, types, seats, deckNames = []) {
       if (!ty?.board) B.fail('board', `names no board of the box with spots (${JSON.stringify(String(b).slice(0, 40))})`);
       const g = ty.board.grid, c = typeof local === 'string' && g && parseAddr(g, local);
       if (!c && !(ty.board.spaces || []).some((sp) => sp.id === local)) B.fail('at', `is no address of the board "${b}" (${JSON.stringify(String(local).slice(0, 20))})`);
-      boardRefs.push([b, `${at}.at`]);
+      if (!boardsPlaced.has(b)) B.fail('board', `"${b}" is never placed by this setup before this entry (list the board first)`);
       return { board: b, at: c ? formatAddr(g, c.c, c.r) : local };
     }
     if (typeof v === 'string' && v.length <= 100 && onBoards(v)) return v; // (read on the table when the entry is laid out)
@@ -813,9 +814,10 @@ function cleanSetup(list, types, seats, deckNames = []) {
     const sub = e.group ? 'group' : e.forEachSeat ? 'forEachSeat' : null;
     return sub ? hiddenIn(e[sub], `${at}[${k}].${sub}`) : e.piece !== undefined && e.up === false ? [[e, `${at}[${k}]`]] : [];
   });
-  /** A shuffled group permutes the places of its hidden pieces that share a
-   *  back (spec §2c): everything else of theirs that shows (rot, lock, n,
-   *  owner) must agree, or it would tell them apart after the shuffle. */
+  /** A shuffled group deals out the identities of its hidden pieces that
+   *  share a back among their places (spec §2c): everything else of theirs
+   *  that shows (rot, lock, n, owner) must agree, or it would tell them
+   *  apart after the shuffle. (Their ids stay with the places: lay.) */
   function sameLooks(group, at) {
     const first = new Map(); // back id → [path, looks] of its first hidden piece
     for (const [e, path] of hiddenIn(group, `${at}.group`)) {
@@ -888,15 +890,19 @@ function cleanSetup(list, types, seats, deckNames = []) {
         }
         if (R.has('count')) o.count = R.count('count', 1, 200);
         if (R.has('spread')) o.spread = R.pair('spread');
-        if (ty.kind === 'board') boardsPlaced.add(o.piece);
       }
     }
     if (R.has('rot')) o.rot = normRot(R.num('rot', -COORD, COORD));
     if (R.has('lock')) o.lock = R.bool('lock');
     o.at = where(R, at, inSeat);
+    if (kind === 'piece' && types[o.piece].kind === 'board') boardsPlaced.add(o.piece); // (after its own `at`: a board isn't placed on itself)
     if (R.has('free')) { // (no snapping: a piece set down at [x, y] exactly, as an export writes one that lies off its spot)
       if (R.get('free') !== true || !Array.isArray(o.at)) R.fail('free', 'must be true, with "at" as [x, y]');
       o.free = true;
+    }
+    if (R.has('off')) { // (a piece on its spot, off the spot's centre: an export writes one a table change or a board's move left so)
+      if (kind !== 'piece' || !(isObj(o.at) ? o.at.board : typeof o.at === 'string' && o.at !== 'center' && o.at !== 'seat')) R.fail('off', 'is only for a piece whose "at" is an address');
+      o.off = R.pair('off');
     }
     if (R.has('owner')) o.owner = owner(R, inSeat);
     if (R.has('id')) { // (kept when no item holds it: an exported game's ids, which its script may store — spec §4c)
@@ -909,10 +915,7 @@ function cleanSetup(list, types, seats, deckNames = []) {
     }
     return o;
   }
-  const out = list.map((e, k) => entry(e, `setup[${k}]`, false));
-  const lost = boardRefs.find(([b]) => !boardsPlaced.has(b));
-  if (lost) throw new Error(`${lost[1]}: board "${lost[0]}" is never placed by this setup`);
-  return out;
+  return list.map((e, k) => entry(e, `setup[${k}]`, false));
 }
 /** The item ids setup `list` (cleaned) asks for (its entries' `id`s). */
 const setupIds = (list) => list.flatMap((e) => (e.group ? setupIds(e.group) : e.id ? [e.id] : []));
@@ -1020,15 +1023,20 @@ function cyrb53(s) {
  *  key; two keys that match are confirmed by comparing canon strings (a
  *  collision never merges two different boxes). */
 export const boxKey = (box) => cyrb53(canon(box));
-let builtins = null; // canon strings of the cleaned BOXES (made on first use)
+let builtins = null; // canon strings of the cleaned BOXES, and their names (made on first use)
+const builtinOf = new WeakMap(); // box object → isBuiltin(box): a stored box is never changed, and canon() of a big one costs
 /** Whether box `b` is one of the built-in BOXES, by content alone (never a
- *  stored or sent flag: nobody can claim it). */
+ *  stored or sent flag: nobody can claim it). A box whose name is none of
+ *  theirs is no built-in at once; the answer for an object is kept (the
+ *  boxes channel asks it of every box, at every guest's join). */
 export function isBuiltin(b) {
-  builtins ||= new Set(Object.values(BOXES).map((x) => canon(cleanBox(x))));
-  try { return builtins.has(canon(cleanBox(b))); } catch (err) {
-    console.error('isBuiltin: not a box at all', err);
-    return false;
-  }
+  builtins ||= { canons: new Set(Object.values(BOXES).map((x) => canon(cleanBox(x)))), names: new Set(Object.values(BOXES).map((x) => x.name)) };
+  if (isObj(b) && typeof b.name === 'string' && !builtins.names.has(b.name.replace(CTRL, ''))) return false;
+  if (builtinOf.has(b)) return builtinOf.get(b);
+  let yes = false;
+  try { yes = builtins.canons.has(canon(cleanBox(b))); } catch (err) { console.error('isBuiltin: not a box at all', err); }
+  if (isObj(b)) builtinOf.set(b, yes);
+  return yes;
 }
 
 /** A box in the game.json authoring format (spec §4a) as cleanBox reads it:
@@ -1044,7 +1052,9 @@ export function isBuiltin(b) {
 export function boxFromDef(def) {
   const list = (v, what, re) => {
     if (v === undefined) return [];
-    if (!Array.isArray(v) || v.some((x) => !isObj(x) || typeof x.id !== 'string')) throw new TypeError(`${what} must be a list of {id, …}`);
+    if (!Array.isArray(v)) throw new TypeError(`${what} must be a list of {id, …}`);
+    const k = v.findIndex((x) => !isObj(x) || typeof x.id !== 'string');
+    if (k >= 0) throw new TypeError(`${what}[${k}]: ${isObj(v[k]) ? '"id" is required (a text id)' : 'must be an object {id, …}'}`);
     // (checked here, not only by cleanBox: an id "__proto__" would set the
     // object's prototype below, and the entry would vanish without a word)
     const bad = v.find((x) => !isId(x.id, re));
@@ -1065,6 +1075,18 @@ export function boxFromDef(def) {
   }
   const { id, pieces, backs: b, decks, types: t, ...rest } = def;
   return { ...rest, name: def.name ?? 'Box', imgs: def.imgs ?? [], types, backs };
+}
+/** cleanBox of boxFromDef(def) — the authoring format checked — with every
+ *  error said as its author wrote the box: "types.<id>" (a board's
+ *  ".board" with it: its grid, spaces… sit on the piece) as "pieces[k]
+ *  («id»)", "backs.<id>" as "backs[k] («id»)". */
+function cleanDef(def, extra = {}) {
+  try { return cleanBox({ ...boxFromDef(def), ...extra }); } catch (err) {
+    throw new Error(err.message.replace(/\b(types|backs)\.([A-Za-z0-9_-]+)(\.board\b)?/g, (m, kind, id) => {
+      const list = def[kind === 'types' ? 'pieces' : 'backs'], k = Array.isArray(list) ? list.findIndex((x) => x?.id === id) : -1;
+      return k < 0 ? m : `${kind === 'types' ? 'pieces' : 'backs'}[${k}] («${id}»)`;
+    }));
+  }
 }
 /** addBox's payload (spec §4c: the game.json authoring format, its images
  *  and decks ingested already — `imgs`: asset ids; `decks`: [{name, id?,
@@ -1088,9 +1110,7 @@ export function boxOfDef(def, gate = cleanDeck) {
   });
   const dup = decks.find(([n], k) => decks.findIndex(([m]) => m === n) !== k);
   if (dup) throw new Error(`decks: two decks are named «${dup[0]}»`);
-  let raw;
-  try { raw = boxFromDef(def); } catch (err) { throw new Error(err.message); }
-  const box = cleanBox({ ...raw, ...(decks.length && { decks: Object.fromEntries(decks.map(([n, , w], k) => [n, w ?? `new${k}`])) }) });
+  const box = cleanDef(def, decks.length ? { decks: Object.fromEntries(decks.map(([n, , w], k) => [n, w ?? `new${k}`])) } : {});
   return { box, decks, id: want(def.id, 'id') };
 }
 /** A stand-in asset id: a TransportBox's images are checked as images later (store.js ingestBox). */
@@ -2285,7 +2305,7 @@ export function createTable(host, env = {}) {
     }
     if (host.table !== f0.table) P.table = host.table;
     if (host.seats !== f0.seats) P.seats = host.seats;
-    for (const k of ['zMax', 'boardSeq', 'guestDeckChars', 'lastSetup']) if (host[k] !== f0[k] && host[k] !== undefined) P[k] = host[k];
+    for (const k of ['zMax', 'boardSeq', 'guestDeckChars', 'lastSetup']) if (host[k] !== f0[k]) P[k] = host[k] ?? null; // (null: gone — a clear's lastSetup)
     if (dirty.log.length > j.log0) P.log = trimLog(dirty.log.slice(j.log0)); // (what the host would trim away need not travel)
     const refresh = [...j.refresh].filter((id) => !j.first.has(`i:${id}`) && own(host.items, id)).sort();
     const hands = [...j.refreshHands].filter((p) => !j.first.has(`p:${p}`) && own(host.players, p)).sort();
@@ -3232,10 +3252,13 @@ export function createTable(host, env = {}) {
     return true;
   }
 
-  /** Removes every item and empties every hand (`clear`). */
+  /** Removes every item and empties every hand (`clear`): no box is set up
+   *  on the table any more (lastSetup goes; a setup or a reset that clears
+   *  sets it again). */
   function clearTable(actor) {
     const n = itemCount();
     let m = 0;
+    delete host.lastSetup;
     for (const id of Object.keys(host.items)) remove(id);
     for (const [q, pl] of Object.entries(host.players)) {
       if (!pl.hand.length) continue;
@@ -3325,15 +3348,16 @@ export function createTable(host, env = {}) {
    *  An entry's `id` is used when no item holds it, else a new one is minted
    *  (remap); minted ids avoid every id the setup asks for. Hidden pieces
    *  carry no declaration order: one entry's are given their z in a random
-   *  order, and a `group` with `shuffle` permutes the places (x, y, z) of its
-   *  hidden pieces that share a back. "#k" is the k-th seated player
+   *  order, and a `group` with `shuffle` deals out the identities of its
+   *  hidden pieces that share a back among their places (ids and z stay
+   *  with the places). "#k" is the k-th seated player
    *  (seated); `hands` go to a named seat's holder or to "#k". An address
    *  `at` is read on the table as it then stands, `{board, at}` on the first
    *  board of that type this layout placed: one the table doesn't have
    *  throws (the caller's journal undoes what was laid out). The addresses
    *  are read again as each board lands (syncSpots), so a piece an earlier
    *  entry put there gets its spot by containment, and one a later entry
-   *  sets down `free` keeps none. With
+   *  sets down `free` keeps none; one set `off` its address keeps it. With
    *  `o.shuffle`, a face-down `deck` entry is shuffled, and a `pile`'s
    *  face-down members among their places (spec §4c: the box's author knew
    *  their order). */
@@ -3356,7 +3380,8 @@ export function createTable(host, env = {}) {
     /** Where the k-th item of entry `e` (w × h) goes: place()'s [x, y, o] —
      *  'center', [x, y] (a top-left; `free`: no snapping), in the seat's
      *  frame (dx to its right, dy toward the table), or centred on an
-     *  address; `spread` steps along the same axes. */
+     *  address (`off`: shifted by [dx, dy], set down unsnapped — o.on its
+     *  address); `spread` steps along the same axes. */
     function spot(e, it, seat, k) {
       const { w, h } = size(it), [sx, sy] = e.spread || [0, 0];
       if (e.at === 'center') return [table.w / 2 - w / 2 + k * sx, table.h / 2 - h / 2 + k * sy];
@@ -3368,7 +3393,8 @@ export function createTable(host, env = {}) {
       const a = typeof e.at === 'string' ? e.at : boards.has(e.at.board) ? `${boards.get(e.at.board)}:${e.at.at}` : null;
       const r = a && resolveAddr(tb(), a);
       if (!r || r.ambiguous) throw new Error(a ? `${r ? 'the ambiguous' : 'no such'} address '${typeof e.at === 'string' ? a : e.at.at}'${r ? ` (${r.ambiguous.join(' or ')})` : ''} on the table's boards` : `no board "${e.at.board}" is placed before an entry set on it`);
-      return [r.x - w / 2 + k * sx, r.y - h / 2 + k * sy, isPiece(it) ? { at: r.at } : {}];
+      const [ox, oy] = e.off || [0, 0];
+      return [r.x - w / 2 + k * sx + ox, r.y - h / 2 + k * sy + oy, !isPiece(it) ? {} : e.off ? { free: true, on: r.at } : { at: r.at }];
     }
     /** A pile's (or a hand's) member: a card {d, i, up} or a piece {t, f, up}. */
     const member = (m) => (m.deck !== undefined ? { d: deckId(m.deck), i: m.i, up: !!m.up } : { t: ref(m.piece), f: m.f ?? 0, up: m.up ?? !box.types[m.piece].back });
@@ -3377,19 +3403,21 @@ export function createTable(host, env = {}) {
       if (e.group) {
         const ids = run(e.group, seat);
         if (e.shuffle) {
-          // (cleanBox saw to it that these agree on everything else that shows: rot, lock, n, owner)
-          // (a place carries its address: they lie on the same spots, re-indexed)
+          // The identities (type, face) are dealt out among the places, and
+          // each item keeps its id, place, z and address: an id the box asks
+          // for names a starting place, never a piece (its author wrote which
+          // id went with which). cleanBox saw to it that the rest agrees: rot, lock, n, owner.
           const byBack = new Map();
           for (const id of ids) {
             const it = host.items[id];
             if (it.k === 'g' && it.up === false) listAt(byBack, backRef(host.boxes, it.t)).push([id, it]);
           }
           for (const l of byBack.values()) {
-            const spots = shuffle(l.map(([, it]) => [it.x, it.y, it.z, it.at]));
+            const who = shuffle(l.map(([, it]) => [it.t, it.f]));
             l.forEach(([id, it], k) => {
               index(id, it, false);
-              [it.x, it.y, it.z, it.at] = spots[k];
-              if (it.at === undefined) delete it.at;
+              [it.t, it.f] = who[k];
+              if (!isPiece(it)) delete it.at; // (a die never snaps: on a token's spot it takes no address)
               index(id, it, true);
             });
           }
@@ -3435,7 +3463,13 @@ export function createTable(host, env = {}) {
         if (owner) it.owner = owner;
         if (lock) it.lock = true;
         it.rot = turned(it, e.rot);
-        place(it, ...spot(e, it, seat, k));
+        const [x, y, po] = spot(e, it, seat, k);
+        place(it, x, y, po);
+        if (po?.on) { // (off its spot's centre: the spot is its own as containment reads it, while its centre lies in reach — D119)
+          const { w, h } = size(it);
+          if (snapAt(tb(), it.x + w / 2, it.y + h / 2)?.at !== po.on) throw new Error(`"off" [${e.off}] takes the piece out of reach of its spot '${display(po.on)}'`);
+          it.at = po.on;
+        }
       });
       // One entry's hidden pieces: their z values in a random order, and
       // their ids minted in a random order too (an env may mint ids in sequence).
@@ -3503,7 +3537,7 @@ export function createTable(host, env = {}) {
         if (why) throw new Error(why);
         const { n } = lay(id, box, box.setup);
         host.lastSetup = id;
-        logEvent(actor, `set up «${box.name}» (${n} pieces)`);
+        logEvent(actor, `set up «${box.name}» (${n} pieces)`, { keep: true });
       } else logEvent(actor, `added the box «${box.name}»`);
       took();
       return id;
@@ -3534,7 +3568,8 @@ export function createTable(host, env = {}) {
       if (why) throw new Error(why);
       const { n, remap, shuffled } = lay(id, box, list, { shuffle });
       host.lastSetup = id;
-      logEvent(p, reset ? `reset «${box.name}»` : `set up «${box.name}» (${n} ${n === 1 ? 'item' : 'items'})${shuffled ? ', face-down piles shuffled' : ''}`);
+      // (kept: a second set laid out with clear: false is said again, never folded into the line before)
+      logEvent(p, reset ? `reset «${box.name}»` : `set up «${box.name}» (${n} ${n === 1 ? 'item' : 'items'})${shuffled ? ', face-down piles shuffled' : ''}`, { keep: true });
       remapped(remap);
       if (rules) emit({ t: 'enable', box: id, remap });
       took();
@@ -3549,12 +3584,14 @@ export function createTable(host, env = {}) {
    *  it holds every hidden identity): addBox's payload (boxOfDef's shape;
    *  its images asset ids, its decks catalog decks), so a table set up from
    *  it lays out this very position. Its types and backs are those of the
-   *  boxes the position uses (the last one set up first; a type or back id
-   *  an earlier box took gets "-2", "-3"…), its decks the ones it shows and
-   *  those boxes' own (a name taken gets " 2"…), and its setup every item —
-   *  the boards first, then the rest, bottom to top — with its own `id`, at
-   *  its top-left (`free` where it lies off the spot snapping would give
-   *  it, or its address when it is centred on one under another board),
+   *  boxes the position uses (the one set up first — while a piece or a
+   *  card of it lies here, or its rules run; a type or back id an earlier
+   *  box took gets "-2", "-3"…), its decks the ones it shows and those
+   *  boxes' own (a name taken gets " 2"…), and its setup every item — the
+   *  boards first, then the rest, bottom to top — with its own `id`, at its
+   *  top-left (where it lies off the spot snapping would give it: its
+   *  address when it is centred on one under another board, the address
+   *  and `off` when it is on its spot off the centre, else `free`),
    *  owners by seat ("seat:<id>") or seated player ("#k"), then the seated
    *  players' hands ("#k"). The table and named seats go with it; with
    *  `o.rules` the running script, with `o.state` its state (data, public,
@@ -3569,12 +3606,18 @@ export function createTable(host, env = {}) {
     syncSpots();
     const ranked = seated(), K = new Map(ranked.map((q, k) => [q, `#${k + 1}`])), warnings = [], B = tb();
     const items = Object.entries(host.items).sort(([, a], [, b]) => a.z - b.z);
-    const used = own(host.boxes, host.lastSetup) ? [host.lastSetup] : [], use = (t) => {
+    const used = [], use = (t) => {
       const b = typeof t === 'string' ? t.slice(0, t.indexOf('/')) : '';
       if (own(host.boxes, b) && !used.includes(b)) used.push(b);
     };
     for (const [, it] of items) for (const m of [it, ...(it.cards || it.of || [])]) use(m.t);
     for (const q of ranked) for (const m of host.players[q].hand) use(m.t);
+    // The box set up comes first (its name, id and players are the file's) —
+    // while the position is its: a piece or a card of its decks lies here, or its rules run
+    const last = own(host.boxes, host.lastSetup), lastDecks = Object.values(last?.decks || {});
+    const cardOf = (m) => lastDecks.includes(m.d);
+    if (last && (used.includes(host.lastSetup) || host.rules?.box === host.lastSetup || items.some(([, it]) => [it, ...(it.cards || [])].some(cardOf))
+      || ranked.some((q) => host.players[q].hand.some(cardOf)))) used.splice(0, used.length, host.lastSetup, ...used.filter((b) => b !== host.lastSetup));
     /** An id like `id` that `taken` doesn't hold, within `max` characters. */
     const uniq = (id, taken, max, sep = '-') => { let x = id; for (let n = 2; taken(x); n++) x = `${id.slice(0, max - String(n).length - sep.length)}${sep}${n}`; return x; };
     const types = {}, backs = {}, imgs = [], typeRef = new Map(); // typeRef: "<box>/<type>" → its id in the export
@@ -3612,10 +3655,11 @@ export function createTable(host, env = {}) {
       if (!e) { warnings.push(`${label(it)}: its ${it.k === 'c' || it.k === 'p' ? 'deck or game box' : 'game box'} is missing`); continue; }
       const { w, h } = size(it);
       e.at = [it.x, it.y];
-      if (isPiece(it)) { // where snapping puts it, as it lies? else its own address (D105), or just where it lies (free)
+      if (isPiece(it)) { // where snapping puts it, as it lies? else its own address (D105), off its centre (containment, D119), or just where it lies (free)
         const s = snapTo(B, host.table, w, h, it.x, it.y), r = it.at && resolveAddr(B, it.at);
         if (!(near(s.x, it.x) && near(s.y, it.y) && s.at === (it.at ?? null))) {
           if (r && near(r.x - w / 2, it.x) && near(r.y - h / 2, it.y)) e.at = display(it.at);
+          else if (r && snapAt(B, it.x + w / 2, it.y + h / 2)?.at === it.at) [e.at, e.off] = [display(it.at), [it.x - (r.x - w / 2), it.y - (r.y - h / 2)]];
           else e.free = true;
         }
       }
@@ -4459,12 +4503,15 @@ export function createTable(host, env = {}) {
    *  in, then the engine's gates (§3a) — t.data and t.public plain JSON,
    *  t.data within DATA_MAX_CHARS and its _timers (gateTimers), t.secret's
    *  keys and values (secretProblem), the asks (cleanAsk, ASK_MAX, one id
-   *  once). An entry that fails a gate, or keyed by someone who isn't at the
-   *  table (a pid an export couldn't name, an "@#k" past the seated players),
-   *  is dropped with console.error, and the host told once for each kind. */
+   *  once). An entry that fails a gate — a key that names no player
+   *  included — or one keyed by a player who isn't at the table (a pid an
+   *  export couldn't name, an "@#k" past the seated players) is dropped with
+   *  console.error, and the host told once for each kind. */
   function seedState(st, remap) {
-    const ranked = seated(), here = (q) => !!own(host.players, q);
-    const s = mapIds(st, (x) => { const r = isObj(remap) && own(remap, x); return typeof r === 'string' ? r : /^@#[1-9]\d*$/.test(x) ? ranked[+x.slice(2) - 1] ?? x : x; });
+    const ranked = seated(), here = (q) => !!own(host.players, q), SEAT_REF = /^@#[1-9]\d*$/;
+    const s = mapIds(st, (x) => { const r = isObj(remap) && own(remap, x); return typeof r === 'string' ? r : SEAT_REF.test(x) ? ranked[+x.slice(2) - 1] ?? x : x; });
+    /** Whether key q is a player who isn't here (a pid, or an "@#k" no seated player answers): any other key is invalid. */
+    const gone = (q) => (PID_RE.test(q) || SEAT_REF.test(q)) && !here(q);
     let bad = 0, away = 0;
     const drop = (why, err) => console.error(`saved game state: ${why} — dropped`, ...(err ? [err] : []));
     const out = { asks: {}, secret: nullProto(null) };
@@ -4477,11 +4524,15 @@ export function createTable(host, env = {}) {
     gateTimers(out);
     if (timers !== undefined && JSON.stringify(timers) !== JSON.stringify(out.data._timers)) bad++;
     for (const [q, v] of Object.entries(isObj(s.secret) ? s.secret : {})) {
-      const why = !here(q) ? `a secret for ${JSON.stringify(q.slice(0, 30))}, who isn't at this table` : secretProblem(q, v);
-      if (why) { if (here(q)) bad++; else away++; drop(why); } else out.secret[q] = v;
+      const why = gone(q) ? `a secret for ${JSON.stringify(q.slice(0, 30))}, who isn't at this table` : secretProblem(q, v);
+      if (why) { if (gone(q)) away++; else bad++; drop(why); } else out.secret[q] = v;
     }
     for (const [q, list] of Object.entries(isObj(s.asks) ? s.asks : {})) {
-      if (!here(q) || !Array.isArray(list)) { if (here(q)) bad++; else away++; drop(`the asks of ${JSON.stringify(q.slice(0, 30))}${here(q) ? ' are not a list' : ", who isn't at this table"}`); continue; }
+      if (!here(q) || !Array.isArray(list)) {
+        if (gone(q)) away++; else bad++;
+        drop(`the asks of ${JSON.stringify(q.slice(0, 30))}${gone(q) ? ", who isn't at this table" : here(q) ? ' are not a list' : ' (not a player id)'}`);
+        continue;
+      }
       const kept = [];
       for (const x of list) {
         try {
@@ -4866,7 +4917,7 @@ export function createTable(host, env = {}) {
       const img = findKey([def.pieces, def.backs], 'img');
       if (img) throw new TypeError(`t.newBox: a script's box has no images (${img})`);
       let box;
-      try { box = cleanBox(boxFromDef(def)); } catch (err) { throw new TypeError(`t.newBox: ${err.message}`); }
+      try { box = cleanDef(def); } catch (err) { throw new TypeError(`t.newBox: ${err.message}`); }
       const decks = scriptDecks(def.decks), same = boxWith(boxText(box, Object.fromEntries(decks)));
       if (same) return same;
       // Its decks go into the catalog, and the whole box — decks too — passes
@@ -5395,8 +5446,10 @@ export function createTable(host, env = {}) {
     grows('boardSeq', -BOARD_Z0);
     grows('guestDeckChars', GUEST_DECK_CHARS);
     if (job && s.guestDeckChars !== undefined && !((a.t === 'addDeck' || a.t === 'addBox') && p !== pid && s.guestDeckChars >= num(host.guestDeckChars) + num(a.cost))) no("the script spent the guests' deck budget");
-    if (s.lastSetup !== undefined && !(typeof s.lastSetup === 'string' && (own(host.boxes, s.lastSetup) || boxes.some(([id]) => id === s.lastSetup)))) no("the patch's last setup is no box");
-    if (job && s.lastSetup !== undefined && !(p === pid && (a.t === 'loadBox' || (a.t === 'setup' && s.lastSetup === a.box) || (a.t === 'reset' && s.lastSetup === host.lastSetup)))) no('the script set the last setup outside a setup');
+    if (s.lastSetup != null && !(typeof s.lastSetup === 'string' && (own(host.boxes, s.lastSetup) || boxes.some(([id]) => id === s.lastSetup)))) no("the patch's last setup is no box");
+    // lastSetup moves only as the host's setup, reset or loadBox (with its setup) moves it — to that very box — and goes (null) only in a clear
+    if (job && s.lastSetup !== undefined && !(p === pid && (s.lastSetup === null ? a.t === 'clear' || (a.t === 'loadBox' && a.clear === true)
+      : (a.t === 'setup' && s.lastSetup === a.box) || (a.t === 'reset' && s.lastSetup === host.lastSetup) || (a.t === 'loadBox' && s.lastSetup === laidOut(a, boxes))))) no('the script set the last setup outside a setup');
     for (const k of ['refresh', 'refreshHands']) if (s[k] !== undefined && !(Array.isArray(s[k]) && s[k].length <= MAX_ITEMS && s[k].every((x) => typeof x === 'string'))) no(`the patch's ${k} is malformed`);
     const raw = out?.effects ?? [];
     const effects = Array.isArray(raw) ? raw.map((e) => (isObj(e) && own(EFFECTS, e.t)?.(e)) || no("the script's effects are malformed")) : no("the script's effects are malformed");
@@ -5414,6 +5467,16 @@ export function createTable(host, env = {}) {
     }
     if (job) boxJobProblem(s, decks, boxes, log, effects, p, a, no);
     return { decks, boxes, items, asks, table, seats, effects };
+  }
+  /** The box the host's loadBox `a` lays out, as the engine finds it
+   *  (registerBox): the one of that content the patch adds (`boxes`:
+   *  checkPatch's) or the catalog holds — when `a` asks for its setup and it
+   *  has one (loadBox sets lastSetup only then); else undefined. */
+  function laidOut(a, boxes) {
+    let box;
+    try { box = cleanBox(a.box); } catch (err) { console.error('checkPatch: a loadBox of a box the engine refuses', err); return undefined; }
+    if (a.setup !== true || !box.setup) return undefined;
+    return boxes.find(([, r]) => canon(r.box) === canon(box))?.[0] ?? boxWith(storedText(box));
   }
   /** checkPatch's part for game boxes (spec §4c), job `a` of player p: a
    *  box comes from the job — the host's own loadBox or addBox ('host', by
@@ -5530,7 +5593,10 @@ export function createTable(host, env = {}) {
       host.log = trimLog(host.log.concat(s.log));
       dirty.log = dirty.log.concat(s.log);
     }
-    for (const k of ['zMax', 'boardSeq', 'guestDeckChars', 'lastSetup']) if (s[k] !== undefined) host[k] = s[k];
+    for (const k of ['zMax', 'boardSeq', 'guestDeckChars', 'lastSetup']) {
+      if (s[k] === null) delete host[k]; // (only lastSetup may go: checkPatch)
+      else if (s[k] !== undefined) host[k] = s[k];
+    }
     for (const id of s.refresh || []) refreshItem(id);
     for (const p of s.refreshHands || []) if (own(host.players, p)) refreshHand(p);
     [spotTB, spotSig, respot] = [tb(), tbSig, false]; // (the boards as the Worker read them: see above)
