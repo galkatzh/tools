@@ -97,6 +97,7 @@ const BOX = {
     if (p.touch) await b.tap(); else await b.click();
   };
   const PLUS = /^\+$/, MINUS = /^[−-]$/;
+  let S1b = null; // the ×3 that Take 3 splits off S1
   const covers = (box, q) => q.x > box.l && q.x < box.r && q.y > box.t && q.y < box.b;
 
   // ===========================================================================
@@ -123,6 +124,7 @@ const BOX = {
     const nw = after[fresh[0]], cx = nw && nw.x + 30, cy = nw && nw.y + 30;
     const onCell = nw && Math.abs(((cx - BX) % 100) - 50) < 0.5 && Math.abs(((cy - BY) % 100) - 50) < 0.5;
     const near = nw && Math.hypot(cx - SPOT.S1.x, cy - SPOT.S1.y) <= 150;
+    S1b = fresh[0];
     ok(fresh.length === 1 && nw.n === 3 && nw.t === before[S1].t && nw.f === before[S1].f, `and puts a new ×3 of the same token on the table (${J(fresh.map((id) => ({ n: after[id].n, x: after[id].x, y: after[id].y })))})`);
     ok(onCell && near && !(Math.abs(cx - SPOT.S1.x) < 1 && Math.abs(cy - SPOT.S1.y) < 1), `next to the stack, snapped to a cell's centre (${cx}, ${cy}; the stack at ${SPOT.S1.x}, ${SPOT.S1.y})`);
     const ln = await M.lines(alice, bob.pid, t0), sent = (await M.sent(bob, s0)).map((x) => x.a);
@@ -157,6 +159,18 @@ const BOX = {
     const after = await M.items(alice);
     ok(after[S1].n === 6 && Object.keys(after).length === Object.keys(before).length, `whole: ×${after[S1].n} there, no piece split off (${Object.keys(after).length} items)`);
     ok((await M.lines(alice, bob.pid, t0)).length === 1, `(one line: ${J(await M.lines(alice, bob.pid, t0))})`);
+    await bob.keyboard.press('Escape');
+    // a ×N stack that is a member of a group goes whole with it (the group's move, not a drag's "take one")
+    await M.click(bob, await M.centre(bob, S1), true);
+    await M.click(bob, await M.centre(bob, S1b), true);
+    ok(J(await M.selected(bob)) === J([S1, S1b].sort()), '(Bob Shift+clicks the ×6 and the ×3 split off it)');
+    const b4 = await M.items(alice), s0 = await M.nSent(bob), g0 = await M.centre(bob, S1), g1 = await M.pt(bob, cell(1, 4).x, cell(1, 4).y);
+    await M.mouseDrag(bob, P3.steps(g0, g1, 12), { pause: 20 });
+    const want = { [S1]: cell(1, 4), [S1b]: { x: b4[S1b].x + 30, y: b4[S1b].y + 30 + 100 } };
+    ok(await P.waitView(alice, 'Object.entries(a).every(([id, c]) => v.items[id] && Math.abs(v.items[id].x + 30 - c.x) < 0.5 && Math.abs(v.items[id].y + 30 - c.y) < 0.5)', want), 'dragging the ×6 carries the group a cell down: both stacks land on their cells');
+    const af = await M.items(alice), g = (await M.sent(bob, s0)).map((x) => x.a).filter((a) => a.t !== 'drag');
+    ok(af[S1].n === 6 && af[S1b].n === 3 && Object.keys(af).length === Object.keys(b4).length, `whole: ×${af[S1].n} and ×${af[S1b].n}, nothing split off`);
+    ok(g.length === 1 && g[0].t === 'group' && g[0].op === 'move', `one group move sent (${J(g.map((a) => `${a.t}:${a.op || ''}`))})`);
     await bob.keyboard.press('Escape');
   }
 

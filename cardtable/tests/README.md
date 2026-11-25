@@ -2254,7 +2254,8 @@ answer a press of the dialog's own buttons; nothing they test goes through
   N − 1; Take 3 sends one split {n: 3}, the new ×3 lands on the next cell's
   centre, the inspector redraws ×7, then ×6 when Alice drags one off; Esc
   closes it. ⋯ Inspect in the bar; Take all, and a plain drag carries the
-  whole stack. The hidden stack shows its back ("?" in its colour) and no
+  whole stack; a ×6 and a ×3 picked together go whole with the group's
+  drag. The hidden stack shows its back ("?" in its colour) and no
   label, name or face colour; a click outside closes it; Alice's stack
   offers Bob no Take. A crowded cell's ×4 lists its four (each label, a
   picture each, the back for the hidden one, Alice's dot on hers alone); a

@@ -167,7 +167,7 @@ const PICKET = `({ name: 'Picket',
     ok(sawBand, 'a Shift+drag on the felt draws a rubber band while it goes');
     ok(sameSet(s1, four), `on release the band picks the four pebbles inside it, each .selected (${s1.length} selected)`);
     ok(!s1.includes(lockedB) && !s1.includes(mineA[1]), 'not the locked pebble, nor Alice\'s');
-    ok(/\b2 not selectable\b/.test(chip1), `the chip counts them: "${chip1}"`);
+    ok(chip1 === "2 not selectable (locked or someone else's)", `the chip counts them: "${chip1}"`);
     ok(b1.on && b1.btns.includes('✕') && /\b4 selected\b/.test(b1.text), `the group bar shows (“${b1.text.trim()}”)`);
     ok(Math.abs(v2.px - v0.px) < 2 && Math.abs(v2.py - v0.py) < 2, 'and the band did not pan the view');
     // Shift+click in and out
@@ -245,7 +245,7 @@ const PICKET = `({ name: 'Picket',
     const sawBand = await band(carol, { x: 1840, y: ROW.B - 60 }, { x: 2360, y: ROW.B + 60 });
     const c1 = await M.chip(carol), sel1 = await M.selected(carol), v2 = await P.tf(carol);
     ok(sawBand && sameSet(sel1, four), `in select mode a one-finger drag on the felt draws a band and picks the four pebbles (${sel1.length})`);
-    ok(/\b1 not selectable\b/.test(c1), `the locked one is counted in the chip: "${c1}"`);
+    ok(c1 === "1 not selectable (locked or someone else's)", `the locked one is counted in the chip: "${c1}"`);
     ok(Math.abs(v2.px - v1.px) < 2 && Math.abs(v2.py - v1.py) < 2, 'the band did not pan');
     const gb = await M.bar(carol);
     ok(gb.on && (await M.inViewport(carol, gb.box)), `the group bar shows on the phone's screen (${J(gb.box)})`);
