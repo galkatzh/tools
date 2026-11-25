@@ -1736,6 +1736,61 @@ own, beside the implementer's `t-p3-ui.js` and `t-p3-cli.js`.
   - **`gameDef(o)`** is an ingested test box (images as asset ids) using
     every entry kind; `position(R)` and `differ(a, b)` compare two rooms'
     private states by seat ("#k"), positions within 0.5.
+  - **The test author's sections, (1′) to (W′)**, written apart from the
+    implementation, every expectation read off the spec: §4l items 1, 2, 4,
+    5 and 6 again, and §4f's Worker contract.
+    - (1′) TABLETOP §4's own example as a box, field by field; the authoring
+      format cleaned (a board's structure on its piece, `img` on a piece and
+      a back, the backs' defaults from their first user, each kind's
+      defaults, `h` from `w`, decks); what it refuses (images, backs, decks,
+      `"at": "seat"` outside forEachSeat); the caps at their bounds (rules
+      200,000 chars, rulesState 4e6 of JSON, meta 8 KB); `src`, `by` and
+      unknown fields dropped; rulesState's entries through §3a's gates when
+      set up with rules (D177: each drop a `console.error`, one toast per
+      kind; a watcher's raw pid kept).
+    - (2′) Every entry kind laid out where its `Where` says, against §2a's
+      grid and seat geometry computed in the test (`chessXY`, `hexXY`,
+      `rimXY`); forEachSeat over named seats (an empty one too) and
+      automatic seats; "#k" with four seats declared out of clockwise
+      order; `{board, at}` on the first board of its type; the 3,000-item
+      cap at its bound and MAX_ITEMS; refusals "before any op" compared
+      as the whole state (`canon(T.state)`), the table shape, seats and
+      hands included; ids kept, re-minted with the remap table, the remap
+      put into the rules' state, a deck id re-minted at registration; the
+      guest box's shuffle (face-down deck and pile entries only), as its
+      Reset's default, and the host's own.
+    - (4′) A varied position (moves, a shuffle, draws, a pull, an unlocked
+      board, a free piece, an owner by player, a hidden stack, t.data /
+      t.public / t.secret / an ask by player) exported and set up in a
+      fresh room and in the same table after a clear (`privateOf`,
+      `unlike`); what an export can't map (a watcher: an ownerless item,
+      the raw pid left in t.data, the secret dropped with its toast); a
+      position using three boxes, compared by type content
+      (`typeContent`: D185 renames a clashing type id); a piece a table
+      change left off its spot's centre (D119) keeping its address.
+    - (5′) Deduplication against key order, another asked id, another
+      deck id; six one-field changes; t.newBox against addBox's box and
+      its own; the built-in draughts loaded, then added in the authoring
+      format (`asAuthoring`).
+    - (6′) MIGRATE[4] as a unit; a v4 save (a duplicate box and an item on
+      it) resumed: records untouched, Reset without re-enabling; a v5 save
+      resumed: Reset lays out lastSetup again and restarts the box's rules;
+      Disable keeps rules.box; the box's code enabled from 📜 sets none;
+      `reset {box}`; a guest box's Reset still shuffled after a reload.
+    - (W′) Through `room()`: every honest box job with a script running —
+      addBox (host, guest, duplicate), setup clearing or kept with its
+      rules and a remap, a setup refused in the mirror, t.newBox and
+      t.layout in hooks, loadBox, reset with and without the box's rules —
+      taken, digests agreeing; and sixteen forged patches (rules.box,
+      lastSetup, box records, `enable` effects outside the job that may
+      carry them) refused whole.
+    - Helpers: `hostTable({seed, players, prefix, ids, me, name})` (a
+      seeded host table, rules in-page; `ids` feeds its id source first),
+      `act(T, p, a)` (applied and drained as the app does, an `enable`
+      followed by the box's setRules), `ranked(T)` (the seated players
+      clockwise from the bottom), `holderOf(T, seatId)`, `reload(T, seed,
+      mutate)` (a save resumed in a fresh table), `tide(o)` (the
+      "Tidewater" box: every entry kind, two boards, two named seats).
 - **`t-p4-wire.js`** (E2E, desktop): the same engine over the wire, through
   `__ct.act` (the 📦 dialog is 4A part 2's): a guest's TransportBox (data
   URL images, a deck with an image) registered only, its PublicBox and
