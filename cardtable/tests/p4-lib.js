@@ -234,8 +234,10 @@ async function reply(p, label, checks = {}) {
       if (p.touch) await box.tap(); else await box.setChecked(on);
     }
   }
+  // (the next question may open in the same #box-ask at once — the trust dialog after Set up's — so wait for its close event, not for it to be closed)
+  await p.evaluate(() => { const d = document.getElementById('box-ask'); window.__askClosed = new Promise((r) => d.addEventListener('close', r, { once: true })); });
   await press(p, `#box-ask-btns button:text-is("${label}")`);
-  await p.waitForSelector('#box-ask:not([open])', { state: 'attached' });
+  await p.evaluate(() => window.__askClosed);
 }
 /** Waits until host page p's queue has been idle for 300 ms on end (a
  *  dialog's button reaches act() a task after the press). */

@@ -543,8 +543,9 @@ const layout = (st, keep = []) => [
   }
   // case 7: nothing hidden of the exported, re-imported game reached Mallory
   await h.sleep(1500);
-  const mine = X.ranked(S2).indexOf('ffffffffffffffff') + 1;
-  const scan = await M.evaluate((needles) => {
+  // (no mark is Mallory's: the box's state was seeded before she sat down — "@#1" Alice, "@#2" Bob, "@#3" dropped —
+  // and the export keyed Alice's and Bob's by their places then, so every secret and ask mark is another player's)
+  const scan = await M.evaluate(([needles, nb]) => {
     const body = (m) => (typeof m?.b === 'string' ? JSON.parse(m.b) : m), hits = [], keys = [];
     const walk = (o, at, ch, k) => {
       if (Array.isArray(o)) o.forEach((x, j) => walk(x, `${at}[${j}]`, ch, k));
@@ -557,9 +558,10 @@ const layout = (st, keep = []) => [
       list.forEach(({ m }, k) => { let d; try { d = body(m); } catch { d = m; } walk(d, '', ch, k); });
     }
     const pub = Object.values(window.M.got).some((l) => l.some(({ m }) => JSON.stringify(m).includes('QZPUBLIC-4b2a')));
-    return { hits, keys, counts, pub };
-  }, [MARK.vault, ...[1, 2, 3].filter((k) => k !== mine).map(MARK.sec), ...[1, 2].filter((k) => k !== mine).map(MARK.ask), `${nb}/cache`, `${lw}/cache`]);
-  ok(scan.counts.state > 0 && scan.counts.boxes > 0, `Mallory received ${J(scan.counts)} messages (state, notes, boxes, rules, decks…)`);
+    const got = (window.M.got.boxes || []).some(({ m }) => { try { return Object.hasOwn(body(m), nb); } catch { return false; } });
+    return { hits, keys, counts, pub, got };
+  }, [[MARK.vault, ...[1, 2, 3].map(MARK.sec), ...[1, 2].map(MARK.ask), `${nb}/cache`, `${lw}/cache`], nb]);
+  ok(scan.counts.state > 0 && scan.got, `Mallory received ${J(scan.counts)} messages, the re-imported box among them (the scan covers it)`);
   ok(!scan.keys.length, `no box she received carries a setup, rules or rulesState (${scan.keys.slice(0, 5)})`);
   ok(!scan.hits.length, `the recursive scan finds no hidden data, no other player's secret or ask, no face-down cache's type (${scan.hits.slice(0, 5)})`);
   ok(scan.pub, 'the public mark (t.public) did reach her: the scan sees the rules state that may travel');
