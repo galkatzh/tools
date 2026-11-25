@@ -2448,6 +2448,26 @@ answer a press of the dialog's own buttons; nothing they test goes through
   theirs, ✕ (first in the bar) gives the toolbar back. Dan, a host alone at
   a fresh table (its "What are we playing?" strip): two picks, no token
   under the bar, and a click on each strip button still reaches it.
+  8 (fix-up 3, D245): Eve, a host alone on an iPhone 13 held upright
+  («Wrap rows»: a lockable box, its table seen whole), moves a row of eight
+  tokens to just below the strip the bar docks in (their screen boxes 3 px
+  under its 60 px). Five picked with ⬚ — three tokens and two dice, a bag
+  on the table — give "5 selected ⟲ ⟳ Flip 🎲 Roll 🔒 Lock 👜 Into bag ▸ 🗑
+  ✕": the bar docks in the table area in one row (≤ 54 px, it had wrapped
+  to 102 px), wider than the screen (it scrolls, its end faded), no token
+  under it and a tap at each row token reaching it; 👜 Into bag ▸ opens its
+  list in the same row. Three row tokens join (eight); 🗑 asks "🗑 Remove
+  8?", the whole button on the screen, unfaded, nothing removed. One token
+  picked with ⬚: its own bar plus ✕, one row, over no token, and a tap on
+  the row picks. Bob (desktop guest, the rim rows table) picks two, his bar
+  at the table area's top; a MutationObserver on #toolbar and #table-wrap
+  records each move of the bar to another parent and how many of its
+  buttons were disabled then. Alice moves a non-member token into his
+  strip: the bar goes over the toolbar, all its buttons held off as it
+  jumps, and a Shift+click at the token picks it; she moves it back out
+  (a member leaving the strip): the bar docks at the top again, held off;
+  she moves one of his picks into the strip: over the toolbar, held off,
+  over no token. On the base (f2bc379) this section fails 10 checks.
   Screenshots `shots/p4-fix-desktop-dock.png`,
   `shots/p4-fix-iphone-corner.png`, `shots/p4-fix2-desktop-toolbar.png`,
   `shots/p4-fix2-desktop-top.png`, `shots/p4-fix2-iphone-toolbar.png`.
@@ -2519,7 +2539,34 @@ answer a press of the dialog's own buttons; nothing they test goes through
   per move). Alone on the same machine the rows now run at 16.7–16.8 ms;
   what is left per frame is the browser's (re-layerizing the table's
   layer, hover hit tests), so a heavily loaded machine can still push a
-  row over — rerun the suite alone before blaming a change.
+  row over — rerun the suite alone before blaming a change. (Amended by
+  fix-up 3 below: the 16.7–16.8 ms did not hold in most solo runs.)
+
+## Phase 4B fix-up 3 (the review's findings)
+
+- **`t-p4-fix.js` section 8** (D245): see its entry under the Phase 4B
+  fix-up above — the bar docked in the table area is one row, no deeper
+  than the strip found clear; the ask in sight; other players' moves into
+  and out of the strip re-dock it, held off as it jumps.
+- **B4, traced again** (D246, amends D243): the reviewers' solo runs of
+  f2bc379 had one B4 row at 33.3 ms in four of five, and so did this
+  round's first. A Chrome trace of the bench's pan and twist (CDP
+  `Tracing` with the timeline's invalidation tracking: each frame's
+  main-thread work, the layouts and their causes, the hover hit tests) found a layout
+  in about every third frame — `placeSeats` wrote the button row's
+  max-height and ⬚'s chip's `bottom` while your own label moved — and,
+  after each, Chrome's synthetic mousemove for hover: a hit test of the
+  whole 1,000-piece table, 3–6 ms at CPU × 2. Now nothing a gesture's
+  frame writes lays the page out. `t-p1-bench.js` adds a check to each pan
+  and gesture row: the phone's layouts (CDP `Performance.getMetrics`'
+  `LayoutCount`, from before the gesture to 300 ms after the lift) are at
+  most `B4_LAYOUTS` (15). Here: 0–7 per row; the code before had 81–101
+  per pan and 86–88 per twist and fails four of these checks. Alone, all
+  B4 rows were green in four runs of four (16.7–16.8 ms p95). What remains per frame is the
+  browser's: re-layerizing the page at each transform change of the table
+  (6–7 ms at CPU × 2), a turn's view-sheet rule change (about 1.5 ms), and
+  Chrome's ad-detector hit tests (about one a second, 10 ms). A loaded
+  machine can still push a row over — rerun the suite alone first.
 
 ## Storage and images (Phase 1B)
 

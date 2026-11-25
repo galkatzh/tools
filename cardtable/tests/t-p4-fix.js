@@ -17,7 +17,12 @@
 //     the toolbar's place, else it docks there and the toolbar stays; no
 //     piece is ever under it, every click and tap reaches its piece; its
 //     buttons wait 400 ms; 🗑 of more than five asks first; a host alone
-//     keeps the game strip (D240).
+//     keeps the game strip (D240);
+//  8. (fix-up 3) the bar docked in the table area is one row, never deeper
+//     than the strip found clear (a phone's wide group bar, a ⬚ single
+//     pick); "🗑 Remove 8?" whole on the screen; another player's move of a
+//     piece into the strip or out of it re-docks the bar, held off as it
+//     jumps (D245).
 'use strict';
 const h = require('./h');
 const { ok, section } = h;
@@ -326,5 +331,94 @@ const linesBy = async (p, who, n) => (await view(p)).log.slice(n).filter((e) => 
       .filter(([, x]) => x > sr.left && x < sr.right).filter(([, x, y]) => !document.elementFromPoint(x, y)?.closest('#game-strip')).map(([t]) => t);
   });
   ok((await shown(dan)).ids.length === 2 && !(await underBar(dan)).length && !blocked.length, `two picked: the bar (${await overToolbar(dan) ? 'over the toolbar' : 'below the strip'}) covers no token, and a click on each of the strip's buttons still reaches it (${J(blocked)} covered)`);
+
+  section('8. (fix-up 3) the bar docked in the table area is ONE row, never deeper than the strip found clear: a phone\'s wide group bar and a piece\'s bar picked by ⬚ cover no token of the row below; "🗑 Remove 8?" in sight; a piece another player moves into the strip, or out, re-docks the bar, held off as it jumps (D245)');
+  // (Eve, a host alone on an iPhone 13 held upright: a table seen whole, its top rim clear; a row of eight tokens drawn
+  // just below the strip the bar docks in, three tokens, two dice and a bag lower down)
+  const WRAP = {
+    name: 'Wrap rows', imgs: [], lockable: 'anyone', table: { shape: 'rect', w: 1300, h: 1000 },
+    types: { tok: { kind: 'token', name: 'Token', w: 60, faces: [{ color: '#f59e0b', label: 'T' }, { color: '#0ea5e9', label: 'U' }] }, die: { kind: 'die', name: 'Die' } },
+    setup: [
+      { piece: 'tok', count: 8, spread: [150, 0], at: [60, 500] }, { piece: 'tok', count: 3, spread: [100, 0], at: [450, 700] },
+      { piece: 'die', count: 2, spread: [100, 0], at: [450, 820] }, { bag: ['tok'], name: 'Sack', at: [1100, 850] },
+    ],
+  };
+  const eve = await P3.join(env, 'Eve', env.url, { ctx: P.PHONE });
+  await act(eve, { t: 'loadBox', box: WRAP, setup: true, clear: true });
+  ok(await until(async () => Object.keys((await view(eve)).items).length === 14, 15000), 'Eve (a phone, upright, alone) sets up the box');
+  const ev = Object.entries((await view(eve)).items).map(([id, it]) => ({ id, ...it }));
+  const erow = ev.filter((it) => it.y === 500), etok = ev.filter((it) => it.y === 700).map((it) => it.id), epick = [...etok, ...ev.filter((it) => it.t?.endsWith('/die')).map((it) => it.id)];
+  // (the row's screen boxes as placeBar sees them — centre ± 0.6 × 60 units — wholly below the strip: their tops 3 px under it)
+  const ew = await box(eve, '#table-wrap'), stripTop = await eve.evaluate(() => { const s = document.getElementById('game-strip'); return s.classList.contains('hidden') ? 4 : s.offsetTop + s.offsetHeight + 4; });
+  const [o0, o1] = [await P3.screenOf(eve, 0, 0), await P3.screenOf(eve, 0, 1000)], sc = (o1.y - o0.y) / 1000;
+  const rowY = Math.round((ew.t + stripTop + 63 + 36 * sc - o0.y) / sc - 30);
+  for (const t of erow) await act(eve, { t: 'move', id: t.id, x: t.x, y: rowY });
+  await until(async () => { const w = await view(eve); return erow.every((t) => w.items[t.id].y === rowY); }, 8000);
+  await h.sleep(400);
+  const rowAt = await Promise.all(erow.map((t) => P3.centreOf(eve, t.id)));
+  ok(Math.abs(o1.x - o0.x) < 1 && rowAt.every((q) => q.y - ew.t > stripTop + 60 && q.y - ew.t < stripTop + 110), `the row is drawn ${Math.round(rowAt[0].y - ew.t)} px below the table area's top, under the strip the bar docks in (${stripTop}–${stripTop + 60} px)`);
+  /** Whether page p's bar is one row in the table area, at most the strip deep: {ok, h, t} (px, from the table area's top). */
+  const oneRow = async (p, top) => { const [b, w] = [await box(p, '#action-bar'), await box(p, '#table-wrap')]; return { ok: !!b && b.t >= w.t && b.b - w.t <= top + 60, h: b && Math.round(b.b - b.t), t: b && Math.round(b.t - w.t) }; };
+  const rowHits = async () => { const out = []; for (const [k, t] of erow.entries()) out.push((await hitAt(eve, rowAt[k])) === t.id); return out; };
+  await eve.tap('#sel-mode');
+  for (const id of epick) await tap(eve, await P3.centreOf(eve, id), true);
+  s = await shown(eve);
+  let r1 = await oneRow(eve, stripTop);
+  ok(s.ids.length === 5 && /🎲 Roll/.test(s.bar) && /Into bag/.test(s.bar) && !(await overToolbar(eve)), `five picked with ⬚ (dice, a bag on the table): the bar docks in the table area ("${s.bar.slice(0, 60)}")`);
+  ok(r1.ok && r1.h <= 54, `in one row, ${r1.h} px tall at ${r1.t} px: within the strip found clear (it wrapped into two rows, 102 px, before)`);
+  ok(await eve.evaluate(() => { const b = document.getElementById('action-bar'); return b.scrollWidth > b.clientWidth && b.classList.contains('more'); }), 'wider than the screen: it scrolls sideways, its end faded');
+  ok(!(await underBar(eve)).length && (await rowHits()).every(Boolean), `no token under it: a tap on each of the row reaches it (${J(await underBar(eve))} covered)`);
+  await shot(eve, 'p4-fix3-iphone-row');
+  await press(eve, '#action-bar [data-cmd="bag"]', true);
+  r1 = await oneRow(eve, stripTop);
+  ok(/👜 Sack/.test((await shown(eve)).bar) && r1.ok && !(await underBar(eve)).length, `👜 Into bag ▸ opens its list in the same row (${r1.h} px tall), over no token`);
+  // three of the row join: eight picked, 🗑 asks — the question scrolled into sight, unfaded
+  for (const k of [0, 1, 2]) await tap(eve, rowAt[k], true);
+  s = await shown(eve);
+  ok(s.ids.length === 8, `three of the row picked by their taps: eight (${s.ids.length})`);
+  await press(eve, '#action-bar [data-cmd="del"]', true);
+  const ask = await eve.evaluate(() => { const b = document.getElementById('action-bar'), d = b.querySelector('[data-cmd="del"]').getBoundingClientRect(); return { text: b.querySelector('[data-cmd="del"]').textContent, l: d.left, r: d.right, vw: innerWidth, more: b.classList.contains('more'), n: Object.keys(window.__ct.view().items).length }; });
+  ok(ask.text === '🗑 Remove 8?' && ask.l >= 0 && ask.r <= ask.vw - 4 && !ask.more && ask.n === 14, `🗑 asks "${ask.text}", the whole of it on the screen (x ${Math.round(ask.l)}–${Math.round(ask.r)} of ${ask.vw}), not faded; nothing removed`);
+  await shot(eve, 'p4-fix3-iphone-ask');
+  await press(eve, '#action-bar [data-cmd="none"]', true);
+  // one token of a lockable box picked with ⬚: its own bar (Flip ⟲ ⟳ 🔒 Lock 👤 Claim 🗑 ✕) docks in one row too
+  await tap(eve, await P3.centreOf(eve, etok[1]), true);
+  s = await shown(eve);
+  r1 = await oneRow(eve, stripTop);
+  ok(s.ids.length === 1 && /Flip/.test(s.bar) && /Claim/.test(s.bar) && /✕/.test(s.bar) && r1.ok && r1.h <= 54 && !(await underBar(eve)).length, `one token picked with ⬚: its bar ("${s.bar}") is one row, ${r1.h} px tall, over no token`);
+  await tap(eve, rowAt[4], true);
+  ok((await shown(eve)).ids.length === 2, 'and a tap on the row below it picks that token');
+  await eve.tap('#sel-mode');
+
+  // Bob (desktop guest, the rim rows table): his bar docks at his table area's top; Alice moves pieces into that strip and out
+  const bw8 = await box(bob, '#table-wrap'), b8 = rowsOf(await onScreen(bob));
+  await bob.evaluate(() => { // (each time the bar is put in another parent: where, and how many of its buttons are held off then)
+    const bar = document.getElementById('action-bar'), docks = (window.__docks = [{ at: bar.parentNode.id }]);
+    const mo = new MutationObserver(() => { if (docks.at(-1).at !== bar.parentNode.id) docks.push({ at: bar.parentNode.id, off: [...bar.querySelectorAll('button')].filter((b) => b.disabled).length, n: bar.querySelectorAll('button').length }); });
+    for (const id of ['toolbar', 'table-wrap']) mo.observe(document.getElementById(id), { childList: true });
+  });
+  const jumped = async (k, where) => { await until(() => bob.evaluate(([k, w]) => window.__docks.length > k && window.__docks.at(-1).at === w, [k, where]), 8000, 50); return bob.evaluate(() => window.__docks.at(-1)); };
+  const [m1, m2] = [b8[1][2], b8[1][3]], other = b8[2][2];
+  await shift(bob, async () => { await tap(bob, m1); await tap(bob, m2); });
+  ok((await shown(bob)).ids.length === 2 && await atTop(bob), 'Bob picks two: his bar docks at the table area\'s top');
+  const strip8 = await P3.tableOf(bob, { x: (bw8.l + bw8.r) / 2, y: bw8.t + 34 }), was8 = (await view(alice)).items[other.id];
+  let k8 = await bob.evaluate(() => window.__docks.length);
+  await act(alice, { t: 'move', id: other.id, x: Math.round(strip8.x - 30), y: Math.round(strip8.y - 30) });
+  let j8 = await jumped(k8, 'toolbar');
+  const q8 = await P3.centreOf(bob, other.id);
+  ok(j8.at === 'toolbar' && q8.y - bw8.t < 64, `Alice moves a token into Bob's strip (${Math.round(q8.y - bw8.t)} px below his table area's top): his bar leaves it for the toolbar`);
+  ok(j8.n > 0 && j8.off === j8.n, `held off as it jumps (${j8.off} of ${j8.n} buttons)`);
+  ok(!(await underBar(bob)).length && (await hitAt(bob, q8)) === other.id, `no token under it: a click at the moved token reaches it (${await hitAt(bob, q8)})`);
+  await shift(bob, async () => tap(bob, q8));
+  ok((await shown(bob)).ids.length === 3, 'Bob\'s Shift+click picks it: three');
+  k8 = await bob.evaluate(() => window.__docks.length);
+  await act(alice, { t: 'move', id: other.id, x: was8.x, y: was8.y });
+  j8 = await jumped(k8, 'table-wrap');
+  ok(j8.at === 'table-wrap' && await atTop(bob) && j8.n > 0 && j8.off === j8.n, `Alice moves it back (a member, out of the strip): the bar docks at the top again, held off as it comes (${j8.off} of ${j8.n})`);
+  k8 = await bob.evaluate(() => window.__docks.length);
+  await act(alice, { t: 'move', id: m1.id, x: Math.round(strip8.x - 30), y: Math.round(strip8.y - 30) });
+  j8 = await jumped(k8, 'toolbar');
+  ok(j8.at === 'toolbar' && j8.n > 0 && j8.off === j8.n && !(await underBar(bob)).length, `Alice moves one of Bob's picks into his strip: the bar jumps over the toolbar, held off (${j8.off} of ${j8.n}), over no token`);
+  await bob.keyboard.press('Escape');
   await env.done();
 })().catch(h.crash);

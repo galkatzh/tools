@@ -823,12 +823,15 @@ sync and rendering, and the Worker together with `handle`.
        never over it, and a piece's bar stands clear of the whole crowd on
        its spot, so a finger's next tap there never lands on a button.
        While a selection is being built its bar docks where no piece is
-       drawn: along the top of the table when that strip is clear (a table
-       seen whole leaves its rim there), else in the toolbar's place, as a
-       phone's selection bar does — ✕ first, then the count — so it never
-       covers a piece still to pick nor moves under the finger; it holds its
-       buttons a moment after it appears, and 🗑 of more than five asks
-       first. On a touch screen the bar's buttons are a fingertip tall
+       drawn, in one row (✕ first, then the count; scrolling sideways when
+       wider than the screen, so it is never deeper than the strip it
+       found clear): along the top of the table when that strip is clear (a
+       table seen whole leaves its rim there), else in the toolbar's place,
+       as a phone's selection bar does — so it never covers a piece still
+       to pick. Any piece, anyone's, that comes into its strip moves it out
+       of the way; it holds its buttons a moment whenever it appears or
+       moves, and 🗑 of more than five asks first, the question scrolled
+       into sight. On a touch screen the bar's buttons are a fingertip tall
        (44 px), as far as the toolbar's height allows.
      - What review found and fixed: a group member refused by the table
        leaves nothing of what the rules wrote for it; a group move sends
@@ -838,7 +841,10 @@ sync and rendering, and the Worker together with `handle`.
        over, in flood tokens (past the burst too) and in watchdog time;
        Hexfront's events are the side to play's alone, by any route; a
        phone pans, pinches and turns the table without making the browser
-       repaint the seat labels or restyle the table twice a frame.
+       repaint the seat labels, restyle the table twice a frame, or lay the
+       page out (each layout made the browser hit-test the whole table for
+       hover): what the seat labels' places resize waits for the fingers
+       to lift.
      - A tap on a ×N badge or a spot's ×k opens the inspector (a long press
        on a phone, in place of the zoom, for a stack); ⋯ Inspect is in the
        bar of a stack or crowded piece the player may move. Take all arms
@@ -955,11 +961,16 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
   piece's bar are placed next to their pieces — a crowded spot counted
   whole — never over them while the screen has room, with fingertip-sized
   buttons on a touch screen (§3, §4).
-- **A selection being built has its bar where no piece is:** along the top
-  of the table when no piece lies there, else over the toolbar (✕ gives it
-  back), so it never covers a piece still to pick nor moves under a finger;
-  its buttons wait a moment after it appears, and 🗑 of more than a few
-  asks first (§3, §4).
+- **A selection being built has its bar where no piece is:** one row
+  along the top of the table when no piece lies there, else over the
+  toolbar (✕ gives it back), so it never covers a piece still to pick;
+  when a piece comes into its strip it moves away, its buttons wait a
+  moment whenever it appears or moves, and 🗑 of more than a few asks
+  first (§3, §4).
+- **A gesture's frames move things, never size them:** while fingers pan,
+  pinch or turn the view, what follows them moves by transform alone, and
+  whatever would lay the page out waits for the lift — a layout makes the
+  browser hit-test the whole table for hover (§2, §4).
 - **A selection mode means selecting:** with ⬚ on, a drag draws a box
   wherever it starts (but on a picked piece, which carries the lot) and a
   click only picks — a double one never flips or rolls (§3).

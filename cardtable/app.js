@@ -2324,7 +2324,7 @@ function renderPlayers(viewMoved) {
   } else if (!viewMoved) return; // nothing to move: no layout read (a patch's redraw stays cheap)
   placeSeats();
 }
-let seatSpots = ''; // where placeSeats last put the button row and the notices
+let seatSpots = '', seatSizes = ''; // where placeSeats last put the button row and the notices, and what it last sized
 // The hint's plate (CSS #table-hint): HINT_FELT of the felt's width on the
 // screen at most, and no wider than the gap between the labels within
 // HINT_BAND of the middle (half the tallest plate: 6 lines, 146 px, on a
@@ -2364,35 +2364,45 @@ function placeSeats() {
   // The table's hint, centred on the table area, on a plate that wraps in
   // the middle of the felt and between the labels beside it.
   const hintW = `${Math.round(Math.max(HINT_MIN_W, Math.min(HINT_FELT * feltW, 2 * side)))}px`;
-  if (hintW !== hintEl.style.getPropertyValue('--hint-w')) hintEl.style.setProperty('--hint-w', hintW);
   // (#table-wrap and #notices both start at #main's top: the offsets agree)
   const strip = $('game-strip'); // the "What are we playing?" strip pushes the notices down too
   if (!strip.classList.contains('hidden')) noticeTop = Math.max(noticeTop, strip.offsetTop + strip.offsetHeight + 4);
   // The watchers' box stays in its corner unless a label is there: then it goes below that label.
   let watchTop = 8;
   for (const [t, b] of corner.sort((a, c) => a[0] - c[0])) if (t < watchTop + watchH && b > watchTop) watchTop = b + 4;
-  // A short, wide table area (a phone in landscape) leaves wide empty
-  // margins beside the felt (as wide as this view shows it: feltW, layout):
-  // the notices move into the left one and the button row into the right
-  // one, so neither covers the cards (CSS .gutters).
-  const gutter = (W - feltW) / 2, gutters = H < 500 && gutter >= 180;
-  const spots = `${rowBottom}|${noticeTop}|${watchTop}|${gutters}|${gutter | 0}|${H}`;
-  if (spots === seatSpots) return;
-  seatSpots = spots;
-  // Moved by `translate` from their CSS spots, for the same reason. The
-  // button row (with the secret card above it) keeps to the room above its
-  // spot: the card shrinks and scrolls, its head on screen (a phone held
-  // sideways with an ask open leaves the table area about 100 px).
-  $('rules-row').style.translate = `0 ${12 - rowBottom}px`;
+  // Moved by `translate` from their CSS spots, for the same reason (⬚'s
+  // chip: above ⬚, and above a row of the rules' buttons lifted over your label).
+  const spots = `${rowBottom}|${noticeTop}|${watchTop}`;
+  if (spots !== seatSpots) {
+    seatSpots = spots;
+    $('rules-row').style.translate = `0 ${12 - rowBottom}px`;
+    $('sel-chip').style.translate = `0 ${60 - Math.max(60, rowBottom + 50)}px`; // (CSS bottom: 60px)
+    $('notices').style.translate = `0 ${noticeTop - 10}px`;
+    $('watch-box').style.translate = `0 ${watchTop - 8}px`;
+  }
+  // What sizes a box — the hint's plate; the button row's room above its
+  // spot, in which the secret card shrinks and scrolls, its head on screen
+  // (a phone held sideways with an ask open leaves the table area about 100
+  // px); the margins — lays the page out. So it waits while fingers or a
+  // felt drag move the view, and catches up as they lift (endPinch, dropFelt):
+  // the browser hit-tests the whole table for hover after every layout,
+  // which in every frame of a gesture made frames of 33 ms on the B4 phone
+  // (D246). A short, wide table area (a phone in landscape) leaves wide
+  // empty margins beside the felt (as wide as this view shows it: feltW,
+  // layout): the notices move into the left one and the button row into
+  // the right one, so neither covers the cards (CSS .gutters).
+  if (pinch || feltDrag?.moved) return;
+  const gutter = (W - feltW) / 2, gutters = H < 500 && gutter >= 180, gw = gutters ? gutter | 0 : 0; // (--gutter: unused without .gutters)
+  const sizes = `${hintW}|${Math.max(0, H - rowBottom - 4)}|${gw}`;
+  if (sizes === seatSizes) return;
+  seatSizes = sizes;
+  hintEl.style.setProperty('--hint-w', hintW);
   $('rules-row').style.setProperty('--row-room', `${Math.max(0, H - rowBottom - 4)}px`);
-  $('sel-chip').style.bottom = `${Math.max(60, rowBottom + 50)}px`; // (⬚'s chip: above ⬚, and above a row of the rules' buttons lifted over your label)
-  $('notices').style.translate = `0 ${noticeTop - 10}px`;
-  $('watch-box').style.translate = `0 ${watchTop - 8}px`;
   $('main').classList.toggle('gutters', gutters);
   // (on the three boxes that use it: on #main, an inherited property, it
-  // would restyle every element of the table at each frame of a zoom or of
-  // a rectangle's turn, whose fit changes as it turns)
-  for (const id of ['notices', 'rules-row', 'watch-box']) $(id).style.setProperty('--gutter', `${gutter | 0}px`);
+  // would restyle every element of the table at each zoom or a rectangle's
+  // turn, whose fit changes as it turns)
+  if (gutters) for (const id of ['notices', 'rules-row', 'watch-box']) $(id).style.setProperty('--gutter', `${gw}px`);
 }
 
 // --- the seat menu (spec §2g) and the watchers -----------------------------------
@@ -3126,7 +3136,7 @@ function barNow() {
  *  open, and while a group is carried) and places it. An armed ✥ Move shows
  *  how much of its time is left (style.css). A selection's bar (placeBar)
  *  holds its buttons off a moment when it shows or offers something else
- *  (armBar); over the toolbar, it fits its row to it. */
+ *  (armBar), and fits its one row to its room, an ask of 🗑 in sight. */
 function renderBar() {
   const was = barEl.classList.contains('hidden') ? '' : barHTML;
   barEl.innerHTML = barHTML = barNow();
@@ -3134,15 +3144,20 @@ function renderBar() {
   barEl.querySelector('.on[data-cmd="all"]')?.style.setProperty('animation-delay', `${moveAll.at - Date.now()}ms`);
   if (!barHTML) return;
   placeBar();
-  if (!multi.size && !picking) return;
+  if (!barAt) return;
   if (barHTML !== was || barArm) armBar(); // (new buttons: held off too while it arms)
-  if (docked()) fitDock();
+  // "🗑 Remove 8?" is wider than the 🗑 it replaces, the last button of a
+  // row a phone scrolls sideways: the row scrolls to its end, unfaded, so
+  // the question is never cut off or read half faded.
+  if (delAsk) barEl.scrollLeft = barEl.scrollWidth;
+  fitRow();
 }
-// A selection's bar holds its buttons off for BAR_ARM_MS after it shows or
-// offers something else (as #box-ask's, D204): a click or a tap aimed at
-// what lay there a moment before — the felt, a toolbar button, the button
-// that was there (the 🗑 that became "🗑 Remove 8?") — presses nothing. The
-// keys (R, F, Space, Delete) still act at once: a key is no misaimed tap.
+// A selection's bar holds its buttons off for BAR_ARM_MS after it shows,
+// offers something else or docks somewhere new (as #box-ask's, D204): a
+// click or a tap aimed at what lay there a moment before — the felt, a
+// toolbar button, the button that was there (the 🗑 that became "🗑 Remove
+// 8?") — presses nothing. The keys (R, F, Space, Delete) still act at
+// once: a key is no misaimed tap.
 // (A piece's own bar isn't held: it shows beside the piece just tapped,
 // where the next quick tap is meant for it.)
 const BAR_ARM_MS = 400;
@@ -3155,23 +3170,24 @@ function armBar() {
 /** Keeps the open bar true to the view after a redraw (`prev`: the items
  *  it redrew, null: all): redrawn when what it offers changed — its item,
  *  or who may do what with it (a seat taken or left turns who owns a
- *  seat-bound piece, a player joins the Give ▸ list) — else moved along
- *  with its item. A bar that offers what the host would now refuse would
- *  send it, from a button or a key. The multi-selection loses the members
- *  that are gone or that this player may no longer handle (a locked one
- *  stays: 🔓 unlocks it). */
+ *  seat-bound piece, a player joins the Give ▸ list) — else placed again:
+ *  a piece's own bar when its item moved, a selection's after any redraw
+ *  (any piece, anyone's, may have come into or left the strip it docks in).
+ *  A bar that offers what the host would now refuse would send it, from a
+ *  button or a key. The multi-selection loses the members that are gone or
+ *  that this player may no longer handle (a locked one stays: 🔓 unlocks it). */
 function syncBar(prev) {
   if (multi.size) {
     const keep = [...multi].filter((id) => view.items[id] && mayTouch(view.items[id]));
     if (keep.length < multi.size) setMulti(keep);
     else if (barNow() !== barHTML) renderBar();
-    else if (!prev || keep.some((id) => prev.has(id))) placeBar();
+    else if (barHTML) placeBar();
     return;
   }
   const it = sel && view.items[sel];
   if (sel && !it) select(null);
   else if (it && barNow() !== barHTML) renderBar();
-  else if (barHTML && (!prev || prev.has(sel))) placeBar();
+  else if (barHTML && (barAt || !prev || prev.has(sel))) placeBar();
 }
 /** Whether a pile `it` turns over: cards do, and pieces with a back. */
 const pileTurns = (it) => { const top = it.top || {}; return 'd' in top || 'b' in top || !!typeAt(boxes, top.t)?.back; };
@@ -3241,19 +3257,22 @@ function placeBeside(el, b) {
 // drawn: the item — with the rest of its crowded spot, whose pieces a finger
 // presses to take the top one (topOf). A selection being built (two or more
 // picked, or one picked by Shift or ⬚) docks its bar instead, where no piece
-// is drawn, so it never moves under a finger nor lies on a piece still to
-// pick (D240): along the top of the table area — below the "What are we
-// playing?" strip when it shows — when no piece is drawn across that strip
-// of the screen (a table seen whole leaves its rim there), else over the
-// toolbar, as a phone's selection bar does (the toolbar comes back with ✕,
-// Esc, or a click on the felt). Beside the picks it moved with each pick and
-// lay on the next row; at the top edge regardless, on the top row and the
-// game strip: a tap meant for a piece ran a command for the whole group.
+// is drawn, so it never lies on a piece still to pick (D240, D245): one row
+// (style.css #action-bar.row: at most 54 px tall, scrolling sideways when
+// wider than the screen) along the top of the table area — below the "What
+// are we playing?" strip when it shows — when no piece is drawn across that
+// strip of the screen (a table seen whole leaves its rim there), else over
+// the toolbar, as a phone's selection bar does (the toolbar comes back with
+// ✕, Esc, or a click on the felt). It is placed again after every redraw
+// (anyone's piece may come into its strip) and, docking somewhere new, held
+// off a moment (armBar). Beside the picks it moved with each pick and lay
+// on the next row; at the top edge regardless, on the top row and the game
+// strip; wrapped into two rows (a phone), on the row below the strip: a tap
+// meant for a piece ran a command for the whole group.
 const toolbarEl = $('toolbar'), barHome = barEl.nextElementSibling; // (where the bar goes back to in #table-wrap)
-/** How tall a strip the docked bar takes along the table area's top (its 44 px buttons, its padding, a gap). */
+/** How tall a strip a selection's bar takes along the table area's top: its row's most (#action-bar.row's max-height, 54 px) and a gap. */
 const DOCK_H = 60;
-/** Whether the bar is docked over the toolbar (placeBar). */
-const docked = () => barEl.parentNode === toolbarEl;
+let barAt = ''; // where a selection's bar is docked: 'top' (the table area's), 'toolbar' (over it); '' for a piece's own bar (beside it)
 /** Where a selection's bar docks in the table area: the top of a strip
  *  across it, below the game strip when that shows, in which no piece (but
  *  a board) is drawn — or null, when every such strip holds one. */
@@ -3265,34 +3284,36 @@ function dockTop() {
   }
   return top;
 }
+/** Puts the bar where it goes (see above): a selection's docked — one row,
+ *  held off a moment and fitted to its room whenever it docks somewhere
+ *  new — and a piece's own beside it (placeBeside). */
 function placeBar() {
-  const top = multi.size || picking ? dockTop() : undefined;
-  if (top === null) { // (over the toolbar)
-    if (docked()) return;
-    toolbarEl.append(barEl);
-    barEl.classList.add('docked');
+  const row = !!(multi.size || picking), top = row ? dockTop() : null, at = !row ? '' : top === null ? 'toolbar' : 'top';
+  if (at !== barAt) {
+    if (at === 'toolbar') toolbarEl.append(barEl);
+    else if (barAt === 'toolbar') wrapEl.insertBefore(barEl, barHome);
+    barEl.classList.toggle('row', !!at);
+    barEl.classList.toggle('docked', at === 'toolbar');
+    barEl.classList.remove('more');
     barEl.style.left = barEl.style.top = '';
-    return;
+    barAt = at;
+    if (at) { armBar(); fitRow(); }
   }
-  if (docked()) {
-    wrapEl.insertBefore(barEl, barHome);
-    barEl.classList.remove('docked', 'more');
-  }
-  if (top !== undefined) {
+  if (at === 'top') {
     barEl.style.left = `${wrapW / 2}px`;
     barEl.style.top = `${top}px`;
-    return;
+  } else if (!at) {
+    const b = screenBox(multi.size ? multi : fanPos.has(sel) ? spotMembers(atOf.get(sel)) : [sel]);
+    if (b) placeBeside(barEl, b);
   }
-  const b = screenBox(multi.size ? multi : fanPos.has(sel) ? spotMembers(atOf.get(sel)) : [sel]);
-  if (b) placeBeside(barEl, b);
 }
-/** Fits the docked bar's one row to the toolbar it covers: its end fades
- *  while more of it lies off the screen (a phone: scroll it sideways). */
-function fitDock() {
+/** Fits a selection's one-row bar to its room: its end fades while more of
+ *  it lies beyond (`.more`; a phone scrolls it sideways). */
+function fitRow() {
   barEl.classList.toggle('more', barEl.scrollLeft + barEl.clientWidth < barEl.scrollWidth - 1);
 }
-barEl.addEventListener('scroll', fitDock, { passive: true });
-new ResizeObserver(() => { if (docked()) fitDock(); }).observe(toolbarEl);
+barEl.addEventListener('scroll', fitRow, { passive: true });
+new ResizeObserver(() => { if (barAt) fitRow(); }).observe(barEl); // (its room changed: the toolbar it covers, the screen's width)
 
 // --- multi-select (spec §4g) -------------------------------------------------
 // Several items picked at once: a rubber band (Shift+drag on the felt — on
@@ -3927,10 +3948,14 @@ function dropAction(d, it, tgtId, tgt, onHand) {
  *  or card pile top; a piece's face with an image, a text or a label; else null. */
 const pressFace = (it) => (it.k === 'c' ? it.up && it : it.k === 'p' && 'd' in (it.top || {}) ? it.top.up && it.top : pieces.zoomable(it, boxes));
 
-/** A felt drag ends without its own end (a pinch, a long press, a cancel): its band, if it drew one, goes too. */
+/** A felt drag ends (let go, or a pinch, a long press, a cancel): its band,
+ *  if it drew one, goes (a band let go picks first: endBand), and a pan
+ *  writes the sizes placeSeats held back while it moved. */
 function dropFelt() {
+  const f = feltDrag;
   feltDrag = null;
   bandEl.classList.add('hidden');
+  if (f?.moved && !f.band) placeSeats(); // (a pan's end: the sizes it held back)
 }
 function startPinch() {
   cancelItemDrag();
@@ -4160,7 +4185,7 @@ window.addEventListener('pointerup', (e) => {
   inspPress = null;
   if (feltDrag) {
     const f = feltDrag;
-    feltDrag = null;
+    dropFelt();
     if (f.band && f.moved) { endBand(f, e); return; }
     // A plain click on empty felt deselects; on an item that can't be
     // dragged, (de)selects it — a board only when nothing else is selected:

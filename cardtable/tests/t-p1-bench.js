@@ -23,7 +23,14 @@
 //        task over 150 ms: a hesitation alone can let the browser raster the
 //        layer again, 50–65 ms), and with rests just past PINCH_REST_MS,
 //        where the badges resize and the fingers move on 50 ms later (no task
-//        over 150 ms: a resize costs at a rest what it does at the lift)
+//        over 150 ms: a resize costs at a rest what it does at the lift).
+//        Every pan and gesture row also counts the phone's layouts (CDP
+//        Performance.getMetrics' LayoutCount, from its first event to 300 ms
+//        after the lift): at most B4_LAYOUTS (15; 0–7 here), since after
+//        each layout the browser hit-tests the whole table for hover (2–6 ms
+//        at CPU × 2 with 1,000 pieces) — what placeSeats wrote in each frame
+//        laid it out 81–101 times a pan, 86–88 a twist: the 33 ms frames of
+//        D246
 //   B6   the host saves the 1,000-item table: every save's main-thread part ≤ 8 ms
 //        (__ct.perf.lastSaveSyncMs, around doSave's synchronous IndexedDB put): ten
 //        throttled saves (rapid play) and five unthrottled ones (a move 1.1 s
@@ -58,7 +65,7 @@ const A = require('./assets-lib');
 const P = require('./p2t-lib');
 const { ok, section } = h;
 
-const B1_MAX = 1.5 * 1024, B3_MAX = 4, B4_LONG = 50, B4_SETTLE = 150, B4_FLOOR = 20, B6_MAX = 8, B10_DESK = 400, B10_PHONE = 1500, B11_MAX = 30;
+const B1_MAX = 1.5 * 1024, B3_MAX = 4, B4_LONG = 50, B4_SETTLE = 150, B4_FLOOR = 20, B4_LAYOUTS = 15, B6_MAX = 8, B10_DESK = 400, B10_PHONE = 1500, B11_MAX = 30;
 const B12_MEDIAN = 3, B12_P95 = 8, B14_MS = 5000, B14_CLICK = 100, B15_MAX = 300;
 const PAN_MS = 3000, GESTURE_MS = 3000, HESITATE_MS = 200; // (a pause of the fingers shorter than a rest: PINCH_REST_MS)
 
@@ -85,13 +92,28 @@ async function throttle(p, rate = 2) {
   };
 }
 
+/** Counts page p's layouts from now on (CDP Performance.getMetrics'
+ *  LayoutCount): returns a function that says how many there were, and stops. */
+async function layouts(p) {
+  const cdp = await p.context().newCDPSession(p);
+  await cdp.send('Performance.enable');
+  const count = async () => (await cdp.send('Performance.getMetrics')).metrics.find((m) => m.name === 'LayoutCount').value;
+  const n0 = await count();
+  return async () => {
+    const n = (await count()) - n0;
+    await cdp.detach().catch((err) => console.error('CDP detach failed', err));
+    return n;
+  };
+}
+
 /** A 3 s felt-drag pan on page p, under CDP CPU throttling × 2: pointer events
  *  driven once per animation frame, rAF timestamps and long tasks collected in
- *  the page. Returns {gaps (ms between frames), long (long-task durations), moved}. */
+ *  the page. Returns {gaps (ms between frames), long (long-task durations), moved,
+ *  layouts (the page's, from before the pan to 300 ms after it: layouts())}. */
 async function pan(p) {
-  const unthrottle = await throttle(p);
+  const unthrottle = await throttle(p), laid = await layouts(p);
   try {
-    return await p.evaluate(async (ms) => {
+    const r = await p.evaluate(async (ms) => {
       const table = document.getElementById('table'), r = document.getElementById('table-wrap').getBoundingClientRect();
       let start = null; // a spot of bare felt: on the table, on no item
       for (let k = 0; k < 2000 && !start; k++) {
@@ -130,6 +152,7 @@ async function pan(p) {
       po.disconnect();
       return { gaps: frames.slice(1).map((t, k) => t - frames[k]), long, moved };
     }, PAN_MS);
+    return { ...r, layouts: await laid() };
   } finally { await unthrottle(); }
 }
 
@@ -144,11 +167,11 @@ async function pan(p) {
  *  are down), settle (theirs from the task where they lift on: the badges
  *  settle there), turned (degrees the view turned), zoomed (the factor its
  *  scale grew by), pauses (at the end of each pause: {bz (the view sheet's
- *  --bz), want (the --bz the scale calls for)})}. */
+ *  --bz), want (the --bz the scale calls for)}), layouts (as pan's)}. */
 async function gesture(p, { turn = 0, from, to, legs = 1, pause = 0 } = {}) {
-  const unthrottle = await throttle(p);
+  const unthrottle = await throttle(p), laid = await layouts(p);
   try {
-    return await p.evaluate(async ([ms, turn, from, to, legs, pause]) => {
+    const r = await p.evaluate(async ([ms, turn, from, to, legs, pause]) => {
       const table = document.getElementById('table'), r = document.getElementById('table-wrap').getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2, R = Math.min(r.width, r.height) / 5, d0 = from ?? R, d1 = to ?? R;
       const tf = (k) => +new RegExp(`${k}\\(([-\\d.e]+)`).exec(table.style.transform)[1];
@@ -189,6 +212,7 @@ async function gesture(p, { turn = 0, from, to, legs = 1, pause = 0 } = {}) {
       const dur = (es) => es.map((e) => Math.round(e.duration)); // (a task that holds the lift began before it, in the same frame)
       return { gaps: frames.slice(1).map((t, k) => t - frames[k]), long: dur(tasks.filter((e) => e.startTime + e.duration < up)), settle: dur(tasks.filter((e) => e.startTime + e.duration >= up)), turned, zoomed, pauses };
     }, [GESTURE_MS, turn, from, to, legs, pause]);
+    return { ...r, layouts: await laid() };
   } finally { await unthrottle(); }
 }
 
@@ -211,7 +235,7 @@ function placeholderWatch() {
   async function panOn(what) {
     await h.sleep(1000);
     const r = await pan(phone), p95 = L.pct(r.gaps, 95);
-    console.log(`  ${what}: ${r.gaps.length} frames, rAF p95 ${p95.toFixed(1)} ms, long tasks [${r.long}]`);
+    console.log(`  ${what}: ${r.gaps.length} frames, rAF p95 ${p95.toFixed(1)} ms, long tasks [${r.long}], ${r.layouts} layouts`);
     ok(r.moved && r.gaps.length > 30, `the scripted pan moves the view (${r.gaps.length} frames)`);
     return { ...r, p95 };
   }
@@ -242,6 +266,7 @@ function placeholderWatch() {
     const full = await panOn(what), limit = Math.max(B4_FLOOR, 1.25 * base.p95);
     ok(!full.long.some((d) => d > B4_LONG), `B4: no long task over ${B4_LONG} ms while panning (${full.long.length ? full.long.join(', ') + ' ms' : 'none'})`);
     ok(full.p95 <= limit, `B4: rAF interval p95 ${full.p95.toFixed(1)} ms ≤ max(${B4_FLOOR}, 1.25 × ${base.p95.toFixed(1)}) = ${limit.toFixed(1)} ms`);
+    ok(full.layouts <= B4_LAYOUTS, `B4: the pan lays the page out ${full.layouts} times in ${full.gaps.length} frames (≤ ${B4_LAYOUTS}: each is followed by the browser's hover hit test of the whole table)`);
   }
   /** B6: host moves of `ids`, from (x0, y0), each followed by its save: once IndexedDB holds that
    *  seq, perf.lastSaveSyncMs is that save's main-thread part. Saves are throttled to one a second
@@ -432,10 +457,11 @@ function placeholderWatch() {
     console.log(`  (a first ${what}, not measured: long tasks [${warm.long}], then [${warm.settle}] as the fingers lift)`);
     await refit();
     const r = await gesture(phone, g), p95 = L.pct(r.gaps, 95), limit = Math.max(B4_FLOOR, 1.25 * pbase.p95);
-    console.log(`  ${what}: ${r.gaps.length} frames, turned ${r.turned.toFixed(1)}°, zoomed ${r.zoomed.toFixed(2)}×, rAF p95 ${p95.toFixed(1)} ms, long tasks [${r.long}], then [${r.settle}] as the fingers lift`);
+    console.log(`  ${what}: ${r.gaps.length} frames, turned ${r.turned.toFixed(1)}°, zoomed ${r.zoomed.toFixed(2)}×, rAF p95 ${p95.toFixed(1)} ms, long tasks [${r.long}], then [${r.settle}] as the fingers lift, ${r.layouts} layouts`);
     ok(!r.long.some((d) => d > long), `B4: no ${long === B4_LONG ? 'long task' : 'task'} over ${long} ms while the fingers are down (${r.long.length ? r.long.join(', ') + ' ms' : 'none over 50 ms'})`);
     if (tight) ok(p95 <= limit, `B4: rAF interval p95 ${p95.toFixed(1)} ms ≤ max(${B4_FLOOR}, 1.25 × ${pbase.p95.toFixed(1)}) = ${limit.toFixed(1)} ms`);
     ok(!r.settle.some((d) => d > B4_SETTLE), `B4: as they lift, the 1,000 badges settle (upright, their exact size) in one go, no task over ${B4_SETTLE} ms (${r.settle.length ? r.settle.join(', ') + ' ms' : 'none over 50 ms'})`);
+    ok(r.layouts <= B4_LAYOUTS, `B4: the gesture lays the page out ${r.layouts} times in ${r.gaps.length} frames, the lift's included (≤ ${B4_LAYOUTS})`);
     return r;
   }
   /** The phone's badges after the lift, and what this view calls for: {view, rot (--view and the view's turn), bz, want (--bz and its exact value)}. */
