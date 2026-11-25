@@ -299,9 +299,10 @@ function hostJob({ p, a, resolve }) {
 /** How a job ended, for its caller: {ok, error?}, and for an addBox the
  *  box the catalog holds for it (`id`: the `added` effect, drain). */
 function outcome(changed, error) {
-  const id = addedBox;
+  const id = addedBox, ruled = ruledNo;
   addedBox = null;
-  return { ...(error ? { ok: false, error } : { ok: changed }), ...(id && { id }) };
+  ruledNo = false;
+  return { ...(error ? { ok: false, error, ...(ruled && { ruled }) } : { ok: changed }), ...(id && { id }) };
 }
 
 const ingesting = new Map(); // host: player → the last of their decks in the works (a chain)
@@ -817,16 +818,17 @@ const incompatible = new Set(); // host: peers on another wire version — they 
  *  action bulbs and banners (for the next broadcast, which shows them here
  *  too), private notices and peek answers, the host's own toasts, and the
  *  decks and rules code the next broadcast must carry. Returns the first
- *  refusal notice for `actor`. (host only) */
+ *  refusal notice for `actor` (whether the rules made it: ruledNo). (host only) */
 function drain(actor) {
   let refusal;
+  ruledNo = false;
   for (const e of T.drain()) {
     switch (e.t) {
       case 'fx': fxQueue.push(e.f); break;
       case 'ann': annQueue.push(e.msg); break;
       case 'note':
-        if (e.p === actor && !refusal && e.msg.startsWith('🚫')) refusal = e.msg;
-        tell(e.p, e.msg);
+        if (e.p === actor && !refusal && e.msg.startsWith('🚫')) [refusal, ruledNo] = [e.msg, !!e.ruled];
+        tell(e.p, e.msg, e.ruled);
         break;
       case 'peek': if (e.p === pid) showPeek(e.c); else noteTo(e.p, { peek: e.c }); break;
       case 'toast': toast(e.msg); break;
@@ -841,6 +843,7 @@ function drain(actor) {
   return refusal;
 }
 let addedBox = null; // the box the job just run added or found (drain's `added`), for its caller (outcome)
+let ruledNo = false; // the job's refusal (drain's) was the rules' own — a veto, `strict` — not the engine's (outcome)
 /** Host: a setup with rules (or a reset of the box whose rules run) just
  *  committed — spec §4c, §4f: the box's rules start now, ahead of every job
  *  that waits, on the box's exported state (`state`: its "@#k" and the ids
@@ -864,7 +867,7 @@ function noteTo(p, body) {
   }
 }
 /** Host: a private notice for player p — this screen's own, or theirs. */
-const tell = (p, msg) => (p === pid ? note(msg) : noteTo(p, { msg: msg.slice(0, 200) }));
+const tell = (p, msg, ruled) => (p === pid ? note(msg, ruled) : noteTo(p, { msg: msg.slice(0, 200), ...(ruled && { ruled }) }));
 
 function scheduleBroadcast() {
   if (!bcastT) bcastT = setTimeout(broadcast, 40);
@@ -1481,7 +1484,7 @@ function connect() {
     if (num(n.wait) > 0) { // the host paces our image pull (its budget a minute): we keep waiting, and say why
       heardAt = Math.max(heardAt, Date.now() + Math.min(num(n.wait), ASSET_WINDOW_MS));
       note(`Card images are coming slowly — the host sends at most ${PEER_ASSET_BUDGET / 1e6} MB of them a minute`);
-    } else if (n.msg) note(String(n.msg)); // toast + the terminal bridge
+    } else if (n.msg) note(String(n.msg), n.ruled === true); // toast + the terminal bridge
     if (n.peek && n.to === pid) { // the host's private answer to our peek: a card {d, i}, or a piece {t, f}
       showPeek('t' in n.peek ? { t: peerText(n.peek.t), f: num(n.peek.f, -1) } : { d: peerText(n.peek.d), i: num(n.peek.i, -1) });
     }
@@ -4137,30 +4140,34 @@ const stopLine = (name) => `The rules running now («${name}») are switched off
  *  piles" (ticked) under "{Bob} added this box and knows its starting
  *  layout"; from the terminal `o` says it ({clear, rules}). Then, before the
  *  rules of any box that isn't built in, the trust dialog: Enable rules, Set
- *  up without rules, or Cancel. A clearing setup stops the game that ran
- *  (its rules switched off first, as 🎲 does: pickCleared) — the box's own
- *  rules, when enabled, start after it (D205). Resolves act()'s outcome, or
- *  null when the host cancelled. */
+ *  up without rules, or Cancel. A box without a layout is set up by its
+ *  rules alone (t.layout): neither its checkbox nor "Set up without rules"
+ *  is offered — they would clear the table for nothing (D213). A clearing
+ *  setup stops the game that ran (its rules switched off first, as 🎲 does:
+ *  pickCleared) — the box's own rules, when enabled, start after it (D205).
+ *  Resolves act()'s outcome, or null when the host cancelled. */
 async function setUpBox(id, o) {
-  const box = T.state.boxes[id], src = T.state.boxSrc[id] || { src: 'host' };
+  const box = T.state.boxes[id], src = T.state.boxSrc[id] || { src: 'host' }, layout = !!box.setup?.length;
   const by = src.src === 'upload' ? T.state.players[src.by]?.name || 'A guest' : '';
   let { clear = true, rules = !!box.rules, shuffle } = o || {};
   const stops = clear && T.state.rules?.enabled ? T.state.rules.name : '';
-  if (!o && (tableBusy() || box.rules || by || stops)) {
+  if (!o && (tableBusy() || (box.rules && layout) || by || stops)) {
     const r = await boxAsk('setup', `Set up «${box.name}»?`, [
       ...(tableBusy() ? ['This clears the table.'] : []),
       ...(stops ? [stopLine(stops)] : []),
-      ...(box.rules ? [{ id: 'rules', label: 'Enable its rules', on: true }] : []),
-      ...(by ? [`${by} added this box and knows its starting layout.`, { id: 'shuffle', label: 'Shuffle face-down piles', on: true }] : []),
+      ...(box.rules && layout ? [{ id: 'rules', label: 'Enable its rules', on: true }] : []),
+      ...(by ? [`${by} added this box and knows its starting layout.`, ...(layout ? [{ id: 'shuffle', label: 'Shuffle face-down piles', on: true }] : [])] : []),
     ], [['cancel', 'Cancel'], ['ok', 'Set up', true]]);
     if (r.v !== 'ok') return null;
-    ({ rules = false, shuffle } = r.on);
+    rules = r.on.rules ?? rules;
+    shuffle = r.on.shuffle;
   }
   if (rules && !isBuiltin(box)) {
-    // (Cancel, never Enable rules, where the confirm's Set up was: a stray second click cancels)
+    // (Cancel, never Enable rules, where the confirm's Set up was — the last
+    // button stands at #box-ask's bottom right: a stray second click cancels)
     const { v } = await boxAsk('trust', `«${box.name}» has rules`, [
       `«${box.name}» comes with rules written by its author${by ? `, added by ${by}` : ''}. A rules script sees every hand and hidden piece and can reveal them. Enable the rules?`,
-    ], [['enable', 'Enable rules', true], ['without', 'Set up without rules'], ['cancel', 'Cancel']]);
+    ], [['enable', 'Enable rules', true], ...(layout ? [['without', 'Set up without rules']] : []), ['cancel', 'Cancel']]);
     if (v === 'cancel') return null;
     rules = v === 'enable';
   }
@@ -4212,11 +4219,11 @@ function boxAnswer(msg, good) {
   show($('box-err'), good ? '' : msg);
   if (!good) console.error('the box sent to the host was not added:', msg);
 }
-/** Refusal `msg` of an upload, with what to do about it when the running
- *  rules (`rules`: {name, enabled}) made it — a strict game takes no new
- *  boxes (D186) — rather than the engine's own gates ("🚫 Box rejected"). */
-const ruledOut = (msg, rules) => (rules?.enabled && msg && !/^🚫 Box rejected/u.test(msg)
-  ? `${msg} — the rules running («${rules.name}») refused the box; the host can switch them off in 📜, then it can be uploaded again` : msg);
+/** Refusal `msg` of an upload that the running rules (`rules`: {name}) made
+ *  — a strict game takes no new boxes (D186), a script may veto one — with
+ *  what to do about it. Only the rules' own refusal (a note's `ruled`, an
+ *  outcome's) gets it: never the engine's gates or a storage failure (D211). */
+const ruledOut = (msg, rules) => `${msg} — the rules running («${rules?.name || 'a script'}») refused the box; the host can switch them off in 📜, then it can be uploaded again`;
 /** Reads an upload into a game box (boxio.readBox, which reports each file)
  *  and adds it. Progress and any failure show in the dialog (a failure as a
  *  toast too), naming the file or the field. The host's box is checked
@@ -4246,7 +4253,7 @@ async function uploadBox(files) {
     }
     say(`Adding «${name}»…`);
     const r = await act({ t: 'addBox', box: tb }), box = T.state.boxes[r.id];
-    if (!box) throw new Error(ruledOut(r.error, T.state.rules) || 'the box was not added');
+    if (!box) throw new Error(r.ruled ? ruledOut(r.error, T.state.rules) : r.error || 'the box was not added');
     const set = !!(box.setup?.length || box.rules); // (Set up has something to do: lay it out, or start its rules)
     say(`${r.ok ? `Added «${name}»` : 'That box is already on this table'}${!set && $('box-now').checked ? ' — it has no layout to set up: its pieces are in the catalog' : ''}`);
     boxBusy(false);
@@ -4413,12 +4420,13 @@ const cliMsgs = []; // bridge-only feedback: command errors, peek results, notic
 
 /** A private notice for this player (a veto, t.tell, a failed send): a toast,
  *  and on a bridged tab the terminal/bot gets it too — nobody may be
- *  watching that browser. */
-function note(msg) {
+ *  watching that browser. `ruled`: the rules refused this player's action
+ *  (the host says so: the note's `ruled`). */
+function note(msg, ruled = false) {
   toast(msg);
   if (CLI) cliMsgs.push(`note: ${msg}`);
   // (the guest waits on the box it sent — the dialog is modal: a refusal now is its answer, whatever refused it)
-  if (boxWait && /^(🚫|That box is already)/u.test(msg)) boxAnswer(ruledOut(msg, view.rules), msg.startsWith('That'));
+  if (boxWait && /^(🚫|That box is already)/u.test(msg)) boxAnswer(ruled ? ruledOut(msg, view.rules) : msg, msg.startsWith('That'));
 }
 
 function cliCardInfo(d, i) {
@@ -4629,6 +4637,7 @@ function cliExec(c) {
         const id = cliBox(c.box), box = T.state.boxes[id];
         if (!box.setup?.length && !box.rules) throw new Error(`setup: «${box.name}» has nothing to set up (no layout, no rules)`);
         if (c.rules && !box.rules) throw new Error(`setup: «${box.name}» has no rules`);
+        if (!box.setup?.length && !c.rules) throw new Error(`setup: «${box.name}» has no layout — its rules lay the table out: add --rules`);
         if (c.rules && !isBuiltin(box)) cliMsgs.push(`setup: «${box.name}» has rules — confirm them on the page (the host's click enables a box's rules)`);
         oneSetup(() => setUpBox(id, { clear: !c.keep, rules: !!c.rules })).then((r) => { if (!r) cliMsgs.push(`setup: «${box.name}» was not set up (cancelled on the page, or another setup was under way)`); },
           (err) => { console.error('bridge setup failed', err); cliMsgs.push(`error: ${err.message}`); });

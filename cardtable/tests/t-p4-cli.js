@@ -8,9 +8,10 @@
 // host's terminal sets a box up (by its name), resets it, and asks for a
 // box's rules — which still wait for the host's click on the page (the trust
 // dialog); a guest's setup and reset are said to be the host's; a box that
-// isn't there is said so.
+// isn't there is said so; a box that only its rules lay out wants --rules.
 'use strict';
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const h = require('./h');
 const { ok, section } = h;
@@ -133,6 +134,20 @@ const API = [
   ok(await host.waitForSelector('#box-ask[open][data-kind="trust"]', { timeout: 10000 }).then(() => true, () => false), 'the trust dialog shows on the host\'s page');
   await host.click('#box-ask-btns button[value="enable"]');
   ok(await until(() => snap('Alice')?.rules === 'Beacon Watch' && snap('Alice').lastSetup === id('Beacon Watch'), 20000, 200), 'Enable rules there: set up, its rules running (the snapshot\'s rules: "Beacon Watch")');
+  // A box without a layout is set up by its rules alone: without --rules the terminal refuses it, saying so (D213)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'p4-cli-'));
+  fs.writeFileSync(path.join(dir, 'game.json'), JSON.stringify({ name: 'Laid by its rules', pieces: [{ id: 'gem', kind: 'token', faces: ['G'] }], rules: 'rules.js' }));
+  fs.writeFileSync(path.join(dir, 'rules.js'), "({ name: 'Laid by its rules' })");
+  await host.click('#box-btn');
+  await host.setChecked('#box-now', false);
+  await host.evaluate(() => { document.getElementById('box-progress').textContent = ''; });
+  await host.setInputFiles('#box-files', ['game.json', 'rules.js'].map((f) => path.join(dir, f)));
+  await host.waitForFunction(() => /^Added/.test(document.getElementById('box-progress').textContent), null, { timeout: 20000 });
+  await host.evaluate(() => document.getElementById('box-dialog').close());
+  fs.rmSync(dir, { recursive: true, force: true });
+  const lone = await type(R.Alice, 'setup Laid by its rules', (ls) => ls.some((l) => /✉ error: setup: «Laid by its rules» has no layout/.test(l)), 5000);
+  ok(lone.some((l) => l.includes('✉ error: setup: «Laid by its rules» has no layout — its rules lay the table out: add --rules')) && snap('Alice').lastSetup === id('Beacon Watch'),
+    'a box with rules and no layout, set up without --rules: refused in the terminal, nothing cleared');
   killAll();
   await env.done();
 })().catch((e) => { killAll(); h.crash(e); });

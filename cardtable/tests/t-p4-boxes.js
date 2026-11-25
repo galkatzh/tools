@@ -36,6 +36,13 @@
 //     answering PNG (Safari), an opaque image is stored as JPEG and a
 //     transparent one as PNG; each records its real type.
 //  12 the same built-in box twice from 📦: one catalog entry.
+//  13 a game running when a box is set up: its rules switched off first;
+//     a strict game refuses an upload, saying what to do; the README's and
+//     Help's examples set up as written.
+//  14 the trust dialog's Cancel where the confirm's Set up was, at four
+//     sizes (its buttons wrapped at 320 px); a box its rules lay out (no
+//     rules checkbox, no "Set up without rules"); a storage failure with
+//     rules running is not blamed on them.
 //  8  resume elsewhere: chess and Hold'em exported mid-game (rules and
 //     state) and imported into a fresh room with two new players (its host
 //     on a phone): set up through the trust dialog, play goes on.
@@ -617,6 +624,67 @@ const harborAs = (name, more = {}) => [file('game.json', J({ ...HARBOR_JSON, nam
     await settle();
     st = await S();
     ok(st.boxes[st.lastSetup]?.name === 'Two Fleets' && Object.keys(st.items).length === 3, `Help's example: set up as written (${Object.keys(st.items).length} items: the sea and a ship a seat)`);
+    await closeBoxes(alice);
+  }
+
+  section("14 the trust dialog's Cancel stands where Set up was at every size, its buttons wrapped too; a box its rules lay out; a storage failure isn't blamed on the rules");
+  {
+    // #box-ask stands on its bottom edge: the last button — Set up, then Cancel — sits at the bottom right, wrapped or not (D214)
+    for (const [w, ht] of [[1280, 800], [390, 664], [844, 390], [320, 568]]) {
+      await alice.setViewportSize({ width: w, height: ht });
+      await openBoxes(alice);
+      await press(alice, `.box-row[data-box="${beacon}"] [data-act="setup"]`);
+      await asked(alice, 'setup');
+      const b = await alice.locator('#box-ask-btns button.main').boundingBox(), at = [b.x + b.width / 2, b.y + b.height / 2];
+      await reply(alice, 'ok');
+      await asked(alice, 'trust');
+      const r = await alice.evaluate(([x, y]) => ({
+        at: document.elementFromPoint(x, y)?.closest('button')?.value ?? null,
+        rows: new Set([...document.querySelectorAll('#box-ask-btns button')].map((e) => Math.round(e.getBoundingClientRect().top))).size,
+      }), at);
+      ok(r.at === 'cancel' && (w > 320 || r.rows > 1), `${w} × ${ht}: where the confirm's Set up was, the trust dialog has ${r.at} (its buttons in ${r.rows} row${r.rows > 1 ? 's' : ''})`);
+      if (w === 320) await shot(alice, 'p4-boxes-trust-narrow');
+      await reply(alice, 'cancel');
+    }
+    await alice.setViewportSize({ width: 1280, height: 800 });
+    // A box without a layout: its rules lay the table out (t.layout) — no "Enable its rules" to untick, no "Set up without rules" (D213)
+    const LAY = "({ name: 'Laid by its rules', setup(t) { if (!t.data.laid) { t.data.laid = true; t.layout(t.boxes().find((b) => b.name === 'Laid by its rules').id, [{ piece: 'gem', at: [600, 500] }]); } } })";
+    const r = await upload(alice, [file('game.json', J({ name: 'Laid by its rules', pieces: [{ id: 'gem', kind: 'token', w: 50, faces: [{ color: '#22c55e', label: 'G' }] }], rules: 'rules.js' }), 'application/json'),
+      file('rules.js', LAY, 'text/javascript')]);
+    const [lid] = await named('Laid by its rules'), n0 = Object.keys((await S()).items).length;
+    ok(/^Added «Laid by its rules»/.test(r.progress) && J((await row(alice, lid))?.btns) === J(['Set up']), `added; its row offers Set up (${r.progress})`);
+    await press(alice, `.box-row[data-box="${lid}"] [data-act="setup"]`);
+    let q = await asked(alice, 'setup');
+    ok(q?.text === 'This clears the table.' && J(q.checks) === '{}', `the confirm: the table cleared, no "Enable its rules" to untick (${J(q)})`);
+    await reply(alice, 'ok');
+    q = await asked(alice, 'trust');
+    ok(J(q?.buttons) === J(['Enable rules', 'Cancel']), `the trust dialog: no "Set up without rules" — there would be nothing to set up (${J(q?.buttons)})`);
+    await reply(alice, 'cancel');
+    await h.sleep(400);
+    let st = await S();
+    ok(Object.keys(st.items).length === n0 && st.lastSetup !== lid && !st.rules?.enabled, 'Cancel: nothing cleared, nothing set up');
+    await press(alice, `.box-row[data-box="${lid}"] [data-act="setup"]`);
+    await asked(alice, 'setup');
+    await reply(alice, 'ok');
+    await asked(alice, 'trust');
+    await reply(alice, 'enable');
+    await settle();
+    st = await S();
+    const items = Object.values(st.items);
+    ok(st.lastSetup === lid && st.rules?.enabled && st.rules.box === lid && items.length === 1 && items[0].t === `${lid}/gem`, `Enable rules: the table cleared, its rules lay out the one gem (${items.length} item${items.length === 1 ? '' : 's'})`);
+    // The host's images can't be stored, with rules running: the dialog says so, and blames no rules (D211)
+    await alice.evaluate(() => {
+      const put = IDBObjectStore.prototype.put;
+      window.__put = put;
+      IDBObjectStore.prototype.put = function (...a) {
+        if (this.name === 'assets') throw new DOMException('the test fills the disk', 'QuotaExceededError');
+        return put.apply(this, a);
+      };
+    });
+    const full = await upload(alice, [file('game.json', J({ ...JSON.parse(game()), name: 'Quota Test' }), 'application/json'), file('map.png', photoPNG(96, 64, 23), 'image/png')]);
+    await alice.evaluate(() => { IDBObjectStore.prototype.put = window.__put; });
+    ok(full.err === "Couldn't add the game: Couldn't store the box's images: storage is full" && !(await named('Quota Test')).length,
+      `the disk full, «Laid by its rules» running: "${full.err}" — not "the rules running … refused the box"`);
     await closeBoxes(alice);
   }
   for (const p of [alice, bob, carol, M]) await p.context().close();

@@ -454,7 +454,10 @@ together, or as one **`.zip`** of them:
   board left so), and with `[x, y]`, `"free": true` sets it down without
   snapping. `owner` may be `"seat:<id>"` or `"#k"`. In a `group` with
   `"shuffle": true`, the face-down pieces that share a back are dealt out
-  among the group's places (an `id` stays with its place). A setup is
+  among the group's places (an `id` stays with its place); they must look
+  alike once dealt — the same `rot`, `lock`, `n` and `owner`, and all dice
+  or none (a die never snaps, so a spot without its address would show
+  one). A setup is
   checked whole before anything moves — a deck or seat it names, the
   players it needs, the room on the table — and happens whole or not at
   all.
@@ -486,7 +489,10 @@ off (the game they ran is cleared away with the table, as 🎲 does), "Enable
 its rules" (ticked), and for a box a guest added "Shuffle face-down piles"
 (ticked) under "{Bob} added this box and knows its starting layout" —
 whoever uploads a box knows the order of its face-down piles and which
-hands go where, so the host's table shuffles them by default. With "Set up
+hands go where, so the host's table shuffles them by default. A box with
+rules and no layout is set up by its rules alone: neither "Enable its
+rules" nor *Set up without rules* is offered for it (the terminal wants
+`--rules`). With "Set up
 now" ticked, the host's own upload is set up at once (a box of pieces alone,
 with nothing to lay out, is only added). *Reset* (offered on the box set up
 last, also after a reload, until the table is cleared — 🎲's games clear it)
@@ -495,15 +501,18 @@ restarts them; other rules are switched off. Guests may upload too, within
 the 1.5 M-character budget they share with their decks; their box is only
 registered — setting it up is the host's call. A strict game's rules (chess,
 go, reversi) take no new boxes while they run: the dialog says so, and the
-host switches them off in 📜 first. The same box uploaded twice is one box.
+host switches them off in 📜 first (only a refusal the rules made says
+so: a full disk is said as such). The same box uploaded twice is one box.
 
 **Trust.** A rules script sees every hand and hidden piece and can reveal
 them, so a box's rules never run without the host's click: before them, the
 **trust dialog** — "«X» comes with rules written by its author, added by
 Bob. … Enable the rules?" — offers *Enable rules*, *Set up without rules*
-or *Cancel* (where the confirm's *Set up* was, and every button wakes half a
-second after the dialog shows, so a double click on *Set up* never answers
-it). Only a built-in box (by its content, never by anything a box can claim)
+or *Cancel*. Both questions stand on their bottom edge, so *Cancel* lies
+where the confirm's *Set up* was at any screen size, its buttons wrapped
+or not, and every button wakes half a second after the dialog shows: a
+double click — or a burst of taps — on *Set up* never enables the rules.
+Only a built-in box (by its content, never by anything a box can claim)
 skips it; the terminal's `setup <box> --rules` waits for the same click on
 the page.
 

@@ -594,8 +594,9 @@ out:
   centre and keeps it on the spot while it lies in reach (as a board moved
   under it leaves a piece); a `group` with `"shuffle": true` deals out the
   identities of its face-down pieces that share a back among their places —
-  each item keeps its place, z and `id`, so an id names a place, never a
-  piece.
+  each item keeps its place, z, address and `id`, so an id names a place,
+  never a piece; those pieces must agree on `rot`, `lock`, `n`, `owner` and
+  on being a die (a die never snaps: its place would lose its address).
 
 **A box's rules and trust.** A box may bring its rules (the script's text)
 and its rules' saved state (`{data, public, asks, secret}`, written by an
@@ -604,8 +605,10 @@ and only after the trust dialog ("«X» comes with rules written by its
 author … A rules script sees every hand and hidden piece and can reveal
 them") — for every box but a built-in one, whoever added it, the host
 included, and from the terminal too (its buttons wake half a second after
-it shows, so the second click of a double click on the confirm's Set up
-never answers it). A clearing Set up — or a Reset — first switches off any
+it shows, and its Cancel lies where the confirm's Set up was, so a double
+click on Set up never enables the rules). A box with rules and no layout
+— one its rules lay out with `t.layout` — is set up by them alone: there
+is no "Set up without rules" for it. A clearing Set up — or a Reset — first switches off any
 other rules that run: the game they ran is cleared away with the table, as
 🎲's games are (a strict game's rules, chess's say, would otherwise refuse
 every move on the new layout). They start right after the setup
@@ -617,7 +620,10 @@ whose `at` is no number, a secret keyed by no player) is dropped with
 `console.error` and one toast to the host. They run as the box's rules
 (`rules.box`), so **Reset** restarts them on that state; an Enable of any
 other text does not. A `clear` (🎲's games start with one) ends the box set
-up: no Reset is offered after it. A box's setup and saved state never reach
+up: no Reset is offered after it — while the box's own rules still run, an
+export is that box's. A refusal the rules make (a veto, `strict`) reaches
+the player as a notice the app knows for theirs: an upload refused so says
+which rules refused it, and an engine's or a storage refusal never does. A box's setup and saved state never reach
 a guest — only the host and the Worker read them.
 
 ## 3. Enforcement path (the one structural change)

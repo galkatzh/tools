@@ -1693,6 +1693,75 @@ function testFixup() {
   }
 }
 
+/** The second fix-up's regressions (G). */
+function testFixup2() {
+  section('(G) a die and a token under one back in a shuffled group: refused — a die never snaps, so its place would show it (D210)');
+  {
+    const tiles = (group) => ({
+      name: 'Mystery Tiles', backs: [{ id: 'bk', color: '#334455' }],
+      pieces: [
+        { id: 'board', kind: 'board', w: 400, h: 140, board: { grid: { type: 'square', cols: 3, rows: 1, cell: 100, x: 50, y: 20, labels: 'chess' } } },
+        { id: 'gem', kind: 'token', w: 60, shape: 'rect', stack: 'none', back: 'bk', faces: [{ label: 'G' }] },
+        { id: 'pebble', kind: 'token', w: 60, shape: 'rect', stack: 'none', back: 'bk', faces: [{ label: 'P' }] },
+        { id: 'die', kind: 'die', w: 60, shape: 'rect', back: 'bk', faces: [{ label: '1' }, { label: '2' }] },
+      ],
+      setup: [{ piece: 'board', at: [100, 100] }, group],
+    });
+    const mixed = tiles({ shuffle: true, group: [{ piece: 'gem', up: false, at: 'a1' }, { piece: 'die', up: false, at: 'b1' }] });
+    const why = thrown(() => boxOfDef(mixed));
+    ok(/^setup\[1\]\.group\[1\]: being a die differs from setup\[1\]\.group\[0\], which shares its back — the shuffle would show which is which$/.test(why), `boxOfDef refuses it, naming both entries (${why})`);
+    const T = hostTable({ seed: 71, players: [[BOB, 'Bob']] }), r = act(T, BOB, { t: 'addBox', box: mixed, cost: 2000 });
+    ok(!r.id && /^🚫 Box rejected: setup\[1\]\.group\[1\]: being a die differs/.test(r.notes[0] || '') && !Object.keys(T.state.boxes).length, `Bob's upload of it: rejected, said (${r.notes[0]})`);
+    ok(!thrown(() => boxOfDef(tiles({ group: [{ piece: 'gem', up: false, at: 'a1' }, { piece: 'die', up: false, at: 'b1' }] }))), 'unshuffled, the two may share the back (alike from outside, §2c)');
+    // tokens alone: every place keeps its address through the shuffle, whatever was dealt to it
+    const b = act(T, HOST, { t: 'addBox', box: tiles({ shuffle: true, group: ['gem', 'pebble', 'gem'].map((k, i) => ({ piece: k, up: false, at: 'abc'[i] + '1', id: `0000c0d${i}` })) }) }).id;
+    let kept = true;
+    const seen = new Set();
+    for (let n = 0; n < 20; n++) {
+      act(T, HOST, { t: 'setup', box: b });
+      [0, 1, 2].forEach((i) => { const it = T.state.items[`0000c0d${i}`]; kept &&= it?.at?.endsWith(`:${'abc'[i]}1`); seen.add(`${i}${tid(it?.t)}`); });
+    }
+    ok(kept && seen.size === 6, `tokens alone: 20 shuffles, every place keeps its address (${kept}); each place held both kinds (${seen.size} of 6 place-kind pairs)`);
+  }
+
+  section("(G) a refusal the rules made says so (`ruled`) — the engine's own and a storage failure never do (D211)");
+  {
+    const R = room(HOST, 'Alice', [[BOB, 'Bob']], 'c'), H = R.H;
+    R.job(HOST, { t: 'setRules', enabled: true, reset: true, code: "({ name: 'No boxes', handle(t, a) { if (a.t === 'addBox') return 'no boxes here'; } })" });
+    const v = R.job(BOB, { t: 'addBox', box: skiff(), cost: 1500 }), vn = v.fx.filter((e) => e.t === 'note' && e.p === BOB);
+    ok(J(vn) === J([{ t: 'note', p: BOB, msg: '🚫 no boxes here', ruled: true }]) && !Object.keys(H.state.boxes).length, `a script's veto of Bob's box, through the Worker: its notice carries ruled (${J(vn)})`);
+    R.job(HOST, { t: 'setRules', enabled: false });
+    R.job(HOST, { t: 'setRules', enabled: true, reset: true, code: RULES_TEMPLATES.chess });
+    const st = R.job(BOB, { t: 'addBox', box: skiff(), cost: 1500 }), sn = st.fx.filter((e) => e.t === 'note' && e.p === BOB);
+    ok(J(sn) === J([{ t: 'note', p: BOB, msg: '🚫 Not a move in this game', ruled: true }]), `strict chess refusing it: ruled too (${J(sn)})`);
+    R.job(HOST, { t: 'setRules', enabled: false });
+    R.job(HOST, { t: 'setRules', enabled: true, reset: true, code: skiff().rules });
+    const e = R.job(BOB, { t: 'addBox', box: { name: 'Broken', pieces: [{ id: 'x', kind: 'nope' }] }, cost: 100 }), en = e.fx.filter((x) => x.t === 'note' && x.p === BOB);
+    ok(en.length === 1 && /^🚫 Box rejected: /.test(en[0].msg) && !('ruled' in en[0]), `the engine's own gate, rules running: no ruled (${J(en)})`);
+    const r0 = quietly(() => R.M.job(BOB, { t: 'chat', msg: 'hi' })).value, out = structuredClone(r0.out);
+    out.effects.push({ t: 'note', p: BOB, msg: '🚫 forged', ruled: 'yes' });
+    quietly(() => H.applyStatePatch(structuredClone(r0.patch), out, { p: BOB, a: { t: 'chat', msg: 'hi' } }));
+    R.M.drain();
+    const f = H.drain().find((x) => x.t === 'note' && x.msg === '🚫 forged');
+    ok(f && !('ruled' in f), `a Worker's note with ruled: "yes" loses it (only true passes) (${J(f)})`);
+  }
+
+  section("(G) after a clear, the box whose rules still run leads the export (D212)");
+  {
+    const R = room(HOST, 'Alice', [[BOB, 'Bob']], 'd'), H = R.H, tb = R.add(HOST, tide({ rules: TIDE_RULES })).id;
+    R.job(HOST, { t: 'setup', box: tb, rules: true });
+    R.job(HOST, { t: 'clear' });
+    let x, why = '';
+    try { x = quietly(() => H.exportBox({ rules: true, state: true })).value.box; } catch (err) { why = err.message; }
+    ok(!why && H.state.lastSetup === undefined && H.state.rules.box === tb && x.name === 'Tidewater' && x.id === tb && x.pieces.some((p) => p.id === 'chart') && x.rules === H.state.rules.code,
+      `the table cleared, Tidewater's rules running: the export is Tidewater, its types and rules (${why || J(x && { name: x.name, id: x.id, types: x.pieces.length })})`);
+    const T = hostTable({ seed: 72, players: [[BOB, 'Bob']] }), sb = act(T, HOST, { t: 'addBox', box: skiff() }).id;
+    act(T, HOST, { t: 'setup', box: sb });
+    act(T, HOST, { t: 'clear' });
+    ok(thrown(() => T.exportBox({})) === 'types needs at least 1 entry (or the box a deck)', 'no rules running: an empty table still has nothing to export (as before)');
+  }
+}
+
 (async () => {
   await guard('(1) format', testFormat);
   await guard('(2) setup', testSetup);
@@ -1712,5 +1781,6 @@ function testFixup() {
   await guard("(6′) MIGRATE[4], reset after a reload", indepMigrate);
   await guard("(W′) Worker contract", indepWorker);
   await guard('(F) fix-up regressions', testFixup);
+  await guard('(G) fix-up 2 regressions', testFixup2);
   report();
 })().catch(crash);

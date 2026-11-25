@@ -783,10 +783,15 @@ sync and rendering, and the Worker together with `handle`.
          a clear ends the box set up, so Reset never lays out a box the
          table no longer holds.
        - A shuffle of hidden pieces deals out what they are, never where
-         they stand: the ids a box's author gave stay with the places.
+         they stand: the ids a box's author gave stay with the places, and
+         pieces that would look different once dealt (a die never snaps)
+         can't share the shuffle.
        - The trust dialog can't be answered by accident: its buttons wake
          half a second after it shows, and Cancel stands where the
-         confirm's Set up was.
+         confirm's Set up was at any screen size (the questions stand on
+         their bottom edge).
+       - A box its rules lay out is set up by its rules alone; only the
+         rules' own refusal of an upload is blamed on them.
 5. **Private material.**
    - `vis` (owner-visible pieces, dice under a cup), private areas beyond the
      hand (a tile rack, a screen), and peeking at any hidden piece.
@@ -874,3 +879,10 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
 - **An id names a place, never a hidden piece:** a shuffle of hidden pieces
   trades their identities among the places, so ids a box's author chose
   reveal nothing (§1, §4).
+- **Whatever a shuffle deals must look alike once dealt:** the hidden
+  pieces a group shuffles agree on everything that shows, being a die
+  included — a die never snaps, so the spot it was dealt to would lose its
+  address and show it (§1, §4).
+- **A question's last button holds its place:** the 📦 questions stand on
+  their bottom edge, so the confirm's *Set up* and the trust dialog's
+  *Cancel* share one spot on every screen, wrapped buttons or not (§4).

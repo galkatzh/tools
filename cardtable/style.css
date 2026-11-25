@@ -677,7 +677,12 @@ dialog ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 14px; }
 #box-dialog .box-err:empty { display: none; }
 #box-msg { margin: 0 0 10px; }
 #deck-to-box { padding: 2px 8px; }
-#box-ask { width: min(440px, calc(100vw - 24px)); }
+/* The 📦 questions stand on their bottom edge, not centred: whatever their
+   body, and however their buttons wrap, the last button sits at the bottom
+   right — the trust dialog's Cancel where the confirm's Set up was (D214).
+   (max-height keeps the top margin positive; a short screen anchors lower.) */
+#box-ask { width: min(440px, calc(100vw - 24px)); margin-block: auto 30vh; max-height: calc(70vh - 16px); }
+@media (max-height: 560px) { #box-ask { margin-block: auto 12px; max-height: calc(100vh - 28px); } }
 #box-ask p { margin: 0 0 4px; font-size: 14px; line-height: 1.45; }
 #box-ask menu { flex-wrap: wrap; }
 #box-ask .main { background: #059669; }

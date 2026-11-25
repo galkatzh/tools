@@ -22,7 +22,7 @@
 //    app takes them with T.drain() after each call:
 //      {t:'fx', f}         an action marker {p, id, x, y, roll?: [die ids]} (the name bulbs, the dice tumble)
 //      {t:'ann', msg}      a banner for every screen (t.announce)
-//      {t:'note', p, msg}  a private notice for player p
+//      {t:'note', p, msg, ruled?}  a private notice for player p (ruled: the rules refused p's action)
 //      {t:'peek', p, c}    a peeked card {d, i} or piece {t, f}, for player p's eyes only
 //      {t:'toast', msg}    a notice for the host's own screen (script errors)
 //      {t:'deck', id}      a new deck, to send to everyone
@@ -817,13 +817,15 @@ function cleanSetup(list, types, seats, deckNames = []) {
   /** A shuffled group deals out the identities of its hidden pieces that
    *  share a back among their places (spec §2c): everything else of theirs
    *  that shows (rot, lock, n, owner) must agree, or it would tell them
-   *  apart after the shuffle. (Their ids stay with the places: lay.) */
+   *  apart after the shuffle — and so must being a die: a die never snaps
+   *  (D112), so the place it was dealt to would lose its address in the
+   *  public view (D210). (Their ids stay with the places: lay.) */
   function sameLooks(group, at) {
     const first = new Map(); // back id → [path, looks] of its first hidden piece
     for (const [e, path] of hiddenIn(group, `${at}.group`)) {
-      const ty = types[e.piece], looks = [snapRot(e.rot, ty.rotStep), e.lock ?? ty.kind === 'board', e.n ?? 1, e.owner ?? null];
+      const ty = types[e.piece], looks = [snapRot(e.rot, ty.rotStep), e.lock ?? ty.kind === 'board', e.n ?? 1, e.owner ?? null, ty.kind === 'die'];
       const [path0, looks0] = first.get(ty.back) ?? first.set(ty.back, [path, looks]).get(ty.back), k = looks.findIndex((v, j) => v !== looks0[j]);
-      if (k >= 0) throw new Error(`${path}: ${['rot', 'lock', 'n', 'owner'][k]} differs from ${path0}, which shares its back — the shuffle would show which is which`);
+      if (k >= 0) throw new Error(`${path}: ${['rot', 'lock', 'n', 'owner', 'being a die'][k]} differs from ${path0}, which shares its back — the shuffle would show which is which`);
     }
   }
   function entry(e, at, inSeat) {
@@ -3406,7 +3408,8 @@ export function createTable(host, env = {}) {
           // The identities (type, face) are dealt out among the places, and
           // each item keeps its id, place, z and address: an id the box asks
           // for names a starting place, never a piece (its author wrote which
-          // id went with which). cleanBox saw to it that the rest agrees: rot, lock, n, owner.
+          // id went with which). cleanBox saw to it that the rest agrees: rot,
+          // lock, n, owner, and being a die (so an address stays true: sameLooks).
           const byBack = new Map();
           for (const id of ids) {
             const it = host.items[id];
@@ -3417,7 +3420,6 @@ export function createTable(host, env = {}) {
             l.forEach(([id, it], k) => {
               index(id, it, false);
               [it.t, it.f] = who[k];
-              if (!isPiece(it)) delete it.at; // (a die never snaps: on a token's spot it takes no address)
               index(id, it, true);
             });
           }
@@ -3584,8 +3586,9 @@ export function createTable(host, env = {}) {
    *  it holds every hidden identity): addBox's payload (boxOfDef's shape;
    *  its images asset ids, its decks catalog decks), so a table set up from
    *  it lays out this very position. Its types and backs are those of the
-   *  boxes the position uses (the one set up first — while a piece or a
-   *  card of it lies here, or its rules run; a type or back id an earlier
+   *  boxes the position uses (the one set up first — or, after a clear,
+   *  the one whose rules run — while a piece or a card of it lies here, or
+   *  its rules run; a type or back id an earlier
    *  box took gets "-2", "-3"…), its decks the ones it shows and those
    *  boxes' own (a name taken gets " 2"…), and its setup every item — the
    *  boards first, then the rest, bottom to top — with its own `id`, at its
@@ -3612,12 +3615,16 @@ export function createTable(host, env = {}) {
     };
     for (const [, it] of items) for (const m of [it, ...(it.cards || it.of || [])]) use(m.t);
     for (const q of ranked) for (const m of host.players[q].hand) use(m.t);
-    // The box set up comes first (its name, id and players are the file's) —
-    // while the position is its: a piece or a card of its decks lies here, or its rules run
-    const last = own(host.boxes, host.lastSetup), lastDecks = Object.values(last?.decks || {});
-    const cardOf = (m) => lastDecks.includes(m.d);
-    if (last && (used.includes(host.lastSetup) || host.rules?.box === host.lastSetup || items.some(([, it]) => [it, ...(it.cards || [])].some(cardOf))
-      || ranked.some((q) => host.players[q].hand.some(cardOf)))) used.splice(0, used.length, host.lastSetup, ...used.filter((b) => b !== host.lastSetup));
+    // The game's box comes first (its name, id and players are the file's): the
+    // box set up — or, after a clear, the box whose rules run (D212) — while the
+    // position is its: a piece or a card of its decks lies here, or its rules run
+    const its = (b) => {
+      const box = own(host.boxes, b), ds = Object.values(box?.decks || {}), cardOf = (m) => ds.includes(m.d);
+      return !!box && (used.includes(b) || host.rules?.box === b || items.some(([, it]) => [it, ...(it.cards || [])].some(cardOf))
+        || ranked.some((q) => host.players[q].hand.some(cardOf)));
+    };
+    const lead = [host.lastSetup, host.rules?.box].find(its);
+    if (lead) used.splice(0, used.length, lead, ...used.filter((b) => b !== lead));
     /** An id like `id` that `taken` doesn't hold, within `max` characters. */
     const uniq = (id, taken, max, sep = '-') => { let x = id; for (let n = 2; taken(x); n++) x = `${id.slice(0, max - String(n).length - sep.length)}${sep}${n}`; return x; };
     const types = {}, backs = {}, imgs = [], typeRef = new Map(); // typeRef: "<box>/<type>" → its id in the export
@@ -4401,7 +4408,7 @@ export function createTable(host, env = {}) {
     why = String(why).slice(0, 300); // (a script's words: as long as t.say's)
     touchNamed(p, a);
     logEvent(RULES, `blocked ${own(host.players, p)?.name || 'a player'}: ${why}`);
-    notify(p, `🚫 ${why}`);
+    notify(p, `🚫 ${why}`, true);
     return bump();
   }
   /** Why the rules' state `json` (rulesJSON) fails the engine's gates (spec
@@ -4548,11 +4555,12 @@ export function createTable(host, env = {}) {
     return out;
   }
 
-  /** Sends a private text notice to a player (toast on their screen). Each
+  /** Sends a private text notice to a player (toast on their screen); `ruled`:
+   *  it is the rules' refusal (veto), which the app may explain (D211). Each
    *  costs a signature: a guest gets at most a burst of 10, then 5 per second. */
-  function notify(p, msg) {
+  function notify(p, msg, ruled = false) {
     if (p !== pid && !flood(notes, p, 10, 5)) { console.warn('notice dropped (flood control)', p, msg); return; }
-    emit({ t: 'note', p, msg: cut(msg) });
+    emit({ t: 'note', p, msg: cut(msg), ...(ruled && { ruled }) });
   }
 
   // --- flood control (host) -----------------------------------------------------
@@ -5340,7 +5348,7 @@ export function createTable(host, env = {}) {
       ? { t: 'fx', f: { p: f.p, id: f.id, x: f.x, y: f.y, ...(f.roll && { roll: [...f.roll] }) } } : null),
     ann: ({ msg }) => (texty(msg) ? { t: 'ann', msg } : null),
     toast: ({ msg }) => (texty(msg) ? { t: 'toast', msg } : null),
-    note: ({ p, msg }) => (typeof p === 'string' && texty(msg) ? { t: 'note', p, msg } : null),
+    note: ({ p, msg, ruled }) => (typeof p === 'string' && texty(msg) ? { t: 'note', p, msg, ...(ruled === true && { ruled }) } : null),
     peek: ({ p, c }) => (typeof p === 'string' && memberProblem(c) === '' ? { t: 'peek', p, c: typeof c.d === 'string' ? { d: c.d, i: c.i } : { t: c.t, f: c.f } } : null),
     deck: ({ id }) => (typeof id === 'string' ? { t: 'deck', id } : null),
     box: ({ id }) => (typeof id === 'string' ? { t: 'box', id } : null),

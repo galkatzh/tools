@@ -1881,7 +1881,9 @@ own, beside the implementer's `t-p3-ui.js` and `t-p3-cli.js`.
   `#box-ask[data-kind]`: `#box-ask-title`, the lines and checkboxes
   (`[data-c=rules]`, `[data-c=shuffle]`) of `#box-ask-body`, the buttons of
   `#box-ask-btns` (values `cancel` / `ok`; the trust dialog's `enable`,
-  `without`, `cancel`, left to right). Every question's buttons are disabled
+  `without`, `cancel`, left to right — no `without` for a box with no
+  layout; the dialog stands on its bottom edge, so its last button keeps
+  one spot). Every question's buttons are disabled
   for half a second once it shows (`ASK_ARM_MS`): Playwright's `click` and
   `tap` wait for them; a test that dispatches its own click must wait too.
 - **Mechanism changes**: `run-all.sh`'s serial batch adds `t-p4-bench`;
@@ -2028,6 +2030,35 @@ answer a press of the dialog's own buttons; nothing they test goes through
   touched the box's corner, and whether that was a hit was the engine's
   rounding), and a touch on the bowl's own corner, dispatched to the bowl,
   plays its stone where the finger ends (D206).
+
+### The 4A fix-up 2's regressions
+
+- **`core-p4.test.mjs` (G)**: a shuffled group of a hidden die and a
+  hidden token under one back is refused by `boxOfDef` and as a guest's
+  upload, naming both entries — unshuffled they may still share it — and
+  tokens alone keep every place's address through 20 shuffles (D210); a
+  script's veto and strict chess's refusal of an `addBox`, through the
+  mirror, reach the player as `{t:'note', …, ruled: true}`, the engine's
+  own "🚫 Box rejected" without it, and a Worker's note with `ruled: "yes"`
+  loses the field (D211); after a host `clear` while a box's own rules
+  run, the export is that box's (its types and rules), where it threw
+  (D212).
+- **`t-p4-boxes.js` section 14**: at 1280 × 800, 390 × 664, 844 × 390 and
+  320 × 568 (where the trust dialog's buttons wrap to two rows), the
+  element where the confirm's Set up was is the trust dialog's Cancel
+  (D214); a box with rules and no layout ("Laid by its rules", which lays
+  out one gem with `t.layout`): its confirm has no rules checkbox, its trust
+  dialog only Enable rules and Cancel, Cancel changes nothing and Enable
+  lays the gem out (D213); the host's upload whose images can't be stored
+  (IndexedDB's `put` on `assets` throwing `QuotaExceededError`, patched in
+  the page) while rules run says "storage is full", never that the rules
+  refused it (D211). Screenshot: `shots/p4-boxes-trust-narrow.png`.
+- **`t-p4-cli.js`**: `setup` of a box with rules and no layout, without
+  `--rules`, is refused in the terminal, nothing cleared (D213).
+- WebKit (not in the harness): the reviewers' `rects.js` and `dblwk.js`
+  probes, run with `PW_BROWSER=webkit`, find Cancel at the confirm's Set up
+  on the desktop, the iPhone 13 upright (where WebKit wraps the buttons)
+  and sideways, and a burst of 8 taps there ends on Cancel.
 
 ## Storage and images (Phase 1B)
 
