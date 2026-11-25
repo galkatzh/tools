@@ -2095,6 +2095,20 @@ function indepGroup() {
     }
   }
 
+  section("(3′) the live drag's group form {ids, dx, dy} (§3c): what the player may move — each id once, the first 200 — relayed as ONE live fx; no state change, no notice; a drag with nothing left relays nothing");
+  {
+    const T = mustered(), s0 = canon(T.state), dragged = (p, a) => { const q = quietly(() => T.apply(p, { t: 'drag', ...a })), fx = T.drain(); return { fx, warn: q.warn }; };
+    let r = dragged(CAROL, { ids: [I.f1, I.b1, I.l1, 'dead0001', I.f1, I.f2, I.f1], dx: 30, dy: 40 });
+    const live = r.fx.filter((e) => e.t === 'fx');
+    ok(live.length === 1 && live[0].f.p === CAROL && live[0].f.live && J([...live[0].f.ids].sort()) === J([I.f1, I.f2].sort()) && live[0].f.dx === 30 && live[0].f.dy === 40,
+      `one live fx naming the two free pawns once each, by (30, 40); Bob's, the locked and the missing dropped (${J(live)})`);
+    ok(!r.fx.some((e) => e.t === 'note') && r.warn.length > 0 && canon(T.state) === s0, 'no notice (live traffic: console.warn), and the table unchanged');
+    r = dragged(CAROL, { ids: [I.b1, I.l1, 'dead0001'], dx: 30, dy: 40 });
+    ok(!r.fx.length && canon(T.state) === s0, `nothing Carol may move: nothing relayed (${J(r.fx)})`);
+    r = dragged(CAROL, { ids: [...Array(200).fill(I.b1), I.f1], dx: 5, dy: 5 });
+    ok(!r.fx.filter((e) => e.t === 'fx').length, 'a free pawn past the 200th id is never looked at');
+  }
+
   section('(3′) flood control: a group costs 1 + ⌊N/20⌋ of the 40-token burst, N its members (the first 200 ids, each once); a group drag one, whatever its size (§4c, §3c, §0.1, D219)');
   {
     /** How many of action `a` a guest gets through a fresh bucket (the clock stopped: no refill). */
