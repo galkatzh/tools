@@ -187,7 +187,7 @@ function testGrid() {
   const accepted = off.filter(([g, s]) => grid.parseAddr(g, s) !== null).map(([, s]) => s);
   ok(!accepted.length, `parseAddr refuses what is no cell of the grid (off it, or not an address): ${accepted.join(' ') || 'none accepted'}`);
   ok([null, undefined, 4, {}, ['e', 4]].every((v) => grid.parseAddr(ch, v) === null), 'parseAddr(non-string) is null, never a throw');
-  ok(grid.MODULE_V === core.MODULE_V && core.MODULE_V === 1 && core.PROTO === 5, `grid.js exports MODULE_V like core.js (${grid.MODULE_V}, ${core.MODULE_V}); PROTO is 5 (Phase 4: ${core.PROTO})`);
+  ok(grid.MODULE_V === core.MODULE_V && core.MODULE_V === 1 && core.PROTO === 6, `grid.js exports MODULE_V like core.js (${grid.MODULE_V}, ${core.MODULE_V}); PROTO is 6 (Phase 5: ${core.PROTO})`);
   const wide = { type: 'square', cols: 26, rows: 3, cell: 10, x: 0, y: 0, labels: 'chess' }, goWide = { type: 'square', cols: 25, rows: 3, cell: 10, x: 0, y: 0, snap: 'point', labels: 'go' };
   ok(grid.formatAddr(wide, 25, 0) === 'z3' && grid.formatAddr(goWide, 24, 2) === 'Z1' && P(goWide, 'z1') === '{"c":24,"r":2}', 'the widest boards: chess to z (26 columns), go to Z (25)');
 }
@@ -2068,7 +2068,7 @@ function testSeats() {
 // =============================================================================
 function testMigrate() {
   section('(6) MIGRATE[2]: size → table, seats null, boardSeq 0, v 3');
-  ok(STATE_V === 5, `STATE_V is 5 (Phase 4: ${STATE_V})`);
+  ok(STATE_V === 6, `STATE_V is 6 (Phase 5: ${STATE_V})`);
   const v2 = { v: 2, seq: 5, size: 1800, zMax: 3, keys: { [BOB]: keyOf(BOB) }, log: [{ p: HOST, txt: 'hi', ts: 1 }],
     items: { c1: { k: 'c', d: DK, i: 3, up: true, x: 500, y: 500, rot: 0, z: 1 }, p1: { k: 'p', name: 'Deck', cards: [{ d: DK, i: 1, up: false }], x: 600, y: 600, rot: 90, z: 3 } },
     players: { [HOST]: player('Alice', 90), [BOB]: player('Bob', 270, { online: false }) } };

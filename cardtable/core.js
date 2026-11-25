@@ -60,9 +60,9 @@ import { BOXES } from './templates.js?v=1';
 export const MODULE_V = 1;
 /** The wire protocol: actions carry it as `_v`, host bodies as `v`; a peer
  *  on another version is refused loudly rather than misread. */
-export const PROTO = 5;
+export const PROTO = 6;
 /** The host state's schema version (state.v), the newest MIGRATE target. */
-export const STATE_V = 5;
+export const STATE_V = 6;
 
 // --- table geometry ---------------------------------------------------------
 // The table is round (a circle: rotation-invariant, so every player can turn
@@ -407,6 +407,12 @@ export function faceLabel(face, f) {
   if (face?.pips !== undefined) return Array.isArray(face.pips) ? face.pips.join('|') : String(face.pips);
   return String(num(f) + 1);
 }
+/** A roll's line (spec §5c), the values of the shown dice alone — `faces`
+ *  their labels, `k` how many dice were hidden: "rolled 3 · 5", "rolled 4
+ *  dice (2 hidden): 3 · 5", "rolled 2 hidden dice", "rolled a hidden die";
+ *  a group's (`counted`) says how many when all show: "rolled 2 dice: 3 · 5". */
+const rollLine = (faces, k, counted) => `rolled ${!k ? `${counted ? `${faces.length} ${faces.length === 1 ? 'die' : 'dice'}: ` : ''}${faces.join(' · ')}`
+  : faces.length ? `${faces.length + k} dice (${k} hidden): ${faces.join(' · ')}` : k === 1 ? 'a hidden die' : `${k} hidden dice`}`;
 /** A SHOWN piece's name {t, f}: its face's label or name if it has one, else its type's name. */
 export function pieceName(boxes, t, f) {
   const ty = typeAt(boxes, t);
@@ -439,6 +445,9 @@ export const MAX_ITEMS = 5000, MAX_N = 999, MAX_BAG = 1000, MAX_ROLL = 20;
  *  into a hand or onto a pile would otherwise grow the state (and the hand
  *  re-sent whole on every change) without bound. Checked only on growth. */
 export const MAX_HAND = 1000, MAX_PILE = 5000;
+/** A piece's `vis` (spec §5a): who sees its face while it lies face down —
+ *  at most MAX_VIS refs, each a player id or 'seat:<id>' (whoever sits there). */
+export const MAX_VIS = 8;
 export const MAX_TYPES = 500, MAX_BACKS = 50, MAX_FACES = 64, MAX_DIE_FACES = 100, MAX_IMGS = 2000;
 export const MAX_CELLS = 4096, MAX_SPACES = 1000, MAX_ZONES = 100, MAX_POLY = 64, MAX_LINKS = 4000, MAX_FILLS = 4096, MAX_MARKS = 64;
 export const MAX_SETUP_ENTRIES = 2000, MAX_SETUP_ITEMS = 3000, MAX_SEATS = 12, MAX_META_CHARS = 2000, MAX_BOX_DECKS = 50;
@@ -775,11 +784,18 @@ function cleanSetup(list, types, seats, deckNames = []) {
     const on = (ty) => !!ty?.board && (!!(ty.board.grid && parseAddr(ty.board.grid, local)) || (ty.board.spaces || []).some((sp) => sp.id === local));
     return tid === null ? Object.values(types).some(on) : isId(tid, TYPE_ID_RE) && on(own(types, tid));
   }
+  /** Whether `v` names a seat or a seated player: "seat:<a seat of the box>", "#k" — or, inside forEachSeat, "seat". */
+  const seatRef = (v, inSeat) => (v === 'seat' && inSeat) || (typeof v === 'string' && (SEAT_K_RE.test(v) || (v.startsWith('seat:') && seatIds.has(v.slice(5)))));
+  const seatRefs = (inSeat) => `"seat:<a seat of the box>", "#k" (the k-th seated player)${inSeat ? ' or "seat"' : ' ("seat" only inside forEachSeat)'}`;
   function owner(R, inSeat) {
     const v = R.get('owner');
-    if ((v === 'seat' && inSeat) || (typeof v === 'string' && SEAT_K_RE.test(v))) return v;
-    if (typeof v === 'string' && v.startsWith('seat:') && seatIds.has(v.slice(5))) return v;
-    return R.fail('owner', `must be "seat:<a seat of the box>", "#k" (the k-th seated player)${inSeat ? ' or "seat"' : ' ("seat" only inside forEachSeat)'}`);
+    return seatRef(v, inSeat) ? v : R.fail('owner', `must be ${seatRefs(inSeat)}`);
+  }
+  /** A hidden piece's viewers (spec §5h): one seat ref (seatRef) or a list of 1 to MAX_VIS, each once. */
+  function viewers(R, inSeat) {
+    const v = R.get('vis'), list = Array.isArray(v) ? [...new Set(v)] : [v];
+    if (!list.length || list.length > MAX_VIS || !list.every((x) => seatRef(x, inSeat))) R.fail('vis', `must be 1 to ${MAX_VIS} of ${seatRefs(inSeat)}`);
+    return list;
   }
   /** A type ref of this box, with a face f and up as the type allows. */
   function piece(R, k) {
@@ -910,6 +926,16 @@ function cleanSetup(list, types, seats, deckNames = []) {
       o.off = R.pair('off');
     }
     if (R.has('owner')) o.owner = owner(R, inSeat);
+    // A hidden piece's private fields (spec §5h): who sees it, and whether its
+    // owner is the one its hiding gave it (po), which goes when it is revealed.
+    if (R.has('vis')) {
+      if (kind !== 'piece' || o.up !== false) R.fail('vis', 'is only for a piece entry with up: false');
+      o.vis = viewers(R, inSeat);
+    }
+    if (R.has('po')) {
+      if (R.get('po') !== true || kind !== 'piece' || o.up !== false || !o.owner) R.fail('po', 'must be true, on a piece entry with up: false and an owner (the one its hiding gave it)');
+      o.po = true;
+    }
     if (R.has('id')) { // (kept when no item holds it: an exported game's ids, which its script may store — spec §4c)
       const id = R.get('id');
       if (typeof id !== 'string' || !CATALOG_ID_RE.test(id)) R.fail('id', 'must be an item id (8 hex digits)');
@@ -1305,7 +1331,7 @@ export function clampShift(tb, cs, dx, dy) {
 // no game concepts — all game semantics live in the script.
 export const RULES = 'RULES'; // synthetic actor id for script-performed ops
 export const RULED_ACTIONS = Object.freeze(['move', 'rot', 'flip', 'shuffle', 'draw', 'deal', 'play', 'handPile', 'toHand', 'toPile', 'stack', 'merge', 'del', 'addDeck', 'peek',
-  'roll', 'face', 'split', 'join', 'take', 'pull', 'toBag', 'lock', 'owner', 'seat', 'addBox']);
+  'roll', 'face', 'split', 'join', 'take', 'pull', 'toBag', 'lock', 'owner', 'seat', 'addBox', 'hide']);
 /** The ruled actions a `strict` script refuses unless handle() returns true
  *  or its `allow` lists them (spec §3c): all but `seat` — players must
  *  always be able to sit down. */
@@ -1319,8 +1345,9 @@ export const MAX_GROUP = 200;
 /** While the rules run, a `group` costs floodCost once more for each this many characters of t.data (mayAct, D234). */
 export const GROUP_DATA_CHARS = 100e3;
 /** What a `group` does to each member (spec §4c): the single action of that
- *  name, run per member — `roll` once, for the dice among them. */
-export const GROUP_OPS = Object.freeze(['move', 'rot', 'flip', 'roll', 'lock', 'del', 'toBag']);
+ *  name, run per member — `roll` once, for the dice among them; `hide` (spec
+ *  §5c) a hide of that member alone. */
+export const GROUP_OPS = Object.freeze(['move', 'rot', 'flip', 'roll', 'lock', 'del', 'toBag', 'hide']);
 /** The members a `group` names: its first MAX_GROUP ids, each once, as
  *  text (a number is the item named by its digits, as textIds reads it: the
  *  flood cost of a payload counts what the job will run on); anything else
@@ -1356,7 +1383,7 @@ function textIds(a) {
  *  Rules lines of one op in an action becomes one line naming the first
  *  AGG_NAMES addresses or labels; AGG_VERB says what each op did. */
 export const AGG_MIN = 4, AGG_NAMES = 8;
-const AGG_VERB = { placed: 'placed', removed: 'removed', turned: 'turned', counted: 'counted', locked: 'locked', unlocked: 'unlocked', owner: 'set the owner of' };
+const AGG_VERB = { placed: 'placed', removed: 'removed', turned: 'turned', counted: 'counted', locked: 'locked', unlocked: 'unlocked', owner: 'set the owner of', hid: 'hid', revealed: 'revealed', vis: 'changed who sees' };
 /** The most t.data may hold, as JSON (checked as a job's hooks end: spec §3f.4). */
 export const DATA_MAX_CHARS = 4e6;
 /** select (spec §3c): at most this many per second per player reach onSelect. */
@@ -1784,6 +1811,12 @@ export const MIGRATE = {
     s.v = 5;
     return s;
   },
+  /** v5 → v6 (Phase 5): nothing to rewrite — no older piece has `vis`, `pv`
+   *  or `po`, so each is still public, or hidden from everyone. */
+  5(s) {
+    s.v = 6;
+    return s;
+  },
 };
 /** Takes the address off item `id` (`it`), which never snaps (a card, a
  *  supply, a board, a die…: snaps), loudly — a hand-edited or corrupted save
@@ -1829,10 +1862,10 @@ export function migrate(s) {
 // rules, items, players, log, fx, ann} or a patch {v, kind:'patch', boot,
 // seq, host, table?, seats?, handy?, rules?, items?, del?, players?, log?,
 // fx?, ann?}, plus the recipient's own fields {to, tp, base (patches),
-// hand?, ask?, hint?, sec?} (T.mine). The shared part is serialized once per
+// hand?, ask?, hint?, sec?, vis?} (T.mine). The shared part is serialized once per
 // broadcast tick and each recipient's body is spliced from it as text.
 /** The fields a body carries for its recipient alone (spliceBody's `mine`). */
-const OWN_FIELDS = ['to', 'tp', 'base', 'hand', 'ask', 'hint', 'sec'];
+const OWN_FIELDS = ['to', 'tp', 'base', 'hand', 'ask', 'hint', 'sec', 'vis'];
 /** A tick's shared part as JSON text. It never holds a recipient's own field:
  *  JSON.parse keeps the last of two equal keys, so a shared `to` or `tp` would
  *  silently override the binding spliceBody puts first. */
@@ -1875,7 +1908,11 @@ export async function sealText(text, key, pub) {
 // maps: an id from the wire is only ever a key, never Object.prototype (a
 // legacy unsigned room can send anything). ask, hint and sec are this
 // player's own (spec §3b): its pending asks ([] for none), its hint
-// ({items, spaces} or null) and its t.secret entry (JSON, or null).
+// ({items, spaces} or null) and its t.secret entry (JSON, or null). A piece
+// hidden from others that this player sees comes in the body's own `vis`
+// (spec §5b), in full: it replaces the shared form of that id, in that
+// message alone — never sticky: the next body that brings the id without
+// it brings the reduced form, and that is what this player then holds.
 const dict = (o) => Object.assign(Object.create(null), o && typeof o === 'object' && !Array.isArray(o) ? o : {});
 const entries = (l) => (Array.isArray(l) ? l.filter((e) => e && typeof e === 'object') : []);
 const texts = (l) => (Array.isArray(l) ? l.filter((s) => typeof s === 'string') : []);
@@ -1915,17 +1952,26 @@ function viewSeats(s) {
     return null;
   }
 }
+/** Body `d`'s items, each as this player is to hold it: its own `vis`
+ *  form (an object) where the body brings one for an id of its `items`,
+ *  else the shared one (spec §5b). */
+function bodyItems(d) {
+  const items = dict(d.items), vis = dict(d.vis);
+  for (const id in items) if (isObj(vis[id])) items[id] = vis[id];
+  return items;
+}
 /** A guest's whole view from a snapshot body. */
 export function viewFromSnap(d) {
   return {
     seq: d.seq, boot: d.boot, host: d.host, table: d.table ? viewTable(d.table) : roundTable(), seats: viewSeats(d.seats), handy: !!d.handy,
-    rules: d.rules ?? null, items: dict(d.items), players: dict(d.players), log: trimLog(entries(d.log)), hand: Array.isArray(d.hand) ? d.hand : [],
+    rules: d.rules ?? null, items: bodyItems(d), players: dict(d.players), log: trimLog(entries(d.log)), hand: Array.isArray(d.hand) ? d.hand : [],
     ask: viewAsks(d.ask), hint: viewHint(d.hint), sec: d.sec ?? null,
   };
 }
 /** What a patch's `pos` sends of an item that only moved: its place. */
 const PLACE_KEYS = ['x', 'y', 'rot', 'z', 'at'];
-/** Folds a patch body into view V, in place: items and players are replaced
+/** Folds a patch body into view V, in place: items (each in this player's
+ *  `vis` form when the body brings one: bodyItems) and players are replaced
  *  whole, an item in `pos` takes its new place ([x, y, rot, z, at?]: no
  *  address, none), `del` removed, log entries appended (then trimmed), the
  *  hand, the asks, the hint, the secret, the table, the seats and `handy`
@@ -1933,7 +1979,7 @@ const PLACE_KEYS = ['x', 'y', 'rot', 'z', 'at'];
  *  Map<id, old public item | undefined (new)>, players: Map<pid, old | undefined>}. */
 export function applyViewPatch(V, d) {
   const items = new Map(), players = new Map();
-  for (const [id, it] of Object.entries(dict(d.items))) { items.set(id, V.items[id]); V.items[id] = it; }
+  for (const [id, it] of Object.entries(bodyItems(d))) { items.set(id, V.items[id]); V.items[id] = it; }
   for (const [id, m] of Object.entries(dict(d.pos))) {
     const it = V.items[id];
     if (!it || !Array.isArray(m) || !m.slice(0, 4).every(Number.isFinite)) { console.error('the host moved an item this view lacks, or sent a bad place', id, m); continue; }
@@ -1961,9 +2007,24 @@ export function applyViewPatch(V, d) {
   return { items, players };
 }
 
-/** Whether item `it` is hidden from player p: in Phase 2, a piece or supply
- *  face down (up: false), hidden from everyone alike (Phase 5 adds `vis`). */
-export const hiddenFrom = (p, it) => (it.k === 'g' || it.k === 's') && it.up === false;
+/** Whether item `it` (a host item) is hidden from player p (spec §2c, §5a):
+ *  a piece or supply face down (up: false) — unless it is a piece whose
+ *  `vis` names p, by id or by the seat p holds (`holder(seatId)`: who sits
+ *  there; seat refs follow the seat's occupant, as owners do). */
+export const hiddenFrom = (p, it, holder = () => null) => (it.k === 'g' || it.k === 's') && it.up === false
+  && !(it.k === 'g' && !!it.vis?.some((r) => (r.startsWith('seat:') ? holder(r.slice(5)) : r) === p));
+/** Whether `r` is a VisRef (spec §5a): a player id, or 'seat:<id>'. */
+const isVisRef = (r) => typeof r === 'string' && (PID_RE.test(r) || (r.startsWith('seat:') && isId(r.slice(5))));
+/** Why item `it`'s private fields are malformed, or '' (spec §5a): `vis`, a
+ *  list of 1 to MAX_VIS distinct VisRefs; `pv` (hidden by a private zone)
+ *  and `po` (its owner set by hiding), each 1 — on a piece alone. A Worker's
+ *  patch is refused for one (checkPatch); a save drops them (createTable). */
+function visProblem(it) {
+  if (it.vis === undefined && it.pv === undefined && it.po === undefined) return '';
+  if (it.k !== 'g') return 'vis, pv and po are for pieces alone';
+  if (it.vis !== undefined && !(Array.isArray(it.vis) && it.vis.length >= 1 && it.vis.length <= MAX_VIS && new Set(it.vis).size === it.vis.length && it.vis.every(isVisRef))) return `its vis is not a list of 1 to ${MAX_VIS} players and seats`;
+  return (it.pv ?? 1) !== 1 || (it.po ?? 1) !== 1 ? 'its pv or po is not 1' : '';
+}
 /** A pile member, an item or a hand entry: a card (else a piece)? */
 const isCard = (m) => m.k === 'c' || 'd' in m;
 /** How far clockwise from the bottom a player sits (watchers last). */
@@ -2009,6 +2070,11 @@ export function createTable(host, env = {}) {
       const why = problem(v);
       if (why) { console.error(`the saved ${what} ${id.slice(0, 30)} is unreadable (${why}): dropped`); delete map[id]; unread[what]++; }
     }
+  }
+  // (a malformed vis, pv or po goes, the piece stays: hidden from everyone, it shows nobody anything)
+  for (const [id, it] of Object.entries(host.items)) {
+    const why = visProblem(it);
+    if (why) { console.error(`the saved item ${id.slice(0, 30)}: ${why} — its vis, pv and po dropped`); delete it.vis; delete it.pv; delete it.po; }
   }
   host.keys ??= {};
   try { host.table = cleanTable(host.table); } catch (err) {
@@ -2061,9 +2127,10 @@ export function createTable(host, env = {}) {
   /** T.byKind: 'c' (cards), 'p' (piles), 'g' (pieces), 's' (supplies), 'b' (bags) → their ids;
    *  T.byType: a type ref → the pieces and supplies of that type; T.byOwner: an owner → its items;
    *  T.byAt: a qualified address → the pieces there; T.byZone: '<board id>:<zone id>' → the
-   *  pieces in that zone (a piece's zones: zonesOf). boardIds: every board (the z band below 0). */
+   *  pieces in that zone (a piece's zones: zonesOf); T.byVis: a VisRef (a pid, 'seat:<id>') →
+   *  the pieces whose `vis` names it. boardIds: every board (the z band below 0). */
   const byKind = new Map(['c', 'p', 'g', 's', 'b'].map((k) => [k, new Set()]));
-  const byType = new Map(), byOwner = new Map(), byAt = new Map(), byZone = new Map(), zonesOf = new Map(), boardIds = new Set();
+  const byType = new Map(), byOwner = new Map(), byAt = new Map(), byZone = new Map(), byVis = new Map(), zonesOf = new Map(), boardIds = new Set();
   let tbVer = 0; // bumped by whatever may change a board (see tb())
   let boardsMoving = false; // a board was touched this tick: it may still change after a read (see tb())
   let spotsReady = false; // (while the saved items are first indexed, zones wait for every board: see below)
@@ -2082,6 +2149,7 @@ export function createTable(host, env = {}) {
     if ((it.k === 'g' || it.k === 's') && it.t) inSet(byType, it.t, id, on);
     if (it.owner) inSet(byOwner, it.owner, id, on);
     if (it.k !== 'g') return;
+    for (const r of it.vis || []) inSet(byVis, r, id, on);
     if (it.z < 0) { boardIds[on ? 'add' : 'delete'](id); tbVer++; return; }
     if (it.at) inSet(byAt, it.at, id, on);
     if (!on) {
@@ -2132,9 +2200,9 @@ export function createTable(host, env = {}) {
    *  that stacks as a pile. */
   const goesOn = (m, pile) => (pile.cards.length ? fits(m, pile.cards.at(-1)) : isCard(m) || flags(m).stack === 'pile');
   /** Whether piece `a` (adding `add` pieces) and piece `b` make one ×N stack:
-   *  the same type, face, side and owner, of a type that stacks by count, ≤ MAX_N. */
+   *  the same type, face, side, owner and viewers (vis), of a type that stacks by count, ≤ MAX_N. */
   const stackable = (a, b, add) => a !== b && a.k === 'g' && b.k === 'g' && a.t === b.t && a.f === b.f && (a.up === false) === (b.up === false)
-    && a.owner === b.owner && flags(b).stack === 'count' && (b.n || 1) + add <= MAX_N;
+    && a.owner === b.owner && String(a.vis) === String(b.vis) && flags(b).stack === 'count' && (b.n || 1) + add <= MAX_N;
 
   // --- item writes ---------------------------------------------------------
   // Every change to host.items goes through put / remove / touch, and every
@@ -2165,13 +2233,16 @@ export function createTable(host, env = {}) {
     dirty.removed.add(id);
     stale.add(id);
   };
+  /** Item `id` (`it`, touched already) changed in place by fn(it), its index entries following (its owner, its vis). */
+  function reindexed(id, it, fn) {
+    index(id, it, false);
+    fn(it);
+    index(id, it, true);
+  }
   /** Item `id` (`it`) now belongs to `to` (an owner; null: nobody), indexed. */
   function setOwner(id, it, to) {
     touch(id);
-    index(id, it, false);
-    if (to) it.owner = to;
-    else delete it.owner;
-    index(id, it, true);
+    reindexed(id, it, () => { if (to) it.owner = to; else delete it.owner; });
   }
   /** Item `id` is about to change in place (moved, turned, flipped, its pile
    *  changed) — or is re-sent unchanged (a refusal). Ids not on the table are
@@ -2366,18 +2437,72 @@ export function createTable(host, env = {}) {
    *  and records its address (`at`), or loses it. `o.free`: no snapping;
    *  `o.at`: centred on that qualified address (already resolved), whatever
    *  lies on top of it; `o.id`: the item is on the table (moved in place), so
-   *  its index entries follow it. */
+   *  its index entries follow it; `o.from`: the item a new one comes off (a
+   *  split's stack), for the private zone it leaves.
+   *  Then the private zones (spec §5a), on a piece set down — never on one a
+   *  board's move carried, which goes through no place(): one that enters an
+   *  active private zone (privateAt) — but the one of the same owner a zone
+   *  hides it in already — lies face down for the zone's owner (`vis`),
+   *  marked `pv`, and becomes theirs (`po`) unless someone else owns it (an
+   *  owner `po` set is the engine's: it follows the zone). One whose type has
+   *  no back can't (a TypeError: a person's action is refused before,
+   *  mayPlace). One a zone hid that lands outside every zone of that owner
+   *  leaves the zone it lay in: a rack ('reveal') turns it face up, its vis
+   *  and the owner it gave gone; a screen ('keep') — or a zone that is no
+   *  longer under it — lets it go hidden. */
   function place(it, x, y, o = {}) {
+    const p = landing(it, x, y, o), Z = zoneAt(it, p), was = it.pv && privateAt(o.from ?? it);
+    if (Z && !typeOf(it.t)?.back) throw new TypeError(`${label(it)} has no hidden side: it can't go into a private zone`);
     if (o.id) index(o.id, it, false);
-    let p;
     if (isPiece(it)) {
-      p = snapPiece(it, x, y, o);
       if (p.at) it.at = p.at;
       else delete it.at;
-    } else { const { w, h } = size(it); p = clampToTable(host.table, x, y, w, h); }
+    }
     ({ x: it.x, y: it.y } = p);
     if (!(it.z < 0)) it.z = isBoard(it) ? BOARD_Z0 + ++host.boardSeq : zTop();
+    if (Z && !(it.pv && it.vis?.includes(Z.ref))) {
+      Object.assign(it, { up: false, vis: [Z.ref], pv: 1 });
+      if (!it.owner || it.po) Object.assign(it, { owner: Z.ref, po: 1 });
+    } else if (!Z && it.pv) {
+      delete it.pv;
+      if (was?.mode === 'reveal' && it.vis?.includes(was.ref)) unveil(it);
+    }
     if (o.id) index(o.id, it, true);
+  }
+  /** Where place() puts item `it` at top-left (x, y), `o` as for place —
+   *  nothing changes: a piece's spot (snapPiece: {x, y, at}), anything else
+   *  clamped onto the table ({x, y}). */
+  function landing(it, x, y, o = {}) {
+    if (isPiece(it)) return snapPiece(it, x, y, o);
+    const { w, h } = size(it);
+    return clampToTable(host.table, x, y, w, h);
+  }
+  /** The active private zone piece `it` lies in (spec §5a) — {ref: its
+   *  owner, a VisRef; mode: 'reveal' | 'keep'} — or null: of the zones under
+   *  its centre (zonesUnder: its own board's, when it has an address), the
+   *  first that is private and whose owner resolves: 'board', to its board's
+   *  owner; 'seat:<id>', to a named seat of the table. */
+  function privateAt(it) {
+    const { w, h } = size(it), T = tb();
+    for (const q of zonesUnder(T, it.x + w / 2, it.y + h / 2, it.at?.slice(0, it.at.indexOf(':')))) {
+      const k = q.indexOf(':'), b = T.byId.get(q.slice(0, k)), z = b.B.zones.find((x) => x.id === q.slice(k + 1));
+      const ref = z.private && (z.owner === 'board' ? host.items[b.id].owner : z.owner && seatDef(z.owner.slice(5)) ? z.owner : null);
+      if (ref) return { ref, mode: z.private };
+    }
+    return null;
+  }
+  /** The active private zone piece `it` would lie in at `p` (landing's
+   *  {x, y, at?}), or null — a board never lies in one. */
+  const zoneAt = (it, p) => (it.k === 'g' && !(it.z < 0) && !isBoard(it) ? privateAt({ ...it, at: undefined, ...p }) : null);
+  /** Whether p may set piece `it` down at top-left (x, y) (`o` as for
+   *  place): a piece with no hidden side can't land in an active private
+   *  zone (spec §5a) — refused, before anything is changed. A script's goes
+   *  on to place(), which throws. */
+  const mayPlace = (p, it, x, y, o) => p === RULES || !!typeOf(it.t)?.back || !zoneAt(it, landing(it, x, y, o)) || no(p, '🚫 That piece has no hidden side');
+  /** Piece `it` face up, for everyone: its vis and pv go, and the owner its hiding gave it (po). (The caller re-indexes it.) */
+  function unveil(it) {
+    for (const k of ['up', 'vis', 'pv']) delete it[k];
+    if (it.po) { delete it.owner; delete it.po; }
   }
   /** Whether item `it` (host or new) is a piece that snaps (snaps: never a board or a die, D22, D112). */
   const isPiece = (it) => snaps(it, host.boxes);
@@ -2647,7 +2772,7 @@ export function createTable(host, env = {}) {
    *  `chat` marks a chat line (talk), `loud` an on-the-record one (a peek); the
    *  buckets are capped separately (LOG_CAPS, trimLog), and a line at LOG_TXT_MAX. */
   function logEvent(p, txt, { chat, as, loud, keep } = {}) {
-    if (gather?.p === p) { gather.line ??= txt; return; } // (a group member's line: the group writes one — a roll's names its faces)
+    if (gather?.p === p) return; // (a group member's line: the group writes one — a roll's from its faces, gather.roll)
     if (runs.length) flushRuns(); // (an aggregating run ends at any other line)
     txt = cut(txt);
     const last = host.log.at(-1);
@@ -2752,9 +2877,22 @@ export function createTable(host, env = {}) {
   const notLocked = (p, it) => p === RULES || !it.lock || no(p, '🔒 That is locked in place');
   /** mayHandle and notLocked: what moving, turning or taking an item whole needs. */
   const may = (p, it) => mayHandle(p, it) && notLocked(p, it);
+  /** Whether `it` is hidden from player p (hiddenFrom: face down, and its vis doesn't name p or p's seat). */
+  const hidden = (p, it) => hiddenFrom(p, it, holder);
+  /** The players piece `it`'s vis names now (seat refs resolved; a seat nobody holds names nobody). */
+  const viewersOf = (it) => [...new Set((it.vis || []).map(resolveOwner).filter(Boolean))];
+  /** Whether p owns `it` (its owner resolves to p). */
+  const owns = (p, it) => !!it.owner && resolveOwner(it.owner) === p;
   /** None of `its` is hidden from p — else one uniform refusal, the same for
    *  every hidden type, before any other check (no oracle on hidden types). */
-  const shown = (p, ...its) => p === RULES || !its.some((it) => hiddenFrom(p, it)) || no(p, '🚫 That piece is hidden');
+  const shown = (p, ...its) => p === RULES || !its.some((it) => hidden(p, it)) || no(p, '🚫 That piece is hidden');
+  /** The private-piece rule (spec §5c) with the hidden-item rule: p sees
+   *  `it`, or it is a private piece (a non-empty vis) that p owns — else
+   *  shown's uniform refusal. What turns over, rolls, sets the face of,
+   *  takes into a hand or claims a private piece asks it first (D254):
+   *  Alice's cupped dice and a script's units hidden for a seat are hers,
+   *  or that seat's, alone. */
+  const seen = (p, it) => p === RULES || !hidden(p, it) || (!!it.vis?.length && owns(p, it)) || no(p, '🚫 That piece is hidden');
   /** Room for k more items (MAX_ITEMS); a save above it still loads. */
   const cap = (p, k = 1) => itemCount() + k <= MAX_ITEMS || no(p, `🚫 The table is full (${MAX_ITEMS.toLocaleString('en-US')} items)`);
   /** Room for k more entries in player q's hand (MAX_HAND), for actor p. */
@@ -2797,15 +2935,16 @@ export function createTable(host, env = {}) {
       logEvent(actor, `dealt a ${piece ? 'piece' : 'card'} from ${label(pile)} to ${pl.name || 'a player'}`);
     } else {
       if (!cap(actor)) return false;
-      const at = nextTo(pile);
-      touch(pileId);
-      pile.cards.pop();
-      const up = !!o.up || (piece && mustShow(c.t));
+      const at = nextTo(pile), up = !!o.up || (piece && mustShow(c.t)), x = num(o.x, at.x), y = num(o.y, at.y);
       const it = piece ? { k: 'g', t: c.t, f: c.f, rot: 0, ...(!up && { up: false }) } : { k: 'c', rot: 0, d: c.d, i: c.i, up };
       it.rot = turned(it, o.rot);
-      place(it, num(o.x, at.x), num(o.y, at.y));
+      if (!mayPlace(actor, it, x, y)) return false;
+      touch(pileId);
+      pile.cards.pop();
+      place(it, x, y);
       nid = put(mint(host.items), it);
-      logEvent(actor, `dealt ${!up ? `a ${piece ? 'piece' : 'card'} face down` : piece ? oneLabel(it) : cardName(host.decks, c.d, c.i)} from ${label(pile)}${toAt(it)}`);
+      // (as it lies now: a piece dealt into a private zone is hidden there, and never named)
+      logEvent(actor, `dealt ${(piece ? it.up === false : !up) ? `a ${piece ? 'piece' : 'card'} face down` : piece ? oneLabel(it) : cardName(host.decks, c.d, c.i)} from ${label(pile)}${toAt(it)}`);
       mark(actor, nid);
     }
     mark(actor, pileId);
@@ -2830,12 +2969,15 @@ export function createTable(host, env = {}) {
 
   /** Flips item `id`: a card or a pile as ever (a pile of pieces needs every
    *  member to have a hidden side); a piece or supply (1) with a back turns
-   *  face down or up, (2) with 2 faces turns to the other, (3) with more
-   *  turns to the next — but a die is rolled, never turned (pieces only). */
+   *  face down or up — a hidden one turned up is public, its vis, pv and po
+   *  gone (unveil), and a private one only for those who see it or own it
+   *  (seen) — (2) with 2 faces turns to the other, (3) with more turns to
+   *  the next — but a die is rolled, never turned (pieces only). */
   function opFlip(actor, id) {
     const it = own(host.items, id);
     if (!it) return gone('flip', id);
     if (it.k === 'b') { console.warn('flip: a bag has no sides', id); return false; }
+    if (it.vis?.length && !seen(actor, it)) return false;
     if (!may(actor, it)) return false;
     if (it.k === 'c') {
       touch(id);
@@ -2853,7 +2995,7 @@ export function createTable(host, env = {}) {
       if (!ty.back && ty.kind === 'die' && it.k === 'g') return no(actor, '🚫 Dice are rolled, not turned');
       if (!ty.back && n < 2) return no(actor, '🚫 That has only one side');
       touch(id);
-      if (ty.back && it.up === false) { delete it.up; logEvent(actor, `turned over ${label(it)}`); } // the face is public now…
+      if (ty.back && it.up === false) { reindexed(id, it, unveil); logEvent(actor, `turned over ${label(it)}`); } // the face is public now…
       else if (ty.back) { it.up = false; logEvent(actor, `turned ${before} face down`); }            // …and was a moment ago
       else if (n === 2) { it.f = 1 - it.f; logEvent(actor, `flipped ${before}`); }
       else { it.f = (it.f + 1) % n; logEvent(actor, `turned ${before} to ${faceLabel(ty.faces[it.f], it.f)}`); }
@@ -2932,7 +3074,7 @@ export function createTable(host, env = {}) {
   function opMove(actor, id, x, y, o = {}) {
     const it = own(host.items, id);
     if (!it) return gone('move', id);
-    if (!may(actor, it)) return false;
+    if (!may(actor, it) || !mayPlace(actor, it, num(x, it.x), num(y, it.y), o)) return false;
     const from = addrNow(it);
     touch(id);
     place(it, num(x, it.x), num(y, it.y), { ...o, id });
@@ -2975,6 +3117,7 @@ export function createTable(host, env = {}) {
   function opToHand(actor, id, q) {
     const it = own(host.items, id), pl = own(host.players, q);
     if (!it || !pl || (it.k !== 'c' && it.k !== 'g')) return false;
+    if (it.vis?.length && !seen(actor, it)) return false; // (a hand shows its holder what it holds: never a private piece hidden from them)
     if (!may(actor, it)) return false;
     if (it.k === 'g' && !flags(it).hand) return no(actor, "🚫 That can't be held in a hand");
     if (!handRoom(actor, q)) return false;
@@ -2992,16 +3135,17 @@ export function createTable(host, env = {}) {
   function opPlay(actor, q, idx, o, up) {
     const pl = own(host.players, q), c = pl.hand[idx];
     if (!cap(actor)) return false;
-    touchPlayer(q, { hand: true });
-    pl.hand.splice(idx, 1);
     const piece = !isCard(c);
     if (piece && mustShow(c.t)) up = true;
     const it = piece ? { k: 'g', t: c.t, f: c.f, rot: 0, ...(!up && { up: false }) } : { k: 'c', rot: 0, d: c.d, i: c.i, up };
-    const { w, h } = size(it);
+    const { w, h } = size(it), x = num(o.x, host.table.w / 2 - w / 2), y = num(o.y, host.table.h / 2 - h / 2);
     it.rot = turned(it, o.rot);
-    place(it, num(o.x, host.table.w / 2 - w / 2), num(o.y, host.table.h / 2 - h / 2));
+    if (!mayPlace(actor, it, x, y)) return false;
+    touchPlayer(q, { hand: true });
+    pl.hand.splice(idx, 1);
+    place(it, x, y);
     const nid = put(mint(host.items), it);
-    const what = !up ? `a ${piece ? 'piece' : 'card'} face down` : piece ? oneLabel(it) : cardName(host.decks, c.d, c.i);
+    const what = (piece ? it.up === false : !up) ? `a ${piece ? 'piece' : 'card'} face down` : piece ? oneLabel(it) : cardName(host.decks, c.d, c.i);
     logEvent(actor, `played ${what} from ${actor === RULES ? `${pl.name || 'a player'}'s hand` : 'hand'}${toAt(it)}`);
     mark(actor, nid);
     return nid;
@@ -3011,15 +3155,18 @@ export function createTable(host, env = {}) {
    *  face (the crypto RNG — never one from the payload). One action marker
    *  goes out for the roll, at its first die: {p, id, x, y, roll: [every
    *  die's id]} (every screen tumbles those; one marker, not one per die,
-   *  keeps a 20-dice patch within B9's 3 KB). Returns their new faces in id
-   *  order, or false. */
+   *  keeps a 20-dice patch within B9's 3 KB). Hidden dice (under a cup)
+   *  roll for those who see them, and their owner (seen); everyone sees the
+   *  tumble, and the line names the values of the shown dice alone ("rolled
+   *  4 dice (2 hidden): 3 · 5", "rolled 2 hidden dice"). Returns their new
+   *  faces in id order, or false. */
   function opRoll(actor, ids) {
     if (!Array.isArray(ids) || !ids.length || ids.length > MAX_ROLL || new Set(ids).size !== ids.length) return no(actor, `🚫 Roll 1 to ${MAX_ROLL} different dice`);
     const dice = [];
     for (const id of ids) {
       const it = own(host.items, id);
       if (!it) return gone('roll', id);
-      if (!shown(actor, it)) return false;
+      if (!seen(actor, it)) return false;
       const ty = it.k === 'g' && typeOf(it.t);
       if (ty?.kind !== 'die') return no(actor, '🚫 Only dice can be rolled');
       if (!mayHandle(actor, it)) return false;
@@ -3031,15 +3178,19 @@ export function createTable(host, env = {}) {
       it.f = rint(ty.faces.length);
     }
     mark(actor, dice[0][0], dice.map(([id]) => id));
-    logEvent(actor, `rolled ${dice.map(([, it, ty]) => (it.up === false ? 'a hidden die' : faceLabel(ty.faces[it.f], it.f))).join(' · ')}`);
+    const faces = dice.filter(([, it]) => it.up !== false).map(([, it, ty]) => faceLabel(ty.faces[it.f], it.f)), k = dice.length - faces.length;
+    if (gather?.p === actor) gather.roll = [faces, k]; // (a group's one line is built from what was said as they rolled: D235)
+    logEvent(actor, rollLine(faces, k));
     return dice.map(([, it]) => it.f);
   }
 
-  /** Turns piece or supply `id` to face `f` (never a die: dice are rolled). */
+  /** Turns piece or supply `id` to face `f` (never a die: dice are rolled) —
+   *  a private one for those who see it or own it (seen), still hidden from
+   *  the others: "turned a hidden piece". */
   function opFace(actor, id, f) {
     const it = own(host.items, id);
     if (!it) return gone('face', id);
-    if (!shown(actor, it)) return false;
+    if (!seen(actor, it)) return false;
     if (it.k !== 'g' && it.k !== 's') return no(actor, '🚫 Only pieces turn to a face');
     const ty = typeOf(it.t);
     if (!ty) return no(actor, "🚫 That piece's game box is missing");
@@ -3049,8 +3200,39 @@ export function createTable(host, env = {}) {
     const before = label(it);
     touch(id);
     it.f = f;
-    logEvent(actor, `turned ${before} to ${faceLabel(ty.faces[f], f)}`);
+    logEvent(actor, it.up === false ? 'turned a hidden piece' : `turned ${before} to ${faceLabel(ty.faces[f], f)}`);
     mark(actor, id);
+    return true;
+  }
+
+  /** Player p's `hide` (spec §5c): pieces `ids` (1 to MAX_ROLL, all
+   *  different) face down for p alone — `vis` is p's own id: a cup belongs
+   *  to a person (D39) — each a piece p sees, shown, whose type has a back,
+   *  that p may handle and that isn't locked; one nobody owns becomes p's
+   *  until it is revealed (`po`, D84: so nobody else may turn it over or
+   *  roll it). All or none: "hid {label}" (as it showed a moment ago), "hid N pieces". */
+  function opHide(actor, ids) {
+    if (!Array.isArray(ids) || !ids.length || ids.length > MAX_ROLL || new Set(ids).size !== ids.length) return no(actor, `🚫 Hide 1 to ${MAX_ROLL} different pieces`);
+    const its = [];
+    for (const id of ids) {
+      const it = own(host.items, id);
+      if (!it) return gone('hide', id);
+      if (it.k !== 'g' || it.z < 0) return no(actor, '🚫 Only pieces can be hidden');
+      if (!shown(actor, it)) return false;
+      if (!typeOf(it.t)?.back) return no(actor, '🚫 That piece has no hidden side');
+      if (it.up === false) return no(actor, '🚫 That piece is hidden already');
+      if (!may(actor, it)) return false;
+      its.push([id, it]);
+    }
+    logEvent(actor, its.length > 1 ? `hid ${its.length} pieces` : `hid ${label(its[0][1])}`);
+    for (const [id, it] of its) {
+      touch(id);
+      reindexed(id, it, () => {
+        Object.assign(it, { up: false, vis: [actor] });
+        if (!it.owner) Object.assign(it, { owner: actor, po: 1 });
+      });
+    }
+    mark(actor, its[0][0]);
     return true;
   }
 
@@ -3065,8 +3247,11 @@ export function createTable(host, env = {}) {
     const k = n ?? 1;
     if (!Number.isInteger(k) || k < 1 || k >= it.n) return no(actor, `🚫 Take 1 to ${it.n - 1} from that stack`);
     if (!may(actor, it)) return false;
-    const to = onto !== undefined ? own(host.items, onto) : null, before = label(it);
+    const to = onto !== undefined ? own(host.items, onto) : null, before = label(it), at = nextTo(it), X = num(x, at.x), Y = num(y, at.y);
     const part = { ...it, n: k > 1 ? k : undefined }; // the k pieces, for the log
+    // (a new stack of them, as the old one is: its side, its owner, who sees it — and the private zone it lies in, which place() reads where the old one lies)
+    const nu = { k: 'g', t: it.t, f: it.f, rot: it.rot, ...(it.up === false && { up: false }), ...(k > 1 && { n: k }), ...(it.owner && { owner: it.owner }),
+      ...(it.vis && { vis: [...it.vis] }), ...(it.pv && { pv: 1 }), ...(it.po && { po: 1 }) };
     if (onto !== undefined) {
       if (!to) return gone('split', onto);
       if (to.k === 'b') { // the toBag checks (a bag takes hidden pieces: no hidden-item rule)
@@ -3077,7 +3262,7 @@ export function createTable(host, env = {}) {
         if (to.k === 's' ? to.t !== it.t : !stackable(it, to, k)) return no(actor, "🚫 Those don't stack together");
       }
       if (!mayHandle(actor, to)) return false;
-    } else if (!cap(actor)) return false;
+    } else if (!cap(actor) || !mayPlace(actor, nu, X, Y)) return false;
     touch(id);
     it.n -= k;
     if (it.n < 2) delete it.n;
@@ -3095,9 +3280,7 @@ export function createTable(host, env = {}) {
       mark(actor, onto);
       return true;
     }
-    const nu = { k: 'g', t: it.t, f: it.f, rot: it.rot, ...(it.up === false && { up: false }), ...(k > 1 && { n: k }), ...(it.owner && { owner: it.owner }) };
-    const at = nextTo(it);
-    place(nu, num(x, at.x), num(y, at.y));
+    place(nu, X, Y, { from: it });
     const nid = put(mint(host.items), nu);
     logEvent(actor, `took ${k} from ${before}${toAt(nu)}`);
     mark(actor, nid);
@@ -3145,9 +3328,9 @@ export function createTable(host, env = {}) {
       mark(actor, id);
       return { hand: true, ...entryOf(nu) };
     }
-    if (!cap(actor)) return false;
-    const at = nextTo(s);
-    place(nu, num(x, at.x), num(y, at.y), po);
+    const at = nextTo(s), X = num(x, at.x), Y = num(y, at.y);
+    if (!cap(actor) || !mayPlace(actor, nu, X, Y, po)) return false;
+    place(nu, X, Y, po);
     const nid = put(mint(host.items), nu);
     logEvent(actor, `took ${oneLabel(nu)} from ${label(s)}${toAt(nu)}`);
     mark(actor, nid);
@@ -3168,8 +3351,11 @@ export function createTable(host, env = {}) {
     if (!mayHandle(actor, bag)) return false;
     if (hand && (!pl || !bag.hand)) return no(actor, "🚫 That bag's pieces can't be held in a hand");
     if (hand ? !handRoom(actor, to) : !cap(actor)) return false;
+    const at = nextTo(bag), k = drawFrom(id, bag), m = bag.of[k], X = num(x, at.x), Y = num(y, at.y);
+    const nu = { k: 'g', t: m.t, f: m.f, rot: 0, ...(m.up === false && { up: false }) };
+    if (!hand && !mayPlace(actor, nu, X, Y, po)) return false; // (its draw stays pending: a refusal never redraws, D114)
     touch(id);
-    const at = nextTo(bag), m = bag.of.splice(drawFrom(id, bag), 1)[0];
+    bag.of.splice(k, 1);
     J?.frames.at(-1).taken.push([id, drawn.get(id)]); // (a rollback of this pull puts its draw back: see restore)
     drawn.delete(id);
     if (hand) {
@@ -3179,10 +3365,9 @@ export function createTable(host, env = {}) {
       mark(actor, id);
       return { hand: true, ...entryOf(m) };
     }
-    const nu = { k: 'g', t: m.t, f: m.f, rot: 0, ...(m.up === false && { up: false }) };
-    place(nu, num(x, at.x), num(y, at.y), po);
+    place(nu, X, Y, po);
     const nid = put(mint(host.items), nu);
-    logEvent(actor, `drew ${m.up === false ? 'a piece' : oneLabel(nu)} from ${label(bag)}${toAt(nu)}`);
+    logEvent(actor, `drew ${nu.up === false ? 'a piece' : oneLabel(nu)} from ${label(bag)}${toAt(nu)}`); // (as it lies: drawn into a rack, it was never shown)
     mark(actor, nid);
     return nid;
   }
@@ -3243,6 +3428,7 @@ export function createTable(host, env = {}) {
         if (seat) return no(actor, '🚫 Only the host can give that away');
       } else if (it.owner) return no(actor, `🚫 That belongs to ${ownerName(it.owner)}`);
       else if (to !== actor) return no(actor, '🚫 Only the host can give that away');
+      else if (it.vis?.length && !seen(actor, it)) return false; // (claimed, a private piece would be p's to turn over: seen's owner)
       else if (isBoard(it)) return no(actor, "🚫 Boards can't be claimed");
       else if (!notLocked(actor, it)) return false;
     }
@@ -3361,7 +3547,7 @@ export function createTable(host, env = {}) {
     const seatK = (k) => { need = Math.max(need, +k.slice(1)); return ranked[+k.slice(1) - 1]; };
     const visit = (e) => {
       if (e.forEachSeat || e.group) { (e.forEachSeat || e.group).forEach(visit); return; }
-      if (typeof e.owner === 'string' && e.owner[0] === '#') seatK(e.owner);
+      for (const r of [e.owner, ...(e.vis || [])]) if (typeof r === 'string' && r[0] === '#') seatK(r);
       for (const m of e.deck !== undefined ? [{ deck: e.deck }] : e.card ? [e.card] : e.pile || []) if (m.deck !== undefined) deck(m.deck, m.i);
       for (const [k, l] of Object.entries(e.hands || {})) {
         const q = k[0] === '#' ? seatK(k) : holder(k);
@@ -3471,7 +3657,8 @@ export function createTable(host, env = {}) {
         }
         return [];
       }
-      const owner = e.owner === 'seat' ? seat.owner : e.owner?.[0] === '#' ? ranked[+e.owner.slice(1) - 1] : e.owner;
+      const who = (r) => (r === 'seat' ? seat.owner : r?.[0] === '#' ? ranked[+r.slice(1) - 1] : r); // (a seat ref: a seat's owner ref, or a seated player)
+      const owner = who(e.owner), vis = e.vis && [...new Set(e.vis.map(who))];
       const tid = e.piece ?? e.supply, lock = e.lock ?? (tid !== undefined && box.types[tid].kind === 'board');
       let made;
       if (e.bag) {
@@ -3500,6 +3687,8 @@ export function createTable(host, env = {}) {
       }
       made.forEach((it, k) => {
         if (owner) it.owner = owner;
+        if (vis) it.vis = vis.slice();
+        if (e.po) it.po = 1;
         if (lock) it.lock = true;
         it.rot = turned(it, e.rot);
         const [x, y, po] = spot(e, it, seat, k);
@@ -3708,11 +3897,12 @@ export function createTable(host, env = {}) {
       : typeRef.has(m.t) ? { piece: typeRef.get(m.t), ...(m.f && { f: m.f }), ...(hand ? m.up === false && { up: false } : { up: m.up !== false }) } : null);
     const setup = [];
     for (const [id, it] of [...items.filter(([, x]) => x.z < 0), ...items.filter(([, x]) => !(x.z < 0))]) {
-      const t = it.t !== undefined && typeRef.get(it.t), pile = it.k === 'p' && it.cards.map((m) => member(m, false));
+      // (a piece a private zone hides goes as it would be placed there: placing it on import hides it again — its up, vis, pv, and the owner its hiding gave, re-derived: spec §5h)
+      const t = it.t !== undefined && typeRef.get(it.t), pile = it.k === 'p' && it.cards.map((m) => member(m, false)), pv = it.k === 'g' && !!it.pv;
       const e = it.k === 'c' ? deckName.has(it.d) && { card: { deck: deckName.get(it.d), i: it.i }, ...(it.up && { up: true }) }
         : it.k === 'p' ? !pile.includes(null) && { pile, ...(it.name && { name: it.name }) }
           : it.k === 'b' ? it.of.every((m) => typeRef.has(m.t)) && { bag: it.of.map((m) => ({ t: typeRef.get(m.t), ...(m.f && { f: m.f }), ...(m.up === false && { up: false }) })), ...(it.name && { name: it.name }), hand: !!it.hand }
-            : t && { [it.k === 's' ? 'supply' : 'piece']: t, ...(it.f && { f: it.f }), ...(it.up === false && { up: false }), ...(it.n > 1 && { n: it.n }) };
+            : t && { [it.k === 's' ? 'supply' : 'piece']: t, ...(it.f && { f: it.f }), ...(it.up === false && !pv && { up: false }), ...(it.n > 1 && { n: it.n }) };
       if (!e) { warnings.push(`${label(it)}: its ${it.k === 'c' || it.k === 'p' ? 'deck or game box' : 'game box'} is missing`); continue; }
       const { w, h } = size(it);
       e.at = [it.x, it.y];
@@ -3727,11 +3917,15 @@ export function createTable(host, env = {}) {
       if (it.rot) e.rot = it.rot;
       const board = !!t && types[t].kind === 'board' && it.k !== 'b';
       if (!!it.lock !== board) e.lock = !!it.lock;
-      if (it.owner) {
-        if (it.owner.startsWith('seat:')) e.owner = it.owner;
-        else if (K.has(it.owner)) e.owner = K.get(it.owner);
-        else warnings.push(`${label(it)}: its owner isn't seated, so it goes ownerless`);
+      /** Player or seat ref `r` as a setup names it: "seat:<id>", or "#k" for a seated player — else null (`what` warned). */
+      const ref = (r, what) => (r.startsWith('seat:') ? r : K.get(r) ?? (warnings.push(`${label(it)}: ${what}`), null));
+      const owner = it.owner && !(pv && it.po) && ref(it.owner, "its owner isn't seated, so it goes ownerless");
+      if (owner) e.owner = owner;
+      if (e.up === false && it.vis) { // (who sees it, and whether its owner is its hiding's: po)
+        const vis = it.vis.map((r) => ref(r, "a player who sees it isn't seated, so they won't")).filter(Boolean);
+        if (vis.length) e.vis = vis;
       }
+      if (e.up === false && it.po && e.owner) e.po = true;
       if (CATALOG_ID_RE.test(id)) e.id = id;
       setup.push(e);
     }
@@ -4119,19 +4313,20 @@ export function createTable(host, env = {}) {
       : op === 'lock' && typeof a.on !== 'boolean' ? '🚫 Say lock or unlock (on: true or false)' : op === 'toBag' && bag?.k !== 'b' ? '🚫 That is not a bag' : '';
     if (bad) { console.warn('refused a group', a, 'from', p); notify(p, bad); return false; }
     const here = ids.filter((id) => own(host.items, id)).sort((x, y) => host.items[x].z - host.items[y].z || (x < y ? -1 : 1));
-    const dice = op === 'roll' && here.filter((id) => { const it = host.items[id]; return it.k === 'g' && !hiddenFrom(p, it) && typeOf(it.t)?.kind === 'die'; }).sort();
+    // (the dice p may roll: those p sees, and the private ones p owns — seen's rule, asked quietly)
+    const dice = op === 'roll' && here.filter((id) => { const it = host.items[id]; return it.k === 'g' && (!hidden(p, it) || (!!it.vis?.length && owns(p, it))) && typeOf(it.t)?.kind === 'die'; }).sort();
     if (dice && !dice.length) { notify(p, '🚫 Only dice can be rolled: none of those is a die'); return false; }
     const N = dice ? dice.length : ids.length, shift = op === 'move' && groupShift(here.map((id) => movable(p, id)).filter(Boolean), a.dx, a.dy);
     const subs = dice ? [{ t: 'roll', ids: dice, group: N }] : here.map((id) => {
       const it = host.items[id];
-      return { t: op, id, ...(shift && { x: it.x + shift.dx, y: it.y + shift.dy }), ...(op === 'rot' && { rot: it.rot + num(a.rot) }), ...(op === 'lock' && { on: a.on }), ...(bag && { bag: a.bag }), group: N };
+      return { t: op, id, ...(shift && { x: it.x + shift.dx, y: it.y + shift.dy }), ...(op === 'rot' && { rot: it.rot + num(a.rot) }), ...(op === 'lock' && { on: a.on }), ...(bag && { bag: a.bag }), ...(op === 'hide' && { ids: [id] }), group: N };
     });
     const g = { p, base, stop: '' }, on = !!host.rules?.enabled, skipped = []; // (skipped: each member's reason, {msg, ruled?})
     let took = 0, fx = null, json;
     for (const sub of subs) {
       if (g.stop) { skipped.push({ msg: 'rules script error', ruled: true }); continue; }
       if (sub.id !== undefined && !own(host.items, sub.id)) { skipped.push({ msg: 'it is gone' }); continue; } // (an earlier member's hook took it)
-      Object.assign(g, { why: null, mark: null, line: null });
+      Object.assign(g, { why: null, mark: null, roll: null });
       const sp = J ? savepoint(json) : -1;
       json = J?.frames[sp].json; // (the rules' state as JSON — each member's savepoint takes it from the one before: one pass over t.data, not one per member)
       gather = g;
@@ -4149,7 +4344,7 @@ export function createTable(host, env = {}) {
     }
     if (!dice) for (let k = here.length; k < ids.length; k++) skipped.push({ msg: 'it is gone' });
     if (took && fx) {
-      logEvent(p, groupLine(a, dice ? N : took, dice && g.line, bag), { keep: true }); // (kept: the line names no item — two groups alike are two gestures, not a repeat)
+      logEvent(p, groupLine(a, dice ? N : took, dice && g.roll, bag), { keep: true }); // (kept: the line names no item — two groups alike are two gestures, not a repeat)
       const it = own(host.items, fx.id); // (where the first member is now: a removed one's bulb stays where it was)
       emit({ t: 'fx', f: { ...fx, ...(it && { x: it.x, y: it.y }) } });
     }
@@ -4166,13 +4361,14 @@ export function createTable(host, env = {}) {
     return bump();
   }
   /** A group's one line (group): "moved 8 items", "rolled 4 dice: 3 · 5 ·
-   *  1 · 6", "put 3 items into the bag Sack" — `n` members (dice) of group
-   *  `a`; `rolled` is the roll's own line ("rolled 3 · 5 · 1 · 6", the faces
-   *  as opRoll said them as it rolled: never a hidden one's value, and never
-   *  read back from dice a hook may since have taken away). */
+   *  1 · 6", "hid 3 pieces", "put 3 items into the bag Sack" — `n` members
+   *  (dice) of group `a`; `rolled` is the roll as opRoll said it as it rolled
+   *  ([the shown dice's faces, how many were hidden]: never a hidden one's
+   *  value, and never read back from dice a hook may since have taken away). */
   function groupLine(a, n, rolled, bag) {
     const items = `${n} ${n === 1 ? 'item' : 'items'}`;
-    if (rolled) return `rolled ${n} ${n === 1 ? 'die' : 'dice'}: ${rolled.replace(/^rolled /, '')}`;
+    if (rolled) return rollLine(...rolled, true);
+    if (a.op === 'hide') return `hid ${n} ${n === 1 ? 'piece' : 'pieces'}`;
     const verb = { move: 'moved', rot: 'rotated', flip: 'flipped', del: 'removed', lock: a.on ? 'locked' : 'unlocked' }[a.op];
     return a.op === 'toBag' ? `put ${items} into ${label(bag)}` : `${verb} ${items}`;
   }
@@ -4278,7 +4474,16 @@ export function createTable(host, env = {}) {
       // only, but the fact of peeking goes on the record for everyone. Guests
       // never hold hidden identities (see publicItems), so the host answers
       // the peeker alone (the 'peek' effect: a card {d, i} or a piece {t, f}).
+      // A piece hidden from the peeker may be peeked at whoever owns it
+      // (spec §5c: Mallory may look at Alice's rack tile, on the record).
       case 'peek': {
+        if (it?.k === 'g') {
+          if (!hidden(p, it)) { notify(p, 'You can already see it'); break; }
+          logEvent(p, 'peeked at a hidden piece', { loud: true });
+          mark(p, a.id);
+          emit({ t: 'peek', p, c: { t: it.t, f: it.f } });
+          break;
+        }
         const c = it?.k === 'c' ? !it.up && it : it?.k === 'p' && it.cards.at(-1);
         if (!c || !mayHandle(p, it)) break;
         const card = isCard(c);
@@ -4288,6 +4493,7 @@ export function createTable(host, env = {}) {
         break;
       }
       case 'roll': opRoll(p, a.ids); break; // (any other field — a forged `f` — is ignored)
+      case 'hide': opHide(p, a.ids); break; // (and a forged `vis` or `up`: hiding is for p alone)
       case 'face': opFace(p, a.id, a.f); break;
       case 'split': opSplit(p, a.id, a.n, a.x, a.y, a.onto); break;
       case 'join': opJoin(p, a.id, a.onto); break;
@@ -4388,7 +4594,7 @@ export function createTable(host, env = {}) {
       }
       case 'select': { // (spec §3c: no state of its own; at most SELECT_PER_SEC a second; never a piece hidden from p)
         const why = !host.rules?.enabled || !hooks.has('onSelect') ? 'the rules want no selections'
-          : !pl ? 'not a player' : !it ? 'no such item' : hiddenFrom(p, it) ? 'hidden from them'
+          : !pl ? 'not a player' : !it ? 'no such item' : hidden(p, it) ? 'hidden from them'
             : !flood(selects, p, SELECT_PER_SEC, SELECT_PER_SEC) ? `more than ${SELECT_PER_SEC} a second` : '';
         if (why) { console.warn(`dropped a select (${why})`, a.id, 'from', p); return null; }
         then.push(['onSelect', p, a.id]);
@@ -4550,7 +4756,7 @@ export function createTable(host, env = {}) {
   /** A script's own copy of item `id`: changing it never changes the table (its address in the display form). */
   function copyItem(id, it) {
     const at = addrNow(it);
-    return { id, ...it, ...(it.cards && { cards: it.cards.map((c) => ({ ...c })) }), ...(it.of && { of: it.of.map((m) => ({ ...m })) }), ...(at && { at }) };
+    return { id, ...it, ...(it.cards && { cards: it.cards.map((c) => ({ ...c })) }), ...(it.of && { of: it.of.map((m) => ({ ...m })) }), ...(it.vis && { vis: [...it.vis] }), ...(at && { at }) };
   }
   /** Calls hook `name` with the facade (when the rules are on and the script
    *  has it): {v: what it returned}, or {err} when it threw — or returned a
@@ -4851,6 +5057,19 @@ export function createTable(host, env = {}) {
   function scriptOwner(call, o) {
     if (o == null || (typeof o === 'string' && (o.startsWith('seat:') ? seatDef(o.slice(5)) : own(host.players, o)))) return o ?? null;
     throw new TypeError(`${call}: owner must be a player id or 'seat:<a named seat>', got ${JSON.stringify(o)}`);
+  }
+  /** Who sees a hidden piece, for a script call `call` (spec §5e): `refs`, a
+   *  list of at most MAX_VIS player ids at the table and 'seat:<a named
+   *  seat>' (each once) — else a TypeError. */
+  function scriptVis(call, refs) {
+    if (!Array.isArray(refs) || refs.length > MAX_VIS) throw new TypeError(`${call}: who sees it is a list of at most ${MAX_VIS} player ids and 'seat:<id>'s, got ${String(JSON.stringify(refs)).slice(0, 60)}`);
+    const bad = refs.find((r) => !(isVisRef(r) && (r.startsWith('seat:') ? seatDef(r.slice(5)) : own(host.players, r))));
+    if (bad !== undefined) throw new TypeError(`${call}: ${String(JSON.stringify(bad)).slice(0, 40)} is no player at the table, nor 'seat:<a named seat>'`);
+    return [...new Set(refs)];
+  }
+  /** Piece `id` (`it`) for a call `call` that hides it, or changes who sees it: a TypeError unless it can lie face down — a piece, no board, whose type has a back. */
+  function hideable(call, id, it) {
+    if (it.k !== 'g' || it.z < 0 || !typeOf(it.t)?.back) throw new TypeError(`${call}: ${id} can't lie hidden (only a piece whose type has a back)`);
   }
   /** Where a script puts new item `it`: `at` an address (any form: centred
    *  on its spot), 'center' or undefined (the table's centre, snapping as
@@ -5174,12 +5393,15 @@ export function createTable(host, env = {}) {
       return n;
     },
     /** Places a new piece (or supply) of type `type` ('box/type'): o = {at?
-     *  (an address, 'center', or {x, y, free?}), f?, n?, owner?, up?, rot?,
-     *  lock? (boards: locked by default), as?: 'piece' | 'supply'}. Its id, or
-     *  false at the item cap. */
+     *  (an address, 'center', or {x, y, free?}), f?, n?, owner?, up?, vis?
+     *  (with up: false: who sees it, as t.hide's refs), rot?, lock? (boards:
+     *  locked by default), as?: 'piece' | 'supply'}. Its id, or false at the
+     *  item cap. */
     spawn(type, o = {}) {
       const ty = scriptType('t.spawn', type);
-      if (!isObj(o)) throw new TypeError('t.spawn: o must be {at?, f?, n?, owner?, up?, rot?, lock?, as?}');
+      if (!isObj(o)) throw new TypeError('t.spawn: o must be {at?, f?, n?, owner?, up?, vis?, rot?, lock?, as?}');
+      if (o.vis !== undefined && (o.up !== false || o.as === 'supply')) throw new TypeError('t.spawn: vis is for a piece with up: false (who sees it while it lies hidden)');
+      const vis = o.vis === undefined ? [] : scriptVis('t.spawn', o.vis);
       const as = o.as ?? 'piece', f = scriptFace('t.spawn', ty, o.f), owner = scriptOwner('t.spawn', o.owner);
       if (as !== 'piece' && as !== 'supply') throw new TypeError(`t.spawn: as must be 'piece' or 'supply', got ${JSON.stringify(as)}`);
       if (o.n !== undefined && (as !== 'piece' || !Number.isInteger(o.n) || o.n < 1 || o.n > MAX_N || (o.n > 1 && ty.stack !== 'count'))) {
@@ -5190,7 +5412,7 @@ export function createTable(host, env = {}) {
       if (o.lock !== undefined && typeof o.lock !== 'boolean') throw new TypeError('t.spawn: lock must be true or false');
       if (o.rot !== undefined && !Number.isFinite(o.rot)) throw new TypeError('t.spawn: rot must be a number');
       if (!cap(RULES)) return false;
-      const it = { k: as === 'supply' ? 's' : 'g', t: type, f, rot: 0, ...(o.up === false && { up: false }), ...(o.n > 1 && { n: o.n }), ...(owner && { owner }), ...((o.lock ?? ty.kind === 'board') && { lock: true }) };
+      const it = { k: as === 'supply' ? 's' : 'g', t: type, f, rot: 0, ...(o.up === false && { up: false }), ...(vis.length && { vis }), ...(o.n > 1 && { n: o.n }), ...(owner && { owner }), ...((o.lock ?? ty.kind === 'board') && { lock: true }) };
       it.rot = turned(it, o.rot);
       place(it, ...scriptSpot('t.spawn', it, o.at));
       const id = put(mint(host.items), it);
@@ -5232,6 +5454,67 @@ export function createTable(host, env = {}) {
     take(id, o = {}) { return scriptDraw('t.take', 's', id, o); },
     /** A random piece out of bag `id` (o = {at?, to?: pid}), as t.take. */
     pull(id, o = {}) { return scriptDraw('t.pull', 'b', id, o); },
+    // --- private material (spec §5e): who sees a hidden piece ------------------
+    /** Turns piece `id` face down for `refs` alone (player ids and
+     *  'seat:<id>'s, at most MAX_VIS; none: nobody) — however it lay, and
+     *  whoever saw it before. False when it vanished; a TypeError when it
+     *  can't lie hidden (hideable) or `refs` aren't players or seats. */
+    hide(id, refs = []) {
+      const it = scriptItem('t.hide', id);
+      if (!it) return false;
+      const vis = scriptVis('t.hide', refs);
+      hideable('t.hide', id, it);
+      logOp(RULES, 'hid', `hid ${label(it)}${onAt(it)}`, it);
+      touch(id);
+      reindexed(id, it, () => {
+        it.up = false;
+        if (vis.length) it.vis = vis;
+        else delete it.vis;
+      });
+      mark(RULES, id);
+      return true;
+    },
+    /** Turns piece `id` face up, for everyone: its vis, pv and po go, and
+     *  the owner hiding gave it (po). True when it is (it was already: no
+     *  line); false when it vanished. */
+    reveal(id) {
+      const it = scriptItem('t.reveal', id);
+      if (!it) return false;
+      if (it.k !== 'g') throw new TypeError(`t.reveal: ${id} is not a piece`);
+      if (it.up !== false && !it.vis && !it.pv && !it.po) return true;
+      touch(id);
+      reindexed(id, it, unveil);
+      logOp(RULES, 'revealed', `revealed ${label(it)}${onAt(it)}`, it);
+      mark(RULES, id);
+      return true;
+    },
+    /** Who sees piece `id` while it lies hidden: `refs` (as t.hide's), or
+     *  null for nobody; whether it lies face up or down is unchanged. */
+    setVis(id, refs) {
+      const it = scriptItem('t.setVis', id);
+      if (!it) return false;
+      const vis = refs === null ? [] : scriptVis('t.setVis', refs);
+      hideable('t.setVis', id, it);
+      if (String(vis) === String(it.vis ?? [])) return true;
+      touch(id);
+      reindexed(id, it, () => {
+        if (vis.length) it.vis = vis;
+        else delete it.vis;
+      });
+      logOp(RULES, 'vis', `changed who sees ${label(it)}${onAt(it)}`, it);
+      mark(RULES, id);
+      return true;
+    },
+    /** Whether player `p` sees what item `id` is: a piece or a supply by the
+     *  visibility rule (spec §5a: face up, or its vis names p or p's seat), a
+     *  card face up, a pile by its top, a bag never (what it holds is
+     *  hidden). False when it vanished. */
+    canSee(p, id) {
+      if (typeof p !== 'string') throw new TypeError(`t.canSee: a player id must be a string, got ${String(JSON.stringify(p)).slice(0, 30)}`);
+      const it = scriptItem('t.canSee', id);
+      if (!it) return false;
+      return it.k === 'c' ? !!it.up : it.k === 'p' ? it.cards.at(-1)?.up !== false : it.k !== 'b' && !hidden(p, it);
+    },
     /** Turns piece or supply `id` — or each of a list of ids, as one log
      *  line (a reversi move's flips: D167) — to face `f` (a die too: no roll). */
     setFace(ids, f) {
@@ -5412,17 +5695,53 @@ export function createTable(host, env = {}) {
   const sentParts = new Map(); // pid → the JSON of each part (PARTS order) as the last takeDirty() saw it
   let partsSeen = -1; // partsVer then
   /** What a body carries for recipient `to` alone, beside `to`, `tp` and
-   *  `base` (spec §1b.3, §3b): in a snapshot (no `d`) their hand, and each of
-   *  ask, hint and sec that isn't empty; in a patch, from a takeDirty()
-   *  result `d`, those that changed since (null: cleared). A peer that isn't
-   *  a registered player (`to` null, or not yet in state.players) gets none. */
+   *  `base` (spec §1b.3, §3b, §5b): in a snapshot (no `d`) their hand, each
+   *  of ask, hint and sec that isn't empty, and `vis`: every piece hidden
+   *  from others that `to` sees, in full (visFor); in a patch, from a
+   *  takeDirty() result `d`, those that changed since (null: cleared), and
+   *  the full form of each piece of the tick's that `to` sees (d.vis). A
+   *  peer that isn't a registered player (`to` null, or not yet in
+   *  state.players) gets none: the shared, reduced form alone. */
   function mine(to, d) {
     const pl = typeof to === 'string' && own(host.players, to), o = {};
     if (!pl) return o;
     if (!d || d.hands.has(to)) o.hand = pl.hand;
     const P = partsOf(to);
     for (const [k, set] of PARTS) if (d ? d[set].has(to) : P[k] !== null) o[k] = P[k];
+    const vis = d ? d.vis?.get(to) : visFor(to);
+    if (vis && Object.keys(vis).length) o.vis = vis;
     return o;
+  }
+  /** Piece `it` as a player its vis names sees it while it lies hidden from
+   *  others (spec §5b, §5d): its shown public form, then up: false and its
+   *  vis — or null: no such piece, or one whose box is missing (no full form
+   *  can be built, and every viewer gets the back). */
+  function fullOf(it) {
+    if (it?.k !== 'g' || it.up !== false || !it.vis?.length || !typeOf(it.t)) return null;
+    return { ...pubItem({ ...it, up: true }, host.boxes, display), up: false, vis: [...it.vis] };
+  }
+  /** Every piece hidden from others that player `to` sees (byVis: by their
+   *  id or their seat), in full: what their snapshot's `vis` holds, by id
+   *  in sorted order. */
+  function visFor(to) {
+    const seat = host.players[to].seatId, ids = new Set([...(byVis.get(to) || []), ...((seat && byVis.get(`seat:${seat}`)) || [])]), o = {};
+    for (const id of [...ids].sort()) {
+      const it = host.items[id], full = fullOf(it);
+      if (full && viewersOf(it).includes(to)) o[id] = full;
+    }
+    return o;
+  }
+  let holders = null; // seat id → who held it at the last takeDirty() (seatMoves)
+  /** Re-sends every piece whose vis names a seat whose occupant changed
+   *  since the last tick (spec §5a, §5j: the byVis touch): the new occupant
+   *  gets its full form, the one who left the shared one. Called by
+   *  takeDirty, so a seat taken by any path — a sit, setSeats, a join, a
+   *  Worker's patch — is caught. */
+  function seatMoves() {
+    const now = new Map();
+    for (const [q, pl] of Object.entries(host.players)) if (pl.seatId && !now.has(pl.seatId)) now.set(pl.seatId, q);
+    if (holders) for (const s of new Set([...holders.keys(), ...now.keys()])) if (holders.get(s) !== now.get(s)) for (const id of byVis.get(`seat:${s}`) || []) touch(id);
+    holders = now;
   }
 
   // --- delta sync: the dirty sets, patches and snapshots ------------------------
@@ -5432,10 +5751,22 @@ export function createTable(host, env = {}) {
    *  is `handy` (from the items). */
   function takeDirty() {
     flushRuns();
+    seatMoves();
     refresh();
     boardsMoving = false; // (the boards as they now are: tb() may keep them until one is touched again)
     const d = dirty, sig = JSON.stringify(rulesView()), h = handy.size > 0;
     dirty = newDirty();
+    // The tick's pieces hidden from others, for those who see them (spec §5b):
+    // d.full their ids (patchContent sends each whole), d.vis each viewer's
+    // full forms (mine) — computed once a tick, for the dirty ones alone.
+    d.full = new Set();
+    d.vis = new Map();
+    for (const id of [...d.items].sort()) {
+      const it = own(host.items, id), full = fullOf(it);
+      if (!full) continue;
+      d.full.add(id);
+      for (const q of viewersOf(it)) (d.vis.get(q) ?? d.vis.set(q, {}).get(q))[id] = full;
+    }
     if (sig !== rulesSig) { rulesSig = sig; d.rules = true; }
     if (h !== handySent) { d.handy = handySent !== undefined; handySent = h; }
     if (partsSeen !== partsVer) { // (each player's own parts, compared only when something may have changed them)
@@ -5451,6 +5782,11 @@ export function createTable(host, env = {}) {
     return d;
   }
   const sent = new Map(); // id → its public item as the last patch or snapshot sent it: what every peer in step holds
+  // The ids that were pieces hidden from others when last sent (fullOf): the
+  // players who see one hold its full form, not `sent`'s, so its next change
+  // goes whole whatever it is — a viewer that lost sight of it as it moved
+  // must not fold a mere place into the full form it holds (spec §5b).
+  const visSent = new Set();
   /** The new place of an item whose public record `was` (what the peers
    *  hold) became `o` by its place alone — x, y, rot, z and its address —
    *  as [x, y, rot, z] plus its address when it has one; else null (no
@@ -5479,13 +5815,15 @@ export function createTable(host, env = {}) {
     if (d.handy) c.handy = handy.size > 0;
     if (d.rules) c.rules = rulesView();
     for (const id of [...d.items].sort()) {
-      const o = pub.get(id), at = placeOf(sent.get(id), o);
+      const o = pub.get(id), full = !!d.full?.has(id), at = !full && !visSent.has(id) && placeOf(sent.get(id), o);
       if (at) (c.pos ||= {})[id] = at;
       else (c.items ||= {})[id] = o;
       sent.set(id, o);
+      if (full) visSent.add(id);
+      else visSent.delete(id);
     }
     if (d.removed.size) c.del = [...d.removed].sort();
-    for (const id of d.removed) sent.delete(id);
+    for (const id of d.removed) { sent.delete(id); visSent.delete(id); }
     const ps = [...d.players].filter((p) => own(host.players, p)).sort();
     if (ps.length) c.players = Object.fromEntries(ps.map((p) => [p, pubPlayer(host.players[p])]));
     if (d.log.length) c.log = trimLog(d.log); // entries this tick both appends and trims need not travel
@@ -5498,6 +5836,8 @@ export function createTable(host, env = {}) {
     const items = Object.fromEntries(Object.keys(host.items).sort().map((id) => [id, pub.get(id)]));
     sent.clear();
     for (const id in items) sent.set(id, items[id]);
+    visSent.clear();
+    for (const ids of byVis.values()) for (const id of ids) if (fullOf(host.items[id])) visSent.add(id);
     return { table: host.table, seats: host.seats, handy: handy.size > 0, rules: rulesView(), items, players: publicPlayers(), log: host.log };
   }
   /** Marks the items action `a` names (id, pile, onto, bag, and the first
@@ -5640,7 +5980,7 @@ export function createTable(host, env = {}) {
       if (it === null) { count -= own(host.items, id) ? 1 : 0; continue; }
       if (!own(host.items, id)) { if (!isId(id)) no(`a patched item has the id ${JSON.stringify(id.slice(0, 30))}`); count++; }
       // (an address as the Worker read it, D128 — but text: every read of one on this table takes it as such)
-      const why = itemProblem(it) || (Math.abs(it.z) > Z_MAX && `its z is past ${Z_MAX}`) || (it.at !== undefined && !(typeof it.at === 'string' && it.at.length <= 100) && 'its address is not one');
+      const why = itemProblem(it) || visProblem(it) || (Math.abs(it.z) > Z_MAX && `its z is past ${Z_MAX}`) || (it.at !== undefined && !(typeof it.at === 'string' && it.at.length <= 100) && 'its address is not one');
       if (why) no(`a patched item (${id.slice(0, 24)}) is malformed: ${why}`);
     }
     if (count > Math.max(had, MAX_ITEMS)) no(`the patch leaves more than ${MAX_ITEMS} items on the table`);
@@ -5909,10 +6249,11 @@ export function createTable(host, env = {}) {
     return cyrb53(canon({ items: host.items, players: host.players, rules: r ? { ...Object.fromEntries(RULES_STATE.map((k) => [k, r[k] ?? {}])), code: r.code, name: r.name, enabled: r.enabled } : null }));
   }
 
+  seatMoves(); // (who holds each seat now: the first tick re-sends a seat's pieces only if that changed)
   return {
     state: host,
     api: tApi, // the rules facade `t`
-    byKind, byType, byOwner,
+    byKind, byType, byOwner, byVis,
     /** T.byAt (a qualified address → the pieces there) and T.byZone ('<board
      *  id>:<zone id>' → the pieces in it), brought up to date (syncSpots). */
     get byAt() { syncSpots(); return byAt; },

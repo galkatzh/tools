@@ -861,6 +861,30 @@ sync and rendering, and the Worker together with `handle`.
    - `vis` (owner-visible pieces, dice under a cup), private areas beyond the
      hand (a tile rack, a screen), and peeking at any hidden piece.
    - *Demos:* dominoes and a hidden-units game.
+   - The engine and the wire (part 1 of the phase):
+     - A piece lies hidden for whom its `vis` names — a player, or a seat
+       and so whoever sits there — and every other player gets its back.
+       Each message carries, in the part addressed to one player, the full
+       form of the pieces that player sees; a seat changing hands sends
+       its pieces again, so its new occupant sees them and the one who
+       left doesn't. Moving such a piece costs the others what moving any
+       hidden piece does.
+     - Hiding a piece (a cup over dice) makes it its hider's until it is
+       revealed: nobody else may turn it over, roll it, set its face, take
+       it into a hand or claim it, and the refusal is the same whatever it
+       is; anyone may peek at it, on the record. The log never names a
+       hidden piece, and a roll names the shown dice's values alone.
+     - A rack or a screen is a zone of a small board: whatever is set down
+       in it hides for its owner (and belongs to them, unless it already
+       belongs to someone); off a rack it is face up again, out from
+       behind a screen it stays hidden; a board moved under or away from a
+       piece changes nothing.
+     - Scripts hide, reveal and change who sees a piece; what a game hides
+       beyond a piece's face (where things are, fog of war) stays the
+       script's.
+     - Exported games keep it all: a cup's dice, a screen's units that
+       left it, and a script's hidden pieces as they were; a rack's tiles
+       are hidden again by their rack when the game is set up.
 
 The terminal bridge follows each phase:
 - pieces and boxes appear in its snapshot;
@@ -998,3 +1022,18 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
   watchdog time grow with the rules' state each member passes over — its
   price past the burst too, so its sender waits the rest out and a flood of
   groups buys no more of the rules' time than single moves do (§5).
+- **What you may see travels to you alone:** a piece hidden from others
+  reaches the players who see it whole, in their own part of each message,
+  and everyone else its back; a piece seen by a seat is seen by whoever
+  sits there, and a move of such a piece costs the others no more than any
+  hidden piece's (§3).
+- **What would show a private piece is its owner's:** a piece you hide
+  (dice under your cup) is yours until it is revealed; nobody else may turn
+  it over, roll it, set its face, take it into a hand or claim it — the
+  same refusal whatever it is — but anyone may peek at it, on the record
+  (§2, §3).
+- **Racks and screens hide whatever is set down in them:** a piece placed
+  in one lies hidden for its owner — placed again, it hides again, even one
+  revealed there; off a rack it is played face up, out from behind a screen
+  it stays hidden; a board moved under or away from a piece changes
+  nothing, and a piece with no hidden side can't go in (§2, §3).

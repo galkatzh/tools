@@ -254,13 +254,16 @@ const bodies = (raw) => raw.map((m) => (typeof m?.b === 'string' ? JSON.parse(m.
 /** Folds bodies (in arrival order) into the view they add up to, as a guest
  *  would: {seq, items, players, rules, table, seats, handy, log, hand} — or null before any
  *  snapshot. The log keeps every entry received (untrimmed): "what did this
- *  peer see". A patch that doesn't follow is skipped, as a guest would. */
+ *  peer see". A patch that doesn't follow is skipped, as a guest would. An
+ *  item the body's own `vis` holds (Phase 5: a piece this peer sees while it
+ *  is hidden from others) is taken in that form, for that body alone. */
 function viewFrom(list) {
   let v = null;
+  const items = (d) => ({ ...d.items, ...Object.fromEntries(Object.entries(d.vis || {}).filter(([id]) => d.items && id in d.items)) });
   for (const d of list) {
-    if (d.kind === 'snap') v = { boot: d.boot, seq: d.seq, items: { ...d.items }, players: { ...d.players }, rules: d.rules, table: d.table, seats: d.seats, handy: d.handy, log: [...d.log], hand: d.hand || v?.hand || [] };
+    if (d.kind === 'snap') v = { boot: d.boot, seq: d.seq, items: items(d), players: { ...d.players }, rules: d.rules, table: d.table, seats: d.seats, handy: d.handy, log: [...d.log], hand: d.hand || v?.hand || [] };
     else if (d.kind === 'patch' && v && d.boot === v.boot && d.base === v.seq) {
-      Object.assign(v.items, d.items);
+      Object.assign(v.items, items(d));
       for (const [id, [x, y, rot, z, at]] of Object.entries(d.pos || {})) { // (an item that only moved: its new place, D233)
         v.items[id] = { ...v.items[id], x, y, rot, z, at };
         if (at === undefined) delete v.items[id].at;

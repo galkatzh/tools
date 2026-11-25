@@ -614,8 +614,8 @@ function quietly(fn) {
     ok(m.zMax === 12, 'zMax is the highest z');
     const { v, keys, zMax, ...rest } = m;
     ok(canon(rest) === canon(noKeys(v1)), 'everything else is unchanged');
-    // (Phase 2: the chain goes on to v3 — MIGRATE[2] —, Phase 3 to v4 — MIGRATE[3] — and Phase 4 to v5 — MIGRATE[4] —, so a v1 save ends as STATE_V)
-    ok(canon(migrate(json(v1))) === canon(MIGRATE[4](MIGRATE[3](MIGRATE[2](json(m))))), 'migrate() runs the chain up to STATE_V');
+    // (Phase 2: the chain goes on to v3 — MIGRATE[2] —, Phase 3 to v4 — MIGRATE[3] —, Phase 4 to v5 — MIGRATE[4] — and Phase 5 to v6 — MIGRATE[5] —, so a v1 save ends as STATE_V)
+    ok(canon(migrate(json(v1))) === canon(MIGRATE[5](MIGRATE[4](MIGRATE[3](MIGRATE[2](json(m)))))), 'migrate() runs the chain up to STATE_V');
     const T = createTable(json(v1), { ...env(10) });
     ok(T.state.v === STATE_V && T.state.keys[BOB] === keyOf(BOB) && T.state.zMax === 12 && !('key' in T.state.players[BOB]), 'createTable lifts a v1 save');
     T.resume('Alice');

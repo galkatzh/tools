@@ -538,7 +538,7 @@ setups. `{x, y, free: true}` skips it.
   face has no label: reversi's "Light disc".
   Ids are ids (`[A-Za-z0-9_-]`; never `__proto__`). The same box again — a
   reset re-running `setup` — is the box already there.
-- `t.spawn('box/type', {at, f, n, owner, up, rot, lock, as})` places a
+- `t.spawn('box/type', {at, f, n, owner, up, vis, rot, lock, as})` places a
   piece (`as: 'supply'`: a supply) at an address, `'center'` or `{x, y,
   free}` → its id (`false` at the 5,000-item cap); a board is locked unless
   `lock: false`. `t.newBag([{t, f, up, n}], {at, name, owner, hand})` → a
@@ -631,6 +631,67 @@ export is that box's. A refusal the rules make (a veto, `strict`) reaches
 the player as a notice the app knows for theirs: an upload refused so says
 which rules refused it, and an engine's or a storage refusal never does. A box's setup and saved state never reach
 a guest — only the host and the Worker read them.
+
+### Private material (Phase 5)
+
+A piece whose type has a back may lie face down for some players and face
+up for others: its `vis` names who sees it — player ids, or `'seat:<id>'`,
+which follows whoever sits there (at most 8). Everyone else gets its back,
+and the host builds each viewer's full form in that viewer's own part of
+every message, so nothing private ever reaches anyone it isn't for.
+
+- `t.hide(id, refs = [])` lays piece `id` face down for `refs` alone (none:
+  for nobody) → `true` (`false`: it is gone). A piece whose type has no
+  back, or a board, throws a `TypeError`, as do refs that name no player at
+  the table and no named seat. "📜 Rules hid {name}" (as it showed a
+  moment ago); four or more in one action are one line, "hid 12 pieces: a1,
+  b1, …".
+- `t.reveal(id)` turns it face up for everyone: its `vis` goes, and so does
+  an owner its hiding gave it ("revealed {name}"; `true` and no line when it
+  was face up already).
+- `t.setVis(id, refs | null)` changes who sees it, face down or not
+  ("changed who sees a hidden piece").
+- `t.canSee(pid, id)` → whether `pid` sees what the item is: a piece by the
+  rule above, a card or a pile's top by its side, a bag never.
+- `t.spawn(type, {up: false, vis: refs, …})` places a piece hidden for
+  `refs` from the start.
+- **Reads see everything**, as ever: `t.item(id)`, `t.find(q)`, `t.at(a)`
+  return a hidden piece whole — its `t` and `f`, `vis`, and the engine's
+  marks `pv` (a private zone hides it) and `po` (its owner is the one its
+  hiding gave it, which goes when it is revealed).
+
+A player's own `hide` makes an unowned piece theirs until it is revealed —
+a cup belongs to a person. A private piece (one with a `vis`) hidden from a
+player is refused to them for `flip`, `roll`, `face`, `toHand` and a claim,
+with one uniform "🚫 That piece is hidden", unless they own it; anyone may
+`peek` at it, on the record ("peeked at a hidden piece"), and a script's
+`validate` may veto that. Rolls of hidden dice log the shown values alone
+("rolled 4 dice (2 hidden): 3 · 5"; `t.roll` of one: "📜 Rules rolled a
+hidden die").
+
+**Private zones.** A board's zone with `private: 'reveal'` (a rack) or
+`'keep'` (a screen) and an `owner` — `'board'` (the board item's owner) or
+`'seat:<id>'` — hides every piece set down in it: face down for that owner
+(`vis`), owned by them unless someone owns it already. Taken off a rack, a
+piece is face up for everyone again; moved out from behind a screen, it
+stays hidden until a flip or the script reveals it. This happens whenever a
+piece is **placed** — by a player, a script (`t.move`, `t.spawn`,
+`t.pull`, …) or a setup — and never because a board moved under it. So:
+
+- a piece placed back in a zone (a unit revealed in combat that steps back
+  into its owner's screen) is hidden again: call `t.reveal` after your own
+  move if your game keeps revealed pieces revealed;
+- a piece placed in **another** owner's zone becomes theirs (its `vis`, and
+  an owner its hiding gave it): a game whose pieces cross into the other
+  side's zones (a deployment area on the main board) gives them back with
+  `t.setVis(id, refs)` and `t.setOwner(id, owner)` after the move;
+- a piece with no back can't go into one: a player's move is refused, a
+  script's throws a `TypeError`.
+
+**Fog of war is the script's.** The engine hides what lies face down and
+nothing else: positions, moves and ownership are public. A game that hides
+where things are, or what a square holds, keeps that in `t.secret` (each
+player's own) and shows each player what they should see.
 
 ## 3. Enforcement path (the one structural change)
 

@@ -474,7 +474,7 @@ function testDedupMigrate() {
   section('(6) MIGRATE[4]: v4 → v5, lastSetup kept, rules.box absent');
   const v4 = { v: 4, seq: 3, table: { shape: 'round', w: 1300, h: 1300 }, seats: null, boardSeq: 0, zMax: 0, items: {}, players: {}, keys: {}, log: [], guestDeckChars: 0, lastSetup: 'abcd0001', rules: { code: '({})', name: 'R', enabled: false, data: {}, public: {}, asks: {}, secret: {} } };
   const m = MIGRATE[4](json(v4));
-  ok(STATE_V === 5 && PROTO === 5 && m.v === 5 && m.lastSetup === 'abcd0001' && !('box' in m.rules) && canon(migrate(json(v4))) === canon(m), `v ${m.v}, lastSetup kept, no rules.box; migrate() ends there`);
+  ok(STATE_V === 6 && PROTO === 6 && m.v === 5 && m.lastSetup === 'abcd0001' && !('box' in m.rules) && canon(migrate(json(v4))) === canon(MIGRATE[5](json(m))), `v ${m.v}, lastSetup kept, no rules.box; migrate() goes on with MIGRATE[5] (Phase 5)`);
 
   section('(6) Reset after a save/load round trip: lastSetup and rules.box are saved');
   const S = room(HOST, 'Alice', [[BOB, 'Bob']]), bid = S.add(HOST, gameDef()).id;
@@ -740,7 +740,7 @@ function testGroup() {
   ok(!q.lines.length && J(q.notes) === J(['🚫 Roll 1 to 20 different dice']), `22 dice: one roll takes at most 20, as the single roll says (${J(q.notes)})`);
 
   section('(3) the payload: ids capped at MAX_GROUP and deduplicated, a flood cost of 1 + ⌊N/20⌋; malformed groups refused');
-  ok(MAX_GROUP === 200 && GROUP_OPS.join() === 'move,rot,flip,roll,lock,del,toBag' && PUBLIC_ACTIONS.includes('group') && !RULED_ACTIONS.includes('group'), 'GROUP_OPS; group is a public action, ruled per member (not as a whole)');
+  ok(MAX_GROUP === 200 && GROUP_OPS.join() === 'move,rot,flip,roll,lock,del,toBag,hide' && PUBLIC_ACTIONS.includes('group') && !RULED_ACTIONS.includes('group'), 'GROUP_OPS; group is a public action, ruled per member (not as a whole)');
   const big = [...Array(500)].map((_, k) => `e${String(k).padStart(7, '0')}`);
   ok(groupIds({ ids: big }).length === 200 && groupIds({ ids: [C(1), C(1), 7, '7', null, {}, C(2)] }).join() === [C(1), '7', C(2)].join(), 'groupIds: the first 200, each once, as text (a number its digits, as textIds reads it), nothing else');
   ok(floodCost({ t: 'group', ids: [...Array(200)].map((_, k) => 10000000 + k) }) === 11, 'a payload of 200 numeric ids costs what 200 text ids do (the job runs on them all)');
@@ -753,7 +753,7 @@ function testGroup() {
   r = run(third, { t: 'group', op: 'move', ids: [...Array(300).fill(C(6)), ...Array(200).fill(C(1))], dx: 10, dy: 0 });
   ok(J(r.notes.map((e) => e.msg)) === J([`🚫 That belongs to ${TWO}`]) && it(1).x === x1, `Mallory's 500 ids, one of them ${TWO}'s 300 times: capped (the free token at 301 never looked at), deduplicated, skipped (${J(r.notes.map((e) => e.msg))})`);
   for (const [a, msg] of [
-    [{ op: 'hide', ids: [C(1)] }, '🚫 A group can only move, rot, flip, roll, lock, del, toBag'], [{ op: 'move', ids: [] }, "🚫 Name the group's items"], [{ op: 'move', ids: 'x' }, "🚫 Name the group's items"],
+    [{ op: 'shuffle', ids: [C(1)] }, '🚫 A group can only move, rot, flip, roll, lock, del, toBag, hide'], [{ op: 'move', ids: [] }, "🚫 Name the group's items"], [{ op: 'move', ids: 'x' }, "🚫 Name the group's items"],
     [{ op: 'lock', ids: [C(1)] }, '🚫 Say lock or unlock (on: true or false)'], [{ op: 'toBag', ids: [C(1)], bag: C(2) }, '🚫 That is not a bag'],
   ]) {
     const s0 = H.state.seq;
@@ -1722,7 +1722,7 @@ function indepMigrate() {
     s.items.dead1001 = { k: 'g', t: 'dead0001/buoy', f: 0, x: 100, y: 1700, rot: 0, z: 999 };
     return s;
   });
-  ok(U.state.v === 5 && U.state.lastSetup === bid && !('box' in U.state.rules) && U.state.rules.enabled && U.state.rules.data.tides === 1, 'resumed at v5: lastSetup, the rules running on their state, no rules.box');
+  ok(U.state.v === STATE_V && U.state.lastSetup === bid && !('box' in U.state.rules) && U.state.rules.enabled && U.state.rules.data.tides === 1, `resumed at v${STATE_V} (v5 in Phase 4): lastSetup, the rules running on their state, no rules.box`);
   ok(J(U.state.boxSrc[bid]) === J({ src: 'host', by: HOST }) && J(U.state.boxSrc.dead0001) === J({ src: 'upload', by: BOB }) && !!U.state.boxes.dead0001 && !!U.state.items.dead1001,
     'no catalog record rewritten; the duplicate box stays, with the item that uses it');
   const nb = Object.keys(U.state.boxes).length, dup = act(U, HOST, { t: 'addBox', box: tide({ rules: TIDE_RULES, setup: TIDE_SETUP.filter((e) => !e.group) }) });
@@ -2089,7 +2089,7 @@ function indepGroup() {
     ok(r.notes.length === 1 && /^50 of 51 (?:were|was) skipped: /u.test(r.notes[0][0]) && J(r.lines) === J([[CAROL, 'moved 1 item']]),
       `one notice counting the 51 distinct members of the first 200 ids, 50 skipped (${J(r.notes)}); one line (${J(r.lines)})`);
     ok(!/Zephyr|Quiet Lantern/.test(J([r.notes, T.state.log])), 'the face-down card is never named');
-    for (const a of [{ op: 'hide', ids: [I.f1] }, { op: 'spin', ids: [I.f1] }, { op: 'move', ids: [] }, { op: 'move' }, { op: 'lock', ids: [I.f1] }, { op: 'toBag', ids: [I.f1], bag: I.f9 }, { op: 'toBag', ids: [I.f1], bag: 'dead0001' }]) {
+    for (const a of [{ op: 'shuffle', ids: [I.f1] }, { op: 'spin', ids: [I.f1] }, { op: 'move', ids: [] }, { op: 'move' }, { op: 'lock', ids: [I.f1] }, { op: 'toBag', ids: [I.f1], bag: I.f9 }, { op: 'toBag', ids: [I.f1], bag: 'dead0001' }]) {
       const s0 = canon(T.state), q = play(T, CAROL, { t: 'group', dx: 5, dy: 5, ...a });
       ok(canon(T.state) === s0 && !q.lines.length && q.notes.length === 1 && /^🚫 /u.test(q.notes[0][0]), `${J(a)}: refused with a notice, nothing changed (${J(q.notes)})`);
     }

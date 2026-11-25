@@ -1244,7 +1244,7 @@ function v3save(extra = {}) {
 function testMigrate() {
   section('(6) MIGRATE[3]: v3 → v4');
   const s = v3save(), was = json(s.items), q = quietly(() => MIGRATE[3](s));
-  ok(s.v === 4 && STATE_V === 5 && PROTO === 5, `v = 4 (STATE_V ${STATE_V}, PROTO ${PROTO}: Phase 4's MIGRATE[4] lifts it on to 5)`);
+  ok(s.v === 4 && STATE_V === 6 && PROTO === 6, `v = 4 (STATE_V ${STATE_V}, PROTO ${PROTO}: Phase 4's MIGRATE[4] and Phase 5's MIGRATE[5] lift it on to 6)`);
   ok(isDeepStrictEqual(s.rules.secret, { [BOB]: { text: 'kept' } }) && isDeepStrictEqual(s.rules.asks, {}) && !('hints' in s.rules) && s.rules.data.score === 3 && s.rules.public.turn === 1,
     `rules.secret ||= {} (an existing one kept), rules.asks ||= {}, rules.hints deleted, the rest untouched (${J(Object.keys(s.rules))})`);
   ok(isDeepStrictEqual(s.rules.data._timers.map((x) => [x.at, x.tag]), [[1e12, 'a'], [2e12, 'b']]) && q.error.length >= 1,
@@ -1269,8 +1269,8 @@ function testMigrate() {
   {
     const s2 = v3save(), s3 = json(s2);
     s3.rules.data._timers = s2.rules.data._timers; // (JSON would turn NaN into null)
-    quietly(() => { MIGRATE[4](MIGRATE[3](s2)); migrate(s3); });
-    ok(isDeepStrictEqual(json(s2), json(s3)), 'migrate() runs MIGRATE[3] on a v3 save (then MIGRATE[4]: the chain ends at STATE_V 5)');
+    quietly(() => { MIGRATE[5](MIGRATE[4](MIGRATE[3](s2))); migrate(s3); });
+    ok(isDeepStrictEqual(json(s2), json(s3)), 'migrate() runs MIGRATE[3] on a v3 save (then MIGRATE[4] and MIGRATE[5]: the chain ends at STATE_V 6)');
   }
   section('(6) a v3 save resumed by createTable: addresses, indexes, the view');
   {
@@ -2250,7 +2250,7 @@ function testPipelineAfterHooks() {
 function testStrict() {
   section('(3) strict: every ruled action but seat is refused ("Not a move in this game") unless handle returns true or allow lists it');
   const SPEC_RULED = ['move', 'rot', 'flip', 'shuffle', 'draw', 'deal', 'play', 'handPile', 'toHand', 'toPile', 'stack', 'merge', 'del', 'addDeck', 'peek',
-    'roll', 'face', 'split', 'join', 'take', 'pull', 'toBag', 'lock', 'owner', 'seat', 'addBox']; // (addBox: Phase 4, ruled like addDeck)
+    'roll', 'face', 'split', 'join', 'take', 'pull', 'toBag', 'lock', 'owner', 'seat', 'addBox', 'hide']; // (addBox: Phase 4, ruled like addDeck; hide: Phase 5)
   ok(sameSet([...RULED_ACTIONS], SPEC_RULED) && sameSet([...STRICT_ACTIONS], SPEC_RULED.filter((t) => t !== 'seat')), 'RULED_ACTIONS is §10.1\'s list; STRICT_ACTIONS is it without seat');
   const seen = [];
   const T = rtable(PIPE(), { onAction(t, a) { seen.push(a.t); } }, { flags: { strict: true }, hands: HANDS });

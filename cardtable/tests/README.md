@@ -2620,6 +2620,65 @@ answer a press of the dialog's own buttons; nothing they test goes through
   times and keeps the fastest: one sample alone could hold a GC pause (2.9
   ms once, every other board 0.000).
 
+## Phase 5 (part 1: the engine and the wire of private material)
+
+- **`core-p5.test.mjs`** (Node, §5l's core list; SERIAL: B23 is a timing
+  budget). Its `room()` is core-p4's — a host table and, while rules run,
+  a Worker-like mirror whose patches the host checks (`R.job`) — plus each
+  player's view as app.js's broadcast builds and a guest folds it:
+  `R.tick()` takes the dirty sets, builds the shared patch once, splices
+  each peer's own part (`T.mine`: hand, asks, hint, secret, `vis`) and
+  folds the body (`viewFromSnap`, `applyViewPatch`); `R.fresh(p)` is what
+  p's full snapshot would show now (call it right after a tick); `R.set`
+  sets a scene (an action, its effects dropped), `R.api(fn)` calls the
+  facade straight on the host (its aggregated 📜 lines written, as a job's
+  end writes them). The test box `PRIVY` has racks (`private: 'reveal'`,
+  owned through their board's owner), north's screen (`'keep'`), a mat of a
+  seat the table lacks (inactive), tiles and units with backs, dice under a
+  cup back, a coin with no back and a bag; Alice (host) sits south, Bob
+  north, Carol east, Mallory (`DAVE`) watches. Sections: (1) the reduction,
+  every row of §5d (a die cupped and revealed, seat-ref vis, owners, a pile
+  of hidden pieces, a box missing, a hand, an unregistered peer); (2)
+  private zones (entering, same owner, leaving a rack and a screen, a real
+  owner kept, another owner's zone, a no-back piece refused or a
+  TypeError, inactive zones, board moves firing nothing — the host may not
+  move North's rack, Bob does —, a zone gone from under a piece, pulls,
+  splits, plays); (3) piece peeks (loud, "You can already see it",
+  vetoed); (4) hide, rolls of cupped dice and their lines, face, flip, the
+  private-piece rule (§5j cases 5, 6, 8, 9), claims, group hide; (5)
+  `byVis` on a seat change (a sit, `t.setSeats`); (6) MIGRATE[5] and the
+  load gate; (7) two seeded runs of 500 ops with three viewers and
+  Mallory: every viewer's folded view equals its own snapshot and holds
+  the full form of exactly what it sees, and no body Mallory gets carries
+  a hidden piece's `t`, `f`, `vis`, an override or a face label she was
+  not shown (`leak`, `labelsShown`, `scanT`); (8) the export round trip of
+  §5l item 8; (9) the facade on the Worker path (a script, `Veil`, runs
+  the call a host's chat names: `t.hide`, `t.reveal`, `t.setVis`,
+  `t.canSee`, `t.spawn`'s vis, their TypeErrors), the setup grammar's
+  `vis` and `po`, and checkPatch's gate on a patch's `vis`, `pv` and `po`;
+  B22 (8 players × 20 vis tiles: a move adds 127 B to its viewer's body, 0
+  to the others') and B23 (a 160-vis snapshot for one player: well under
+  1 ms).
+- **`t-p5-wire.js`** (E2E, every action through `__ct.act` or Mallory's
+  raw sends: the UI's buttons are part 2's): Alice hosts, Bob is a guest,
+  Mallory a raw peer (final-lib). Cupped dice rolled (Alice's screen draws
+  their faces, the others the cup); a gem pulled from the bag straight into
+  Alice's rack; Mallory's flip, roll, face, move, claim and hides refused
+  (uniformly where it must be), a forged `vis`/`up` ignored, her peek
+  answered to her alone and logged; north's unit seen by whoever sits
+  north (Mallory, once moved there); Bob's reload (his snapshot carries his
+  own full forms); a group hide; and a recursive scan of every body
+  Mallory received (no gem type ref or label, no cupped die's face, her
+  only override north's unit while she sat there).
+- **`h.viewFrom`** folds a body's `vis` overrides as a guest does (an
+  override for an id of the same body's `items`, in that body alone).
+- **Mechanism changes, no check weakened:** PROTO and STATE_V are 6
+  (core-p2's two version checks, core-p3's and core-p4's MIGRATE checks
+  now run the chain through MIGRATE[5]; t-p4-wire's resumed state is
+  `STATE_V`); hide is a ruled action and a group op, so core-p3's §10.1
+  list gains it and core-p4's malformed-group checks use `shuffle`, an op a
+  group still doesn't know, where they used `hide`.
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores

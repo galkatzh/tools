@@ -115,7 +115,7 @@ const state = (page) => page.evaluate(() => window.__ct.hostState());
   await host.reload();
   await host.waitForFunction(() => window.__ct?.hostState()?.rules?.enabled && window.__ct.jobs() === 0, null, { timeout: 20000 });
   S = await state(host);
-  ok(S.lastSetup === bid && S.rules.box === bid && S.v === 5, `resumed: lastSetup and rules.box kept, state v${S.v}`);
+  ok(S.lastSetup === bid && S.rules.box === bid && S.v === require(path.join(h.APP_ROOT, 'cardtable/core.js')).STATE_V, `resumed: lastSetup and rules.box kept, state v${S.v} (STATE_V: 5 in Phase 4, 6 in Phase 5)`);
   await host.evaluate(() => window.__ct.act({ t: 'reset' }));
   await settle(host);
   S = await state(host);
