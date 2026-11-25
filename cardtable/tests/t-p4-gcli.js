@@ -108,7 +108,7 @@ const DRILL = {
   const after = await Promise.all(fakes.map((b) => sent(b, () => { for (const bad of BAD) b.c.stdin.write(bad + '\n'); b.c.stdin.write('group flip zz01\n'); })));
   ok(after.every((g) => g?.length === 1 && eq(g[0], { t: 'group', op: 'flip', ids: ['zz01'] })), `${BAD.length} malformed lines send nothing: only the good line after them arrives (${after.map(json).join(' / ')})`);
   const usages = fakes.map((b, k) => b.c.buf.slice(marks[k]).split('\n').filter((l) => l.includes(USAGE)).map((l) => l.replace(/^(?:🂡 > )+/, '').trim()));
-  ok(usages.every((u) => u.length === BAD.length) && json(usages[0]) === json(usages[1]), `each prints the usage, word for word alike in both (${json(usages[0][0])})`);
+  ok(usages.every((u) => u.length === BAD.length) && json(usages[0]) === json(usages[1]), `each prints the usage, word for word alike in both (${json(usages[0][0]?.replace(/^\S+ /, ''))})`);
   const help = await Promise.all(fakes.map((b) => type(b, 'help', (ls) => ls.some((l) => l.startsWith(`  ${USAGE}`)))));
   const helpLine = help.map((ls) => ls.find((l) => l.startsWith(`  ${USAGE}`)));
   ok(helpLine.every(Boolean) && helpLine[0] === helpLine[1], `both helps list it, alike: ${json(helpLine[0])}`);
