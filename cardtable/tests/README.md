@@ -43,7 +43,7 @@ node t-smoke.js         # one suite, output on the terminal
   within 1 s; go's stone #300 within 10 ms of Worker time), run alone, one
   at a time after the parallel batch, under the same lock: `SERIAL`, a
   comma-separated list of suite names, default
-  `t-p1-bench,core-p1-bench,core-p2-bench,core-p4-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench,t-p4-resume-bench`.
+  `t-p1-bench,core-p1-bench,core-p2-bench,core-p4-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench,t-p4-resume-bench,t-p4-hex-bench`.
   A listed suite that doesn't exist fails the run.
 - Runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
   `/tmp/cardtable-tests.lock`): concurrent runs on a small machine starve each
@@ -2267,6 +2267,86 @@ answer a press of the dialog's own buttons; nothing they test goes through
   on a crowd's ×3 opens it, a row's tap selects. Sideways: a long press,
   Take 1, and ⬚ with a one-finger band — the inspector and the group bar
   on the screen.
+
+### The 4B Hexfront suites written from the spec (independent of the implementation)
+
+- **`p4h-lib.js`** (helpers, not a suite): `player` (a player with p1-lib's
+  RTC hook, p3-lib's `actTap`, p4-lib's `watchers`, and two init scripts
+  of its own: `wireLog`, every whole `state` and `boxes` message the page
+  receives with its bytes on the wire — Trystero's framing included, as
+  the B1' counter counts them — its kind, the item ids it carries and its
+  body's JSON length, in `window.__wire`; `modalLog`, every dialog shown
+  modally, in `window.__modals`); `hexOf(p)`, what a page sees of Hexfront
+  read from its own view and catalog (a unit is a piece whose type's
+  `meta` names a side; the one board with a hex grid; the dice; the Events
+  pile and the type its back draws; the seats; the hand; the types); hex
+  geometry by brute force on p3-lib's `spotXY` (`hexAt`, `hexNear`,
+  `ahead`: a free hex one row forward, `forward`, `frontOf`); gestures
+  (`focus`: 🧭, then the wheel or two spreading fingers at a table point;
+  `dragFrom`, with Shift; `longPress`; `moveStack`: a Shift+drag, or a tap,
+  ✥ Move all and a drag; `putAway`; `feltAt`); `refusal(p, at)` (the first
+  "🚫" notice since); `linesBy` / `logged` (log lines by their timestamp:
+  the log keeps a bounded number of lines, so its length stops growing);
+  `layoutOf(items)` (a public layout, ids and the box id left out).
+- **`t-p4-hexplay.js`** (§4l t-p4-hexfront items 1–6; Alice hosts on a
+  desktop, Bob plays on an iPhone 13 upright; each plays a whole turn on
+  their own screen). 1: Hexfront from 📦's Built-in section — one confirm
+  (the table had items), no `#box-ask` at all (built in by content: no
+  trust dialog), its rules on, the stored box `isBuiltin` (core's), 📦
+  listing it "built in" with its 📜 on both screens, Bob's copy without
+  setup, rules or rulesState. 2: on both screens one hex map, 40 stacks of
+  ×10 (400 counters), 20 a side, each owned by its side's seat, each
+  centred on a hex of its own with its address; dice; the Events pile face
+  down with 24 cards (D222); the two players in the two seats; ×10 drawn
+  on every stack. Then `turn(A, O)` for each side: 3 — the turn cue and
+  the phase button on the active screen alone; O's stack dragged forward
+  out of turn: sent, refused, back whole; A's drag on O's stack sends
+  nothing, a forged move of it (`__ct.act`) is refused by the host; A moves
+  a whole stack a hex forward (Shift+drag; ✥ on the phone), on both
+  screens. 4 — the inspector (a click on ×10; a long press), Take 3: ×7
+  and a ×3 of its kind on a hex of its own, the inspector redrawn ×7, Esc
+  or a tap outside closes it; O's Take out of turn refused; the ×3 joined
+  back (Shift+drag onto the ×7; a tap on ×3, ✥ Take all and a drag). 6 —
+  an event drawn (a double click; a tap and Draw): one card in the hand,
+  its face in the hand bar, the pile one fewer and the drawer's count on
+  the other screen, no event card's identity in any body the guest
+  receives outside their own hand; a second draw and O's draw refused. 5 —
+  a roll refused before combat; ⚔ To combat (the button moves on, the
+  badge changes on the other screen, a move is now refused); both dice
+  picked (Shift+clicks; ⬚ and taps) and rolled as a group (Space; 🎲 Roll):
+  one line "rolled 2 dice: a · b", the values the faces shown; O's roll
+  refused; ⏭ End turn hands the turn and the button over. Turn 2 returns
+  to the first side; both screens agree. Screenshots
+  `shots/p4-hexplay-*.png`.
+- **`t-p4-hexbox.js`** (Hexfront deterministic, and resumed elsewhere):
+  templates.js imported twice (two module instances, two runs of the
+  generator) gives one box; two Node set-ups store one box (`isBuiltin`)
+  and lay out one table, ids aside; the browser's set-up from 📦 stores
+  that very box and draws that layout; set up again from 📦: one catalog
+  entry, the same layout. A mid-game position (made with `__ct.act`: a
+  move, a split, a draw each, ⚔ and ⏭) exported from 📦 (`Hexfront.json`:
+  no images; the rules and the game state ticked by default) and uploaded
+  in a fresh room (Carol on a desktop, Dave on an iPhone 13 sideways) with
+  Set up now: the setup confirm, the trust dialog (the export is no
+  built-in box), Enable rules; then every item by its id as it was, each
+  seat's hand, the script's state, the side to play and its phase; Dave
+  moves a stack on his phone, Carol's move out of turn is refused.
+- **`t-p4-hex-bench.js`** (item 7, serial). B18: in Node the snapshot body
+  (and with its PublicBox) ≤ 120 KB; in the browser the snapshot a guest
+  receives on the wire ≤ 120 KB (with the boxes message too), a desktop
+  guest's cold render ≤ 600 ms and an iPhone 13's at 2× CPU throttle ≤ 2 s
+  (`lastSnapRenderMs`, the worst of three). B19 on Hexfront itself:
+  Azure's 200 counters split into 200 singles, one a hex, moved a hex at a
+  time by Azure's player — in Node, host apply p95 ≤ 15 ms with the rules
+  off (`T.apply`) and with Hexfront's turn script on (a mirror runs the job
+  as the Worker does; the host's `applyStatePatch`), and every guest's
+  sealed patch ≤ 30 KB, measured as B1 measures a body
+  (`JSON.stringify(sealText(…))`); in the browser Alice bands the 200
+  (Shift+drag) and drags them a hex: one line "moved 200 items", the
+  patch each guest receives on the wire ≤ 30 KB; then, the rules off in
+  📜, `perf.lastJobMs` of five more drags (median ≤ 15 ms).
+- No existing suite changed; `run-all.sh`'s serial batch adds
+  `t-p4-hex-bench`.
 
 ## Storage and images (Phase 1B)
 
