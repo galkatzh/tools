@@ -2055,10 +2055,36 @@ answer a press of the dialog's own buttons; nothing they test goes through
   refused it (D211). Screenshot: `shots/p4-boxes-trust-narrow.png`.
 - **`t-p4-cli.js`**: `setup` of a box with rules and no layout, without
   `--rules`, is refused in the terminal, nothing cleared (D213).
-- WebKit (not in the harness): the reviewers' `rects.js` and `dblwk.js`
-  probes, run with `PW_BROWSER=webkit`, find Cancel at the confirm's Set up
-  on the desktop, the iPhone 13 upright (where WebKit wraps the buttons)
-  and sideways, and a burst of 8 taps there ends on Cancel.
+- WebKit is not in the harness: section 14's slot check was repeated there
+  by hand, outside it (Playwright's WebKit, one-off scripts not kept),
+  finding Cancel at the confirm's Set up on the desktop, the iPhone 13
+  upright (where WebKit wraps the buttons) and sideways, and a burst of 8
+  taps there ending on Cancel. No suite asserts it in WebKit.
+
+### The 4A fix-up 3's regressions
+
+- **`core-p4.test.mjs` (H)**: a box with rules and no layout ("Laid by its
+  rules"), through the mirror: a `setup` without its rules is refused
+  ("has no layout — its rules lay the table out: set it up with them"),
+  nothing cleared or marked set up; with them it lays out its gem, and a
+  Reset while they run lays it out again; with its rules switched off — or
+  other rules running — a `reset` is refused ("is laid out by its rules,
+  which aren't running: Set up starts them again"), the gem kept, nothing
+  logged; a box with neither layout nor rules is refused ("has nothing to
+  set up"), the table kept (D215). After a Disable (which keeps
+  `rules.box`) and a clear, an export of a deck-only table is just the
+  deck — not named after the box, none of its types or `players` — and a
+  box set up whose rules are off and whose pieces were deleted no longer
+  names the export (D216).
+- **`t-p4-boxes.js` section 14**: "Laid by its rules" with its rules
+  running offers ↺ Reset and Set up; switched off (`setRules {enabled:
+  false}`), only Set up, and a `reset` sent anyway comes back refused with
+  that message, the gem kept (D215). Screenshot:
+  `shots/p4-boxes-rulesoff-desk.png` and `p4-boxes-rulesoff-phone.png`
+  (390 × 664).
+- **`t-p4-cli.js`**: `setup Laid by its rules --rules` (Enable on the
+  page), its rules switched off, then `reset`: refused in the terminal
+  with the same message, still the box set up (D215).
 
 ## Storage and images (Phase 1B)
 

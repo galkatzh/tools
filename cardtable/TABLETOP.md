@@ -790,8 +790,10 @@ sync and rendering, and the Worker together with `handle`.
          half a second after it shows, and Cancel stands where the
          confirm's Set up was at any screen size (the questions stand on
          their bottom edge).
-       - A box its rules lay out is set up by its rules alone; only the
-         rules' own refusal of an upload is blamed on them.
+       - A box its rules lay out is set up — and reset — by its rules
+         alone, never cleared for nothing while they are off; only the
+         rules' own refusal of an upload is blamed on them, and only rules
+         that run name an export.
 5. **Private material.**
    - `vis` (owner-visible pieces, dice under a cup), private areas beyond the
      hand (a tile rack, a screen), and peeking at any hidden piece.
@@ -886,3 +888,7 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
 - **A question's last button holds its place:** the 📦 questions stand on
   their bottom edge, so the confirm's *Set up* and the trust dialog's
   *Cancel* share one spot on every screen, wrapped buttons or not (§4).
+- **Set up and Reset always lay something out:** a box its rules lay out is
+  set up or reset only with those rules starting; with them off, 📦 offers
+  no Reset and the engine refuses one, so the table is never cleared for
+  nothing (§4).

@@ -3553,7 +3553,9 @@ export function createTable(host, env = {}) {
    *  the rules running are this box's — the `enable` effect asks the app to
    *  queue, right after this job commits, the setRules that starts the box's
    *  rules on its exported state, with the ids that had to change (remap).
-   *  True when it did; false, refused, when it didn't. */
+   *  A box without a layout is set up — or reset — only with its rules
+   *  starting: they lay it out. True when it did; false, refused, when it
+   *  didn't. */
   function setupBox(p, a) {
     const reset = a.t === 'reset', id = reset ? host.lastSetup : a.box, box = typeof id === 'string' ? own(host.boxes, id) : null;
     if (reset && !box) return no(p, host.lastSetup ? '🚫 The box last set up is gone' : '🚫 Nothing to reset: no game box was set up');
@@ -3561,6 +3563,10 @@ export function createTable(host, env = {}) {
     if (!box) return no(p, '🚫 No such game box on this table');
     const rules = reset ? !!host.rules?.enabled && host.rules.box === id : a.rules === true;
     if (rules && !box.rules) return no(p, `🚫 «${box.name}» has no rules`);
+    // A box without a layout is laid out by its rules alone (t.layout): without them starting, it would clear the table for nothing (D213, D215)
+    if (!box.setup?.length && !rules) {
+      return no(p, `🚫 «${box.name}» ${!box.rules ? 'has nothing to set up (no layout, no rules)' : reset ? "is laid out by its rules, which aren't running: Set up starts them again" : 'has no layout — its rules lay the table out: set it up with them'}`);
+    }
     const shuffle = !reset && typeof a.shuffle === 'boolean' ? a.shuffle : host.boxSrc[id]?.src === 'upload'; // (D83: a guest's box knows its layout)
     return atomic(p, `Couldn't set up «${box.name}»`, () => {
       if (reset || a.clear !== false) clearTable(p);
@@ -3618,12 +3624,14 @@ export function createTable(host, env = {}) {
     // The game's box comes first (its name, id and players are the file's): the
     // box set up — or, after a clear, the box whose rules run (D212) — while the
     // position is its: a piece or a card of its decks lies here, or its rules run
+    // (run: enabled — a Disable keeps rules.box, D216)
+    const running = host.rules?.enabled && host.rules.box;
     const its = (b) => {
       const box = own(host.boxes, b), ds = Object.values(box?.decks || {}), cardOf = (m) => ds.includes(m.d);
-      return !!box && (used.includes(b) || host.rules?.box === b || items.some(([, it]) => [it, ...(it.cards || [])].some(cardOf))
+      return !!box && (used.includes(b) || running === b || items.some(([, it]) => [it, ...(it.cards || [])].some(cardOf))
         || ranked.some((q) => host.players[q].hand.some(cardOf)));
     };
-    const lead = [host.lastSetup, host.rules?.box].find(its);
+    const lead = [host.lastSetup, running].find(its);
     if (lead) used.splice(0, used.length, lead, ...used.filter((b) => b !== lead));
     /** An id like `id` that `taken` doesn't hold, within `max` characters. */
     const uniq = (id, taken, max, sep = '-') => { let x = id; for (let n = 2; taken(x); n++) x = `${id.slice(0, max - String(n).length - sep.length)}${sep}${n}`; return x; };

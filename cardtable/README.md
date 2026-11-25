@@ -497,7 +497,9 @@ now" ticked, the host's own upload is set up at once (a box of pieces alone,
 with nothing to lay out, is only added). *Reset* (offered on the box set up
 last, also after a reload, until the table is cleared — 🎲's games clear it)
 lays it out again on a cleared table and, when its rules were running,
-restarts them; other rules are switched off. Guests may upload too, within
+restarts them; other rules are switched off. A box its rules lay out has
+no Reset while they are off (it would clear the table for nothing): *Set
+up* starts them again. Guests may upload too, within
 the 1.5 M-character budget they share with their decks; their box is only
 registered — setting it up is the host's call. A strict game's rules (chess,
 go, reversi) take no new boxes while they run: the dialog says so, and the
@@ -714,7 +716,7 @@ Game pieces have their own commands (both REPLs; `help` lists them):
 | `select <id>` | selects a piece, as a tap does: rules that want it answer with a hint. A select the host would drop (rules that take none, a piece hidden from you) is said as an error |
 | `boxes` | lists the game boxes on this table: `[cd34ef56] Beacon Watch — 2 piece types · 📜 rules · a guest's upload · set up` (📜: it brings rules; "set up": the box set up last) |
 | `setup <box> [--keep] [--rules]` | the host's: sets a box up, named by its id or its name; `--keep` keeps the table's items, `--rules` runs its rules — which, unless the box is built in, still wait for the host's click in the trust dialog on the page |
-| `reset` | the host's: lays the box set up last out again (its rules restarted when they run) |
+| `reset` | the host's: lays the box set up last out again (its rules restarted when they run; a box its rules lay out, with them off, is refused — `setup <box> --rules` starts them again) |
 
 New questions, a new hint (`💡 hint: e3, e4`) and a new `t.secret`
 (`🔒 for you: …`) print as they arrive, the same text in both REPLs (the

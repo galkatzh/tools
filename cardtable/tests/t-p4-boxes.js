@@ -41,8 +41,9 @@
 //     Help's examples set up as written.
 //  14 the trust dialog's Cancel where the confirm's Set up was, at four
 //     sizes (its buttons wrapped at 320 px); a box its rules lay out (no
-//     rules checkbox, no "Set up without rules"); a storage failure with
-//     rules running is not blamed on them.
+//     rules checkbox, no "Set up without rules"; its rules switched off, no
+//     Reset, and one sent anyway refused); a storage failure with rules
+//     running is not blamed on them.
 //  8  resume elsewhere: chess and Hold'em exported mid-game (rules and
 //     state) and imported into a fresh room with two new players (its host
 //     on a phone): set up through the trust dialog, play goes on.
@@ -685,6 +686,21 @@ const harborAs = (name, more = {}) => [file('game.json', J({ ...HARBOR_JSON, nam
     await alice.evaluate(() => { IDBObjectStore.prototype.put = window.__put; });
     ok(full.err === "Couldn't add the game: Couldn't store the box's images: storage is full" && !(await named('Quota Test')).length,
       `the disk full, «Laid by its rules» running: "${full.err}" — not "the rules running … refused the box"`);
+    // Its rules switched off (📜): Reset would clear the table for nothing — 📦 offers only Set up, and the engine refuses one sent anyway (D215)
+    ok(J((await row(alice, lid))?.btns) === J(['↺ Reset', 'Set up']), `its rules running: ↺ Reset and Set up (${J((await row(alice, lid))?.btns)})`);
+    await alice.evaluate(() => window.__ct.act({ t: 'setRules', enabled: false }));
+    await settle();
+    ok(J((await row(alice, lid))?.btns) === J(['Set up']), `its rules off: only Set up — Set up starts them again (${J((await row(alice, lid))?.btns)})`);
+    const sent = await alice.evaluate(() => window.__ct.act({ t: 'reset' }));
+    await settle();
+    st = await S();
+    ok(!sent.ok && /^🚫 «Laid by its rules» is laid out by its rules, which aren't running: Set up starts them again$/.test(sent.error) && Object.keys(st.items).length === 1 && st.lastSetup === lid,
+      `a reset sent anyway: refused ("${sent.error}"), the gem stays, still the box set up`);
+    await shot(alice, 'p4-boxes-rulesoff-desk');
+    await alice.setViewportSize({ width: 390, height: 664 }); // (an iPhone 13's viewport, upright)
+    await alice.locator(`.box-row[data-box="${lid}"]`).scrollIntoViewIfNeeded();
+    await shot(alice, 'p4-boxes-rulesoff-phone');
+    await alice.setViewportSize({ width: 1280, height: 800 });
     await closeBoxes(alice);
   }
   for (const p of [alice, bob, carol, M]) await p.context().close();

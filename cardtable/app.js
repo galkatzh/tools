@@ -4055,9 +4055,9 @@ const boxBy = (e) => (e.builtin ? 'built in' : e.src === 'script' ? 'made by �
 /** Redraws the 📦 dialog's lists while it is open (renderAll, takeBoxes): a guest's is read-only. */
 function renderBoxes() {
   if (!$('box-dialog').open) return;
-  const host = role === 'host', last = host && T.state.lastSetup;
+  const host = role === 'host', last = host && T.state.lastSetup, again = host && !noReset();
   const row = (e) => `<div class="box-row" data-box="${esc(e.id)}"><div class="box-info"><b>${esc(e.name)}</b>${e.rules ? ' <span title="comes with rules">📜</span>' : ''}${e.id === last ? ' <i>set up</i>' : ''}
-    <small>${esc(boxSize(e))} · ${esc(boxBy(e))}</small></div>${host ? `<span class="box-btns">${e.id === last ? '<button data-act="reset">↺ Reset</button>' : ''}${e.setup ? '<button data-act="setup">Set up</button>' : ''}</span>` : ''}</div>`;
+    <small>${esc(boxSize(e))} · ${esc(boxBy(e))}</small></div>${host ? `<span class="box-btns">${e.id === last && again ? '<button data-act="reset">↺ Reset</button>' : ''}${e.setup ? '<button data-act="setup">Set up</button>' : ''}</span>` : ''}</div>`;
   const html = boxEntries().map(row).join('') || '<p class="box-note">No game box on this table yet.</p>';
   if ($('box-list').innerHTML !== html) $('box-list').innerHTML = html; // (unchanged: the focus stays)
   for (const id of ['box-builtin', 'box-export', 'box-now-lbl']) $(id).classList.toggle('hidden', !host);
@@ -4173,6 +4173,14 @@ async function setUpBox(id, o) {
   }
   if (stops) act({ t: 'setRules', enabled: false });
   return act({ t: 'setup', box: id, clear, rules, ...(shuffle !== undefined && { shuffle }) });
+}
+/** Why the box last set up can't be reset now, or '': without a layout it is
+ *  laid out by its own rules alone, and they aren't running — a Reset would
+ *  clear the table for nothing (core refuses it too: D215). 📦 offers no
+ *  Reset then, and the terminal says this; Set up starts the rules again. */
+function noReset() {
+  const last = T.state.lastSetup, box = T.state.boxes[last], r = T.state.rules;
+  return box && !box.setup?.length && !(r?.enabled && r.box === last) ? `«${box.name}» is laid out by its rules, which aren't running: Set up starts them again` : '';
 }
 /** Host: Reset (spec §4g) — the box last set up laid out again on a cleared
  *  table, its rules restarted when they are running, any other rules
@@ -4643,11 +4651,14 @@ function cliExec(c) {
           (err) => { console.error('bridge setup failed', err); cliMsgs.push(`error: ${err.message}`); });
         break;
       }
-      case 'reset':
+      case 'reset': {
         if (role !== 'host') throw new Error('reset: only the host resets a game');
         if (!T.state.boxes[T.state.lastSetup]) throw new Error('reset: no game box was set up on this table');
+        const why = noReset(); // (said before anything is sent: no other rules switched off for a refused reset)
+        if (why) throw new Error(`reset: ${why}`);
         oneSetup(() => resetBox(true)).catch((err) => { console.error('bridge reset failed', err); cliMsgs.push(`error: ${err.message}`); }); // (other rules than the box's own are switched off, as on the page)
         break;
+      }
       case 'asks': for (const line of view.ask.length ? view.ask.map(cliAsk) : ['❓ no questions wait for you']) cliMsgs.push(line); break;
       case 'place': { // onto a board's spot (spec §3i): an item moves there, centred; a supply (id or type name) hands one out there
         const B = boardsNow(), r = resolveAddr(B, String(c.at ?? ''));

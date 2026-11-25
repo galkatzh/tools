@@ -1762,6 +1762,56 @@ function testFixup2() {
   }
 }
 
+/** The third fix-up's regressions (H). */
+function testFixup3() {
+  section("(H) a box without a layout is set up or reset only with its rules starting — never a table cleared for nothing (D215)");
+  {
+    const LAY = { name: 'Laid by its rules', pieces: [{ id: 'gem', kind: 'token', w: 50, faces: [{ label: 'G' }] }],
+      rules: "({ name: 'Laid by its rules', setup(t) { if (!t.data.laid) { t.data.laid = true; t.layout(t.boxes().find((b) => b.name === 'Laid by its rules').id, [{ piece: 'gem', at: [600, 500] }]); } } })" };
+    const R = room(HOST, 'Alice', [[BOB, 'Bob']], 'e'), H = R.H, lb = R.add(HOST, LAY).id, n = () => Object.keys(H.state.items).length;
+    const no = R.job(HOST, { t: 'setup', box: lb });
+    ok(J(no.notes) === J(['🚫 «Laid by its rules» has no layout — its rules lay the table out: set it up with them']) && !no.lines.length && H.state.lastSetup === undefined,
+      `Set up without its rules (the API, past the page's checks): refused, nothing cleared or marked set up (${J(no.notes)})`);
+    R.job(HOST, { t: 'setup', box: lb, rules: true });
+    ok(n() === 1 && H.state.rules.enabled && H.state.rules.box === lb && H.state.lastSetup === lb, `with its rules: they lay out one gem (${n()} items)`);
+    const again = R.job(HOST, { t: 'reset' });
+    ok(n() === 1 && H.state.rules.enabled && again.lines.includes('reset «Laid by its rules»') && R.same(), `Reset while they run: cleared, the rules started afresh lay it out again (${n()} items, ${J(again.lines)})`);
+    R.job(HOST, { t: 'setRules', enabled: false });
+    const off = R.job(HOST, { t: 'reset' });
+    ok(J(off.notes) === J(["🚫 «Laid by its rules» is laid out by its rules, which aren't running: Set up starts them again"]) && !off.lines.length && n() === 1 && H.state.lastSetup === lb,
+      `its rules switched off in 📜, then Reset: refused — the gem stays, nothing logged, still the box set up (${J(off.notes)}; before: the table cleared, "reset «…»", nothing laid out)`);
+    R.job(HOST, { t: 'setRules', enabled: true, reset: true, code: '({ name: "Other" })' });
+    const other = R.job(HOST, { t: 'reset' });
+    ok(/^🚫 «Laid by its rules» is laid out by its rules, which aren't running/.test(other.notes[0] || '') && n() === 1 && H.state.rules.name === 'Other',
+      `other rules running: Reset refused the same way, in the Worker too (${other.notes[0]})`);
+    const T = hostTable({ seed: 81 }), bare = act(T, HOST, { t: 'addBox', box: { name: 'Bare', pieces: [{ id: 'x', kind: 'token', faces: ['X'] }] } }).id;
+    act(T, HOST, { t: 'setup', box: act(T, HOST, { t: 'addBox', box: skiff() }).id });
+    const k = Object.keys(T.state.items).length, b = act(T, HOST, { t: 'setup', box: bare });
+    ok(J(b.notes) === J(['🚫 «Bare» has nothing to set up (no layout, no rules)']) && Object.keys(T.state.items).length === k && k > 0, `a box with neither: refused, Skiff's ${k} items stay (${J(b.notes)})`);
+  }
+
+  section('(H) only rules that run lead the export: a Disable keeps rules.box, a later export is not that box (D216)');
+  {
+    const R = room(HOST, 'Alice', [[BOB, 'Bob']], 'f'), H = R.H, tb = R.add(HOST, tide({ rules: TIDE_RULES })).id;
+    R.job(HOST, { t: 'setup', box: tb, rules: true });
+    R.job(HOST, { t: 'setRules', enabled: false });
+    R.job(HOST, { t: 'clear' });
+    R.job(HOST, { t: 'addDeck', deck: { name: 'Plain', cards: [{ n: 'A' }, { n: 'B' }] } });
+    const x = quietly(() => H.exportBox({})).value.box;
+    ok(H.state.rules.box === tb && !H.state.rules.enabled && x.name !== 'Tidewater' && x.id !== tb && !x.players && !x.pieces.length && J(x.decks?.map((d) => d.name)) === J(['Plain']),
+      `Tidewater's rules off, the table cleared, a plain deck added: the export is just the deck (${J({ name: x.name, id: x.id, players: x.players, types: x.pieces.length, decks: x.decks?.map((d) => d.name) })})`);
+    // the box set up, its rules off, its pieces all gone without a clear: no longer its position either
+    const one = R.add(HOST, tide({ name: 'Tide One', id: 'feed0009', decks: [], rules: TIDE_RULES, setup: [{ piece: 'buoy', at: [400, 400], id: 'feed9001' }] })).id;
+    R.job(HOST, { t: 'setup', box: one, rules: true });
+    R.job(HOST, { t: 'setRules', enabled: false });
+    R.job(HOST, { t: 'del', id: 'feed9001' });
+    R.job(HOST, { t: 'addDeck', deck: { name: 'Plain', cards: [{ n: 'A' }, { n: 'B' }] } });
+    const y = quietly(() => H.exportBox({})).value.box;
+    ok(H.state.lastSetup === one && !Object.keys(H.state.items).some((id) => id === 'feed9001') && y.name !== 'Tide One' && !y.pieces.length,
+      `still the box set up, but its one buoy deleted and its rules off: the export isn't named after it (${y.name}, ${y.pieces.length} types)`);
+  }
+}
+
 (async () => {
   await guard('(1) format', testFormat);
   await guard('(2) setup', testSetup);
@@ -1782,5 +1832,6 @@ function testFixup2() {
   await guard("(W′) Worker contract", indepWorker);
   await guard('(F) fix-up regressions', testFixup);
   await guard('(G) fix-up 2 regressions', testFixup2);
+  await guard('(H) fix-up 3 regressions', testFixup3);
   report();
 })().catch(crash);

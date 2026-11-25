@@ -148,6 +148,18 @@ const API = [
   const lone = await type(R.Alice, 'setup Laid by its rules', (ls) => ls.some((l) => /✉ error: setup: «Laid by its rules» has no layout/.test(l)), 5000);
   ok(lone.some((l) => l.includes('✉ error: setup: «Laid by its rules» has no layout — its rules lay the table out: add --rules')) && snap('Alice').lastSetup === id('Beacon Watch'),
     'a box with rules and no layout, set up without --rules: refused in the terminal, nothing cleared');
+  // Set up with --rules (Enable on the page), its rules then switched off: "reset" would clear the table for nothing — refused, saying so (D215)
+  R.Alice.c.stdin.write('setup Laid by its rules --rules\n');
+  await host.waitForSelector('#box-ask[open][data-kind="trust"]', { timeout: 10000 });
+  await host.waitForTimeout(600); // (ASK_ARM_MS: the buttons arm after half a second)
+  await host.click('#box-ask-btns button[value="enable"]');
+  const lid = await host.evaluate(() => Object.entries(window.__ct.hostState().boxes).find(([, b]) => b.name === 'Laid by its rules')[0]);
+  ok(await until(() => snap('Alice')?.lastSetup === lid && snap('Alice').rules === 'Laid by its rules', 20000, 200), '"setup Laid by its rules --rules", enabled on the page: set up, its rules running');
+  await host.evaluate(() => window.__ct.act({ t: 'setRules', enabled: false }));
+  ok(await until(() => snap('Alice')?.rules == null, 10000, 100), `its rules switched off (the snapshot's rules: ${snap('Alice')?.rules})`);
+  const stuck = await type(R.Alice, 'reset', (ls) => ls.some((l) => /✉ error: reset: /.test(l)), 5000);
+  ok(stuck.some((l) => l.includes("✉ error: reset: «Laid by its rules» is laid out by its rules, which aren't running: Set up starts them again")) && snap('Alice').lastSetup === lid,
+    `"reset" with its rules off: refused in the terminal, still the box set up (${stuck.filter((l) => /error/.test(l)).join(' | ')})`);
   killAll();
   await env.done();
 })().catch((e) => { killAll(); h.crash(e); });
