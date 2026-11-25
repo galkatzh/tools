@@ -1,0 +1,132 @@
+{
+  "name": "Harbor Run",
+  "players": [
+    2,
+    4
+  ],
+  "table": {
+    "shape": "rect",
+    "w": 1600,
+    "h": 1100,
+    "felt": "#1d4e5f"
+  },
+  "backs": [
+    {
+      "id": "hold",
+      "color": "#5b3a1e",
+      "label": "?"
+    }
+  ],
+  "pieces": [
+    {
+      "id": "harbor",
+      "name": "Harbor",
+      "kind": "board",
+      "img": "board.png",
+      "w": 600,
+      "h": 400,
+      "grid": {
+        "type": "square",
+        "cols": 6,
+        "rows": 4,
+        "cell": 100,
+        "labels": "chess",
+        "draw": "none"
+      }
+    },
+    {
+      "id": "boat",
+      "name": "Boat",
+      "kind": "token",
+      "shape": "round",
+      "w": 70,
+      "faces": [
+        {
+          "img": "boat-red.png",
+          "name": "Red boat"
+        },
+        {
+          "img": "boat-blue.png",
+          "name": "Blue boat"
+        }
+      ]
+    },
+    {
+      "id": "crate",
+      "name": "Crate",
+      "kind": "token",
+      "shape": "rect",
+      "w": 44,
+      "img": "crate.png",
+      "back": "hold"
+    },
+    {
+      "id": "d6",
+      "kind": "die"
+    }
+  ],
+  "decks": [
+    {
+      "name": "Tides",
+      "back": "#0e3a4a",
+      "cards": [
+        {
+          "file": "tide-calm.png",
+          "name": "Calm",
+          "count": 3
+        },
+        {
+          "file": "tide-storm.png",
+          "name": "Storm",
+          "count": 2
+        },
+        {
+          "name": "Fog",
+          "text": "Nobody sails this turn"
+        }
+      ]
+    }
+  ],
+  "setup": [
+    {
+      "piece": "harbor",
+      "at": "center"
+    },
+    {
+      "forEachSeat": [
+        {
+          "piece": "boat",
+          "at": "seat",
+          "owner": "seat"
+        }
+      ]
+    },
+    {
+      "piece": "crate",
+      "at": "c2",
+      "up": false
+    },
+    {
+      "piece": "crate",
+      "at": "d3",
+      "up": false
+    },
+    {
+      "piece": "d6",
+      "at": [
+        1380,
+        140
+      ]
+    },
+    {
+      "deck": "Tides",
+      "at": [
+        1380,
+        760
+      ]
+    }
+  ],
+  "meta": {
+    "goal": "Bring three crates home"
+  }
+}

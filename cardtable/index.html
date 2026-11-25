@@ -17,9 +17,10 @@
       <option value="2400">Table: large</option>
     </select>
     <button id="add-deck-btn">+ Deck</button>
-    <button id="invite-btn">Copy invite</button>
+    <button id="invite-btn" title="Copy the invite link"><span class="lbl">Copy invite</span><span class="lbl-s">Invite</span></button>
     <button id="qr-btn" title="Show the invite link as a QR code">QR</button>
     <button id="games-btn" class="hidden" title="Pick a game to play">🎲 <span class="lbl">Games</span></button>
+    <button id="box-btn" title="Game boxes: set one up, upload one, export the table">📦 <span class="lbl">Boxes</span></button>
     <button id="rules-btn" title="Game rules script">📜</button>
     <button id="view-btn" title="Reset your view to your seat">🧭</button>
     <button id="log-btn" title="Table log & chat">💬</button>
@@ -96,6 +97,42 @@
     <form method="dialog"><menu><button>Close</button></menu></form>
   </dialog>
 
+  <!-- game boxes (app.js renderBoxes): the catalog, the built-in boxes, an upload, the export -->
+  <dialog id="box-dialog">
+    <div class="box-head"><h3>📦 Game boxes</h3><form method="dialog"><button title="Close" aria-label="Close">✕</button></form></div>
+    <div id="box-msg" class="box-err" role="alert"></div>
+    <section><h4>On this table</h4><div id="box-list" class="box-rows"></div></section>
+    <section id="box-builtin"><h4>Built in</h4><div id="box-builtins" class="box-rows"></div></section>
+    <section>
+      <h4>Upload a game</h4>
+      <p class="box-note">A <code>game.json</code> with its images (and <code>rules.js</code>), or one <code>.zip</code> of them — see Help.</p>
+      <div class="box-line">
+        <button id="box-up" type="button">⬆ Upload a game…</button>
+        <label id="box-now-lbl" class="radio"><input type="checkbox" id="box-now" checked> Set up now</label>
+      </div>
+      <input type="file" id="box-files" multiple accept=".json,.zip,image/*,.js" hidden>
+      <div id="box-progress" aria-live="polite"></div>
+      <div id="box-err" class="box-err" role="alert"></div>
+    </section>
+    <section id="box-export">
+      <h4>Export this table</h4>
+      <label class="radio"><input type="checkbox" id="box-x-rules" checked> Include the rules</label>
+      <label class="radio"><input type="checkbox" id="box-x-state" checked> Include the game state (scores, hidden script data)</label>
+      <div class="box-line"><button id="box-x-go" type="button">⬇ Export…</button></div>
+      <div id="box-x-msg" aria-live="polite"></div>
+    </section>
+    <form method="dialog"><menu><button>Close</button></menu></form>
+  </dialog>
+
+  <!-- what Set up, Reset and a box's rules ask the host first (app.js boxAsk): data-kind is setup, reset or trust -->
+  <dialog id="box-ask">
+    <form method="dialog">
+      <h3 id="box-ask-title"></h3>
+      <div id="box-ask-body"></div>
+      <menu id="box-ask-btns"></menu>
+    </form>
+  </dialog>
+
   <dialog id="qr-dialog">
     <h3>Scan to join this table</h3>
     <canvas id="qr-canvas"></canvas>
@@ -126,6 +163,7 @@
           <input type="file" id="deck-files" multiple accept="image/*,.json"></label>
         <label>Card back (optional) <input type="file" id="deck-back" accept="image/*"></label>
       </div>
+      <p class="box-note">A whole game (board, pieces, decks)? Use <button id="deck-to-box" type="button" title="Game boxes">📦</button></p>
       <menu>
         <button value="cancel" formnovalidate>Cancel</button>
         <button id="deck-add" value="add">Add deck</button>
@@ -165,6 +203,7 @@
     { "name": "Gold", "text": "Worth 1 coin", "color": "#eab308", "count": 20 }
   ] }</pre>
         Cards without a <code>file</code> render as text cards (no art needed). <code>meta</code> is free-form data that 📜 Rules scripts can read via <code>t.card(ref)</code>. Extra images not listed in the manifest still join, filename-named.</li>
+      <li><b>📦 Game boxes</b>: a whole game in one upload — a <code>game.json</code> (its board, pieces, decks, setup and rules) picked with its images, or one <code>.zip</code> of them (the format is in the README). Anyone may upload one; the host <b>sets it up</b> (that clears the table), <b>resets</b> it to its start, and <b>exports</b> the table as a box — the position, and with them the rules and their state — to keep it or go on in another room. A box's rules run only once the host agrees: a rules script sees every hand and hidden piece.</li>
       <li><b>Copy invite</b> and send the link to friends — or tap <b>QR</b> so they can scan it with a phone. Everyone sees the table live over WebRTC (no server).</li>
       <li>The game lives in the host's browser tab — if the host closes it, reopening the same link on the host's browser resumes the game.</li>
     </ul>

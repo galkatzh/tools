@@ -34,7 +34,12 @@ select {
 #logo { font-weight: 700; white-space: nowrap; color: #fde68a; letter-spacing: 0.2px; }
 #games-btn { background: #0f766e; }
 #games-btn:hover { background: #0d9488; }
-@media (max-width: 820px) { #games-btn .lbl { display: none; } }
+.lbl-s { display: none; }
+@media (max-width: 820px) { /* a phone's toolbar: short labels, so a guest's fits two lines held upright and a host's one held sideways */
+  #toolbar { column-gap: 6px; }
+  #games-btn .lbl, #box-btn .lbl, #invite-btn .lbl { display: none; }
+  #invite-btn .lbl-s { display: inline; }
+}
 .spacer { flex: 1; }
 #name-input { width: 110px; }
 #net-status { color: #f59e0b; font-size: 13px; white-space: nowrap; }
@@ -644,6 +649,49 @@ dialog ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 14px; }
 #rules-err { color: #f87171; font-size: 12.5px; min-height: 1.2em; white-space: pre-wrap; }
 #rules-status { font-size: 13px; color: #94a3b8; font-weight: 400; }
 #rules-enable { background: #7c3aed; }
+
+/* --- game boxes (📦): the catalog, the built-in boxes, an upload, the export; what Set up asks first --- */
+#box-dialog { width: min(560px, calc(100vw - 24px)); padding-bottom: 0; }
+#box-dialog section { border-top: 1px solid #334155; padding: 10px 0 12px; }
+#box-dialog h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8; }
+#box-dialog > form { position: sticky; bottom: 0; background: #1e293b; padding: 4px 0 14px; box-shadow: 0 -8px 8px -6px #0008; } /* Close stays in reach of a thumb */
+.box-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.box-head form { display: none; }
+.box-head button { background: none; font-size: 18px; padding: 4px 10px; }
+.box-rows { display: flex; flex-direction: column; gap: 6px; }
+.box-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: #273449; border-radius: 8px; }
+.box-info { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.box-info b { font-size: 15px; }
+.box-info i { color: #2dd4bf; font-size: 12px; }
+.box-info small { display: block; color: #94a3b8; font-size: 12.5px; margin-top: 2px; }
+.box-btns { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: none; max-width: 50%; }
+.box-btns [data-act="setup"], .box-btns [data-builtin], #box-up { background: #0f766e; }
+.box-btns [data-act="setup"]:hover, .box-btns [data-builtin]:hover, #box-up:hover { background: #0d9488; }
+.box-note { font-size: 13px; color: #94a3b8; margin: 0 0 8px; line-height: 1.4; }
+.box-line { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; }
+#box-progress, #box-x-msg { font-size: 13px; color: #cbd5e1; margin-top: 6px; overflow-wrap: anywhere; }
+#box-progress:empty, #box-x-msg:empty { display: none; }
+#box-x-msg.box-err { color: #fca5a5; }
+.box-err { color: #fca5a5; background: #7f1d1d66; border-radius: 8px; padding: 6px 10px; margin-top: 6px; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+#box-dialog .box-err:empty { display: none; }
+#box-msg { margin: 0 0 10px; }
+#deck-to-box { padding: 2px 8px; }
+#box-ask { width: min(440px, calc(100vw - 24px)); }
+#box-ask p { margin: 0 0 4px; font-size: 14px; line-height: 1.45; }
+#box-ask menu { flex-wrap: wrap; }
+#box-ask .main { background: #059669; }
+#box-ask[data-kind="trust"] .main { background: #7c3aed; }
+@media (pointer: coarse) { #box-dialog button, #box-ask button { min-height: 44px; } }
+#box-dialog .box-err, #box-progress, #box-x-msg { scroll-margin: 12px 0 80px; } /* (scrolled into view above the sticky Close) */
+@media (max-height: 500px) { /* a phone held sideways: every line for the lists; the ✕ stays at the top, by a thumb */
+  #box-dialog { padding: 0 14px 10px; }
+  .box-head { position: sticky; top: 0; z-index: 1; background: #1e293b; padding: 6px 0; }
+  .box-head h3 { margin: 0; font-size: 17px; }
+  .box-head form { display: block; }
+  #box-dialog > form { display: none; }
+  #box-dialog section { padding: 6px 0 8px; }
+  #box-dialog .box-err, #box-progress, #box-x-msg { scroll-margin: 56px 0 12px; }
+}
 
 /* --- QR invite --- */
 #qr-canvas { display: block; margin: 0 auto; border-radius: 8px; background: #fff; max-width: 100%; }

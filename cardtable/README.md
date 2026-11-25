@@ -377,10 +377,129 @@ same file picker as the images:
   can enforce `meta.cost` or `meta.type` instead of parsing card names.
 - `back` names an uploaded image to use as the card back (the separate back
   picker still works and wins if both are given).
+- `r` and `s` (a rank `A`…`K` or `JOKER`, a suit `♠ ♥ ♦ ♣ 🃏`, and `c`, `"r"`
+  or `"b"`, its colour) make a standard card; an exported game writes a
+  standard deck so.
 - Fail-loudly validation: bad JSON, a `file` that matches no uploaded image,
-  or an entry with neither `file` nor `name` abort the upload with a visible
-  error. Uploaded images the manifest doesn't mention still join the deck,
-  filename-named.
+  or an entry with no `file`, `name` or `text` abort the upload with a
+  visible error. Uploaded images the manifest doesn't mention still join the
+  deck, filename-named.
+- Every image is checked by its header first (a PNG, JPEG, WebP or GIF by its
+  real bytes — an SVG named `.png` is refused — at most 4,096 px a side),
+  then redrawn at most 560 px on its long side as WebP (JPEG or PNG where the
+  browser can't write WebP, as Safari may not) and stepped down to fit 2 MB.
+
+## Game boxes (📦)
+
+A **game box** is a whole game in one upload: its table, seats, boards,
+pieces, dice, decks, starting layout and, optionally, its rules. The **📦**
+button (next to 🎲) lists the boxes on this table — each with its size, who
+added it and 📜 when it brings rules — the built-in ones (Draughts,
+Backgammon), **Upload a game…**, and, for the host, **Export this table**.
+
+**The format** is a `game.json` (the one of [TABLETOP.md](TABLETOP.md) §4, a
+little extended), uploaded with its images and its `rules.js` — picked
+together, or as one **`.zip`** of them:
+
+```jsonc
+{
+  "name": "Harbor Run", "players": [2, 4],
+  "table": { "shape": "rect", "w": 1600, "h": 1100, "felt": "#1d4e5f" },
+  "seats": [ { "id": "red", "name": "Red", "edge": "bottom" } ],        // optional: named seats
+  "backs": [ { "id": "hold", "color": "#5b3a1e", "label": "?" } ],     // or "img": "back.png"
+  "pieces": [
+    { "id": "harbor", "kind": "board", "img": "board.png", "w": 600, "h": 400,
+      "grid": { "type": "square", "cols": 6, "rows": 4, "cell": 100, "labels": "chess" } },
+    { "id": "boat", "kind": "token", "w": 70, "faces": [ { "img": "boat-red.png" }, { "img": "boat-blue.png" } ] },
+    { "id": "crate", "kind": "token", "w": 44, "img": "crate.png", "back": "hold" },
+    { "id": "d6", "kind": "die" }
+  ],
+  "decks": [ { "name": "Tides", "back": "#0e3a4a", "cards": [ { "file": "calm.png", "name": "Calm", "count": 3 } ] } ],
+  "setup": [
+    { "piece": "harbor", "at": "center" },
+    { "forEachSeat": [ { "piece": "boat", "at": "seat", "owner": "seat" } ] },
+    { "piece": "crate", "at": "c2", "up": false },
+    { "deck": "Tides", "at": [1380, 760] },
+    { "hands": { "#1": [ { "deck": "Tides", "i": 5 } ] } }
+  ],
+  "rules": "rules.js",
+  "meta": { "goal": "Bring three crates home" }
+}
+```
+
+- **Pieces** are a list: a type's `id`, its `kind` (token, tile, die,
+  board), size, `faces` (each a colour, a label, text, pips or an `img`, a
+  file of the upload; `img` alone is the one-face shorthand) and its `back`
+  (the face a hidden piece shows). A board carries its `grid`, `spaces`,
+  `zones` and `links` (see *Pieces, dice and boards*). **Decks** are
+  `deck.json` manifests (above), each named. Every file a box names is
+  relative to `game.json`.
+- **The setup** lays the game out: a `piece`, `supply` or `bag`; a `deck`
+  (a face-down pile of the whole deck, `"shuffle": true` to shuffle it), a
+  `pile` of cards or pieces, a `card`; `forEachSeat` (each seated player's
+  material, `"at": "seat"`, `"owner": "seat"`); `hands` dealt by seat
+  (`"#1"` is the first seated player clockwise from the bottom, or a named
+  seat). `at` is `"center"`, `[x, y]` (a top-left corner), `"seat"`, an
+  address on one of the box's boards (`"c2"`, `"harbor:c2"`), or
+  `{ "board": "harbor", "at": "c2" }`; `owner` may be `"seat:<id>"` or
+  `"#k"`. A setup is checked whole before anything moves — a deck or seat it
+  names, the players it needs, the room on the table — and happens whole or
+  not at all.
+- **`meta`** (at most 8 KB) is for scripts (`t.box(id).meta`), and **public**:
+  every player can read it. So are a box's name, pieces and decks' names;
+  its setup, rules and saved rules state never leave the host.
+
+**Zips and their limits.** A zip is read in the browser (JSZip, fetched from
+the CDN the first time one is picked), within limits that hold whatever the
+zip claims: the file at most 64 MB, at most 2,100 files, at most 64 MB
+unzipped in all and 16 MB a file (600 KB for `rules.js`) — each file is
+unzipped as a stream that stops the moment it passes what its entry
+declared, so a zip bomb or a lying directory costs nothing. A path with `..`
+or a leading `/` refuses the zip; macOS's `__MACOSX/` copies are skipped.
+`game.json` sits at the zip's root or in its one folder. Every image is
+checked by its header before it is decoded (a 30,000 × 30,000 PNG is
+refused unread), then redrawn: at most 2,048 px for a board's images, 560 px
+for the others, as WebP (JPEG or PNG without WebP), stepped down in quality
+and then in size until it fits 2 MB — so nothing but a plain picture is
+ever stored. A box's images add up to at most 48 MB. Every failure is said
+in the dialog and a toast, naming the file or the field ("map.png: not a
+PNG, JPEG, WebP or GIF image", "game.json: pieces[0].img names "gone.png",
+which isn't in the upload").
+
+**Set up and Reset** are the host's. *Set up* asks first what there is to
+decide: that it clears the table, "Enable its rules" (ticked), and for a box
+a guest added "Shuffle face-down piles" (ticked) under "{Bob} added this box
+and knows its starting layout" — whoever uploads a box knows the order of
+its face-down piles and which hands go where, so the host's table shuffles
+them by default. With "Set up now" ticked, the host's own upload is set up
+at once. *Reset* (offered on the box set up last, also after a reload) lays
+it out again on a cleared table and, when its rules were running, restarts
+them. Guests may upload too, within the 1.5 M-character budget they share
+with their decks; their box is only registered — setting it up is the
+host's call. The same box uploaded twice is one box.
+
+**Trust.** A rules script sees every hand and hidden piece and can reveal
+them, so a box's rules never run without the host's click: before them, the
+**trust dialog** — "«X» comes with rules written by its author, added by
+Bob. … Enable the rules?" — offers *Enable rules*, *Set up without rules*
+or *Cancel*. Only a built-in box (by its content, never by anything a box
+can claim) skips it; the terminal's `setup <box> --rules` waits for the same
+click on the page.
+
+**Export and resuming elsewhere.** *Export this table* (the host's) writes the
+table as a box: its boards, pieces and decks, and a setup of the position
+as it stands — every item where it lies, with its id, face, owner (by seat,
+or `"#k"`), pile order and bag contents, and each seated player's hand —
+with, as ticked, the rules and their state (scores, hidden script data;
+each seated player written as `"@#k"`). It is a `.zip` with its images
+(`game.json`, `images/…`, `rules.js`), or a `.json` when there are none.
+Upload it in another room and set it up with its rules: the k-th seated
+player there takes the k-th place, ids are kept wherever they are free (a
+script that stored a pile's or its box's id finds it), and play goes on —
+a chess game mid-move, a Hold'em hand mid-bet. The file holds every hidden
+card and piece: keep it as you would the game box itself. Exporting and
+importing the same table again gives the same game: an image the browser
+already holds is kept byte for byte.
 
 ## Scriptable rules (📜)
 
@@ -563,6 +682,9 @@ Game pieces have their own commands (both REPLs; `help` lists them):
 | `asks` | lists the rules' questions waiting for you: `❓ promo: Promote to [0] ♕ [1] ♖ [2] ♗ [3] ♘`, and for a pick what to answer (an item, a spot, hand cards, a number) |
 | `answer <id> <value>` | answers one: an option's label (any case) or its number — a label first, so `answer bid 3` means the option labelled 3 where there is one —, an offered item's id, an offered spot (`g7`), hand indices (`0,3`), a number. The tab checks it first: what wasn't offered is said, and nothing is sent |
 | `select <id>` | selects a piece, as a tap does: rules that want it answer with a hint. A select the host would drop (rules that take none, a piece hidden from you) is said as an error |
+| `boxes` | lists the game boxes on this table: `[cd34ef56] Beacon Watch — 2 piece types · 📜 rules · a guest's upload · set up` (📜: it brings rules; "set up": the box set up last) |
+| `setup <box> [--keep] [--rules]` | the host's: sets a box up, named by its id or its name; `--keep` keeps the table's items, `--rules` runs its rules — which, unless the box is built in, still wait for the host's click in the trust dialog on the page |
+| `reset` | the host's: lays the box set up last out again (its rules restarted when they run) |
 
 New questions, a new hint (`💡 hint: e3, e4`) and a new `t.secret`
 (`🔒 for you: …`) print as they arrive, the same text in both REPLs (the
@@ -586,12 +708,16 @@ bridge as a small API — the same in both languages: `state`, `send`,
 `wait`, `on`, plus `chat`, `play`, `draw`, `btn`, `roll(*ids)`,
 `take(supply, x, y, hand)`, `place(ref, addr)`, `seat(id)` (`'-'`
 stands up, `'+'` sits down again), `answer(id, value)` (a value as the
-`answer` command takes it — a number is an option's index —, or a list of hand indices) and `select(id)`.
+`answer` command takes it — a number is an option's index —, or a list of hand indices), `select(id)`,
+`setup(box, keep, rules)` and `reset()`. A game box is uploaded from the
+page's 📦 only (its images are read and redrawn by the tab).
 The state also carries your own parts of the rules: `asks` (`[{id, prompt,
 options: [labels]} | {id, prompt, pick, among?, count?, min?, max?}]`),
 `hint` (`{items, spaces}` or null), `secret` (your whole `t.secret` entry,
 or null) and `strict` (whether the running rules are strict; `rules` stays
-the script's name). It also carries the table (`shape`, `w`, `h`), the
+the script's name); `boxes` (`[{id, name, types, rules, src, builtin}]`:
+`rules` whether it brings rules, `src` `host`, `upload` or `script`) and
+`lastSetup` (the box set up last: the host's to know, null on a guest). It also carries the table (`shape`, `w`, `h`), the
 named `seats` (each with its `player`, or null), `me` (your `seat` angle
 and `seatId`), and the pieces (`kind`, `type`, `typeRef`, `face`, `label`,
 `at` when on a board's spot, …; a hidden one only `kind: "hidden"`). `play()` names the card
@@ -734,4 +860,10 @@ desktop and two phones, every rule by real drags), `t-p3-go.js` (9 × 9 by
 hand and a 361-stone 19 × 19 fill; it runs in the serial batch for B13)
 and `t-p3-reversi.js`; `t-p3c-review.js` keeps the 3C review's fix-ups
 (the 📜 dialog's games, a fingertip's reach, the ask panel, the secret card
-on a phone held sideways).
+on a phone held sideways). Game boxes have `core-p4.test.mjs` (the engine:
+the setup grammar, addBox, setup, reset, export and import),
+`t-p4-wire.js`, `t-p4-boxes.js` (the 📦 dialog on a desktop and on phones:
+uploads, every hostile zip, the trust dialog, Reset, export and re-import,
+chess and Hold'em resumed in another room), `t-p4-cli.js` (`boxes`,
+`setup`, `reset` in both REPLs) and `t-p4-bench.js` (a 64-photo zip
+imported, and a box exported, against the clock).

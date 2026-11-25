@@ -204,6 +204,16 @@ class Bridge:
         else:
             self.send(t='seat', id=sid)
 
+    def setup(self, box, keep=False, rules=False):
+        """Host: sets game box `box` up (its id or name; see state['boxes']):
+        `keep` keeps the table's items, `rules` enables its rules — the host
+        still confirms a box's rules on the page unless the box is built in."""
+        self.send(t='setup', box=box, keep=keep, rules=rules)
+
+    def reset(self):
+        """Host: lays the box last set up (state['lastSetup']) out again."""
+        self.send(t='reset')
+
     def close(self):
         self._server.shutdown()
 
@@ -236,6 +246,9 @@ HELP = """commands:
   asks                    the rules' questions waiting for you (new ones print as they come)
   answer <id> <value>     answer one: an option's label or number, an item id, a spot, hand indices (0,3), a number
   select <id>             select a piece: the rules may hint where it can go
+  boxes                   the game boxes on this table (📜 has rules; "set up": the last one set up)
+  setup <box> [--keep] [--rules]  host: set a box up (id or name); --keep keeps the table, --rules runs its rules
+  reset                   host: set the last box up again
   chat <msg>              say something (also "!commands" for rules scripts)
   quit"""
 
@@ -288,6 +301,14 @@ def fmt_item(it):
     if kind == 'unknown':
         return f"{head}? unknown piece{at}{tail}"
     return f"{head}{fmt_piece(it)} ({kind}){n}{at}{tail}"
+
+
+def fmt_box(b, last):
+    """A game box as one line (spec §4i): its id, name, size, rules, where it comes from, and whether it was set up last."""
+    src = 'built in' if b.get('builtin') else {'upload': "a guest's upload", 'script': 'made by the rules'}.get(b['src'], "the host's")
+    n = b['types']
+    return (f"  [{b['id']}] {b['name']} — {n} piece type{'' if n == 1 else 's'}"
+            + (' · 📜 rules' if b.get('rules') else '') + f' · {src}' + (' · set up' if b['id'] == last else ''))
 
 
 def spot(args):
@@ -356,6 +377,18 @@ def run_cmd(bridge, line):
         for e in s['log'][-n:]:
             sep = ':' if e.get('chat') else ''
             out(f"  {e['who']}{sep} {e['text']}")
+    elif cmd == 'boxes':
+        for b in s['boxes']:
+            out(fmt_box(b, s.get('lastSetup')))
+        if not s['boxes']:
+            out('(no game boxes on this table)')
+    elif cmd == 'setup':
+        box = ' '.join(a for a in args if not a.startswith('--'))
+        if not box:
+            raise ValueError('setup <box> [--keep] [--rules] — see "boxes"')
+        bridge.setup(box, '--keep' in args, '--rules' in args)
+    elif cmd == 'reset':
+        bridge.reset()
     elif cmd == 'buttons':
         for b in s['buttons']:
             out(f"  [{b['id']}] {b['label']}")

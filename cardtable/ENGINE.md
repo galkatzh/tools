@@ -567,6 +567,46 @@ setups. `{x, y, free: true}` skips it.
   characters). Don't write it; a save holding a malformed one loses the bad
   entries loudly (`console.error`) when it loads.
 
+### Game boxes (Phase 4)
+
+A game box (README, "Game boxes") is a game's material and starting layout,
+and often its rules too. A script reads the boxes on the table and lays one
+out:
+
+- `t.boxes()` → `[{id, name, src, builtin, types}]`: every box on the table,
+  where it came from (`'host'`, `'upload'`: a guest's, `'script'`: a
+  `t.newBox`), whether it is a built-in one (by its content), and its number
+  of piece types.
+- `t.box(id)` → the box as every player may see it, or `null`: its name,
+  types, backs, decks (`{name: deckId}`), table, seats, `players` and
+  `meta` (a box's own data, at most 8 KB, public), plus `src`, `by`,
+  `builtin` and `hasRules`. Never its setup, rules or saved state.
+- `t.layout(boxId, entries?)` lays out `entries` (or the box's own setup) in
+  the setup grammar, as 📜 Rules, clearing nothing, and returns how many
+  items it placed; one line, "placed N items of «X»". Everything is checked
+  before the first item lands — a type, deck or seat it names, "#k" against
+  the seated players, the room on the table — and a bad layout throws a
+  `TypeError` ("t.layout: …"). An entry's `id` that an item on the table
+  already holds is minted anew (`console.warn`). A script's own "Reset"
+  button: `t.remove` what it laid out, then `t.layout`.
+
+**A box's rules and trust.** A box may bring its rules (the script's text)
+and its rules' saved state (`{data, public, asks, secret}`, written by an
+export). They start only from the host's **Set up** with "Enable its rules",
+and only after the trust dialog ("«X» comes with rules written by its
+author … A rules script sees every hand and hidden piece and can reveal
+them") — for every box but a built-in one, whoever added it, the host
+included, and from the terminal too. They start right after the setup
+commits, as an Enable with a reset: on the box's saved state, every
+`"@#k"` there read as the k-th seated player and every id the setup had to
+change replaced by its new one (a script that stored a pile's id finds it);
+an entry that fails the engine's gates (an ask of 500 options, a timer
+whose `at` is no number, a secret keyed by no player) is dropped with
+`console.error` and one toast to the host. They run as the box's rules
+(`rules.box`), so **Reset** restarts them on that state; an Enable of any
+other text does not. A box's setup and saved state never reach a guest —
+only the host and the Worker read them.
+
 ## 3. Enforcement path (the one structural change)
 
 In `apply(p, a)`, for a **ruled** action (every gameplay action: move,
@@ -873,7 +913,14 @@ takes the other items off the table unasked, and leaves the hands alone.
   `select` on a tap (`tapSelect`, `noSelect`: what the host would drop) —
   and the terminal's `answer`, `select` and `asks`; a game that lays out
   the whole table started on a cleared one (`pickCleared`, from 🎲 or the
-  📜 dialog); a fingertip's reach for small supplies (`nearTouch`).
+  📜 dialog); a fingertip's reach for small supplies (`nearTouch`); the 📦
+  dialog (`renderBoxes`, `uploadBox`, `setUpBox` with the trust dialog,
+  `resetBox`, the export) and the terminal's `boxes`, `setup` and `reset`.
+- `cardtable/boxio.js`: game boxes in and out of files — a `game.json`
+  with its images and rules file, or a `.zip` (JSZip from the CDN, every
+  entry unzipped as a stream within its limits), read into the box `addBox`
+  takes; `encodeImage` (every uploaded image checked by its header and
+  redrawn, for decks too); the export (`exportFile`).
 - `cardtable/pieces.js`: the hint layer's SVG (`hintSVG`, numbers only).
 - `cardtable/index.html` / `style.css`: Rules button + dialog (editor,
   examples select, enable/disable, error line), buttons row, seat glow,

@@ -43,7 +43,7 @@ node t-smoke.js         # one suite, output on the terminal
   within 1 s; go's stone #300 within 10 ms of Worker time), run alone, one
   at a time after the parallel batch, under the same lock: `SERIAL`, a
   comma-separated list of suite names, default
-  `t-p1-bench,core-p1-bench,core-p2-bench,t-p1-flood,t-p1-assets,t-p3-go`.
+  `t-p1-bench,core-p1-bench,core-p2-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench`.
   A listed suite that doesn't exist fails the run.
 - Runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
   `/tmp/cardtable-tests.lock`): concurrent runs on a small machine starve each
@@ -1653,7 +1653,10 @@ own, beside the implementer's `t-p3-ui.js` and `t-p3-cli.js`.
   `select` and its printed hint, the printed secret, no control character
   on the terminal; then the Bridge API in both languages with the same
   tabs re-paired (`select`, `answer` with a number, a list, a label and a
-  spot, `place`). Since the 3C review it also checks an ask whose labels
+  spot, `place`; `snaps` keeps only what goes to the tab's bridge of the
+  moment, so a push still on its way to the REPL just killed never passes
+  for the table the re-paired tab has yet to receive — a race a loaded run
+  showed in 4A). Since the 3C review it also checks an ask whose labels
   are digits (`answer dig 3` is the option labelled 3; `answer dig 0`,
   with no such label, index 0) and a `select` with no rules running: said
   as `error: select …: the rules take no selections` in both, never sent.
@@ -1753,6 +1756,80 @@ own, beside the implementer's `t-p3-ui.js` and `t-p3-cli.js`.
   on one of the box's boards (read with grid.js's `parseAddr`), as §4a now
   allows; core-p3's v4 save lifts on to v5 and its §10.1 ruled-action list
   has `addBox`.
+
+### The 📦 dialog, files and the terminal (4A part 2)
+
+- **`fixtures/`** (made by `node fixtures/make-boxes.js`, which draws the
+  images with a canvas; run it again after changing it, and commit what it
+  writes — original content): **`harbor/`** "Harbor Run", a `game.json` and
+  its 6 PNGs (a board image, two boats with a transparent ground, a crate,
+  two tide cards), a deck with a text card, a die, hidden crates;
+  **`harbor.zip`** the same game in one top-level folder (`harbor-run/`);
+  **`beacon/`** "Beacon Watch", a box with rules (`rules.js`, a "🔥 Keep
+  watch" button counting in `t.data.watches`) and a rules state, no images.
+- **`zip-lib.js`**: `zip(entries)` writes a zip — each entry `{name, data,
+  store?, declared?}`, deflated unless `store`, its headers declaring
+  `declared` bytes unzipped (the truth by default), names as given (`../x`,
+  `/x`); `photoPNG(w, h)` a big opaque "photograph" PNG (a gradient with
+  grain in 4 × 4 blocks: 4,000 × 3,000 is 3.5 MB); `game(img)` the tiny
+  game.json of the hostile zips; and **`HOSTILE`**, §4j's attacker cases as
+  zips: `bomb()` (map.png, 100 MB of zeros declared honestly, 98 KB
+  zipped), `liar()` (the same, its directory saying 1 KB), `slip()`
+  (`../../evil.png`, `/abs.png`), `svg()` (an SVG with a script named
+  map.png), `missing()` (game.json names `gone.png`), `huge()` (a
+  30,000 × 30,000 PNG header). (A noise PNG no encoder shrinks is
+  assets-lib's `png(w, h, {seed})`.)
+- **`t-p4-boxes.js`** (E2E: Alice hosts on a desktop, Bob on an iPhone 13
+  upright, Carol watches on one sideways, Mallory is a raw peer; every
+  upload a file picked in the dialog, every Set up, Reset and Export a
+  press): game.json and PNGs, then the same zip (the same box: an image
+  re-encodes to the same bytes); JSZip fetched only for the zip, and its
+  build pinned (`_data.uncompressedSize`, `internalStream`,
+  `unsafeOriginalName`); every hostile zip, bad JSON, a missing plain file
+  and a refused field, each named inline and in a toast; Mallory's cases 5,
+  6, 10 and 11; a guest's box with rules (by Bob, 📜 on every screen) set up
+  through the setup confirm and the trust dialog (without rules, Cancel,
+  Enable); Reset, and after a host reload; export → clear → re-import (the
+  same position everywhere — box and deck ids read as their names: this
+  room's catalog keeps the first box — and case 7: a kept game's state in
+  no guest's messages); a guest box shuffled, the confirm naming him, and
+  the budget it shares with decks; a 4,000 × 3,000 PNG board and a 2,048 ×
+  2,048 noise board stepped down (quality, then size), and the Safari
+  fallback (`toDataURL('image/webp')` stubbed to answer PNG: JPEG for the
+  opaque, PNG for the transparent); a built-in box twice, one entry; and
+  chess and Hold'em exported mid-game and resumed in a fresh room whose
+  host is on a phone. Helpers: `upload(p, files, now)` (picks files in
+  page p's 📦 and waits for the outcome: `{progress, err, msg, ask}`),
+  `asked(p, kind)` / `reply(p, value, checks)` (the `#box-ask` dialog:
+  `data-kind` setup, reset or trust), `settle(p)` (the queue idle for
+  300 ms: a press's action reaches it a task later), `position(state)` (a
+  host state comparable across a re-import). Screenshots:
+  `shots/p4-boxes-*.png`.
+- **`t-p4-cli.js`** (cli.js and cli.py in parity): `boxes` listed in the
+  same words, `setup <box> [--keep] [--rules]` and `reset` sent as their
+  commands, the help, the Bridge API's `setup()` and `reset()`; then real
+  tabs: the snapshot's `boxes` and `lastSetup` (the host's alone), a setup
+  by name, a reset, a guest's refused, an unknown box, and `--rules`
+  waiting for the trust dialog on the host's page.
+- **`t-p4-bench.js`** (in the serial batch): B20, a zip of 64 photographs
+  (1,200 × 900 JPEGs drawn in the page, 20.5 MB) imported from 📦 on the
+  desktop within 10 s, its progress said file by file; B21, that box set up
+  (64 items) and exported with its images within 5 s.
+- **The dialog** (`#box-dialog`): `.box-row[data-box=<id>]` rows with
+  `[data-act=setup]` / `[data-act=reset]` buttons (the host's), the
+  built-in list `#box-builtins [data-builtin=<key>]`, `#box-up` (it clicks
+  the hidden `#box-files`), `#box-now` ("Set up now", the host's),
+  `#box-progress`, `#box-err` (an upload's failure, "Couldn't add the game:
+  …"; a guest's refusal from the host, "🚫 Box rejected: …"), `#box-msg` (a
+  Set up or Reset that failed), `#box-x-rules`, `#box-x-state`, `#box-x-go`
+  and `#box-x-msg` ("Saved Harbor Run.zip"). The questions are one dialog,
+  `#box-ask[data-kind]`: `#box-ask-title`, the lines and checkboxes
+  (`[data-c=rules]`, `[data-c=shuffle]`) of `#box-ask-body`, the buttons of
+  `#box-ask-btns` (values `cancel` / `ok`; the trust dialog's `cancel`,
+  `without`, `enable`).
+- **Mechanism changes**: `run-all.sh`'s serial batch adds `t-p4-bench`;
+  `t-p3-term.js` keeps only the snapshots a tab sends to its bridge of the
+  moment (see its entry). No assertion changed.
 
 ## Storage and images (Phase 1B)
 

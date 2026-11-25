@@ -766,6 +766,18 @@ sync and rendering, and the Worker together with `handle`.
      - The host's own box is added only once its images are stored; a
        guest's leaves nothing in the host's storage until it is on the
        table, within the budget it shares with decks.
+     - The 📦 box picker, the upload, Set up, Reset and the export are in
+       too, and the terminal's `boxes`, `setup` and `reset`:
+       - An upload is read within limits that hold whatever a zip claims
+         (each file unzipped as a stream that stops at what it declared),
+         and every image leaves as a plain picture a canvas drew — except
+         one the browser already holds, kept as it is, so a game exported
+         and imported again is the same game.
+       - A box's rules wait for the host's click in the trust dialog, from
+         the terminal too; only a built-in box, known by its content,
+         skips it.
+       - An export takes the rules and their state along by default only
+         while they run.
 5. **Private material.**
    - `vis` (owner-visible pieces, dice under a cup), private areas beyond the
      hand (a tile rack, a screen), and peeking at any hidden piece.

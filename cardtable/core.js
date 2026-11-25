@@ -3643,7 +3643,7 @@ export function createTable(host, env = {}) {
     // the rules' state: seated players as "@#k"; the other boxes merged into this one are this one now
     const as = (x) => (K.has(x) ? `@${K.get(x)}` : used.includes(x) && CATALOG_ID_RE.test(used[0]) ? used[0] : x);
     const box = {
-      name: main?.name || 'Table', ...(main && CATALOG_ID_RE.test(used[0]) && { id: used[0] }),
+      name: main?.name || str(r?.name, 40) || 'Table', ...(main && CATALOG_ID_RE.test(used[0]) && { id: used[0] }), // (no box: a card game is its rules')
       ...(main?.players && { players: main.players }), ...(main?.lockable && { lockable: main.lockable }), ...(main?.meta !== undefined && { meta: main.meta }),
       table: host.table, ...(host.seats && { seats: host.seats }), imgs,
       backs: Object.entries(backs).map(([id, b]) => ({ id, ...b })),
@@ -4082,7 +4082,7 @@ export function createTable(host, env = {}) {
       }
       case 'loadBox': if (hostOnly(p, a)) loadBox(p, a.box, { setup: a.setup === true, clear: a.clear === true }); break;
       case 'setup': case 'reset': if (!hostOnly(p, a) || !setupBox(p, a)) return null; break;
-      case 'addBox': addBox(p, a); break;
+      case 'addBox': if (!addBox(p, a)) return null; break; // (refused, or the same box found: nothing changed — act() resolves {ok: false, id})
       case 'clear': if (hostOnly(p, a)) clearTable(p); break;
       case 'chat': {
         const msg = chatLine(a.msg);

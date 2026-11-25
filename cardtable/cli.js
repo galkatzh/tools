@@ -86,6 +86,11 @@ class Bridge {
   select(id) { this.send({ t: 'select', id }); }
   /** Sits in named seat `id`; '-' stands up to watch, '+' sits down again (automatic seating). */
   seat(id) { this.send(id === '-' ? { t: 'seat', watch: true } : id === '+' ? { t: 'seat', sit: true } : { t: 'seat', id }); }
+  /** Host: sets game box `box` up (its id or name; see state.boxes): `keep` keeps the table's items, `rules` enables
+   *  its rules — the host still confirms a box's rules on the page unless the box is built in. */
+  setup(box, keep = false, rules = false) { this.send({ t: 'setup', box, keep, rules }); }
+  /** Host: lays the box last set up (state.lastSetup) out again. */
+  reset() { this.send({ t: 'reset' }); }
   route(req, res) {
     const url = new URL(req.url, 'http://x');
     if (url.searchParams.get('token') !== this.token) {
@@ -179,6 +184,9 @@ const HELP = `commands:
   asks                    the rules' questions waiting for you (new ones print as they come)
   answer <id> <value>     answer one: an option's label or number, an item id, a spot, hand indices (0,3), a number
   select <id>             select a piece: the rules may hint where it can go
+  boxes                   the game boxes on this table (📜 has rules; "set up": the last one set up)
+  setup <box> [--keep] [--rules]  host: set a box up (id or name); --keep keeps the table, --rules runs its rules
+  reset                   host: set the last box up again
   chat <msg>              say something (also "!commands" for rules scripts)
   quit`;
 
@@ -206,6 +214,11 @@ const fmtPiece = (p) => `${p.label != null ? `${p.label} ` : ''}${p.type}`;
 const fmtTop = (t) => (t.hidden ? 'hidden piece' : 'type' in t ? fmtPiece(t) : fmtCard(t));
 /** A hand entry: a card, or a piece (its label, then its type's name). */
 const fmtHand = (c) => (c.kind === 'piece' ? fmtPiece({ label: c.label, type: c.name }) : fmtCard(c));
+/** A game box as one line (spec §4i): its id, name, size, rules, where it comes from, and whether it was set up last. */
+function fmtBox(b, last) {
+  const from = b.builtin ? 'built in' : { upload: "a guest's upload", script: 'made by the rules' }[b.src] || "the host's";
+  return `  [${b.id}] ${b.name} — ${b.types} piece type${b.types === 1 ? '' : 's'}${b.rules ? ' · 📜 rules' : ''} · ${from}${b.id === last ? ' · set up' : ''}`;
+}
 /** Splits `args` into [the rest joined, x, y]: x and y when the last two are numbers. */
 function spot(args) {
   const k = args.length;
@@ -261,6 +274,14 @@ function runCmd(bridge, line) {
       return s.players.forEach((p) => out(`  ${p.winner ? '🏆' : p.turn ? '⏳' : ' '} ${p.name}${p.id === s.pid ? ' (you)' : ''}${p.seatId ? ` [${p.seatId}]` : ''} 🂠${p.cards}${p.badge ? ' ' + p.badge : ''}${p.watching ? ' (watching)' : ''}${p.online ? '' : ' (offline)'}`));
     case 'log':
       return s.log.slice(-(+args[0] || 15)).forEach((e) => out(`  ${e.who}${e.chat ? ':' : ''} ${e.text}`));
+    case 'boxes':
+      return s.boxes.length ? s.boxes.forEach((b) => out(fmtBox(b, s.lastSetup))) : out('(no game boxes on this table)');
+    case 'setup': {
+      const box = args.filter((a) => !a.startsWith('--')).join(' ');
+      if (!box) throw new Error('setup <box> [--keep] [--rules] — see "boxes"');
+      return bridge.setup(box, args.includes('--keep'), args.includes('--rules'));
+    }
+    case 'reset': return bridge.reset();
     case 'buttons':
       return s.buttons.length ? s.buttons.forEach((b) => out(`  [${b.id}] ${b.label}`)) : out('(none)');
     case 'play': {

@@ -28,6 +28,7 @@ import { MODULE_V as GRID_V, turn, spotOf } from './grid.js?v=1';
 import * as pieces from './pieces.js?v=1';
 import { RULES_TEMPLATES, GAMES, BOXES, MODULE_V as TEMPLATES_V } from './templates.js?v=1';
 import * as store from './store.js?v=1';
+import * as boxio from './boxio.js?v=1';
 
 const { esc, safeColor, contrastFor } = pieces;
 
@@ -1229,7 +1230,7 @@ function takeBoxes(d) {
     if (!/^[0-9a-f]{8}$/.test(id)) { console.warn('ignored a game box with a bad id', id); continue; }
     try {
       boxes[id] = cleanBox(b);
-      boxInfo[id] = { src: ['host', 'upload', 'script'].includes(b.src) ? b.src : 'host', ...(PID_RE.test(b.by) && { by: b.by }), builtin: b.builtin === true };
+      boxInfo[id] = { src: ['host', 'upload', 'script'].includes(b.src) ? b.src : 'host', ...(PID_RE.test(b.by) && { by: b.by }), builtin: b.builtin === true, hasRules: b.hasRules === true };
       got.push(id);
     } catch (err) {
       console.error(`game box ${id} from the host rejected`, err);
@@ -1240,6 +1241,9 @@ function takeBoxes(d) {
   for (const h of refs) if (imgs.get(h) === 'missing') imgs.delete(h);
   wantImages(refs);
   arrived(itemsByBox, got, (z) => 't' in z && got.includes(pieces.boxIdOf(z.t)));
+  const mine = boxWait && got.find((id) => boxInfo[id].by === pid && boxes[id].name === boxWait.name);
+  if (mine) boxAnswer(`«${boxes[mine].name}» is on the table — the host can set it up from 📦`, true);
+  renderBoxes();
 }
 let askT = 0;
 /** Guest: asks the host for images `ids`. Requests are gathered for a
@@ -2876,6 +2880,7 @@ function renderAll(prev = new Map(), prevPlayers) {
   applySeatView();
   renderItems(prev, prevPlayers);
   renderGames(); // before the seats: the strip's place moves the notices
+  renderBoxes();
   renderWatchers(); // (its size, too: placeSeats moves it off the labels)
   renderPlayers();
   // The hand bar hides on a table with nothing to hold and an empty hand
@@ -4011,75 +4016,235 @@ $('chat-form').addEventListener('submit', (e) => {
   input.value = '';
 });
 
-// --- deck creation --------------------------------------------------------
-/** Downscales an image file to a compact data URL (keeps decks shareable & persistable). */
-async function fileToDataURL(file, max = 560) {
-  const bmp = await createImageBitmap(file);
-  const s = Math.min(1, max / Math.max(bmp.width, bmp.height));
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.round(bmp.width * s);
-  canvas.height = Math.round(bmp.height * s);
-  canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
-  bmp.close();
-  return canvas.toDataURL('image/webp', 0.8);
-}
-
-/** Card name from an image filename: "dragon_rider.png" → "dragon rider". */
-const nameFromFile = (fn) => fn.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim().slice(0, 60);
-
-/** Custom deck without a manifest: one card per image, named after its file. */
-async function filenameDeck(images) {
-  const imgs = [], cards = [];
-  for (const f of images) {
-    cards.push({ g: imgs.length, n: nameFromFile(f.name) });
-    imgs.push(await fileToDataURL(f));
-  }
-  return { name: 'Deck', back: null, imgs, cards };
-}
-
-/** Custom deck from a deck.json manifest plus its images. Entries:
- *  { file?, name?, count?, text?, color?, meta? } — `file`-less entries render
- *  as text cards; `meta` is free-form JSON for rules scripts (t.card).
- *  Each image is stored once in deck.imgs and shared by all its copies. */
-async function manifestDeck(m, images) {
-  if (!Array.isArray(m.cards) || !m.cards.length) throw new Error('deck.json needs a non-empty "cards" array');
-  const byName = new Map(images.map((f) => [f.name, f]));
-  const imgs = [], gOf = new Map(); // filename → index into imgs
-  const imgIdx = async (fn) => {
-    if (!gOf.has(fn)) {
-      const f = byName.get(fn);
-      if (!f) throw new Error(`deck.json references "${fn}" but no such image was uploaded`);
-      gOf.set(fn, imgs.length);
-      imgs.push(await fileToDataURL(f));
-    }
-    return gOf.get(fn);
-  };
-  const cards = [];
-  for (const e of m.cards) {
-    if (!e.file && !e.name) throw new Error('every deck.json card needs a "file" or a "name"');
-    const card = {
-      n: String(e.name ?? nameFromFile(e.file)).slice(0, 60),
-      ...(e.file ? { g: await imgIdx(String(e.file)) } : {}),
-      ...(e.text ? { txt: String(e.text).slice(0, 300) } : {}),
-      ...(e.color ? { col: String(e.color).slice(0, 24) } : {}),
-      ...(e.bg ? { b: String(e.bg).slice(0, 24) } : {}),
-      ...(e.meta !== undefined ? { meta: e.meta } : {}),
+// --- game boxes (📦, spec §4g) -------------------------------------------------
+// The dialog lists every box on this table (the host's, a guest's upload, a
+// script's, a built-in one once set up), the built-in boxes, an upload, and
+// the export. Anyone may upload (a guest within the guests' budget); setting
+// a box up, resetting it and exporting are the host's. A box's rules never
+// run without the host's click in the trust dialog, unless the box is built
+// in — by its content (isBuiltin), never by anything a peer can send.
+const builtinOf = new WeakMap(); // box → isBuiltin(box): a box is written once, and canon() of a big one costs
+const builtIn = (b) => (builtinOf.has(b) ? builtinOf.get(b) : builtinOf.set(b, isBuiltin(b)).get(b));
+/** Every box on this table as the dialog and the terminal list it: {id,
+ *  name, types, decks, src, by (a pid), builtin, rules} — and on the host
+ *  `setup`, whether it lays anything out. A guest knows what the host says
+ *  of each (boxInfo). */
+function boxEntries() {
+  const host = role === 'host';
+  return Object.entries(host ? T.state.boxes : boxes).map(([id, b]) => {
+    const i = (host ? T.state.boxSrc[id] : boxInfo[id]) || { src: 'host' };
+    return {
+      id, name: b.name, types: Object.keys(b.types).length, decks: Object.keys(b.decks || {}).length, src: i.src, by: i.by,
+      builtin: host ? builtIn(b) : !!i.builtin, rules: host ? !!b.rules : !!i.hasRules, ...(host && { setup: !!b.setup?.length }),
     };
-    const count = Math.min(Math.max(1, e.count | 0 || 1), 500);
-    for (let k = 0; k < count; k++) cards.push(card); // copies share the object; card defs are never mutated
+  });
+}
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+/** "3 piece types · 1 deck" */
+const boxSize = (e) => [e.types && plural(e.types, 'piece type'), e.decks && plural(e.decks, 'deck')].filter(Boolean).join(' · ') || 'empty';
+/** Who a box comes from, as the dialog says it. */
+const boxBy = (e) => (e.builtin ? 'built in' : e.src === 'script' ? 'made by 📜 Rules' : `by ${e.by ? actorInfo(e.by).name : 'the host'}`);
+
+/** Redraws the 📦 dialog's lists while it is open (renderAll, takeBoxes): a guest's is read-only. */
+function renderBoxes() {
+  if (!$('box-dialog').open) return;
+  const host = role === 'host', last = host && T.state.lastSetup;
+  const row = (e) => `<div class="box-row" data-box="${esc(e.id)}"><div class="box-info"><b>${esc(e.name)}</b>${e.rules ? ' <span title="comes with rules">📜</span>' : ''}${e.id === last ? ' <i>set up</i>' : ''}
+    <small>${esc(boxSize(e))} · ${esc(boxBy(e))}</small></div>${host ? `<span class="box-btns">${e.id === last ? '<button data-act="reset">↺ Reset</button>' : ''}${e.setup ? '<button data-act="setup">Set up</button>' : ''}</span>` : ''}</div>`;
+  const html = boxEntries().map(row).join('') || '<p class="box-note">No game box on this table yet.</p>';
+  if ($('box-list').innerHTML !== html) $('box-list').innerHTML = html; // (unchanged: the focus stays)
+  for (const id of ['box-builtin', 'box-export', 'box-now-lbl']) $(id).classList.toggle('hidden', !host);
+  if (!host) return;
+  if (!$('box-builtins').children.length) {
+    $('box-builtins').innerHTML = Object.entries(BOXES).map(([k, b]) => `<div class="box-row"><div class="box-info"><b>${esc(b.name)}</b>
+      <small>${esc(GAMES.find((g) => g.box === k)?.pitch || boxSize({ types: Object.keys(b.types).length }))}</small></div><span class="box-btns"><button data-builtin="${k}">Set up</button></span></div>`).join('');
   }
-  const deck = { name: String(m.name || 'Deck').slice(0, 24), back: null, imgs, cards };
-  // back: an uploaded image's filename, or a solid color like "#111"
-  if (m.back != null) deck.back = String(m.back).startsWith('#') ? String(m.back).slice(0, 24) : imgs[await imgIdx(String(m.back))];
-  // Uploaded images the manifest didn't mention still join, filename-named.
-  for (const f of images) {
-    if (gOf.has(f.name)) continue;
-    cards.push({ g: imgs.length, n: nameFromFile(f.name) });
-    imgs.push(await fileToDataURL(f));
-  }
-  return deck;
+  const code = !!T.state.rules?.code;
+  $('box-x-rules').disabled = $('box-x-state').disabled = !code;
+}
+$('box-btn').addEventListener('click', () => {
+  for (const id of ['box-progress', 'box-err', 'box-msg', 'box-x-msg']) $(id).textContent = '';
+  if (role === 'host') $('box-x-rules').checked = $('box-x-state').checked = !!T.state.rules?.enabled; // (rules the table runs go with it, by default)
+  $('box-dialog').showModal();
+  renderBoxes();
+});
+$('deck-to-box').addEventListener('click', () => { $('deck-dialog').close(); $('box-btn').click(); });
+$('box-dialog').addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-act], button[data-builtin]');
+  if (!b) return;
+  $('box-msg').textContent = '';
+  const r = b.dataset.builtin ? await pickCleared({ box: b.dataset.builtin, title: BOXES[b.dataset.builtin].name })
+    : b.dataset.act === 'reset' ? await resetBox() : await setUpBox(b.closest('[data-box]').dataset.box);
+  boxDone(r);
+});
+/** After Set up or Reset (act()'s outcome, null when the host cancelled): the
+ *  dialog closes on the table set up, or says why it wasn't. */
+function boxDone(r) {
+  if (r?.ok) {
+    askGame = false; // (the strip's question is answered)
+    $('box-dialog').close();
+    renderAll();
+  } else if (r) show($('box-msg'), r.error || 'Nothing was set up');
 }
 
+/** Asks the host in #box-ask (`kind`: setup, reset or trust, its data-kind):
+ *  a title, then `body` — each a line of text, or a checkbox {id, label, on}
+ *  — and the buttons [[value, label]], the last the main one. Resolves {v:
+ *  the button's value ('cancel' on Esc), on: {checkbox id: ticked}}. Every
+ *  text is set as text. */
+function boxAsk(kind, title, body, btns) {
+  const dlg = $('box-ask'), el = (tag, o) => Object.assign(document.createElement(tag), o);
+  const check = ({ id, label, on }) => {
+    const box = el('input', { type: 'checkbox', checked: on }), l = el('label', { className: 'radio' });
+    box.dataset.c = id;
+    l.append(box, ` ${label}`);
+    return l;
+  };
+  dlg.dataset.kind = kind;
+  dlg.returnValue = '';
+  $('box-ask-title').textContent = title;
+  $('box-ask-body').replaceChildren(...body.map((x) => (typeof x === 'string' ? el('p', { textContent: x }) : check(x))));
+  $('box-ask-btns').replaceChildren(...btns.map(([v, label], k) => el('button', { value: v, textContent: label, className: k === btns.length - 1 ? 'main' : '' })));
+  dlg.showModal();
+  return new Promise((resolve) => dlg.addEventListener('close', () => resolve({
+    v: dlg.returnValue || 'cancel', on: Object.fromEntries([...dlg.querySelectorAll('[data-c]')].map((c) => [c.dataset.c, c.checked])),
+  }), { once: true }));
+}
+/** Whether a setup would discard anything: items on the table, or cards in a hand. */
+const tableBusy = () => Object.keys(T.state.items).length > 0 || Object.values(T.state.players).some((pl) => pl.hand.length);
+/** Host: sets box `id` up (spec §4g). From the dialog, it first asks what
+ *  there is to decide — "This clears the table", "Enable its rules" (ticked),
+ *  and for a guest's box "Shuffle face-down piles" (ticked) under "{Bob} added
+ *  this box and knows its starting layout"; from the terminal `o` says it
+ *  ({clear, rules}). Then, before the rules of any box that isn't built in,
+ *  the trust dialog: Enable rules, Set up without rules, or Cancel. Resolves
+ *  act()'s outcome, or null when the host cancelled. */
+async function setUpBox(id, o) {
+  const box = T.state.boxes[id], src = T.state.boxSrc[id] || { src: 'host' };
+  const by = src.src === 'upload' ? T.state.players[src.by]?.name || 'A guest' : '';
+  let { clear = true, rules = !!box.rules, shuffle } = o || {};
+  if (!o && (tableBusy() || box.rules || by)) {
+    const r = await boxAsk('setup', `Set up «${box.name}»?`, [
+      ...(tableBusy() ? ['This clears the table.'] : []),
+      ...(box.rules ? [{ id: 'rules', label: 'Enable its rules', on: true }] : []),
+      ...(by ? [`${by} added this box and knows its starting layout.`, { id: 'shuffle', label: 'Shuffle face-down piles', on: true }] : []),
+    ], [['cancel', 'Cancel'], ['ok', 'Set up']]);
+    if (r.v !== 'ok') return null;
+    ({ rules = false, shuffle } = r.on);
+  }
+  if (rules && !builtIn(box)) {
+    const { v } = await boxAsk('trust', 'Enable the rules?', [
+      `«${box.name}» comes with rules written by its author${by ? `, added by ${by}` : ''}. A rules script sees every hand and hidden piece and can reveal them. Enable the rules?`,
+    ], [['cancel', 'Cancel'], ['without', 'Set up without rules'], ['enable', 'Enable rules']]);
+    if (v === 'cancel') return null;
+    rules = v === 'enable';
+  }
+  return act({ t: 'setup', box: id, clear, rules, ...(shuffle !== undefined && { shuffle }) });
+}
+/** Host: Reset (spec §4g) — the box last set up laid out again on a cleared
+ *  table, its rules restarted when they are running; asked first. Resolves
+ *  act()'s outcome, or null. */
+async function resetBox() {
+  const name = T.state.boxes[T.state.lastSetup]?.name, again = T.state.rules?.enabled && T.state.rules.box === T.state.lastSetup;
+  const { v } = await boxAsk('reset', `Reset «${name}»?`, [`The table is cleared and «${name}» laid out again${again ? ', its rules started afresh' : ''}.`], [['cancel', 'Cancel'], ['ok', 'Reset']]);
+  return v === 'ok' ? act({ t: 'reset' }) : null;
+}
+
+let boxRun = 0; // the upload in the works (closing the dialog drops it: its result is not added)
+let boxWait = null; // guest: the box it sent, {name}, until the host answers (note, takeBoxes)
+/** Busy reading an upload: one at a time. */
+const boxBusy = (on) => { $('box-up').disabled = on; $('box-up').textContent = on ? 'Reading…' : '⬆ Upload a game…'; };
+$('box-dialog').addEventListener('close', () => { boxRun++; boxWait = null; boxBusy(false); });
+$('box-up').addEventListener('click', () => $('box-files').click());
+$('box-files').addEventListener('change', () => {
+  const files = [...$('box-files').files];
+  $('box-files').value = ''; // (the same files picked again are a new upload)
+  if (files.length) uploadBox(files);
+});
+/** Writes `msg` into the dialog's element `el`, scrolled into view (a phone shows a few lines of the dialog). */
+function show(el, msg) {
+  el.textContent = msg;
+  if (msg) el.scrollIntoView({ block: 'nearest' });
+}
+/** A guest hears how the box it sent went (note, takeBoxes): in the dialog. */
+function boxAnswer(msg, good) {
+  boxWait = null;
+  show($('box-progress'), good ? msg : '');
+  show($('box-err'), good ? '' : msg);
+}
+/** Reads an upload into a game box (boxio.readBox, which reports each file)
+ *  and adds it. Progress and any failure show in the dialog (a failure as a
+ *  toast too), naming the file or the field. The host's box is checked
+ *  (checkTransportBox), added at once and, with "Set up now", set up; a
+ *  guest's is checked, its images cached here first (as a deck's are), then
+ *  sent: the host answers with a notice or with the box itself (boxWait). */
+async function uploadBox(files) {
+  const run = ++boxRun, say = (msg) => { if (run === boxRun) show($('box-progress'), msg); };
+  boxBusy(true);
+  $('box-err').textContent = '';
+  try {
+    const tb = await boxio.readBox(files, say);
+    if (run !== boxRun) return;
+    say('Checking the box…');
+    const cost = checkTransportBox(tb), name = String(tb.name);
+    if (role !== 'host') {
+      const over = boxOverBudget(0, cost); // (bigger than all of the guests' budget; the host says what is left)
+      if (over) throw new Error(over);
+      await store.cache((await store.ingestBox(tb)).assets);
+      if (run !== boxRun) return;
+      boxWait = { name };
+      const r = await act({ t: 'addBox', box: tb });
+      if (!r.ok) throw new Error(r.error);
+      say(`Sent «${name}» to the host…`);
+      return;
+    }
+    say(`Adding «${name}»…`);
+    const r = await act({ t: 'addBox', box: tb });
+    if (!r.id) throw new Error(r.error || 'the box was not added');
+    say(r.ok ? `Added «${name}»` : 'That box is already on this table');
+    boxBusy(false);
+    if (run === boxRun && $('box-now').checked) boxDone(await setUpBox(r.id));
+  } catch (err) {
+    console.error('a game upload failed', err);
+    if (run !== boxRun) return;
+    boxWait = null;
+    say('');
+    show($('box-err'), `Couldn't add the game: ${err.message}`);
+    toast(`Couldn't add the game: ${err.message}`);
+  } finally {
+    if (run === boxRun) boxBusy(false);
+  }
+}
+// Export (host only, spec §4d: the file holds every hidden identity): core
+// writes the table as a box (T.exportBox), boxio.js the file, saved through
+// an object URL and <a download>.
+$('box-x-go').addEventListener('click', async () => {
+  const btn = $('box-x-go'), msg = $('box-x-msg');
+  btn.disabled = true;
+  msg.className = '';
+  msg.textContent = 'Exporting…';
+  try {
+    const { box, warnings } = T.exportBox({ rules: $('box-x-rules').checked, state: $('box-x-state').checked });
+    const { name, blob } = await boxio.exportFile(box, store.getAsset);
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    show(msg, `Saved ${name}${warnings.length ? ` — left out: ${warnings.join('; ')}` : ''}`);
+  } catch (err) {
+    console.error('the export failed', err);
+    msg.className = 'box-err';
+    show(msg, `Export failed: ${err.message}`);
+    toast(`Export failed: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// --- deck creation --------------------------------------------------------
+// The images become data URLs through boxio.js (encodeImage: checked by their
+// header, re-encoded and stepped down to fit 2 MB), as a game box's do.
 // Building a big image deck takes seconds: one build at a time, and closing
 // the dialog meanwhile (Cancel/Escape) abandons that build — its result is
 // dropped even if the player has reopened the dialog since.
@@ -4115,12 +4280,12 @@ $('deck-form').addEventListener('submit', async (e) => {
       if (mf) {
         let m;
         try { m = JSON.parse(await mf.text()); } catch (err) { throw new Error(`${mf.name} is not valid JSON: ${err.message}`); }
-        deck = await manifestDeck(m, images);
+        deck = await boxio.manifestDeck(m, images);
       } else {
-        deck = await filenameDeck(images);
+        deck = await boxio.filenameDeck(images);
       }
       const backFile = $('deck-back').files[0];
-      if (backFile) deck.back = await fileToDataURL(backFile);
+      if (backFile) deck.back = await boxio.encodeImage(backFile, { name: backFile.name });
       if (name) deck.name = name;
     }
     // A guest ingests its own deck first (store.js: the same checks the host
@@ -4203,6 +4368,7 @@ const cliMsgs = []; // bridge-only feedback: command errors, peek results, notic
 function note(msg) {
   toast(msg);
   if (CLI) cliMsgs.push(`note: ${msg}`);
+  if (boxWait && /^(🚫 Box rejected|That box is already)/u.test(msg)) boxAnswer(msg, msg.startsWith('That'));
 }
 
 function cliCardInfo(d, i) {
@@ -4264,6 +4430,9 @@ function cliSnapshot() {
     hint: view.hint, secret: view.sec,
     rules: rules?.enabled ? rules.name : null, // (a name, as ever: cah-bot.py compares it; strict is its own field)
     strict: strictRules(),
+    // the game boxes on this table (spec §4i), and the one last set up (the host's to know)
+    boxes: boxEntries().map(({ id, name, types, rules: r, src, builtin }) => ({ id, name, types, rules: r, src, builtin })),
+    lastSetup: (role === 'host' && T.state.lastSetup) || null,
     // rules: true marks script lines — a player can NAME itself "📜 Rules", but can't fake this
     log: view.log.slice(-40).map((e) => ({
       who: typeof e.n === 'string' ? e.n : actorInfo(e.p).name, text: e.txt,
@@ -4274,6 +4443,13 @@ function cliSnapshot() {
 }
 
 const CLI_KINDS = { p: 'pile', b: 'bag', s: 'supply' };
+/** Host: the box a command names, by its id or (any case) its name. */
+function cliBox(ref) {
+  if (own(T.state.boxes, ref)) return ref;
+  const s = String(ref ?? '').toLowerCase(), named = Object.keys(T.state.boxes).filter((id) => T.state.boxes[id].name.toLowerCase() === s);
+  if (named.length === 1) return named[0];
+  throw new Error(named.length ? `two boxes are named «${ref}»: say its id (see "boxes")` : `no such game box: ${ref} — see "boxes"`);
+}
 /** Resolves a command's item reference: an exact id, a pile's or a bag's
  *  name, a supply's type name, or (for pile commands with no ref) the
  *  biggest pile on the table. */
@@ -4398,6 +4574,20 @@ function cliExec(c) {
         act({ t: 'select', id });
         break;
       }
+      case 'setup': { // (spec §4i) the trust dialog still asks on the page before the rules of a box that isn't built in
+        if (role !== 'host') throw new Error('setup: only the host sets up a game');
+        const id = cliBox(c.box), box = T.state.boxes[id];
+        if (c.rules && !box.rules) throw new Error(`setup: «${box.name}» has no rules`);
+        if (c.rules && !builtIn(box)) cliMsgs.push(`setup: «${box.name}» has rules — confirm them on the page (the host's click enables a box's rules)`);
+        setUpBox(id, { clear: !c.keep, rules: !!c.rules }).then((r) => { if (!r) cliMsgs.push(`setup: «${box.name}» was not set up (cancelled on the page)`); },
+          (err) => { console.error('bridge setup failed', err); cliMsgs.push(`error: ${err.message}`); });
+        break;
+      }
+      case 'reset':
+        if (role !== 'host') throw new Error('reset: only the host resets a game');
+        if (!T.state.boxes[T.state.lastSetup]) throw new Error('reset: no game box was set up on this table');
+        act({ t: 'reset' });
+        break;
       case 'asks': for (const line of view.ask.length ? view.ask.map(cliAsk) : ['❓ no questions wait for you']) cliMsgs.push(line); break;
       case 'place': { // onto a board's spot (spec §3i): an item moves there, centred; a supply (id or type name) hands one out there
         const B = boardsNow(), r = resolveAddr(B, String(c.at ?? ''));
@@ -4485,7 +4675,7 @@ function askName() {
 async function boot() {
   // Module skew: a page cached across a deploy could pair this app.js with
   // other versions of its modules. Stop here, plainly, not with odd errors later.
-  const skew = [['core.js', CORE_V], ['grid.js', GRID_V], ['pieces.js', pieces.MODULE_V], ['templates.js', TEMPLATES_V], ['store.js', store.MODULE_V]].filter(([, v]) => v !== MODULE_V);
+  const skew = [['core.js', CORE_V], ['grid.js', GRID_V], ['pieces.js', pieces.MODULE_V], ['templates.js', TEMPLATES_V], ['store.js', store.MODULE_V], ['boxio.js', boxio.MODULE_V]].filter(([, v]) => v !== MODULE_V);
   if (skew.length) {
     console.error(`module version mismatch: app.js is v${MODULE_V}, ${skew.map(([f, v]) => `${f} v${v}`).join(', ')}`);
     document.body.insertAdjacentHTML('afterbegin', '<div id="skew-banner">Card Table was updated while this page loaded — reload this page</div>');

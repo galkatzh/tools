@@ -42,8 +42,11 @@ const GC_UNUSED_MS = 14 * DAY, CACHE_MAX = 500e6;
 // --- images -------------------------------------------------------------------
 const u8 = (x) => (x instanceof Uint8Array ? x : ArrayBuffer.isView(x) ? new Uint8Array(x.buffer, x.byteOffset, x.byteLength) : new Uint8Array(x));
 const unreadable = () => new Error("the image's header can't be read");
-/** The image type its first bytes announce (PNG 89 50 4E 47, JPEG FF D8 FF, GIF8, RIFF….WEBP), or null. */
-function sniff(b) {
+/** The image type its first bytes announce (PNG 89 50 4E 47, JPEG FF D8 FF,
+ *  GIF8, RIFF….WEBP), or null: what an image really is, whatever its name or
+ *  data URL says (boxio.js reads an upload's, and its own re-encoding's, so). */
+export function imageType(bytes) {
+  const b = u8(bytes);
   const is = (o, s) => [...s].every((c, k) => b[o + k] === c.charCodeAt(0));
   return is(0, '\x89PNG') ? 'image/png' : is(0, '\xff\xd8\xff') ? 'image/jpeg' : is(0, 'GIF8') ? 'image/gif'
     : is(0, 'RIFF') && is(8, 'WEBP') ? 'image/webp' : null;
@@ -113,7 +116,7 @@ function gifDims(b, le16) {
  *  (imageDims) within IMG_MAX_SIDE per side and IMG_MAX_PX in all. Returns
  *  {w, h}; throws a readable Error ("image is 30000 × 30000 px (…)"). */
 export function checkImage(bytes, mime) {
-  const b = u8(bytes), real = sniff(b);
+  const b = u8(bytes), real = imageType(b);
   if (!IMG_MIMES.includes(mime) || !real) throw new Error('not a PNG/JPEG/WebP/GIF image');
   if (real !== mime) throw new Error(`the image claims to be ${mime} but is ${real}`);
   if (b.length > ASSET_MAX_BYTES) throw new Error(`image is ${(b.length / 1e6).toFixed(1)} MB (max ${ASSET_MAX_BYTES / 1e6} MB)`);

@@ -62,7 +62,7 @@ const CTRL = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
   const run = (code) => host.evaluate((c) => window.__ct.act({ t: 'rulesBtn', id: 'run', code: c }), code);
 
   section('two bots: Bob on cli.js, Carol on cli.py, each a REPL started with --as, its tab joining as that player');
-  const snaps = {}, B = {};
+  const snaps = {}, B = {}, ports = {}; // ports: each tab's bridge now (a push still on its way to the one before isn't kept)
   /** Starts `name`'s REPL in `lang` with --as, opens the URL it prints in a
    *  tab of its own (which records what it sends: actTap), and keeps the last
    *  snapshot the tab pushes to its bridge (snaps[name]). */
@@ -70,10 +70,11 @@ const CTRL = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
     const c = lang === 'node' ? child('node', [path.join(APP, 'cli.js'), invite, '--as', name]) : child('python3', ['-u', path.join(APP, 'cli.py'), invite, '--as', name]);
     if (!(await until(() => /~cli~\d+-\w+\S*\n/.test(c.buf), 10000, 100))) throw new Error(`${lang} REPL did not start: ${c.buf}`);
     const url = c.buf.match(/(\S+~cli~\d+-\w+\S*)/)[1];
+    ports[name] = url.match(/~cli~(\d+)-/)[1];
     const tab = await env.page(name);
     await tab.addInitScript(S.actTap);
     await tab.route(/127\.0\.0\.1:\d+\/state\?/, (route) => {
-      snaps[name] = route.request().postData();
+      if (new URL(route.request().url()).port === ports[name]) snaps[name] = route.request().postData();
       route.continue().catch((err) => console.error('route.continue failed', err.message));
     });
     await tab.goto(url);
@@ -250,6 +251,7 @@ const CTRL = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
   for (const n of ['Bob', 'Carol']) {
     B[n].c.kill();
     delete snaps[n]; // (only what the tab pushes to its new bridge counts: a bot waits for the table before it acts)
+    ports[n] = String(apis[n].port);
     const url = `${invite.replace(/~cli~.*$/, '')}~cli~${apis[n].port}-${apis[n].token}~as~${n}`;
     await B[n].tab.goto(url);
     await B[n].tab.reload(); // (a hash change alone doesn't boot again)
