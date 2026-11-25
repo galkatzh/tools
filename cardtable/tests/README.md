@@ -2201,6 +2201,72 @@ answer a press of the dialog's own buttons; nothing they test goes through
   in a terminal, one line in both REPLs, the skips said once in the
   sender's; an unknown op said in the terminal.
 
+### The 4B selection suites written from the spec (independent of the implementation)
+
+- **`p4m-lib.js`** (helpers, not a suite): `join` (a player with p1-lib's
+  RTC hook, p3-lib's `actTap` and p4-lib's `watchers`: every action it
+  sends, `window.__acts`, and every notice it shows, `window.__toasts`);
+  what a page shows — `selected`, `bar` (shown, text, buttons, box),
+  `chip`, `bandShown`, `selMode` (⬚), `badge(p, id, 'count' | 'fanb')`,
+  `hit`, `pt` (a table point's client point); gestures — `mouseDrag` and
+  `click` with Shift, CDP touches `tap`, `longPress`, `fingerDrag` (the
+  finger then rests 400 ms: Chromium suppresses a tap that lands while a
+  swipe's fling still runs) and `spread` (two fingers: a zoom); `sent`,
+  `notes`, `lines(p, who, since)` (the log lines in a player's or the
+  rules' name), `peakRate` (the most messages in any one second).
+- **`t-p4-multi.js`** (§4l t-p4-select items 1–5; Alice hosts, Bob on a
+  desktop, Carol on an iPhone 13) on "Sorting yard", an original box: a
+  22 × 10 yard of 180 pebbles, rows of dice and counters, 60° and 45°
+  turners, chits with a back, a two-faced coin, a bag, a flag; three
+  pebbles locked, two Alice's. 1: a plain drag pans on the felt and on the
+  locked yard, a Shift+drag there draws a band (never picking the yard,
+  even round its centre), only what Bob may handle ("2 not selectable
+  …"), Shift+click in and out, Esc, a click on the felt and ✕ clear; on
+  the phone ⬚ sits at the bottom left, a finger drag pans without it, with
+  it a one-finger band and taps pick and unpick, ✕ and ⬚ off clear, a
+  finger carries the group (drag {ids}, never a move; one group on the
+  lift), 🔒 and 🔓 by taps (the locked stay picked). 2: one band of exactly
+  200 (the yard's 180, 10 dice, 10 counters) dragged by the mouse:
+  Alice's and Carol's screens glide all 200 mid-drag, Bob's 200 share one
+  shift, every drag names the 200, at most 17 in any second, no move, one
+  group move on the drop — each yard pebble on the next cell, the dice and
+  counters by the shift, on every screen and drawn so on Bob's — no flood
+  notice, one line "moved 200 items"; the relay shaken fast with a small
+  group (≈ 60 pointer moves a second, still ≤ 17 drags); a 201st never
+  picked. 3: the group bar's buttons, then ⟳, R, Shift+R, ⟲ (by 60, the
+  largest rotStep, each member snapped to its own: 60°, 45°, free), Flip
+  and F (the chits face down and up, the coin over, never a die), 🎲 Roll
+  and Space ("rolled 3 dice: a · b · c", the new faces in id order), 🔒
+  and 🔓 (picked while locked), 👜 Into bag ▸ Sack, 🗑, ⟳ of plain pebbles
+  (90°), Delete — each one `group` and one log line, no skip; the bar
+  covers no member. 4: Alice locks one counter and claims another while
+  Bob's drag of the four is under way: those two stay put on every screen
+  (Bob's draws them back), the other two move, "2 of 4 were skipped: …"
+  once, "moved 2 items". 5: «Picket» (enabled from 📜) vetoes the flag,
+  third of five by z: the four move, the flag stays, "1 of 5 was skipped:
+  The flag holds its ground", one line "moved 4 items" and the rules'
+  "blocked Bob: …"; the vetoed member's own t.say and t.data write are
+  rolled back, onAction counted four. Screenshots `shots/p4m-*.png`.
+- **`t-p4-inspect.js`** (§4l t-p4-select item 6; Alice, Bob on a desktop,
+  Carol on an iPhone 13 upright, Dave on one sideways, 750 × 342) on
+  "Stack yard": ×N stacks, a hidden ×6, Alice's ×3, two crowded cells. A
+  click on ×10 opens the inspector beside the stack; the stepper runs 1 …
+  N − 1; Take 3 sends one split {n: 3}, the new ×3 lands on the next cell's
+  centre, the inspector redraws ×7, then ×6 when Alice drags one off; Esc
+  closes it. ⋯ Inspect in the bar; Take all, and a plain drag carries the
+  whole stack. The hidden stack shows its back ("?" in its colour) and no
+  label, name or face colour; a click outside closes it; Alice's stack
+  offers Bob no Take. A crowded cell's ×4 lists its four (each label, a
+  picture each, the back for the hidden one, Alice's dot on hers alone); a
+  click on a row selects that piece with its bar; a drag out of a row
+  closes the list and moves that piece. Alice thins the crowd: the list
+  redraws, then closes; she removes a stack Bob inspects: it closes. The
+  phone: a long press opens it (not the zoom) on the screen, 44 px
+  buttons, + and Take 2 by taps, a tap outside closes it, a tap on ×N or
+  on a crowd's ×3 opens it, a row's tap selects. Sideways: a long press,
+  Take 1, and ⬚ with a one-finger band — the inspector and the group bar
+  on the screen.
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores
