@@ -2603,7 +2603,7 @@ function testFixup4B() {
     const w = Math.ceil(chars / 100e3), left = T.mayAct(EVE, g5) && drain();
     ok(w >= 10 && left === 40 - w, `a group of 5 costs ${40 - left} tokens at ${chars} characters of t.data: (1 + ⌊5/20⌋) × ⌈chars / 100,000⌉`);
     clock.t += 2000;
-    ok(T.mayAct(EVE, g200) && drain() === 0, 'a group of 200: the whole burst, never more (it can always be sent)');
+    ok(T.mayAct(EVE, g200) && drain() === 0, 'a group of 200: it can always be sent from a full burst, and takes all of it (D241: and more — section J)');
     ok(appBudget()(g5) === 4050, 'with no rules state, the budget is 4000 + 10 ms a member');
     const src = /^function budget\(a\) \{\n[\s\S]*?\n\}$/m.exec(fs.readFileSync(path.join(APP_ROOT, 'cardtable/app.js'), 'utf8'))[0];
     const budget = new Function('RULES_TIMEOUT_MS', 'groupIds', 'own', 'countSetup', 'T', `${src}\nreturn budget;`)(4000, groupIds, own, () => 0, T);
@@ -2613,6 +2613,67 @@ function testFixup4B() {
     R.job(HOST, { t: 'setRules', enabled: true, code: BIG });
     const t0 = performance.now(), q = R.job(BOB, { t: 'group', op: 'move', ids: [1, 2, 3, 4, 5, 6, 7].map(C), dx: 0, dy: 100 }), ms = performance.now() - t0;
     ok(q.lines.includes('moved 6 items') && H.state.rules.enabled && R.same(), `Bob's group of 7 at 1 MB (one locked): ${ms.toFixed(0)} ms, the rules on (${J(q.lines)})`);
+  }
+}
+
+// =============================================================================
+// (J) 4B fix-up 2 regressions
+// =============================================================================
+function testFixup4B2() {
+  section("(J) a group whose members leave t.data's JSON as the job found it, a function added: refused, as a single action's is (D129, D241)");
+  {
+    // member 1's validate sets x to 1; member 2's sets it back (and n), and hides a function in t.data: its JSON ends the job as it began
+    const SNEAK = "({ name: 'Sneak', setup(t) { t.data.x = 0; t.data.n = 0; }, validate(t, a) { if (a.t !== 'move') return; t.data.n++; if (t.data.n === 1) t.data.x = 1; else { t.data.x = 0; t.data.n = 0; t.data.fn = function () { return 1; }; } } })";
+    const R = room(HOST, 'Alice', [[BOB, 'Bob']], 'j'), H = R.H, bid = R.add(HOST, squad()).id;
+    R.job(HOST, { t: 'setup', box: bid });
+    R.job(HOST, { t: 'setRules', enabled: true, code: SNEAK });
+    const M = R.M, q = R.job(BOB, { t: 'group', op: 'move', ids: [C(1), C(2)], dx: 0, dy: 100 });
+    ok(!H.state.rules.enabled && q.error?.message === 't.data.fn is a function, not JSON', `the rules go off, saying so: ${J(q.error)}`);
+    ok(!('fn' in M.state.rules.data) && !('fn' in H.state.rules.data) && H.state.items[C(1)].y === M.state.items[C(1)].y, 'nothing of the job is left in the Worker or on the host (it failed closed)');
+  }
+
+  section('(J) a ruled group is priced past the burst: it overdraws the bucket, and its sender waits the rest out (D241)');
+  {
+    const BIG = "({ name: 'Big', setup(t) { t.data.big = Array.from({ length: 125000 }, (_, k) => 1000000 + k); }, validate() {} })";
+    let n = 0;
+    const clock = { t: 1.7e12 }, T = quietly(() => createTable({}, { pid: HOST, now: () => clock.t, uid: () => `b${(++n).toString(16).padStart(7, '0')}` })).value;
+    T.open('Alice');
+    quietly(() => T.apply(HOST, { t: 'setRules', enabled: true, code: BIG }));
+    const g200 = { t: 'group', op: 'move', ids: Array.from({ length: 200 }, (_, k) => C(k)) }, price = floodCost(g200) * Math.ceil(T.rulesChars() / 100e3);
+    ok(price > 100 && T.mayAct(EVE, g200), `a group of 200 at ${T.rulesChars()} characters costs ${price} tokens, and goes from a full burst of 40`);
+    ok(!T.mayAct(EVE, g200) && !T.mayAct(EVE, { t: 'move' }), 'then nothing more goes');
+    clock.t += ((price - 40) / 20) * 1000 - 100; // (just short of paying it back: 20 tokens a second)
+    ok(!T.mayAct(EVE, { t: 'move' }), `${((price - 40) / 20).toFixed(1)} s later, less 0.1 s: still nothing`);
+    clock.t += 300;
+    const back = [1, 2, 3, 4, 5].filter(() => T.mayAct(EVE, { t: 'move' })).length;
+    ok(back === 4, `0.2 s past it: the 4 tokens it has back, and no more (${back})`);
+    clock.t += 2000;
+    ok(T.mayAct(EVE, g200), 'a burst later, the group goes again');
+  }
+
+  section("(J) a guest's sustained flood of ruled groups buys no more of the Worker's time than one of single moves (D241: I5)");
+  {
+    const BIG = "({ name: 'Big', setup(t) { t.data.big = Array.from({ length: 250000 }, (_, k) => 1000000 + k); }, validate() {} })";
+    const R = room(HOST, 'Alice', [[BOB, 'Bob']], 'k'), H = R.H;
+    R.job(HOST, { t: 'loadBox', box: { name: 'Many', imgs: [], table: { shape: 'rect', w: 4000, h: 3000 }, types: { tok: { kind: 'token', name: 'Unit', shape: 'rect', w: 40, faces: [{ label: 'U' }] } }, setup: Array.from({ length: 10 }, (_, r) => ({ piece: 'tok', count: 20, spread: [60, 0], at: [300, 300 + 80 * r] })) }, setup: true, clear: true });
+    R.job(HOST, { t: 'setRules', enabled: true, code: BIG });
+    const ids = Object.keys(H.state.items).filter((id) => H.state.items[id].t?.endsWith('/tok')).slice(0, 200), chars = H.rulesChars();
+    const time = (fn) => { const t0 = performance.now(); fn(); return performance.now() - t0; };
+    const single = Math.min(...[0, 1, 2].map((k) => time(() => R.job(BOB, { t: 'move', id: ids[k], x: 900 + 50 * k, y: 2500 }))));
+    const grp = time(() => R.job(BOB, { t: 'group', op: 'move', ids, dx: 0, dy: 40 }));
+    const price = floodCost({ t: 'group', ids }) * Math.ceil(chars / 100e3), groups = (20 / price) * grp / 1000, singles = 20 * single / 1000;
+    ok(H.state.rules.enabled && ids.length === 200 && R.same(), `t.data ${(chars / 1e6).toFixed(2)} MB: a single move ${single.toFixed(1)} ms, a group of 200 ${grp.toFixed(0)} ms (${price} tokens)`);
+    ok(groups <= singles, `a flood of groups buys ${groups.toFixed(2)} s of the Worker a second, one of single moves ${singles.toFixed(2)} s (was ${(0.5 * grp / 1000).toFixed(2)} s with the price capped at the burst)`);
+  }
+
+  section('(J) a fresh id is never digits alone: an object lists such a key first, out of the order it was added (D244)');
+  {
+    const ids = Array.from({ length: 100000 }, () => core.uid());
+    ok(ids.every((id) => /^[0-9a-f]{8}$/.test(id) && !/^\d+$/.test(id)), 'uid(): 100,000 ids, each 8 hex digits, none all digits');
+    const T = quietly(() => createTable({}, { pid: HOST })).value, names = Array.from({ length: 12 }, (_, k) => `Box ${k}`); // (core's own uid)
+    T.open('Alice');
+    for (const name of names) quietly(() => T.apply(HOST, { t: 'addBox', box: { name, imgs: [], pieces: [{ id: 'tok', kind: 'token', faces: [{ label: 'T' }] }] } }));
+    ok(J(Object.values(T.state.boxes).map((b) => b.name)) === J(names), `the catalog lists its 12 boxes in the order they were added (${J(Object.keys(T.state.boxes))})`);
   }
 }
 
@@ -2641,5 +2702,6 @@ function testFixup4B() {
   await guard('(G) fix-up 2 regressions', testFixup2);
   await guard('(H) fix-up 3 regressions', testFixup3);
   await guard('(I) 4B fix-up regressions', testFixup4B);
+  await guard('(J) 4B fix-up 2 regressions', testFixup4B2);
   report();
 })().catch(crash);

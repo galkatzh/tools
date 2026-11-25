@@ -43,7 +43,7 @@ node t-smoke.js         # one suite, output on the terminal
   within 1 s; go's stone #300 within 10 ms of Worker time), run alone, one
   at a time after the parallel batch, under the same lock: `SERIAL`, a
   comma-separated list of suite names, default
-  `t-p1-bench,core-p1-bench,core-p2-bench,core-p4-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench,t-p4-resume-bench,t-p4-hexfront,t-p4-hex-bench`.
+  `t-p1-bench,core-p1-bench,core-p2-bench,core-p4-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench,t-p4-resume-bench,t-p4-hexfront,t-p4-hex-bench,t-p4-select,t-p4-gflood`.
   A listed suite that doesn't exist fails the run.
 - Runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
   `/tmp/cardtable-tests.lock`): concurrent runs on a small machine starve each
@@ -2416,8 +2416,9 @@ answer a press of the dialog's own buttons; nothing they test goes through
 - **`t-p4-fix.js`** (Alice hosts, Bob on a desktop, Carol on an iPhone 13;
   the box «Corner yard»: two rows of tokens on a 12 × 6 yard, three pegs
   crowding a cell, a ×6 stack, 22 dice, two bags). 1: two Shift+clicks —
-  the group bar docks at the table area's top edge, no token is under it,
-  and the next Shift+click on the row above the picks picks (D236); a
+  the group bar docks at the table area's top edge (no piece is drawn
+  there), no token is under it, and the next Shift+click on the row above
+  the picks picks (D236, D240); a
   Shift+click on the bar selects no page text. 2: a Shift+double-click on a
   token and on a die picks and puts back, nothing flips or rolls. 3: 👜
   Into bag ▸ Pouch with the bag Sack among the picks: "put 2 items into the
@@ -2429,8 +2430,27 @@ answer a press of the dialog's own buttons; nothing they test goes through
   tap-tap only picks and puts back; a finger drag that starts on a token
   draws a box (the four inside picked, the token unmoved — D237); a band
   turned into a pinch by a second finger leaves no band. 6: chess (strict,
-  takes selections): two of your pieces Shift+clicked, no bar. Screenshots
-  `shots/p4-fix-desktop-dock.png`, `shots/p4-fix-iphone-corner.png`.
+  takes selections): two of your pieces Shift+clicked, no bar. 7 (fix-up
+  2, D240): «Rim rows», six rows of nine tokens from the table's top edge.
+  Alice, whose screen has them 45 px below the table area's top,
+  Shift+clicks tokens in that top row: the bar docks over the toolbar at
+  once, its buttons held off ≥ 390 ms (a MutationObserver on their
+  `disabled`), no token lies under it, and the next Shift+clicks — in the
+  top row and the row below — each pick their token; 🗑 of six asks first
+  ("🗑 Remove 6?", nothing removed), its second press logs "removed 6
+  items", and the toolbar is back. Bob, seated at a side (his view turns
+  the table: its rim along his screen's top): two picks dock the bar at the
+  table area's top edge, over no token, every toolbar button still his to
+  click, and a third pick leaves it where it is. Carol, zoomed in and
+  panned until the tokens reach her screen's top (35 px below the table
+  area's), ⬚ on: two taps in the middle dock the bar over the toolbar, no
+  token under it, taps on the highest and the lowest token each pick
+  theirs, ✕ (first in the bar) gives the toolbar back. Dan, a host alone at
+  a fresh table (its "What are we playing?" strip): two picks, no token
+  under the bar, and a click on each strip button still reaches it.
+  Screenshots `shots/p4-fix-desktop-dock.png`,
+  `shots/p4-fix-iphone-corner.png`, `shots/p4-fix2-desktop-toolbar.png`,
+  `shots/p4-fix2-desktop-top.png`, `shots/p4-fix2-iphone-toolbar.png`.
 - **`core-p4.test.mjs` (I)**: a group roll whose onAction removes a die (one
   line from the faces rolled, the rules on); Hexfront laid out without its
   rules — loadBox, Set up, Reset after a Disable — in two rooms: the Events
@@ -2442,6 +2462,25 @@ answer a press of the dialog's own buttons; nothing they test goes through
   snapshot, a place for an unknown item dropped loudly (D233); a ruled
   group's price at 1 MB of t.data and its watchdog budget from `T.rulesChars`
   (D234).
+- **`core-p4.test.mjs` (J)** (fix-up 2): a group of two whose validate
+  hooks take t.data's JSON away and back while hiding a function in it:
+  the rules go off with "t.data.fn is a function, not JSON", nothing of the
+  job left in the mirror or on the host (D242); a group of 200 at 1 MB
+  costs 121 tokens, goes from a full burst, and overdraws it — nothing
+  passes until (121 − 40) / 20 s have gone, then exactly the 4 tokens 0.2 s
+  bought (D241); at 2 MB, the Worker time a flood of groups buys a second
+  (20 / price × a group's time) is no more than a flood of single moves';
+  100,000 `uid()`s, none of digits alone, and 12 boxes added to a table
+  listed in the order they came (D244: an all-digit id is an array index,
+  listed first — `t-p4-cli.js`'s box list failed so about one run in
+  twenty).
+- **`t-p4-gflood.js`** (serial; Alice hosts a rules script whose t.data
+  holds 3 MB, Bob and Carol on desktops): for 24 s Bob sends a group move
+  of 200 every 2 s and Carol a single move every 2 s. Flood control lets 1
+  to 3 of Bob's groups through (each overdraws by its price, D241); each of
+  Carol's moves applies within 6 s, their median within 1 s (~1.6 s with
+  the price capped at the burst), the last third's waits no longer than
+  the first's, the job queue at most 3, the rules still on.
 - **Mechanism changes** (the wire's `pos`, D233, and the fixes' texts; no
   assertion removed or weakened): the folds of patches written outside
   core — `core-p1.test.mjs`'s spec model (and its list of a patch's keys),
@@ -2462,6 +2501,25 @@ answer a press of the dialog's own buttons; nothing they test goes through
   `core-p4.test.mjs`'s group of one expects the single action's refusal
   word for word ("🔒 …", D235) and its `appBudget()` passes a table with
   `rulesChars`; `t-p4-select.js`'s ⬚ chip reads "drag a box" (D237).
+- **Mechanism changes in fix-up 2** (no assertion removed or weakened):
+  `t-p4-attack.js`'s extra broadcasts before the scan are Bob's moves of
+  three hidden items, each awaited as its own body (one pawn's move gave
+  her 6 bodies and 10 meetings with the hidden items under load, short of
+  the check's 11); `t-p3-cli.js` waits for each REPL to have printed the
+  four new asks as they came before it types `asks` (under load the last
+  push landed inside the listing: 8 lines for 5); `core-p4.test.mjs` (I)'s "a group of 200: the whole burst, never more"
+  keeps its check (it goes from a full burst and takes all of it) under
+  D241's words; `run-all.sh`'s serial batch adds `t-p4-gflood`.
+- **B4 on this machine** (D243): `t-p1-bench`'s rAF rows ran at 33.3 ms
+  p95 here, with no long task — the code before this fix-up and the base
+  before 4B alike. A Chrome trace of its pan and twist found app costs: a
+  pan repainted the seat labels every frame (they are layers of their own
+  now), and each finger's move in a pinch forced the style the other had
+  just written (the table area's size and rect are no longer read back
+  per move). Alone on the same machine the rows now run at 16.7–16.8 ms;
+  what is left per frame is the browser's (re-layerizing the table's
+  layer, hover hit tests), so a heavily loaded machine can still push a
+  row over — rerun the suite alone before blaming a change.
 
 ## Storage and images (Phase 1B)
 

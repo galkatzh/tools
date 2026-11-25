@@ -689,7 +689,11 @@ its `a.to` / `a.from` as any move does. Every member takes every check of
 the single action (owner, lock, a hidden piece) and the whole pipeline
 above from a **savepoint** of its own: `handle`, `strict`, `validate`,
 the default effect, then its own `onAction` — so the next member's hooks
-see this one's done, as two actions in a row would. A veto, or an engine
+see this one's done, as two actions in a row would. Each member's gates
+(t.data plain JSON, its size, the asks) are checked against the job's
+start, as the patch is built from there: a function hidden while the
+members took t.data away and back fails the job closed, as it would a
+single action. A veto, or an engine
 refusal, rolls back that member alone (`rollbackTo` its savepoint) — what
 its `handle` and `validate` wrote too — and re-sends it; the others apply. A `handle` or `validate` that throws fails
 the whole group closed (nothing of it stays, the rules switch off); an
@@ -708,8 +712,9 @@ skipped: {the first reason}" (a refusal only when none applied; a group of
 one says just what its single action would). There is
 no `t.group` call: a script moves many pieces with the ops it has. A group
 costs 1 + ⌊N/20⌋ of flood control's tokens — while the rules run, that
-times ⌈t.data's size / 100 KB⌉, at most the whole burst, since each member
-passes over the rules' state (its savepoint, its gates) — and its watchdog
+times ⌈t.data's size / 100 KB⌉, since each member passes over the rules'
+state (its savepoint, its gates); past the burst of 40 it still goes from
+a full bucket, and overdraws it, so its sender waits the rest out — and its watchdog
 budget grows by 10 ms a member, plus 20 ms a member for each MB of
 `t.data`; a stop names the limit the job had. A group drag (`drag {ids, dx, dy}`, the live glide) is
 one token however many it carries, and never reaches the rules.

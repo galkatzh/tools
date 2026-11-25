@@ -142,6 +142,8 @@ const PROBE = `({ name: 'CLI probe', strict: true, allow: ['move', 'draw'],
     { id: 'two', prompt: 'Pass two cards', pick: 'hand', count: 2 },
     { id: 'num', prompt: 'How many?', pick: 'number', min: 2, max: 5 },
   ]), `the snapshot's asks, one per form (${json(s.asks.slice(1))})`);
+  // (each REPL prints the four new asks as they arrive; under load the last may come late, inside what `asks` prints next)
+  await until(() => ['Alice', 'Bob'].every((n) => printed(n, m[n], /✉ ❓ num: /).length === 1), 10000, 100);
   const lists = await Promise.all(['Alice', 'Bob'].map((n) => type(R[n], 'asks', (ls) => ls.filter((l) => /✉ ❓ /.test(l)).length >= 5)));
   const shown = lists.map((ls) => ls.filter((l) => /✉ ❓ /.test(l)));
   ok(json(shown[0]) === json(shown[1]) && shown[0].length === 5, '"asks" lists all five, the same text in both REPLs');

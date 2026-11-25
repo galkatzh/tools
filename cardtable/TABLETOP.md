@@ -822,17 +822,23 @@ sync and rendering, and the Worker together with `handle`.
        above it when there is room, else below, else as low as they fit —
        never over it, and a piece's bar stands clear of the whole crowd on
        its spot, so a finger's next tap there never lands on a button.
-       While a selection is being built its bar waits at the top edge of
-       the table instead, still under the finger and off the pieces still
-       to pick. On a touch screen the bar's buttons are a fingertip tall
-       (44 px).
+       While a selection is being built its bar docks where no piece is
+       drawn: along the top of the table when that strip is clear (a table
+       seen whole leaves its rim there), else in the toolbar's place, as a
+       phone's selection bar does — ✕ first, then the count — so it never
+       covers a piece still to pick nor moves under the finger; it holds its
+       buttons a moment after it appears, and 🗑 of more than five asks
+       first. On a touch screen the bar's buttons are a fingertip tall
+       (44 px), as far as the toolbar's height allows.
      - What review found and fixed: a group member refused by the table
        leaves nothing of what the rules wrote for it; a group move sends
        each peer the members' new places alone (a third of the bytes); a
        built-in box shuffles its face-down piles whenever it is laid out;
        a group under rules pays for the rules' state each member passes
-       over, in flood tokens and in watchdog time; Hexfront's events are
-       the side to play's alone, by any route.
+       over, in flood tokens (past the burst too) and in watchdog time;
+       Hexfront's events are the side to play's alone, by any route; a
+       phone pans, pinches and turns the table without making the browser
+       repaint the seat labels or restyle the table twice a frame.
      - A tap on a ×N badge or a spot's ×k opens the inspector (a long press
        on a phone, in place of the zoom, for a stack); ⋯ Inspect is in the
        bar of a stack or crowded piece the player may move. Take all arms
@@ -948,9 +954,12 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
 - **Tools stand beside what they act on:** the stack inspector and a
   piece's bar are placed next to their pieces — a crowded spot counted
   whole — never over them while the screen has room, with fingertip-sized
-  buttons on a touch screen; a selection being built keeps its bar at the
-  top edge of the table instead, off the pieces still to pick and still
-  under the finger (§3, §4).
+  buttons on a touch screen (§3, §4).
+- **A selection being built has its bar where no piece is:** along the top
+  of the table when no piece lies there, else over the toolbar (✕ gives it
+  back), so it never covers a piece still to pick nor moves under a finger;
+  its buttons wait a moment after it appears, and 🗑 of more than a few
+  asks first (§3, §4).
 - **A selection mode means selecting:** with ⬚ on, a drag draws a box
   wherever it starts (but on a picked piece, which carries the lot) and a
   click only picks — a double one never flips or rolls (§3).
@@ -961,4 +970,6 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
   place alone, so a 200-piece group move costs each peer about 11 KB (§1,
   §3).
 - **A group pays for what it costs:** while rules run, its price and its
-  watchdog time grow with the rules' state each member passes over (§5).
+  watchdog time grow with the rules' state each member passes over — its
+  price past the burst too, so its sender waits the rest out and a flood of
+  groups buys no more of the rules' time than single moves do (§5).

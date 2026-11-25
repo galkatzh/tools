@@ -2945,9 +2945,11 @@ function renderAll(prev = new Map(), prevPlayers) {
 let viewAngle = 0;
 let manualView = false; // true after a manual rotation, until 🧭 resets it
 let zoomZ = 1, panX = 0, panY = 0;
-// The table area's size, read by layout() (which runs on every resize): what
-// is placed in screen space between two layouts reads these, never the DOM,
-// so a patch that moves an item and puts up a name bulb forces no layout (B3).
+// The table area's size, read when it changes (its ResizeObserver): layout()
+// and what is placed in screen space read these, never the DOM, so a patch
+// that moves an item and puts up a name bulb forces no layout (B3), nor does
+// a pan, zoom or pinch frame — two fingers move twice a frame, and each read
+// after the other's writes made the browser restyle the table then (B4).
 let wrapW = 0, wrapH = 0;
 
 /** Rotates a vector by `a` degrees (screen coords, clockwise-positive). */
@@ -3006,32 +3008,37 @@ function sizeBadges(s) {
   if (bz !== badgeZ) viewSheet.cssRules[0].style.setProperty('--bz', (badgeZ = bz));
 }
 
-function layout() {
-  const w = (wrapW = wrapEl.clientWidth), h = (wrapH = wrapEl.clientHeight);
-  // The fit: a round table by its diameter (so it never refits as the view
-  // turns), a rectangle by its bounding box at the view's angle.
+/** The view's fit (no DOM: what layout() then draws): `scale` from the
+ *  table area's size, the view's angle and zoom — a round table fits by its
+ *  diameter (so it never refits as the view turns), a rectangle by its
+ *  bounding box at the view's angle — and the pan kept so that at least the
+ *  table's centre stays reachable. */
+function fit() {
+  if (!wrapW) [wrapW, wrapH] = [wrapEl.clientWidth, wrapEl.clientHeight]; // (before the observer's first call)
   const a = (viewAngle * Math.PI) / 180, c = Math.abs(Math.cos(a)), sn = Math.abs(Math.sin(a)), rect = TABLE.shape === 'rect';
   const bw = rect ? TABLE_W * c + TABLE_H * sn : TABLE_W, bh = rect ? TABLE_W * sn + TABLE_H * c : TABLE_H;
-  scale = Math.min(w / bw, h / bh) * zoomZ; // fit × user zoom
+  scale = Math.min(wrapW / bw, wrapH / bh) * zoomZ; // fit × user zoom
+  feltW = bw * scale; // (placeSeats: the hint's plate fits its middle, the notices the margins beside it)
+  panX = clamp(panX, -(bw * scale) / 2, (bw * scale) / 2);
+  panY = clamp(panY, -(bh * scale) / 2, (bh * scale) / 2);
+}
+function layout() {
+  fit();
   if (viewAngle !== textAngle) viewSheet.cssRules[1].style.setProperty('--view', `${(textAngle = viewAngle)}deg`);
   if (!pinch) {
     sizeBadges(scale);
     if (viewAngle !== badgeAngle) viewSheet.cssRules[2].style.setProperty('--view', `${(badgeAngle = viewAngle)}deg`);
   }
-  feltW = bw * scale; // (placeSeats: the hint's plate fits its middle, the notices the margins beside it)
-  // keep at least the table's center reachable
-  panX = clamp(panX, -(bw * scale) / 2, (bw * scale) / 2);
-  panY = clamp(panY, -(bh * scale) / 2, (bh * scale) / 2);
   // Center the unscaled table on the wrap; then scale, rotate, and pan.
-  tableEl.style.left = `${(w - TABLE_W) / 2}px`;
-  tableEl.style.top = `${(h - TABLE_H) / 2}px`;
+  tableEl.style.left = `${(wrapW - TABLE_W) / 2}px`;
+  tableEl.style.top = `${(wrapH - TABLE_H) / 2}px`;
   tableEl.style.transform = `translate(${panX}px, ${panY}px) rotate(${viewAngle}deg) scale(${scale})`;
   if (barHTML) placeBar();
   placeInspector();
   for (const b of bulbs.values()) placeFx(b);
   renderPlayers(true); // seat labels live in screen space and track the view
 }
-new ResizeObserver(layout).observe(wrapEl);
+new ResizeObserver(() => { [wrapW, wrapH] = [wrapEl.clientWidth, wrapEl.clientHeight]; layout(); }).observe(wrapEl);
 
 /** Pointer event (or {clientX, clientY}) `e` → table coords: the item
  *  frame, #table's padding box, which is its whole w × h (style.css: the
@@ -3048,9 +3055,9 @@ function tableToScreen(x, y) {
   return [wrapW / 2 + panX + rx, wrapH / 2 + panY + ry];
 }
 
-/** Re-anchors the view so table point `t` sits at client position (cx, cy). */
-function anchorView(t, cx, cy) {
-  const r = wrapEl.getBoundingClientRect();
+/** Re-anchors the view so table point `t` sits at client position (cx, cy)
+ *  (`r`: the table area's client rect, if read already), and draws it. */
+function anchorView(t, cx, cy, r = wrapEl.getBoundingClientRect()) {
   const [sx, sy] = tableToScreen(t.x, t.y);
   panX += cx - r.left - sx;
   panY += cy - r.top - sy;
@@ -3062,7 +3069,7 @@ wrapEl.addEventListener('wheel', (e) => {
   e.preventDefault();
   const before = toTable(e);
   zoomZ = clamp(zoomZ * Math.exp(-e.deltaY * 0.0015), 0.5, zoomMax());
-  layout();
+  fit();
   anchorView(before, e.clientX, e.clientY);
 }, { passive: false });
 
@@ -3089,6 +3096,7 @@ function applySeatView() {
 const ARM_MS = 5000; // how long ✥ Move stays armed
 let moveAll = null; // {id, at}: ✥ Move armed at `at` — the next drag of that ×N stack or supply moves all of it (until ARM_MS has passed)
 let giveOpen = false; // a list is open in the bar: the host's Give ▸, or the group bar's 👜 Into bag ▸
+let delAsk = null; // the group bar's 🗑 asks "Remove N?" (a token: its ARM_MS timer's; GROUP_CMDS.del)
 let barHTML = ''; // what the bar shows (barFor's or groupBar's markup)
 /** Selects item `id` alone (null: nothing), with its bar; the multi-selection stays as it is.
  *  `picked`: it is a selection being built by picks (Shift, ⬚), whose bar docks (placeBar). */
@@ -3111,17 +3119,38 @@ function markSelected() {
 function barNow() {
   if (strictRules() && view.rules.wants?.includes('select')) return '';
   if (multi.size) return groupBar();
-  const it = sel && view.items[sel];
-  return it ? barFor(sel, it) : '';
+  const it = sel && view.items[sel], html = it ? barFor(sel, it) : '';
+  return html && picking ? `${html}<button data-cmd="none">✕</button>` : html; // (docked over the toolbar, it gives the toolbar back: placeBar)
 }
 /** Builds the bar (hidden when it offers nothing, while the inspector is
  *  open, and while a group is carried) and places it. An armed ✥ Move shows
- *  how much of its time is left (style.css). */
+ *  how much of its time is left (style.css). A selection's bar (placeBar)
+ *  holds its buttons off a moment when it shows or offers something else
+ *  (armBar); over the toolbar, it fits its row to it. */
 function renderBar() {
+  const was = barEl.classList.contains('hidden') ? '' : barHTML;
   barEl.innerHTML = barHTML = barNow();
   barEl.classList.toggle('hidden', !barHTML || !!insp || !!drag?.group);
   barEl.querySelector('.on[data-cmd="all"]')?.style.setProperty('animation-delay', `${moveAll.at - Date.now()}ms`);
-  if (barHTML) placeBar();
+  if (!barHTML) return;
+  placeBar();
+  if (!multi.size && !picking) return;
+  if (barHTML !== was || barArm) armBar(); // (new buttons: held off too while it arms)
+  if (docked()) fitDock();
+}
+// A selection's bar holds its buttons off for BAR_ARM_MS after it shows or
+// offers something else (as #box-ask's, D204): a click or a tap aimed at
+// what lay there a moment before — the felt, a toolbar button, the button
+// that was there (the 🗑 that became "🗑 Remove 8?") — presses nothing. The
+// keys (R, F, Space, Delete) still act at once: a key is no misaimed tap.
+// (A piece's own bar isn't held: it shows beside the piece just tapped,
+// where the next quick tap is meant for it.)
+const BAR_ARM_MS = 400;
+let barArm = 0; // the timer that lets the docked bar's buttons act again (0: they act)
+function armBar() {
+  for (const b of barEl.querySelectorAll('button')) b.disabled = true;
+  clearTimeout(barArm);
+  barArm = setTimeout(() => { barArm = 0; for (const b of barEl.querySelectorAll('button')) b.disabled = false; }, BAR_ARM_MS);
 }
 /** Keeps the open bar true to the view after a redraw (`prev`: the items
  *  it redrew, null: all): redrawn when what it offers changed — its item,
@@ -3211,23 +3240,59 @@ function placeBeside(el, b) {
 // finger-sized on small screens; it goes beside what it acts on, where it is
 // drawn: the item — with the rest of its crowded spot, whose pieces a finger
 // presses to take the top one (topOf). A selection being built (two or more
-// picked, or one picked by Shift or ⬚) docks its bar at the top edge of the
-// table area instead (D236): beside the picks, it lay on the very pieces to
-// pick next, and moved with each pick, so a tap or a click meant for a piece
-// hit whichever button had come under it (🗑 removed the group). It stands
-// beside them only when the top edge would cover one of them.
+// picked, or one picked by Shift or ⬚) docks its bar instead, where no piece
+// is drawn, so it never moves under a finger nor lies on a piece still to
+// pick (D240): along the top of the table area — below the "What are we
+// playing?" strip when it shows — when no piece is drawn across that strip
+// of the screen (a table seen whole leaves its rim there), else over the
+// toolbar, as a phone's selection bar does (the toolbar comes back with ✕,
+// Esc, or a click on the felt). Beside the picks it moved with each pick and
+// lay on the next row; at the top edge regardless, on the top row and the
+// game strip: a tap meant for a piece ran a command for the whole group.
+const toolbarEl = $('toolbar'), barHome = barEl.nextElementSibling; // (where the bar goes back to in #table-wrap)
+/** How tall a strip the docked bar takes along the table area's top (its 44 px buttons, its padding, a gap). */
+const DOCK_H = 60;
+/** Whether the bar is docked over the toolbar (placeBar). */
+const docked = () => barEl.parentNode === toolbarEl;
+/** Where a selection's bar docks in the table area: the top of a strip
+ *  across it, below the game strip when that shows, in which no piece (but
+ *  a board) is drawn — or null, when every such strip holds one. */
+function dockTop() {
+  const strip = $('game-strip'), top = strip.classList.contains('hidden') ? 4 : strip.offsetTop + strip.offsetHeight + 4;
+  for (const id in view.items) {
+    const b = !isBoard(view.items[id]) && screenBox([id]);
+    if (b && b.y0 < top + DOCK_H && b.y1 > top && b.x1 > 0 && b.x0 < wrapW) return null;
+  }
+  return top;
+}
 function placeBar() {
-  if (multi.size || picking) {
-    const ids = multi.size ? [...multi] : [sel], hw = barEl.offsetWidth / 2, x0 = wrapW / 2 - hw, x1 = wrapW / 2 + hw, y1 = 4 + barEl.offsetHeight;
-    if (!ids.some((id) => { const m = screenBox([id]); return m && m.x0 < x1 && m.x1 > x0 && m.y0 < y1; })) {
-      barEl.style.left = `${wrapW / 2}px`;
-      barEl.style.top = '4px';
-      return;
-    }
+  const top = multi.size || picking ? dockTop() : undefined;
+  if (top === null) { // (over the toolbar)
+    if (docked()) return;
+    toolbarEl.append(barEl);
+    barEl.classList.add('docked');
+    barEl.style.left = barEl.style.top = '';
+    return;
+  }
+  if (docked()) {
+    wrapEl.insertBefore(barEl, barHome);
+    barEl.classList.remove('docked', 'more');
+  }
+  if (top !== undefined) {
+    barEl.style.left = `${wrapW / 2}px`;
+    barEl.style.top = `${top}px`;
+    return;
   }
   const b = screenBox(multi.size ? multi : fanPos.has(sel) ? spotMembers(atOf.get(sel)) : [sel]);
   if (b) placeBeside(barEl, b);
 }
+/** Fits the docked bar's one row to the toolbar it covers: its end fades
+ *  while more of it lies off the screen (a phone: scroll it sideways). */
+function fitDock() {
+  barEl.classList.toggle('more', barEl.scrollLeft + barEl.clientWidth < barEl.scrollWidth - 1);
+}
+barEl.addEventListener('scroll', fitDock, { passive: true });
+new ResizeObserver(() => { if (docked()) fitDock(); }).observe(toolbarEl);
 
 // --- multi-select (spec §4g) -------------------------------------------------
 // Several items picked at once: a rubber band (Shift+drag on the felt — on
@@ -3260,6 +3325,7 @@ const mayMove = (id) => { const it = view.items[id]; return !!it && mayTouch(it)
 function setMulti(ids) {
   multi = new Set(ids);
   giveOpen = false;
+  delAsk = null;
   if (multi.size === 1) {
     const [id] = multi;
     multi.clear();
@@ -3342,7 +3408,7 @@ function groupBar() {
     + (locks.length ? b('lock', locks.some((it) => !it.lock) ? '🔒 Lock' : '🔓 Unlock') : '')
     + (bags.length ? b('bag', '👜 Into bag ▸', giveOpen ? 'on' : '') + (giveOpen ? `<span class="give">${
       bags.map(([id, bg]) => `<button data-cmd="bagTo" data-to="${esc(id)}">👜 ${esc(bg.name || 'Bag')}</button>`).join('')}</span>` : '') : '')
-    + (mine.length ? b('del', '🗑') : '')
+    + (mine.length ? (delAsk ? b('del', `🗑 Remove ${mine.length}?`, 'on') : b('del', '🗑')) : '')
     + b('none', '✕');
 }
 /** Whether a turn of public item `it` shows (the bar's ⟲ ⟳): cards and piles; a piece that isn't a die and doesn't look the same at any angle. */
@@ -3351,9 +3417,11 @@ const turnsAround = (it) => it.k === 'c' || it.k === 'p' || (it.k === 'g' && !is
 const turnsOver = (it) => it.k === 'c' || (it.k === 'p' ? pileTurns(it) : it.k === 'g' && flips(it));
 /** The step the group bar's ⟲ ⟳ turn by: the largest rotStep among members `ids`, else 90 (each member snaps it to its own). */
 const groupStep = (ids) => Math.max(0, ...ids.map((id) => flagsOf(view.items[id], boxes).rotStep || 0)) || 90;
+/** 🗑 of more than this many members asks first, in the bar (GROUP_CMDS.del). */
+const GROUP_DEL_ASK = 5;
 /** Sends one `group` `op` of the members among `ids` this player may move, that `fit` takes (`o`: its other fields). */
 const groupAct = (op, ids, o = {}, fit = () => true) => act({ t: 'group', op, ids: ids.filter((id) => mayMove(id) && fit(view.items[id])), ...o });
-/** The group bar's commands on members `ids` (the keys run them too: see keydown). */
+/** The group bar's commands on members `ids` (`key`: a key ran it, not a button — see keydown). */
 const GROUP_CMDS = {
   rl: (ids) => groupAct('rot', ids, { rot: -groupStep(ids) }, turnsAround),
   rr: (ids) => groupAct('rot', ids, { rot: groupStep(ids) }, turnsAround),
@@ -3366,7 +3434,15 @@ const GROUP_CMDS = {
   lock: (ids) => { const its = ids.filter((id) => mayLock(view.items[id])); act({ t: 'group', op: 'lock', ids: its, on: its.some((id) => !view.items[id].lock) }); },
   bag: () => { giveOpen = !giveOpen; renderBar(); },
   bagTo: (ids, bag) => groupAct('toBag', ids, { bag }, (it) => it.k === 'g' && bagTakes(view.items[bag], it, it.n || 1)), // (pieces only: what core's toBag takes)
-  del: (ids) => groupAct('del', ids),
+  del: (ids, to, key) => { // (from the bar, more than GROUP_DEL_ASK ask first: "🗑 Remove 12?" removes them, for ARM_MS; Delete removes at once)
+    if (!key && !delAsk && ids.filter(mayMove).length > GROUP_DEL_ASK) {
+      const ask = (delAsk = {});
+      setTimeout(() => { if (delAsk === ask) { delAsk = null; renderBar(); } }, ARM_MS);
+      return renderBar();
+    }
+    delAsk = null;
+    groupAct('del', ids);
+  },
   none: () => setMulti([]),
 };
 
@@ -3569,13 +3645,14 @@ const CMDS = {
   give: () => { giveOpen = !giveOpen; renderBar(); },
   giveTo: (id, it, to) => act({ t: 'owner', id, to }),
   inspect: (id) => openInspector(inspectOf(id)),
+  none: () => setMulti([]), // (the ✕ of a docked bar: one piece picked by Shift or ⬚)
 };
 /** The step ⟲ and ⟳ turn item `it` by: a card's 90°; a piece's rotStep (45 when it turns freely). */
 const rotStep = (it) => (pieceLike(it) ? flagsOf(it, boxes).rotStep || 45 : 90);
-/** Runs bar command `cmd` (`to`: its button's data-to): on the multi-selection's members, or on the selected item. */
-function runCmd(cmd, to) {
+/** Runs bar command `cmd` (`to`: its button's data-to; `key`: a key ran it): on the multi-selection's members, or on the selected item. */
+function runCmd(cmd, to, key = false) {
   const it = sel && view.items[sel];
-  if (multi.size) GROUP_CMDS[cmd]?.([...multi], to);
+  if (multi.size) GROUP_CMDS[cmd]?.([...multi], to, key);
   else if (it) CMDS[cmd]?.(sel, it, to);
 }
 barEl.addEventListener('mousedown', (e) => { if (e.shiftKey) e.preventDefault(); }); // (a Shift+click on a button, picking along, would select the page's text up to it)
@@ -3669,7 +3746,7 @@ document.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase(), cmd = k === 'r' ? (e.shiftKey ? 'rl' : 'rr') : { f: 'flip', ' ': 'roll', delete: 'del', backspace: 'del' }[k];
   if (!cmd || barEl.classList.contains('hidden') || !barEl.querySelector(`[data-cmd="${cmd}"]`)) return;
   e.preventDefault();
-  runCmd(cmd);
+  runCmd(cmd, undefined, true);
 });
 /** Reveals a peeked card {d, i} or piece {t, f} to this player only (the host's answer to a peek action). */
 function showPeek(c) {
@@ -3866,6 +3943,7 @@ function startPinch() {
     d0: Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1,
     ang0: (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI,
     t0: toTable({ clientX: m.x, clientY: m.y }), // table point pinned under the fingers
+    r: wrapEl.getBoundingClientRect(), // the table area's client rect, read once (each finger's move would force a restyle: updatePinch)
     fit: scale / zoomZ, // the fit as the fingers land: whether a rest resizes the badges goes by it too (pinchRest)
     rest: 0, // the timer that sees the fingers rest (pinchRest)
   };
@@ -3895,8 +3973,8 @@ function updatePinch() {
   zoomZ = clamp(pinch.z0 * (d / pinch.d0), 0.5, zoomMax());
   viewAngle = (((pinch.a0 + ang - pinch.ang0) % 360) + 360) % 360;
   manualView = true;
-  layout();
-  anchorView(pinch.t0, m.x, m.y); // the felt tracks the fingers
+  fit();
+  anchorView(pinch.t0, m.x, m.y, pinch.r); // the felt tracks the fingers (one layout, reading nothing back)
   clearTimeout(pinch.rest);
   pinch.rest = setTimeout(pinchRest, PINCH_REST_MS);
 }

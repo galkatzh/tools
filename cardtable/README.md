@@ -163,13 +163,15 @@ Playing on the free table:
   selectable (locked or someone else's)"). The picked pieces wear the
   selection ring; drag any one of them and they all go, together — the
   others see them glide, one message every 60 ms however many there are —
-  and land each on its own spot. Their bar waits at the top edge of the
-  table (beside them when it would cover one), off the pieces you are still
-  picking, and acts on them all with one action each: **⟲ ⟳** (by the
+  and land each on its own spot. While you pick, their bar docks where no
+  piece is drawn — along the top of the table, or, when pieces lie there,
+  in the toolbar's place (**✕** first, then the count; ✕ brings the toolbar
+  back) — so it never covers a piece you are about to pick, and acts on
+  them all with one action each: **⟲ ⟳** (by the
   largest turn step among them), **Flip**, **🎲 Roll** (their dice, as one
   throw, 20 at most), **🔒 / 🔓**, **👜 Into bag ▸** (the bags on the
-  table; only pieces go in), **🗑**, and **✕**; so do
-  **R**, **F**, **Space** and **Delete**. **Esc**, a click on the felt, ✕ or
+  table; only pieces go in), **🗑** (more than five ask first: "🗑 Remove
+  8?"), and **✕**; so do **R**, **F**, **Space** and **Delete**. **Esc**, a click on the felt, ✕ or
   ⬚ off clears them. One action for the lot means one log line ("moved 8
   items", "rolled 3 dice: 4 · 1 · 6"), and one notice for the members the
   table or the rules refused ("2 of 8 were skipped: That belongs to Bob").
@@ -317,7 +319,9 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
 - **Flood control**: the host is the only authority, so a guest's action
   burst could freeze the table for everyone: each guest may send a burst
   of 40 actions, then 20 per second (more are dropped, and they're told to
-  slow down), and the decks guests add share one 1.5M-char budget per
+  slow down) — a group of many items costs more, and under a rules script
+  with a large state more again, past the burst too (the sender then waits
+  it out) — and the decks guests add share one 1.5M-char budget per
   table (saved with it), so nobody can fill the host's browser storage.
   Card and deck names lose their control characters on the way in.
 - **Persistence**: the host saves the table in IndexedDB (`store.js`,
@@ -965,5 +969,6 @@ the group bar and the inspector on a desktop and phones held both ways),
 exported and resumed) — with their benches `t-p4-box-bench.js`,
 `t-p4-resume-bench.js` and `t-p4-hex-bench.js` (B18 and B19 on Hexfront) in
 the serial batch; `t-p4-fix.js` keeps the 4B review's fix-ups (the bar
-docked while picking, ⬚'s corner, a double click that only picks, chess's
-group bar).
+where no piece is drawn while picking, ⬚'s corner, a double click that only
+picks, chess's group bar) and `t-p4-gflood.js`, in the serial batch, a
+guest's flood of groups under a 3 MB rules state.

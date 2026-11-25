@@ -167,7 +167,10 @@ export function seatAngles(tb, seats) {
 
 // --- small helpers --------------------------------------------------------
 export const rand = (n) => [...crypto.getRandomValues(new Uint8Array(n))].map((b) => b.toString(16).padStart(2, '0')).join('');
-export const uid = () => rand(4);
+/** A fresh item, deck or box id: 8 hex digits, never digits alone — a key
+ *  like "93673545" is an array index, which an object lists before every
+ *  other key, out of the order it was added (📦's boxes, the terminal's). */
+export const uid = () => { let id; do id = rand(4); while (/^\d+$/.test(id)); return id; };
 export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 /** obj[key] only when it's the object's OWN property — never Object.prototype
  *  via a crafted id like "__proto__" or "constructor". Only a string or a
@@ -4069,11 +4072,15 @@ export function createTable(host, env = {}) {
     const done = handled ? 'handled' : took && 'took';
     if (!host.rules?.enabled) return g ? done : bump();
     // The checkpoint: what is kept even if a later hook fails. Its gates
-    // (data's size, secret, asks) already hold unless handle or validate broke them.
+    // (data's size, secret, asks) already hold unless handle or validate broke
+    // them — checked against the job's start, as settle's are: the patch says
+    // a field only when its JSON differs from there, so a function in a field
+    // whose JSON a group's members took away and back (one member's savepoint
+    // to the next) is refused here, not left for the Worker's post (D129).
     let bad;
     try {
       J.cp = savepoint();
-      bad = jobHooks.length && gateProblem(J.frames[J.cp].json, J.frames[base].json);
+      bad = jobHooks.length && gateProblem(J.frames[J.cp].json, J.frames[0].json);
     } catch (err) { bad = `the rules' state is not JSON (${err.message})`; }
     if (bad) {
       const names = hooksSince(base);
@@ -4747,24 +4754,27 @@ export function createTable(host, env = {}) {
   const acts = new Map(), notes = new Map(), selects = new Map(); // player id → token bucket (see flood)
   const talk = new Map(); // player id → timestamps of recent chats/renames
   /** Token bucket: true while `key` may act — a burst of `burst`, refilling
-   *  at `perSec`. `map` keeps each key's {n, at}. */
+   *  at `perSec`, `cost` tokens an act. `map` keeps each key's {n, at}. An
+   *  act that costs more than the whole burst goes from a full bucket and
+   *  overdraws it: its sender waits the rest out before acting again. */
   function flood(map, key, burst, perSec, cost = 1) {
     const ts = now(), b = map.get(key) || { n: burst, at: ts };
     b.n = Math.min(burst, b.n + ((ts - b.at) / 1000) * perSec);
     b.at = ts;
     map.set(key, b);
-    if (b.n < cost) return false;
+    if (b.n < Math.min(cost, burst)) return false;
     b.n -= cost;
     return true;
   }
   /** Every action re-renders the host (the one authority): a guest may send
    *  bursts of 40 tokens (a drag, a reconnect's queue), then 20 per second;
    *  action `a` costs floodCost(a) of them (a `group`: 1 + ⌊N/20⌋) — while
-   *  the rules run, a group's times ⌈t.data's size / GROUP_DATA_CHARS⌉, at
-   *  most the whole burst: each member passes over the rules' state (its
-   *  savepoint, its gates), so a group costs the Worker what as many single
-   *  actions would, and is priced so (D234). */
-  const mayAct = (p, a) => flood(acts, p, 40, 20, a?.t === 'group' && host.rules?.enabled ? Math.min(40, floodCost(a) * Math.max(1, Math.ceil(rulesChars() / GROUP_DATA_CHARS))) : floodCost(a));
+   *  the rules run, a group's times ⌈t.data's size / GROUP_DATA_CHARS⌉: each
+   *  member passes over the rules' state (its savepoint, its gates), so a
+   *  group costs the Worker what many single actions would, and is priced so,
+   *  past the burst too (it overdraws: flood) — a flood of them buys no more
+   *  of the Worker's time than single actions do (D234, D241). */
+  const mayAct = (p, a) => flood(acts, p, 40, 20, a?.t === 'group' && host.rules?.enabled ? floodCost(a) * Math.max(1, Math.ceil(rulesChars() / GROUP_DATA_CHARS)) : floodCost(a));
   const dataChars = new WeakMap(); // the rules' t.data object → its length as JSON (rulesChars)
   /** How large the running rules' state is: t.data's length as JSON (0 with
    *  the rules off), kept per t.data object (the host's is replaced, never

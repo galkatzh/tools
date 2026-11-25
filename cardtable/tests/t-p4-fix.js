@@ -1,8 +1,8 @@
 // Phase 4B fix-up regressions (the reviewers' findings), on real screens —
 // a desktop guest (mouse and keyboard), an iPhone 13 (CDP touches), host:
 //  1. a selection built by Shift+clicks: its bar docks at the table area's
-//     top edge, off the pieces still to pick, so the next click picks
-//     (D236); a Shift+click on the bar selects no page text;
+//     top edge, off the pieces still to pick, so the next click picks (D236,
+//     D240); a Shift+click on the bar selects no page text;
 //  2. Shift+double-click picks and puts back: nothing flips, rolls or draws;
 //  3. 👜 Into bag ▸ with a bag among the picks sends only what a bag takes
 //     (no "skipped" notice); 🎲 Roll of 22 dice rolls 20 and says so;
@@ -11,7 +11,13 @@
 //  5. on the phone, ⬚: its chip stands above ⬚, no seat label under ⬚; a
 //     tap-tap only picks; a drag that starts on a piece draws a box (D237);
 //     a pinch that began as a band leaves no band;
-//  6. strict rules that take selections (chess): no group bar either.
+//  6. strict rules that take selections (chess): no group bar either;
+//  7. (fix-up 2) picks in the TOP row of the screen — a desktop, and a
+//     phone zoomed in: with pieces along the table area's top the bar takes
+//     the toolbar's place, else it docks there and the toolbar stays; no
+//     piece is ever under it, every click and tap reaches its piece; its
+//     buttons wait 400 ms; 🗑 of more than five asks first; a host alone
+//     keeps the game strip (D240).
 'use strict';
 const h = require('./h');
 const { ok, section } = h;
@@ -19,7 +25,7 @@ const P = require('./p2t-lib');
 const P3 = require('./p3-lib');
 const { until, view, act } = require('./p1-lib');
 const { pickGame } = require('./stones-lib');
-const { shown, box, overlap, toasts, shot, tap, pinch, badgeAt } = require('./p4s-lib');
+const { shown, box, overlap, toasts, shot, tap, press, pinch, badgeAt } = require('./p4s-lib');
 
 const J = JSON.stringify;
 /** The test box (original): a 12 × 6 yard of 100-unit cells with two rows of
@@ -64,12 +70,12 @@ const linesBy = async (p, who, n) => (await view(p)).log.slice(n).filter((e) => 
   ok(ROWS.every(Boolean) && pegs.length === 3 && dice.length === 22, `found the pieces (16 tokens, ${pegs.length} pegs, ${dice.length} dice)`);
   const XY = (p, id) => P.itemXY(p, id), shift = async (p, fn) => { await p.keyboard.down('Shift'); try { await fn(); } finally { await p.keyboard.up('Shift'); } };
 
-  section('1. desktop: Shift+clicks build a selection; its bar docks at the top edge, clear of every piece, and the next click picks (D236)');
+  section('1. desktop: Shift+clicks build a selection; its bar docks at the table area\'s top edge, clear of every piece, and the next click picks (D236, D240)');
   await shift(bob, async () => { await tap(bob, await XY(bob, tokAt(0, 1))); await tap(bob, await XY(bob, tokAt(1, 1))); });
   let s = await shown(bob);
   const bar = await box(bob, '#action-bar'), wrap = await box(bob, '#table-wrap');
   ok(J(s.ids.sort()) === J([tokAt(0, 1), tokAt(1, 1)].sort()) && /^2 selected/.test(s.bar), `two picked, the group bar ("${s.bar.slice(0, 30)}")`);
-  ok(bar && bar.t - wrap.t < 12, `the bar stands at the table area's top edge (${Math.round(bar.t - wrap.t)} px below it)`);
+  ok(bar && bar.t - wrap.t < 12, `the bar stands at the table area's top edge (${Math.round(bar.t - wrap.t)} px below it), no piece drawn there`);
   const under = [];
   for (const id of ROWS) if ((await hitAt(bob, await XY(bob, id))) !== id) under.push(id);
   ok(!under.length, `no token is under the bar: a click on each reaches it (${under.length} covered)`);
@@ -191,5 +197,134 @@ const linesBy = async (p, who, n) => (await view(p)).log.slice(n).filter((e) => 
   } else await shift(W, async () => { for (const id of mine) await tap(W, await XY(W, id)); });
   s = await shown(W);
   ok(s.ids.length === 2 && s.bar === '', `${who} picks two of ${seated[W.pid]}'s pieces; no bar (${J(s.bar)})`);
+
+  section('7. picks in the top row of the screen, on a desktop and a zoomed phone: no piece under the docked bar (over the toolbar when pieces line the top), every click and tap reaches its piece; its buttons wait 400 ms; 🗑 of six asks first (D240)');
+  // (a game laid out to the table's rim: six rows of nine tokens from its top edge)
+  const RIM = {
+    name: 'Rim rows', imgs: [], table: { shape: 'rect', w: 1300, h: 1000 },
+    types: { tok: { kind: 'token', name: 'Token', w: 60, faces: [{ color: '#f59e0b', label: 'T' }, { color: '#0ea5e9', label: 'U' }] } },
+    setup: Array.from({ length: 6 }, (_, r) => ({ piece: 'tok', count: 9, spread: [120, 0], at: [70, 30 + 100 * r] })),
+  };
+  await act(alice, { t: 'setRules', enabled: false });
+  await act(alice, { t: 'loadBox', box: RIM, setup: true, clear: true });
+  ok(await until(async () => (await Promise.all([alice, bob, carol].map(view))).every((w) => !w.rules?.enabled && Object.keys(w.items).length === 54), 15000), 'the rim rows are set up on every screen, chess off');
+  /** Page p's items drawn in its table area (clear of its edges, ⬚'s corner and the bottom label): {id: {x, y}} (client px). */
+  const onScreen = (p) => p.evaluate(() => {
+    const w = document.getElementById('table-wrap').getBoundingClientRect(), out = {};
+    for (const el of document.querySelectorAll('#table .item')) {
+      const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+      if (x > w.left + 20 && x < w.right - 20 && y > w.top + 10 && y < w.bottom - 70) out[el.dataset.id] = { x, y };
+    }
+    return out;
+  });
+  /** Items `c` (onScreen's) in rows as drawn, top first, each left to right: [[{id, x, y}]]. */
+  const rowsOf = (c) => {
+    const rr = [];
+    for (const [id, q] of Object.entries(c).sort((a, b) => a[1].y - b[1].y)) {
+      const row = rr.find((r) => Math.abs(r[0].y - q.y) < 15);
+      if (row) row.push({ id, ...q }); else rr.push([{ id, ...q }]);
+    }
+    return rr.map((r) => r.sort((a, b) => a.x - b.x));
+  };
+  /** The items on page p's screen whose centre lies under the action bar (a click there would press it). */
+  const underBar = (p) => p.evaluate(() => [...document.querySelectorAll('#table .item')].filter((el) => {
+    const r = el.getBoundingClientRect();
+    return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest('#action-bar');
+  }).map((el) => el.dataset.id));
+  /** Whether page p's action bar is docked over the toolbar: inside its box, off the table area. */
+  const overToolbar = async (p) => { const [b, t, w] = [await box(p, '#action-bar'), await box(p, '#toolbar'), await box(p, '#table-wrap')]; return !!b && b.t >= t.t - 1 && b.b <= t.b + 1 && b.b <= w.t + 1; };
+  /** Whether page p's action bar stands at the table area's top edge. */
+  const atTop = async (p) => { const [b, w] = [await box(p, '#action-bar'), await box(p, '#table-wrap')]; return !!b && b.t >= w.t && b.t - w.t < 70; };
+  /** The toolbar's buttons on page p that a click at their centre doesn't reach. */
+  const toolbarBlocked = (p) => p.evaluate(() => [...document.querySelectorAll('#toolbar > button:not(.hidden)')].filter((b) => {
+    const r = b.getBoundingClientRect();
+    return r.width && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) !== b && !b.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+  }).map((b) => b.id));
+  // Alice (the host, seated at the bottom): the rows reach her screen's top edge — the bar takes the toolbar's place
+  await alice.evaluate(() => { // (the bar's buttons, as they turn off and on: [performance.now(), disabled])
+    window.__arm = [];
+    new MutationObserver((ms) => { for (const m of ms) window.__arm.push([performance.now(), m.target.disabled]); })
+      .observe(document.getElementById('action-bar'), { subtree: true, attributes: true, attributeFilter: ['disabled'] });
+  });
+  const rr = rowsOf(await onScreen(alice)), top = rr[0], mc = Math.floor(top.length / 2), aw = await box(alice, '#table-wrap');
+  ok(rr.length >= 6 && top.length >= 6 && top[0].y - aw.t < 90, `Alice's screen shows the rows, the top one ${Math.round(top[0].y - aw.t)} px below the table area's top (${rr.map((r) => r.length)})`);
+  await alice.keyboard.down('Shift');
+  await tap(alice, top[mc - 1]);
+  await until(() => alice.evaluate(() => window.__arm.length > 0 && [...document.querySelectorAll('#action-bar button')].every((b) => !b.disabled)), 3000, 50);
+  const arm = await alice.evaluate(() => window.__arm), off = arm.find((e) => e[1]), on = off && arm.findLast((e) => !e[1]);
+  ok(await overToolbar(alice) && off && on && on[0] - off[0] >= 390, `one Shift+click: tokens lie along the table area's top, so the bar docks over the toolbar, its buttons held off ${on && off ? Math.round(on[0] - off[0]) : '?'} ms, then live`);
+  await tap(alice, top[mc]);
+  await tap(alice, top[mc + 1]);
+  s = await shown(alice);
+  ok(s.ids.length === 3 && await overToolbar(alice), `three picked in the top row of the screen; the bar still over the toolbar ("${s.bar.slice(0, 30)}")`);
+  ok(!(await underBar(alice)).length, `no token lies under it (${J(await underBar(alice))})`);
+  await tap(alice, top[mc + 2]);
+  await tap(alice, rr[1][mc]);
+  s = await shown(alice);
+  ok(s.ids.length === 5 && s.ids.includes(top[mc + 2].id) && s.ids.includes(rr[1][mc].id), `the next Shift+clicks — in the top row, and in the row below — each pick their token (${s.ids.length} picked)`);
+  await shot(alice, 'p4-fix2-desktop-toolbar');
+  await tap(alice, rr[1][mc + 1]);
+  await alice.keyboard.up('Shift');
+  const six = (await shown(alice)).ids;
+  n0 = (await view(alice)).log.length;
+  await alice.click('#action-bar [data-cmd="del"]');
+  await h.sleep(700);
+  const still = (await view(alice)).items;
+  ok(six.length === 6 && /🗑 Remove 6\?/.test((await shown(alice)).bar) && six.every((id) => !!still[id]), `🗑 of six picked asks first: "${(await shown(alice)).bar.slice(-12)}"; nothing removed`);
+  await alice.click('#action-bar [data-cmd="del"]');
+  ok(await until(async () => { const w = await view(alice); return six.every((id) => !w.items[id]); }, 8000) && (await linesBy(alice, alice.pid, n0)).includes('removed 6 items'), `its second press removes them: ${J(await linesBy(alice, alice.pid, n0))}`);
+  ok(!(await toolbarBlocked(alice)).length, `the selection gone, the toolbar is back (${J(await toolbarBlocked(alice))} covered)`);
+
+  // Bob (seated at a side: his view turns the table, its rim along his screen's top): the bar docks there, the toolbar stays his
+  const br = rowsOf(await onScreen(bob)), bw = await box(bob, '#table-wrap');
+  ok(br[0][0].y - bw.t > 90, `Bob's top row is ${Math.round(br[0][0].y - bw.t)} px below the table area's top`);
+  await shift(bob, async () => { await tap(bob, br[0][1]); await tap(bob, br[0][2]); });
+  s = await shown(bob);
+  ok(s.ids.length === 2 && await atTop(bob) && !(await underBar(bob)).length, `two picked: the bar stands at the table area's top edge, over no token ("${s.bar.slice(0, 30)}")`);
+  ok(!(await toolbarBlocked(bob)).length, `and every toolbar button is still his to click (${J(await toolbarBlocked(bob))} covered)`);
+  await shot(bob, 'p4-fix2-desktop-top');
+  await shift(bob, async () => tap(bob, br[1][1]));
+  ok((await shown(bob)).ids.length === 3 && await atTop(bob), 'the next Shift+click picks a third; the bar has not moved');
+  await bob.keyboard.press('Escape');
+
+  // Carol's phone, zoomed in on the rows (a finger's size) and panned to bring them to the top of her screen: ⬚, two
+  // picks in the middle, then taps on the token highest on the screen and on the lowest
+  await carol.tap('#view-btn'); // (🧭: her seat's view, the whole table)
+  await h.sleep(400);
+  const cw = await box(carol, '#table-wrap'), c0 = Object.values(await onScreen(carol));
+  await pinch(carol, { x: c0.reduce((t, q) => t + q.x, 0) / c0.length, y: c0.reduce((t, q) => t + q.y, 0) / c0.length }, 60, 160);
+  await h.sleep(400);
+  const hi = await carol.evaluate(() => Math.min(...[...document.querySelectorAll('#table .item')].map((el) => { const r = el.getBoundingClientRect(); return r.top + r.height / 2; })));
+  const fp = await P.feltPoint(carol, { band: [0.05, 0.45] });
+  await P.touchDrag(carol, fp, { x: fp.x, y: fp.y - (hi - cw.t - 35) }, 12); // (a finger on the felt pans: the rows rise to the top edge)
+  await h.sleep(400);
+  await carol.tap('#sel-mode');
+  const cs = Object.entries(await onScreen(carol)).map(([id, q]) => ({ id, ...q })), cy = (cw.t + cw.b) / 2;
+  const near = [...cs].sort((a, b) => Math.hypot(a.x - (cw.l + cw.r) / 2, a.y - cy) - Math.hypot(b.x - (cw.l + cw.r) / 2, b.y - cy)).slice(0, 2);
+  for (const q of near) await tap(carol, q, true);
+  ok((await shown(carol)).ids.length === 2 && await overToolbar(carol), `Carol taps two tokens in the middle of her screen (${cs.length} on it): the bar docks over the toolbar`);
+  ok(!(await underBar(carol)).length, `no token on her screen lies under it (${J(await underBar(carol))})`);
+  const highest = cs.filter((q) => !near.includes(q)).sort((a, b) => a.y - b.y)[0], lowest = cs.filter((q) => !near.includes(q)).sort((a, b) => b.y - a.y)[0];
+  await tap(carol, highest, true);
+  await tap(carol, lowest, true);
+  s = await shown(carol);
+  ok(highest.y - cw.t < 80 && s.ids.length === 4 && s.ids.includes(highest.id) && s.ids.includes(lowest.id), `a tap on the token highest on her screen (${Math.round(highest.y - cw.t)} px below the table area's top) and on the lowest each pick theirs (${s.ids.length})`);
+  await shot(carol, 'p4-fix2-iphone-toolbar');
+  await press(carol, '#action-bar [data-cmd="none"]', true);
+  ok((await shown(carol)).ids.length === 0 && await carol.evaluate(() => document.getElementById('action-bar').classList.contains('hidden')), '✕ (first in the docked bar) clears them: the toolbar is back');
+  await carol.tap('#sel-mode');
+
+  // a host alone at a fresh table has the "What are we playing?" strip at the table's top: picking never covers it
+  const dan = await P3.join(env, 'Dan', env.url);
+  await act(dan, { t: 'loadBox', box: RIM, setup: true, clear: true });
+  ok(await until(async () => Object.keys((await view(dan)).items).length === 54 && await dan.evaluate(() => !document.getElementById('game-strip').classList.contains('hidden')), 15000), 'Dan, alone at a table of his own, has its game strip');
+  const dr = rowsOf(await onScreen(dan));
+  await shift(dan, async () => { await tap(dan, dr[1][3]); await tap(dan, dr[1][4]); });
+  const blocked = await dan.evaluate(() => {
+    const sr = document.getElementById('game-strip').getBoundingClientRect();
+    return [...document.querySelectorAll('#game-strip button')].map((b) => { const r = b.getBoundingClientRect(); return [b.textContent.trim(), r.left + r.width / 2, r.top + r.height / 2]; })
+      .filter(([, x]) => x > sr.left && x < sr.right).filter(([, x, y]) => !document.elementFromPoint(x, y)?.closest('#game-strip')).map(([t]) => t);
+  });
+  ok((await shown(dan)).ids.length === 2 && !(await underBar(dan)).length && !blocked.length, `two picked: the bar (${await overToolbar(dan) ? 'over the toolbar' : 'below the strip'}) covers no token, and a click on each of the strip's buttons still reaches it (${J(blocked)} covered)`);
   await env.done();
 })().catch(h.crash);

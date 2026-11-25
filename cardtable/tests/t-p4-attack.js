@@ -175,10 +175,13 @@ function scan(bodies, box, words = true) {
   ok(slow.includes('🚫 Too many actions — slow down'), `the rest refused by flood control (${J(slow.filter((m) => !/skipped/.test(m)))})`);
 
   section('nothing hidden in anything Mallory or Bob received: no face-down card\'s index, no hidden piece\'s type, face or side, no hidden word (§0.1 item 3, §2d)');
-  // (one more broadcast for her: how many bodies the earlier ticks coalesced into varies with the load — 5 or 6 — and the check below wants 6)
-  const b1 = (await S()).items[ID.b1];
-  await act(bob, { t: 'move', id: ID.b1, x: b1.x + 10, y: b1.y });
-  await until(async () => ((await sawM(M)).state || []).length > 5, 10000);
+  // (more broadcasts for her, each of a hidden item Bob moves, each its own body: how many bodies the earlier ticks
+  // coalesced into, and so how often she met the hidden items, varies with the load — 5 or 6 bodies, 10 to 16 meetings)
+  for (const k of [ID.crate, ID.gem, ID.pebble]) {
+    const it = (await S()).items[k], n = ((await sawM(M)).state || []).length;
+    await act(bob, { t: 'move', id: k, x: it.x + 10, y: it.y });
+    await until(async () => ((await sawM(M)).state || []).length > n, 10000);
+  }
   await h.sleep(1500); // (the last broadcasts)
   const got = await sawM(M), box = added.id;
   const play = scan(Object.fromEntries(Object.entries(got).filter(([ch]) => ch !== 'boxes' && ch !== 'decks')), box);
