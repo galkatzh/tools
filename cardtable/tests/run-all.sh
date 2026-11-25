@@ -9,7 +9,7 @@
 #   APP_ROOT             repo checkout to serve (default: this one)
 #   JOBS                 suites at once (default: 2 per CPU; each drives a Chromium)
 #   SERIAL               the suites run alone, after the others, comma-separated
-#                        names (default: t-p1-bench,core-p1-bench,core-p2-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench)
+#                        names (default: t-p1-bench,core-p1-bench,core-p2-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench,t-p4-resume-bench)
 #   CARDTABLE_TEST_LOCK  lock file (default /tmp/cardtable-tests.lock)
 cd "$(dirname "$0")" || exit 2
 mkdir -p out
@@ -20,7 +20,7 @@ flock 9
 echo "[run-all] APP_ROOT=${APP_ROOT:-$(cd ../.. && pwd)}"
 node --experimental-vm-modules parse.js || exit 1
 shopt -s nullglob
-IFS=, read -ra names <<< "${SERIAL-t-p1-bench,core-p1-bench,core-p2-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench}"
+IFS=, read -ra names <<< "${SERIAL-t-p1-bench,core-p1-bench,core-p2-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench,t-p4-resume-bench}"
 serial=() missing=()
 for n in "${names[@]}"; do
   [[ $n == *"$1"* ]] || continue

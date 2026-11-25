@@ -43,7 +43,7 @@ node t-smoke.js         # one suite, output on the terminal
   within 1 s; go's stone #300 within 10 ms of Worker time), run alone, one
   at a time after the parallel batch, under the same lock: `SERIAL`, a
   comma-separated list of suite names, default
-  `t-p1-bench,core-p1-bench,core-p2-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench`.
+  `t-p1-bench,core-p1-bench,core-p2-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench,t-p4-resume-bench`.
   A listed suite that doesn't exist fails the run.
 - Runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
   `/tmp/cardtable-tests.lock`): concurrent runs on a small machine starve each
@@ -1968,6 +1968,35 @@ answer a press of the dialog's own buttons; nothing they test goes through
 - **`t-p4-box-bench.js`** (serial): B20 and B21 on a generated board game
   (a 2,400 × 1,800 board and 63 counters, 64 photographs, 21 MB zipped),
   the clock started by the file input's change event.
+- **`t-p4-resume.js`** (§4l t-p4-boxes item 8, resume elsewhere; written
+  from the spec too, with p4-lib's dialog and host helpers): Alice (desktop)
+  and Bob (iPhone 13 upright) play Hold'em to a bet on the flop and chess to
+  1. e4 Nf6 2. e5 d5 (en passant open on d6, which only the game state
+  knows), every move a drag and every bet a press on the player's own
+  screen; Alice exports from 📦 → Export… (the download captured: the
+  `.json` named after the box or, with no box, the rules; the box, deck and
+  item ids in it, pids only as "@#k", hands as "#k"). Each export goes into
+  a **fresh room with two new players**, through the file input, the setup
+  confirm and the trust dialog (its words and three buttons): chess (Carol
+  hosts on an iPhone 13, Dave on a desktop) keeps its ids and box id
+  (`t.data.box`), White to move on White's new player, who takes en
+  passant, and Black takes back, by drags; Hold'em (Erin on a desktop, Fay
+  on an iPhone 13 sideways) gives each new player the hand, stack, chips
+  paid and bet of the old one with the same "#k", the burn card its id, the
+  board its deck's id, and the player owing the call presses Call 10, then
+  the hand is checked down to its showdown (pot 40 paid). No "ids had to
+  change" or dropped-state toast, no rules error. Then (Gus on an iPhone 13
+  sideways, Hal on a desktop) an export without "Include the rules": no
+  rules question, no trust dialog, the rules off, a pawn may step back; and
+  one without "Include the game state", set up with its rules: the game
+  starts afresh. Screenshots: `shots/p4-resume-*.png`.
+- **`t-p4-resume-bench.js`** (serial): B21 on "Ridgeline Clash", a board
+  game drawn in the page (a grained 2,000 × 1,500 hex map, 16 counter faces
+  and 2 backs, 400 counters in forty ×10 stacks, dice, 24 order cards of 12
+  images, two seats and a turn script), picked as 33 files, set up with its
+  rules, a turn played, then exported with its rules and state: the clock
+  from the press of Export… to the download; the `.zip` holds game.json,
+  rules.js and every image game.json names (an image by its bytes).
 
 ## Storage and images (Phase 1B)
 
