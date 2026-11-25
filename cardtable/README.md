@@ -216,6 +216,52 @@ the host does.
 backgammon) while your hand is empty, so the board gets the whole screen;
 it comes back as soon as something that can be held is on the table.
 
+## Private material
+
+A piece whose type has a back can lie face down for some players and face up
+for others: dice under a cup, tiles on a rack, units behind a screen. Who
+sees it travels with it — a player, or a seat and so whoever sits there —
+and every other screen gets its back alone, in every message, the log
+included ("Alice hid 3 pieces", "rolled 2 hidden dice": never what they are).
+
+- **Hiding.** Select a piece with a hidden side and press **🙈 Hide** (or
+  **H**; several at once from the group bar): it turns its back to everyone
+  but you. On your screen it stays face up, with **🙈** on its corner and
+  that corner faintly hatched — "Hidden from the others: only you can see
+  it", says its tooltip. A piece you hide is yours until it is revealed:
+  nobody else may turn it over, roll it, set its face, take it into a hand
+  or claim it, and the refusal is the same whatever it is ("🚫 That piece
+  is hidden").
+- **Dice under a cup.** 🙈 Hide on a die cups it with the dice touching it
+  (as 🎲 Roll throws them together). Roll them under the cup: everyone sees
+  the cup shake, you alone see the faces, and the log says "rolled 3 hidden
+  dice" — or, rolled with dice in the open, their values alone ("rolled 4
+  dice (2 hidden): 3 · 5"). **Reveal** (or **F**) shows them to everyone.
+- **Racks and screens.** A board can carry a private zone: a **rack** or a
+  **screen**, hatched in its owner's colour and labelled "🔒 Alice's rack"
+  ("🔒 Your rack" on your own screen; "🔓 Nobody's rack" while its board
+  has no owner, when it hides nothing). Whatever is set down in one hides
+  for its owner — and is theirs, unless it already belongs to someone. A
+  tile taken off a rack is played face up; a unit moved out from behind a
+  screen stays hidden until it is revealed. A bag's **🔒 Draw to my rack**
+  draws a piece straight into the first free slot of your rack, so it is
+  never seen face up on the way. In a box, a rack is a board's zone with
+  `"private": "reveal"` (a screen: `"keep"`) and `"owner": "board"` (the
+  board item's owner: `"owner": "seat"` in `forEachSeat` gives each seat
+  its own) or `"seat:<id>"`; its label stands beside it on the side of the
+  table's middle, so leave it room there, clear of the seat labels at the
+  table's edge.
+- **Peeking.** **Peek** at any piece hidden from you — someone's rack tile,
+  a cup — shows you its face alone ("Only you can see this — everyone knows
+  you peeked"); the log says *that* you peeked. A game's rules may forbid it.
+- **Seats.** A piece hidden for a seat is seen by whoever sits there: stand
+  up, and its back is all you see; the next player there sees its face.
+- **Exporting.** An exported game keeps it all: a cup's dice stay cupped
+  for the same player, a screen's units that left it stay hidden, and a
+  rack's tiles are hidden again by their rack when the game is set up.
+- **In the terminal**: `hide <id…>`, `reveal <id>` and `peek <id>` (see
+  [Terminal bridge & bots](#terminal-bridge--bots-clijs--clipy)).
+
 ## How it works
 
 Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB-DESIGN.md):
@@ -775,7 +821,10 @@ Game pieces have their own commands (both REPLs; `help` lists them):
 | `boxes` | lists the game boxes on this table: `[cd34ef56] Beacon Watch — 2 piece types · 📜 rules · a guest's upload · set up` (📜: it brings rules; "set up": the box set up last) |
 | `setup <box> [--keep] [--rules]` | the host's: sets a box up, named by its id or its name; `--keep` keeps the table's items, `--rules` runs its rules — which, unless the box is built in, still wait for the host's click in the trust dialog on the page |
 | `reset` | the host's: lays the box set up last out again (its rules restarted when they run; a box its rules lay out, with them off, is refused — `setup <box> --rules` starts them again) |
-| `group <op> <id,id,…> [dx dy \| deg \| bag]` | one action on many items, as the group bar does: `move dx dy`, `rot deg`, `flip`, `roll`, `lock`, `unlock`, `del`, `bag <bag>` (items and the bag by id or name); one log line, one notice for the members refused |
+| `group <op> <id,id,…> [dx dy \| deg \| bag]` | one action on many items, as the group bar does: `move dx dy`, `rot deg`, `flip`, `roll`, `lock`, `unlock`, `del`, `bag <bag>`, `hide` (items and the bag by id or name); one log line, one notice for the members refused |
+| `hide <id…>` | hides pieces from the others, as 🙈 Hide does: you alone see their faces, and they are yours until revealed (dice: a cup). A piece with no hidden side, one hidden already, or one you can't see is refused, and then none is hidden |
+| `reveal <id>` | turns a hidden piece face up for everyone (a `flip`); a piece face up already is said, and nothing is sent |
+| `peek <id>` | a face-down card, a pile's top, or a piece hidden from you: its face comes back to you alone (`peek: 3\|4 Bone`), and the log says *that* you peeked; a piece you can see is said at once, with no line |
 
 New questions, a new hint (`💡 hint: e3, e4`) and a new `t.secret`
 (`🔒 for you: …`) print as they arrive, the same text in both REPLs (the
@@ -791,8 +840,10 @@ Light man (token) @610,610 at:d4`, `[cd34ef56] hidden piece ×2 @80,90`,
 `[ef56ab12] supply Gold (token) ∞ @200,200`, `[0a1b2c3d] bag "Tiles" ×42
 @300,300`, `[1a2b3c4d] pile "stack" ×5 top: hidden piece @500,500`,
 `[2b3c4d5e] board Chessboard (board) @0,0 🔒` (a piece or a supply whose
-game box this tab lacks: `? unknown piece`). `players` shows a named seat
-as `[light]`, and a watcher as `(watching)`.
+game box this tab lacks: `? unknown piece`), and a piece you see while the
+others see its back `[4d5e6f7a] 3 d6 (die) @500,300 owner:Alice 🙈 hidden
+from others`. `players` shows a named seat as `[light]`, and a watcher as
+`(watching)`.
 
 Scripting: `require('./cli.js')` / `from cli import Bridge` exposes the
 bridge as a small API — the same in both languages: `state`, `send`,
@@ -800,8 +851,9 @@ bridge as a small API — the same in both languages: `state`, `send`,
 `take(supply, x, y, hand)`, `place(ref, addr)`, `seat(id)` (`'-'`
 stands up, `'+'` sits down again), `answer(id, value)` (a value as the
 `answer` command takes it — a number is an option's index —, or a list of hand indices), `select(id)`,
-`setup(box, keep, rules)`, `reset()` and `group(op, ids, kw)` (Python:
-`group(op, ids, **kw)`; kw `dx`, `dy`, `deg`, `bag`). A game box is uploaded from the
+`setup(box, keep, rules)`, `reset()`, `group(op, ids, kw)` (Python:
+`group(op, ids, **kw)`; kw `dx`, `dy`, `deg`, `bag`), `hide(...ids)`
+(Python: `hide(*ids)`) and `reveal(id)`. A game box is uploaded from the
 page's 📦 only (its images are read and redrawn by the tab).
 The state also carries your own parts of the rules: `asks` (`[{id, prompt,
 options: [labels]} | {id, prompt, pick, among?, count?, min?, max?}]`),
@@ -812,7 +864,9 @@ the script's name); `boxes` (`[{id, name, types, rules, src, builtin}]`:
 `lastSetup` (the box set up last: the host's to know, null on a guest). It also carries the table (`shape`, `w`, `h`), the
 named `seats` (each with its `player`, or null), `me` (your `seat` angle
 and `seatId`), and the pieces (`kind`, `type`, `typeRef`, `face`, `label`,
-`at` when on a board's spot, …; a hidden one only `kind: "hidden"`). `play()` names the card
+`at` when on a board's spot, …; a hidden one only `kind: "hidden"`, one
+hidden from the others but not from you all its fields and
+`hiddenFromOthers: true`). `play()` names the card
 by its `key` (each hand card has one), so the tab's own state lag can't
 change which card goes. Pass it the card itself — `play(s.hand[i])` from
 a state you hold — when you play several: a bare index is resolved

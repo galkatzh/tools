@@ -81,10 +81,11 @@ export function turnShows(it, boxes) {
   const L = lookOf(shownPart(it), boxes), f = L?.face, F = flagsOf(it, boxes);
   return !f || !['round', 'disc'].includes(F.shape) || F.w !== F.h || f.img !== undefined || !!f.label || !!f.text || f.pips !== undefined;
 }
-/** The face a public piece-like item shows, when it is worth enlarging (an
- *  image, a text or a label: the long-press zoom): {t, f}, or null. */
+/** The face a public piece-like item shows this screen, when it is worth
+ *  enlarging (an image, a text or a label: the long-press zoom; a piece
+ *  hidden from the others but not from us too, spec §5g): {t, f}, or null. */
 export function zoomable(it, boxes) {
-  const m = shownPart(it), face = m && 't' in m && m.up !== false ? typeAt(boxes, m.t)?.faces[m.f] : null;
+  const m = shownPart(it), face = m && 't' in m ? typeAt(boxes, m.t)?.faces[m.f] : null;
   return face && (face.img !== undefined || face.text || face.label) ? { t: m.t, f: m.f } : null;
 }
 
@@ -111,10 +112,17 @@ export function faceHTML(face, w, h, box, img, back, extra = '', upright = false
 /** A piece whose box (or type, or back) isn't here: a "?" (PLACEHOLDER units square). */
 const PLACEHOLDER_HTML = '<div class="pface placeholder">?</div>';
 
-/** The badges any item may carry (spec §2g): its owner's dot, in `ownerColor`
- *  (the app resolves it: a seat-bound owner's is the seat's colour), and 🔒,
- *  which CSS shows only while the item is selected. */
-export const badgesHTML = (it, ownerColor) => (it.owner ? `<i class="odot" style="background:${safeColor(ownerColor)}"></i>` : '') + (it.lock ? '<i class="lockb">🔒</i>' : '');
+/** Whether public item `it` is a piece this screen sees while the others see
+ *  its back (spec §5d: the full form a `vis` override brings — its face, and
+ *  `up: false`). */
+export const veiled = (it) => it.k === 'g' && 't' in it && it.up === false;
+/** The badges any item may carry (spec §2g, §5g): its owner's dot, in
+ *  `ownerColor` (the app resolves it: a seat-bound owner's is the seat's
+ *  colour), and 🔒, which CSS shows only while the item is selected; 🙈 on a
+ *  piece only this screen's player (and whoever else its `vis` names) sees,
+ *  always shown. */
+export const badgesHTML = (it, ownerColor) => (it.owner ? `<i class="odot" style="background:${safeColor(ownerColor)}"></i>` : '')
+  + (it.lock ? '<i class="lockb">🔒</i>' : '') + (veiled(it) ? '<i class="visb">🙈</i>' : '');
 
 /** A bag: a drawn pouch (BAG_W × BAG_H units, the viewBox's) in its colour, with its name and count. */
 const POUCH = '<svg class="pouch" viewBox="0 0 90 100" aria-hidden="true">'
@@ -126,9 +134,11 @@ const POUCH = '<svg class="pouch" viewBox="0 0 90 100" aria-hidden="true">'
 
 /** How to draw a public item that isn't a card nor a pile of cards: a piece,
  *  a supply, a bag, a board or a pile of pieces. Returns {html, cls (the
- *  item element's classes), w, h}. `img(h)`: markup for image h;
- *  `ownerColor`: the colour of its owner's dot (badgesHTML). */
-export function itemView(it, boxes, img, ownerColor) {
+ *  item element's classes: `veiled` for a piece hidden from the others that
+ *  this screen sees, whose corner CSS hatches), w, h}. `img(h)`: markup for
+ *  image h; `ownerColor`: the colour of its owner's dot (badgesHTML);
+ *  `zoneLook`: how a board's private zones look on this screen (boardSVG). */
+export function itemView(it, boxes, img, ownerColor, zoneLook) {
   const { w, h } = sizeOf(it, boxes), badges = badgesHTML(it, ownerColor);
   if (it.k === 'b') {
     const html = `<div class="bagbox" style="color:${safeColor(it.color, '#8b5e34')}">${POUCH}<span class="bname">${esc(it.name || 'Bag')}</span><span class="bn">${num(it.n)}</span></div>${badges}`;
@@ -136,11 +146,12 @@ export function itemView(it, boxes, img, ownerColor) {
   }
   const m = shownPart(it), L = lookOf(m, boxes), F = flagsOf(m || {}, boxes), board = isBoard(it, boxes);
   const ty = L && !L.back && typeAt(boxes, m.t);
-  let html = L ? faceHTML(L.face, w, h, L.box, img, L.back, board && ty?.board ? boardSVG(ty) : '', !!ty?.upright) : PLACEHOLDER_HTML;
+  let html = L ? faceHTML(L.face, w, h, L.box, img, L.back, board && ty?.board ? boardSVG(ty, zoneLook) : '', !!ty?.upright) : PLACEHOLDER_HTML;
   if (it.k === 'p') html += `<span class="count">${num(it.n)}</span>${it.name ? `<span class="pname">${esc(it.name)}</span>` : ''}`;
   else if (it.k === 's') html += '<span class="count">∞</span>';
   else if (it.n >= 2) html += `<span class="count">×${num(it.n)}</span>`;
-  const cls = ['piece', `shape-${L ? F.shape : 'rect'}`, ...(it.k === 'p' ? ['pile', ...(it.n > 1 ? ['multi'] : [])] : []), ...(it.k === 's' ? ['supply'] : []), ...(board ? ['board'] : []), ...(isDie(it, boxes) ? ['die'] : [])];
+  const cls = ['piece', `shape-${L ? F.shape : 'rect'}`, ...(it.k === 'p' ? ['pile', ...(it.n > 1 ? ['multi'] : [])] : []), ...(it.k === 's' ? ['supply'] : []), ...(board ? ['board'] : []),
+    ...(isDie(it, boxes) ? ['die'] : []), ...(veiled(it) ? ['veiled'] : [])];
   return { html: html + badges, cls, w, h };
 }
 /** A piece in the hand ({t, f, up?}: its owner sees its face) as markup filling a hand card. */
@@ -201,11 +212,12 @@ export function tumble(el) {
 // boardSVG(type) draws a board type's grid, spaces, zones and links (cleanBox
 // checked every field) as an inline <svg> laid over its face. Only numbers
 // and safeColor'd colours go into it; its only text is our own coordinate
-// labels (.blabels) and the spaces' and zones' labels (.slabel), escaped:
-// style.css turns each by its class (the view's turn varies, the string
-// doesn't). A grid of any size is a handful of <path>s (one per colour), so
-// a 64 × 64 board stays cheap to build and to draw (B11). The string is
-// built once per type (cached: a type is an immutable object of the box map).
+// labels (.blabels) and the spaces' and zones' labels (.slabel; a private
+// zone's names its owner), escaped: style.css turns each by its class (the
+// view's turn varies, the string doesn't). A grid of any size is a handful
+// of <path>s (one per colour), so a 64 × 64 board stays cheap to build and to
+// draw (B11). The string is built once per type (cached: a type is an
+// immutable object of the box map), its private zones apart (privateSVG).
 const svgCache = new WeakMap();
 /** A number for an SVG attribute: finite, at most two decimals. */
 const n2 = (v) => Math.round(num(v) * 100) / 100;
@@ -308,28 +320,53 @@ function spaceSVG(sp) {
   if (sp.label) s += `<text class="slabel" x="${n2(x)}" y="${n2(y)}" font-size="${n2(Math.max(10, Math.min(r * 0.5, 40)))}" fill="${ink}" text-anchor="middle" dominant-baseline="central">${esc(sp.label)}</text>`;
   return s;
 }
+/** A plain zone `z` (a translucent fill in its colour) as SVG. */
+const zoneSVG = (z) => { const c = safeColor(z.color, '#94a3b8'); return `<path d="${poly(z.poly)}" fill="${c}" fill-opacity=".22" stroke="${c}" stroke-width="3"/>`; };
+/** Zone `z`'s label `text` at its centroid, as SVG. */
+function zoneText(z, text) {
+  const cx = z.poly.reduce((a, p) => a + num(p[0]), 0) / z.poly.length, cy = z.poly.reduce((a, p) => a + num(p[1]), 0) / z.poly.length;
+  return `<text class="slabel" x="${n2(cx)}" y="${n2(cy)}" font-size="28" fill="currentColor" fill-opacity=".8" text-anchor="middle" dominant-baseline="central">${esc(text)}</text>`;
+}
 /** Board type `type` (a cleanBox'd type with a `board`) as an inline SVG
  *  string over its whole face, viewBox 0 0 w h in board-local units: its
- *  zones, links, grid and spaces, bottom to top. Cached per type. */
-export function boardSVG(type) {
+ *  zones, links, grid and spaces, bottom to top, then its private zones
+ *  (privateSVG). Cached per type but for the private zones, which look as
+ *  each board item's owner and seats make them (`zoneLook`). */
+export function boardSVG(type, zoneLook) {
+  const B = type.board || {}, priv = (B.zones || []).filter((z) => z.private);
   let s = svgCache.get(type);
-  if (s !== undefined) return s;
-  const B = type.board || {}, w = num(type.w), h = num(type.h);
-  s = `<svg class="psvg" viewBox="0 0 ${n2(w)} ${n2(h)}" aria-hidden="true">`;
-  for (const z of B.zones || []) {
-    const c = safeColor(z.color, '#94a3b8');
-    s += `<path d="${poly(z.poly)}" fill="${c}" fill-opacity=".22" stroke="${c}" stroke-width="3"/>`;
+  if (s === undefined) {
+    const w = num(type.w), h = num(type.h), plain = (B.zones || []).filter((z) => !z.private);
+    s = `<svg class="psvg" viewBox="0 0 ${n2(w)} ${n2(h)}" aria-hidden="true">${plain.map(zoneSVG).join('')}`;
+    const at = new Map((B.spaces || []).map((sp) => [sp.id, sp]));
+    if (B.links?.length) s += `<path fill="none" stroke="#0f172a" stroke-opacity=".45" stroke-width="3" d="${B.links.map(([a, b]) => `M${n2(at.get(a).x)} ${n2(at.get(a).y)}L${n2(at.get(b).x)} ${n2(at.get(b).y)}`).join('')}"/>`;
+    if (B.grid) s += gridSVG(B.grid, h);
+    for (const sp of B.spaces || []) s += spaceSVG(sp);
+    for (const z of plain) if (z.label) s += zoneText(z, z.label);
+    svgCache.set(type, s);
   }
-  const at = new Map((B.spaces || []).map((sp) => [sp.id, sp]));
-  if (B.links?.length) s += `<path fill="none" stroke="#0f172a" stroke-opacity=".45" stroke-width="3" d="${B.links.map(([a, b]) => `M${n2(at.get(a).x)} ${n2(at.get(a).y)}L${n2(at.get(b).x)} ${n2(at.get(b).y)}`).join('')}"/>`;
-  if (B.grid) s += gridSVG(B.grid, h);
-  for (const sp of B.spaces || []) s += spaceSVG(sp);
-  for (const z of B.zones || []) {
-    if (!z.label) continue;
-    const cx = z.poly.reduce((a, p) => a + num(p[0]), 0) / z.poly.length, cy = z.poly.reduce((a, p) => a + num(p[1]), 0) / z.poly.length;
-    s += `<text class="slabel" x="${n2(cx)}" y="${n2(cy)}" font-size="28" fill="currentColor" fill-opacity=".8" text-anchor="middle" dominant-baseline="central">${esc(z.label)}</text>`;
+  return `${s}${priv.length ? privateSVG(type, priv, zoneLook) : ''}</svg>`;
+}
+let hatchN = 0; // (each hatch pattern's id: unique in the page, which holds every board's SVG)
+/** The private zones `priv` of board type `type` (spec §5g), over its grid
+ *  and spaces: each as `look(z)` says — {text, color, cy} for an active zone
+ *  (its owner resolves): hatched in its owner's colour, a dashed edge, and
+ *  its label (`text`: "🔒 Alice's rack") just outside it — the pieces set in
+ *  it would cover a label inside — on the side of `cy` (a local y: the
+ *  table's middle; else the board's), white on a dark outline so it reads
+ *  on a board's face and on the felt alike; {text} alone for an inactive
+ *  one: a plain zone, labelled at its centre. */
+function privateSVG(type, priv, look = () => ({ text: '' })) {
+  let s = '';
+  for (const z of priv) {
+    const L = look(z), xs = z.poly.map((p) => num(p[0])), ys = z.poly.map((p) => num(p[1]));
+    if (!L.color) { s += zoneSVG(z) + (L.text ? zoneText(z, L.text) : ''); continue; }
+    const c = safeColor(L.color, '#94a3b8'), id = `hz${++hatchN}`, y0 = Math.min(...ys), y1 = Math.max(...ys), fs = 26;
+    s += `<pattern id="${id}" width="16" height="16" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="16" height="16" fill="${c}" fill-opacity=".14"/>`
+      + `<rect width="6" height="16" fill="${c}" fill-opacity=".5"/></pattern><path d="${poly(z.poly)}" fill="url(#${id})" stroke="${c}" stroke-width="4" stroke-dasharray="16 10"/>`;
+    const side = num(L.cy ?? type.h / 2) < (y0 + y1) / 2 ? -1 : 1, y = side < 0 ? y0 - fs * 0.85 : y1 + fs * 0.85;
+    // (the label at its own origin, which it turns and grows about, moved away from the zone as it grows: style.css .zlabel)
+    s += `<g transform="translate(${n2((Math.min(...xs) + Math.max(...xs)) / 2)} ${n2(y)})"><text class="slabel zlabel" style="--side:${side}" font-size="${fs}" font-weight="700" fill="#f8fafc" stroke="#0f172a" stroke-width="5" paint-order="stroke" stroke-linejoin="round" text-anchor="middle" dominant-baseline="central">${esc(L.text)}</text></g>`;
   }
-  s += '</svg>';
-  svgCache.set(type, s);
   return s;
 }

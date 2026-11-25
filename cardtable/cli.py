@@ -217,10 +217,20 @@ class Bridge:
     def group(self, op, ids, **kw):
         """One op on many items, as one action (spec §4i): `op` is move (dx=,
         dy=), rot (deg=: a turn by that much each), flip, roll (the dice among
-        them), lock, unlock, del or bag (bag=: an id or a name); `ids` a list of
-        item ids (or names). The host skips the members you may not handle, and
-        says how many in one notice."""
+        them), lock, unlock, del, bag (bag=: an id or a name) or hide; `ids` a
+        list of item ids (or names). The host skips the members you may not
+        handle, and says how many in one notice."""
         self.send(t='group', op=op, ids=list(ids), **kw)
+
+    def hide(self, *ids):
+        """Hides pieces (ids) from the others, at once (spec §5i): you alone
+        see their faces, and they are yours until revealed — dice under a cup."""
+        self.send(t='hide', ids=list(ids))
+
+    def reveal(self, iid):
+        """Turns hidden piece `iid` face up for everyone (a flip; never of a
+        piece face up already)."""
+        self.send(t='reveal', id=iid)
 
     def close(self):
         self._server.shutdown()
@@ -238,7 +248,9 @@ HELP = """commands:
   draw [pile]             draw from a pile (default: biggest; id or name)
   deal [pile] [--up]      deal the top card onto the table
   shuffle [pile]          shuffle a pile
-  flip|peek|tohand <id>   flip / peek at / take a table card
+  flip|peek|tohand <id>   flip / peek at / take a table card (peek: a face-down card, a pile's top, a hidden piece)
+  hide <id...>            hide pieces from the others: you alone see their faces (dice: a cup)
+  reveal <id>             turn a hidden piece face up for everyone
   move <id> <x> <y>       move an item (table coords)
   roll <id...> | roll all roll dice together (all: every die you may handle, at most 20)
   face <id> <f>           turn a piece to face f (0, 1, …; not a die)
@@ -249,7 +261,7 @@ HELP = """commands:
   bag <id> <bag>          put a piece into a bag
   lock|unlock <id>        lock an item in place, or free it
   claim|release <id>      make an item yours, or nobody's
-  group <op> <id,id,…> [dx dy | deg | bag]  one op on many items: move dx dy, rot deg, flip, roll, lock, unlock, del, bag <bag>
+  group <op> <id,id,…> [dx dy | deg | bag]  one op on many items: move dx dy, rot deg, flip, roll, lock, unlock, del, bag <bag>, hide
   seat <id> | seat - | seat +   sit in a named seat; - stand up to watch; + sit down again
   btn <id>                press a rules button (see "buttons")
   asks                    the rules' questions waiting for you (new ones print as they come)
@@ -287,9 +299,10 @@ def fmt_hand(c):
 
 def fmt_item(it):
     """A table item as one line: every line keeps the `  [id] … @x,y` frame
-    (parsers split on it), then the owner and 🔒 when present (spec §2i)."""
+    (parsers split on it), then the owner, 🔒 and "🙈 hidden from others" (a
+    piece you see whose back the others see, spec §5i) when present (spec §2i)."""
     at = f" @{it['x']},{it['y']}" + (f" at:{it['at']}" if it.get('at') else '')
-    tail = (f" owner:{it['owner']}" if it.get('owner') else '') + (' 🔒' if it.get('locked') else '')
+    tail = (f" owner:{it['owner']}" if it.get('owner') else '') + (' 🔒' if it.get('locked') else '') + (' 🙈 hidden from others' if it.get('hiddenFromOthers') else '')
     n = f" ×{it['n']}" if it.get('n') else ''
     head = f"  [{it['id']}] "
     kind = it['kind']
@@ -349,7 +362,7 @@ def need(args, n, usage):
 
 
 STALE_S = 25  # a live tab re-polls at least every 20 s
-GROUP_USAGE = 'group <op> <id,id,…> [dx dy | deg | bag] — op: move dx dy, rot deg, flip, roll, lock, unlock, del, bag <bag>'
+GROUP_USAGE = 'group <op> <id,id,…> [dx dy | deg | bag] — op: move dx dy, rot deg, flip, roll, lock, unlock, del, bag <bag>, hide'
 
 
 def run_cmd(bridge, line):
@@ -426,6 +439,13 @@ def run_cmd(bridge, line):
     elif cmd in ('flip', 'peek', 'tohand', 'btn'):
         need(args, 1, f'{cmd} <id>')
         bridge.send(t='toHand' if cmd == 'tohand' else cmd, id=args[0])
+    elif cmd == 'hide':
+        if not args:
+            raise ValueError('hide <id...>')
+        bridge.hide(*args)
+    elif cmd == 'reveal':
+        need(args, 1, 'reveal <id>')
+        bridge.reveal(args[0])
     elif cmd == 'move':
         x, y = need(args, 3, 'move <id> <x> <y>')
         bridge.send(t='move', id=args[0], x=x, y=y)

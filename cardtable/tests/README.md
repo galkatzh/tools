@@ -2679,6 +2679,65 @@ answer a press of the dialog's own buttons; nothing they test goes through
   list gains it and core-p4's malformed-group checks use `shuffle`, an op a
   group still doesn't know, where they used `hide`.
 
+## Phase 5 (part 2: private material on the screen and in the terminal)
+
+- **`t-p5-private.js`** (E2E, §5l's t-p5-private and §5j's attacker cases
+  1–9 and 11 through the UI): Alice hosts on a desktop (mouse, Shift+click,
+  keys), Bob plays on an iPhone 13 (p4m-lib's CDP taps and finger drags;
+  held upright, then sideways by `setViewportSize(844 × 390)`), Mallory is a
+  raw peer seated east. Its test box, "Privy table", has a rack per seat
+  (`owner: 'board'`, the board owned by `seat:south` / `seat:north`, the
+  north one turned 180°), a rack nobody owns, north's screen (`'keep'`),
+  bones (domino-like tiles, faces of pips) under one back, dice under a cup
+  back, units, a coin with no back and a bag "Boneyard"; fixed ids (`ID`).
+  `drawn(p, id)` reads what a screen draws of a piece (its 🙈 badge, the
+  `.veiled` corner, its tooltip, a face or a back), `zoneOf(p, board)` a
+  board's private-zone labels and the colour of its hatch (its `<pattern>`),
+  `barOn(p, id)` selects one piece alone and returns its bar's buttons,
+  `malTries(actions)` sends Mallory's actions and returns the notices they
+  bring her. Sections: (1) the cup — 🙈 Hide on a die cups its handful, the
+  badge, corner and tooltip on Alice's screen alone, 🎲 Roll under the cup
+  (Bob's screen tumbles the backs: a MutationObserver records `.tumble`),
+  a group roll of two cupped and two shown dice ("rolled 4 dice (2 hidden):
+  a · b", case 11), Mallory's flip, roll, face, move and claim (case 8),
+  Reveal from the bar and from the group bar, H; (2) racks — the labels on
+  each screen ("🔒 Your rack", "🔒 Bob's rack", "🔓 Nobody's rack") and the
+  hatch in the owner's colour, 🔒 Draw to my rack by mouse and by touch
+  (each piece in a free slot of its own), Bob's finger drag off his rack
+  (face up for both), a group 🙈 Hide by Shift+click that never sends the
+  coin; (3) Bob's Peek (the overlay, its caption and pips, the loud line)
+  and Mallory's cases 4, 5, 6; (4) seat refs (case 3: Bob's unit behind
+  north's screen and his cupped die; Bob stands up, Mallory sits north —
+  she gets north's unit and north's rack tile, never the die; the labels
+  follow the seat's holder); (5) the phone held sideways — a rack tile's
+  Reveal and 🙈 Hide in view and 44 px tall; (6) a rules script (cases 9,
+  11 and 7: `t.hide` for `seat:north` with no owner, `t.roll` of a cupped
+  die, a `validate` that vetoes peek); (7) the recursive scan of every body
+  Mallory got (no `t`/`f` of Alice's rack tiles, of Bob's die once cupped
+  or of Alice's dice while cupped; overrides only north's while she held
+  it; no `pips` key; her one peek answer her own; her view in step).
+  Screenshots: `shots/p5-cup-desk.png`, `p5-racks-desk.png`,
+  `p5-racks-phone.png`, `p5-bar-landscape.png`. Case 10 (the order of
+  Veiled Ranks' hidden units) needs the demo: part 3's.
+- **`t-p5-cli.js`** (cli.js and cli.py in parity, §5i): to a fake tab,
+  `hide <id…>`, `reveal <id>`, `peek <id>` and `group hide <id,…>` send
+  exactly their commands from both REPLs, a line with no id prints the same
+  usage and sends nothing, both helps list them alike, `table` marks a
+  piece hidden from the others ("🙈 hidden from others") in the same words,
+  and the Bridge API's `hide(...ids)` / `hide(*ids)` and `reveal(id)`; then
+  real tabs (Alice hosting on cli.js, Bob on cli.py, box "Cupboard"):
+  Alice's `hide` (her snapshot: the dice whole, `hiddenFromOthers: true`;
+  Bob's: `{kind: 'hidden'}`), Bob's `peek` ("✉ peek: <face> d6" in his REPL,
+  the line in Alice's), Alice's of her own (said at once, no line),
+  `reveal` (and a second one said in the terminal), Bob's `hide` of a coin
+  refused and his `group hide` skipping it.
+- **Mechanism changes, no check weakened:** `t-p2-pieces.js` checks each
+  piece's bar for exactly its buttons; Phase 5 adds 🙈 Hide to a shown
+  piece whose type has a back (the chit, the hand tile) and Peek to a piece
+  hidden from the player (the hidden die, token and chit stack), so those
+  five expected lists gain `hide` or `peek` (spec §5g). A hidden piece's
+  Flip now reads "Reveal" (the same `data-cmd="flip"`).
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores

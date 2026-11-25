@@ -23,8 +23,9 @@ import {
   cleanDeck, cleanDeckV1, cleanBox, isBuiltin, deckOverBudget, assetRefs, cleanName, standardDeck, cardName, pieceName, faceLabel, createTable,
   MODULE_V as CORE_V, PROTO, PUBLIC_ACTIONS, HOST_ACTIONS, MAX_ROLL, MAX_N, MAX_BAG, MAX_HAND, MAX_PILE, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch, roundTable, FELT,
   tableBoards, snapTo, snapAt, snaps, displayAddr, resolveAddr, liveFx, countSetup, checkTransportBox, boxOverBudget, publicBox, groupIds, GROUP_OPS, clampShift, MAX_GROUP,
+  zonesUnder, PLACEHOLDER,
 } from './core.js?v=1';
-import { MODULE_V as GRID_V, turn, spotOf } from './grid.js?v=1';
+import { MODULE_V as GRID_V, turn, spotOf, fromLocal, toLocal } from './grid.js?v=1';
 import * as pieces from './pieces.js?v=1';
 import { RULES_TEMPLATES, GAMES, BOXES, MODULE_V as TEMPLATES_V } from './templates.js?v=1';
 import * as store from './store.js?v=1';
@@ -1921,6 +1922,77 @@ function ownerColor(o) {
   return o.startsWith('seat:') ? view.seats?.find((s) => s.id === o.slice(5))?.color || '#94a3b8' : view.players[o]?.color || '#94a3b8';
 }
 
+// --- private material on this screen (spec §5g) ---------------------------------
+// A piece hidden from the others that this player sees comes in its full
+// form (its face, `up: false`, its `vis`: pieces.veiled): it is drawn face
+// up with 🙈 and a hatched corner, and its tooltip says who sees it. A
+// board's private zones (racks, screens) are hatched in their owner's colour
+// with "🔒 Alice's rack" beside them — per board item and per screen, as its
+// owner and the seats make them (zoneLook).
+/** Whether public piece `it` can be hidden by this player's 🙈 Hide (core's
+ *  hide, which also asks mayHandle and no lock): shown to everyone, no
+ *  board, of a type with a back. */
+const hides = (it) => it.k === 'g' && 't' in it && it.up !== false && !isBoard(it) && !!typeAt(boxes, it.t)?.back;
+/** The tooltip of a piece this player sees while it is hidden from the others: who else sees it. */
+function privateTip(it) {
+  const others = [...new Set((it.vis || []).map((r) => ownerOf({ owner: r })).filter((p) => p && p !== pid))];
+  return `Hidden from the others: ${others.length ? `you and ${others.map((p) => view.players[p]?.name || 'a player').join(', ')} can see it` : 'only you can see it'}`;
+}
+/** The private zones (spec §5a) of public item `it`'s type: a shown board's ([] for anything else). */
+const privZones = (it) => (it.k === 'g' && 't' in it && typeAt(boxes, it.t)?.board?.zones?.filter((z) => z.private)) || [];
+/** Who owns private zone `z` of public board `it` (spec §5a, D252), a VisRef — 'board': the
+ *  board's owner; 'seat:<id>': a seat of the table, held or not — or null: the zone is inactive. */
+const zoneOwner = (it, z) => (z.owner === 'board' ? it.owner || null : view.seats?.some((s) => `seat:${s.id}` === z.owner) ? z.owner : null);
+/** Owner ref `o` as this screen says it, possessive: "Your", "Alice's", or a free seat's "North's". */
+function whose(o) {
+  const p = ownerOf({ owner: o });
+  if (p === pid) return 'Your';
+  return `${p ? view.players[p]?.name || 'A player' : view.seats?.find((s) => `seat:${s.id}` === o)?.name || 'A seat'}'s`;
+}
+/** How public board `it`'s private zone `z` looks on this screen (pieces.js
+ *  boardSVG): active, {color: its owner's, text: "🔒 Alice's rack" — "🔒
+ *  Your rack", a `keep` zone a screen, one with its own label "🔒 Camp ·
+ *  Alice's" —, cy: the table's centre in the board's frame, its y (the
+ *  label stands on that side of the zone: a rack's away from its seat's
+ *  label, a deployment zone's toward the middle of the board)}; inactive
+ *  (nobody owns its board, or no such seat), {text: "🔓 Nobody's rack"}. */
+const zoneLook = (it) => (z) => {
+  const o = zoneOwner(it, z), kind = z.private === 'keep' ? 'screen' : 'rack', ty = typeAt(boxes, it.t);
+  if (!o) return { text: `🔓 ${z.label || `Nobody's ${kind}`}` };
+  const w = whose(o), cy = Math.round(toLocal({ x: it.x, y: it.y, w: ty.w, h: ty.h, rot: num(it.rot) }, TABLE_W / 2, TABLE_H / 2).y);
+  return { color: ownerColor(o), text: `🔒 ${z.label ? `${z.label} · ${w === 'Your' ? 'yours' : w}` : `${w} ${kind}`}`, cy };
+};
+const zoneBoards = new Set(); // the ids of the boards drawn with private zones: a seat taken or left, a rename, redraws them (renderAll)
+/** This player's active private zones (spec §5g), racks ('reveal') first: [{b (a tableBoards board), z}]. */
+function myZones() {
+  const out = boardsNow().list.flatMap((b) => (b.B.zones || []).filter((z) => z.private && ownerOf({ owner: zoneOwner(view.items[b.id], z) }) === pid).map((z) => ({ b, z })));
+  return out.sort((a, c) => (c.z.private === 'reveal') - (a.z.private === 'reveal'));
+}
+/** Where "Draw to my rack" sets down a piece of bag `bag` (spec §5g): the
+ *  first free slot of this player's private zones — each zone's bounding box
+ *  on the table scanned row by row in steps of the piece's size, keeping the
+ *  slots whose centre lies in the zone (where the host's place() reads it) —
+ *  one that no item overlaps, else the first slot (a full rack still takes
+ *  it, overlapping), else the zone's middle: a top-left {x, y}. The piece's
+ *  size is the largest back among the bag's box's pieces (it lands hidden:
+ *  its back's size), else a placeholder's. */
+function rackSlot(bag) {
+  const box = boxes[bag.box], backs = Object.values(box?.types || {}).filter((ty) => ty.kind !== 'board' && ty.back).map((ty) => box.backs[ty.back]);
+  const w = Math.max(...backs.map((k) => num(k?.w)), 0) || PLACEHOLDER, h = Math.max(...backs.map((k) => num(k?.h)), 0) || PLACEHOLDER, gap = 6, TB = boardsNow();
+  const taken = Object.values(view.items).filter((o) => !isBoard(o)).map((o) => {
+    const s = sizeOf(o, boxes), [ow, oh] = Math.round(num(o.rot) / 90) % 2 ? [s.h, s.w] : [s.w, s.h], cx = o.x + s.w / 2, cy = o.y + s.h / 2;
+    return [cx - ow / 2, cy - oh / 2, cx + ow / 2, cy + oh / 2];
+  });
+  const slots = myZones().flatMap(({ b, z }) => {
+    const pts = z.poly.map(([x, y]) => fromLocal(b, x, y)), xs = pts.map((p) => p.x), ys = pts.map((p) => p.y), x0 = Math.min(...xs), y0 = Math.min(...ys), x1 = Math.max(...xs), y1 = Math.max(...ys), out = [];
+    for (let y = y0 + gap; y + h <= y1 + 0.5; y += h + gap) {
+      for (let x = x0 + gap; x + w <= x1 + 0.5; x += w + gap) if (zonesUnder(TB, x + w / 2, y + h / 2).includes(`${b.id}:${z.id}`)) out.push({ x, y });
+    }
+    return out.length ? out : [{ x: (x0 + x1 - w) / 2, y: (y0 + y1 - h) / 2 }]; // (a zone smaller than a piece: its middle)
+  });
+  return slots.find(({ x, y }) => !taken.some(([l, t, r, bt]) => l < x + w - 1 && r > x + 1 && t < y + h - 1 && bt > y + 1)) || slots[0] || null;
+}
+
 // --- motion (UX-I1) ----------------------------------------------------------
 // Remote moves glide via a CSS transition on .item left/top (style.css; off
 // while dragging and under prefers-reduced-motion). Here, from what a patch
@@ -2190,6 +2262,7 @@ function renderItems(prev, prevPlayers = new Map()) {
     if (!it) {
       if (el) { el.remove(); itemEls.delete(id); }
       lives.delete(id);
+      zoneBoards.delete(id);
       continue;
     }
     if (!el) {
@@ -2206,16 +2279,20 @@ function renderItems(prev, prevPlayers = new Map()) {
       }
     }
     const mine = `${ownerColor(it.owner)}|${!!it.lock}`; // the badges
-    const sig = piece ? `g|${looks(it)}|${!!boxes[pieces.boxOf(it)]}|${imageState(img)}|${mine}`
+    const zones = piece ? privZones(it) : []; // (a board's private zones look as their owners make them)
+    if (zones.length) zoneBoards.add(id); else zoneBoards.delete(id);
+    const sig = piece ? `g|${looks(it)}|${!!boxes[pieces.boxOf(it)]}|${imageState(img)}|${mine}${zones.length ? `|${JSON.stringify(zones.map(zoneLook(it)))}` : ''}`
       : it.k === 'c' ? `c|${it.d}|${it.i}|${it.up}|${!!decks[it.d]}|${imageState(img)}|${mine}`
         : `p|${it.n}|${JSON.stringify(it.top)}|${it.name}|${!!decks[it.top?.d]}|${imageState(img)}|${mine}`;
     if (el.dataset.sig !== sig) {
       el.dataset.sig = sig;
       perf.drawn++;
       if (piece) {
-        const v = pieces.itemView(it, boxes, faceImage, ownerColor(it.owner));
+        const v = pieces.itemView(it, boxes, faceImage, ownerColor(it.owner), zoneLook(it));
         el.innerHTML = v.html;
         kind(el, v.cls, v.w, v.h);
+        if (pieces.veiled(it)) el.title = privateTip(it);
+        else el.removeAttribute('title');
       } else {
         el.innerHTML = contentFor(it);
         kind(el, it.k === 'p' ? ['pile', ...(it.n > 1 ? ['multi'] : [])] : []);
@@ -2924,6 +3001,8 @@ function celebrate(won) {
  *  them, none by default), and everything else that changed (each keeps a
  *  signature of what it last drew). */
 function renderAll(prev = new Map(), prevPlayers) {
+  // (a private zone names its owner: a seat taken or left, a rename, redraws its board — when what it says changed)
+  if (prev && prevPlayers?.size) for (const id of zoneBoards) if (!prev.has(id)) prev.set(id, view.items[id]);
   applySeatView();
   renderItems(prev, prevPlayers);
   renderGames(); // before the seats: the strip's place moves the notices
@@ -3007,8 +3086,8 @@ function rotv(x, y, a) {
 // more task of 50–90 ms). D102 has the measures; B4's rested pinch, the
 // budget.
 const viewSheet = new CSSStyleSheet(), BADGE_MAX = 3, BZ_STEP = 1.25, PINCH_REST_MS = 300;
-viewSheet.replaceSync('#table .item > .count, #table .item > .fanb, #table .item > .odot, #table .item > .lockb, #table .pile > .pname, #table .item.selected, #table .item.hint, #table .item.offer, #table .blabels text, #table .snap-ghost {} '
-  + '#table .psvg text {} #table .item > .count, #table .item > .fanb, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb, #table .uptext {}');
+viewSheet.replaceSync('#table .item > .count, #table .item > .fanb, #table .item > .odot, #table .item > .lockb, #table .item > .visb, #table .pile > .pname, #table .item.selected, #table .item.hint, #table .item.offer, #table .blabels text, #table .psvg .zlabel, #table .snap-ghost {} '
+  + '#table .psvg text {} #table .item > .count, #table .item > .fanb, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb, #table .item > .visb, #table .uptext {}');
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, viewSheet];
 let badgeZ = '', textAngle = 0, badgeAngle = 0, feltW = 0;
 
@@ -3223,13 +3302,17 @@ function barFor(id, it) {
     return (may && F.hand && room ? b('draw', 'Draw') : '') + (may ? b('peek', 'Peek') + b('dealup', 'Deal↑') + b('dealdn', 'Deal↓') + b('shuffle', 'Shuffle') : '')
       + (free && pileTurns(it) ? b('flip', 'Flip') : '') + (free ? b('rr', cards ? '⟳90' : '⟳') : '') + unlock + del;
   }
-  if (it.k === 'b') return (may && it.n ? b('pull', 'Draw') + (it.hand && room ? b('pullHand', '✋ Draw to hand') : '') : '') + lock + del;
+  if (it.k === 'b') return (may && it.n ? b('pull', 'Draw') + (myZones().length ? b('pullRack', '🔒 Draw to my rack') : '') + (it.hand && room ? b('pullHand', '✋ Draw to hand') : '') : '') + lock + del;
   if (it.k === 's') return (may ? b('take', 'Take 1') + (F.hand && room ? b('takeHand', '✋') : '') : '') + (free ? all('✥ Move') : '') + lock + del;
-  const die = isDie(it), owner = ownerOf(it), host = role === 'host';
+  const die = isDie(it), owner = ownerOf(it), host = role === 'host', hid = 'b' in it || it.up === false;
   const players = Object.entries(view.players).filter(([p]) => p !== it.owner);
   const give = giveOpen ? `<span class="give">${players.map(([p, pl]) => `<button data-cmd="giveTo" data-to="${esc(p)}">${esc(pl.name || 'Player')}</button>`).join('')}${
     (view.seats || []).filter((st) => it.owner !== `seat:${st.id}`).map((st) => `<button data-cmd="giveTo" data-to="seat:${esc(st.id)}">🪑 ${esc(st.name)}</button>`).join('')}</span>` : '';
-  return (free && flips(it) ? b('flip', 'Flip') : '')
+  // (spec §5g: a hidden piece turns face up for everyone — Reveal, also a cupped die; a shown one with a back hides from
+  // the others — 🙈 Hide, on a die its handful too: the cup; one hidden from this player may be peeked at, whoever owns it)
+  return (free && (pieces.veiled(it) || flips(it)) ? b('flip', hid ? 'Reveal' : 'Flip') : '')
+    + (free && hides(it) ? b('hide', '🙈 Hide') : '')
+    + ('b' in it && !isBoard(it) ? b('peek', 'Peek') : '')
     + (die && may ? b('roll', '🎲 Roll') : '')
     + (free && !die && pieces.turnShows(it, boxes) ? b('rl', '⟲') + b('rr', '⟳') : '') // (a plain checker looks the same at any angle)
     + (free && it.n >= 2 ? b('split', '✂ Take 1') + all('✥ Move all') : '')
@@ -3489,7 +3572,8 @@ function groupBar() {
   const locks = its.filter(mayLock);
   return `<span class="gn">${ids.length} selected</span>`
     + (mine.some(turnsAround) ? b('rl', '⟲') + b('rr', '⟳') : '')
-    + (mine.some(turnsOver) ? b('flip', 'Flip') : '')
+    + (mine.some(turnsOver) ? b('flip', mine.filter(turnsOver).every((it) => 'b' in it || it.up === false) ? 'Reveal' : 'Flip') : '')
+    + (mine.some(hides) ? b('hide', '🙈 Hide') : '') // (the cup over dice: spec §5g)
     + (its.some((it) => isDie(it) && mayTouch(it)) ? b('roll', '🎲 Roll') : '')
     + (locks.length ? b('lock', locks.some((it) => !it.lock) ? '🔒 Lock' : '🔓 Unlock') : '')
     + (bags.length ? b('bag', '👜 Into bag ▸', giveOpen ? 'on' : '') + (giveOpen ? `<span class="give">${
@@ -3499,8 +3583,8 @@ function groupBar() {
 }
 /** Whether a turn of public item `it` shows (the bar's ⟲ ⟳): cards and piles; a piece that isn't a die and doesn't look the same at any angle. */
 const turnsAround = (it) => it.k === 'c' || it.k === 'p' || (it.k === 'g' && !isDie(it) && pieces.turnShows(it, boxes));
-/** Whether public item `it` turns over (the bar's Flip): a card, a pile that turns, a piece that flips. */
-const turnsOver = (it) => it.k === 'c' || (it.k === 'p' ? pileTurns(it) : it.k === 'g' && flips(it));
+/** Whether public item `it` turns over (the bar's Flip, or Reveal when every one is hidden): a card, a pile that turns, a piece that flips — a cupped die too. */
+const turnsOver = (it) => it.k === 'c' || (it.k === 'p' ? pileTurns(it) : it.k === 'g' && (pieces.veiled(it) || flips(it)));
 /** The step the group bar's ⟲ ⟳ turn by: the largest rotStep among members `ids`, else 90 (each member snaps it to its own). */
 const groupStep = (ids) => Math.max(0, ...ids.map((id) => flagsOf(view.items[id], boxes).rotStep || 0)) || 90;
 /** 🗑 of more than this many members asks first, in the bar (GROUP_CMDS.del). */
@@ -3512,6 +3596,7 @@ const GROUP_CMDS = {
   rl: (ids) => groupAct('rot', ids, { rot: -groupStep(ids) }, turnsAround),
   rr: (ids) => groupAct('rot', ids, { rot: groupStep(ids) }, turnsAround),
   flip: (ids) => groupAct('flip', ids, {}, turnsOver),
+  hide: (ids) => groupAct('hide', ids, {}, hides),
   roll: (ids) => { // (the host rolls them as one: at most MAX_ROLL, as a single roll; the chip says what was left out)
     const dice = ids.filter((id) => isDie(view.items[id]) && mayTouch(view.items[id]));
     if (dice.length > MAX_ROLL) chip(`${MAX_ROLL} dice at most: ${dice.length - MAX_ROLL} left out`);
@@ -3713,11 +3798,13 @@ const CMDS = {
   dealdn: (id, it) => act({ t: 'deal', id, up: false, rot: uprightRot(), ...dealSpot(it) }),
   shuffle: (id) => act({ t: 'shuffle', id }),
   peek: (id) => act({ t: 'peek', id }), // the host logs it, then reveals the card to us alone (showPeek)
-  zoom: (id, it) => showZoom(it.k === 'c' ? it : pieces.zoomable(it, boxes)), // a face everyone sees: silent
+  zoom: (id, it) => showZoom(it.k === 'c' ? it : pieces.zoomable(it, boxes), pieces.veiled(it) ? 'Only you can see this. Click to close.' : ''), // a face we see: silent
+  hide: (id, it) => act({ t: 'hide', ids: isDie(it) ? handful(id).filter((d) => hides(view.items[d])) : [id] }), // (a die: the cup over its handful)
   roll: (id) => act({ t: 'roll', ids: handful(id) }),
   take: (id, it) => act({ t: 'take', id, ...dealSpot(it) }),
   takeHand: (id) => act({ t: 'take', id, hand: true }),
   pull: (id, it) => act({ t: 'pull', id, ...dealSpot(it) }),
+  pullRack: (id, it) => act({ t: 'pull', id, ...(rackSlot(it) || dealSpot(it)) }), // (the host's place() hides it there, for this player; a rack gone since the bar drew: beside the bag)
   pullHand: (id) => act({ t: 'pull', id, hand: true }),
   split: (id, it) => act({ t: 'split', id, n: 1, ...dealSpot(it) }),
   all: (id) => { // arms (or disarms) a whole-stack or supply drag for ARM_MS: touch has no Shift key
@@ -3816,8 +3903,9 @@ document.addEventListener('close', () => { letGo(true); setTimeout(() => letGo(t
 // peek overlay, else the seat menu, else clears the selection (the
 // multi-selection too) and its bar. The others are the bar's shortcuts — on
 // the selected item, or the group bar's on the multi-selection — run only
-// when the bar shows and offers them: R / Shift+R rotate, F flips, Space
-// rolls a die (and its handful; the group's dice), Delete removes.
+// when the bar shows and offers them: R / Shift+R rotate, F flips (or
+// reveals), H hides (🙈), Space rolls a die (and its handful; the group's
+// dice), Delete removes.
 document.addEventListener('keydown', (e) => {
   if (document.querySelector('dialog[open]')) return;
   if (e.key === 'Escape') {
@@ -3829,15 +3917,17 @@ document.addEventListener('keydown', (e) => {
   }
   // (a held key fires once: an auto-repeat would roll, flip or delete again and again, for everyone)
   if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.target.closest?.('input, textarea, select, button')) return;
-  const k = e.key.toLowerCase(), cmd = k === 'r' ? (e.shiftKey ? 'rl' : 'rr') : { f: 'flip', ' ': 'roll', delete: 'del', backspace: 'del' }[k];
+  const k = e.key.toLowerCase(), cmd = k === 'r' ? (e.shiftKey ? 'rl' : 'rr') : { f: 'flip', h: 'hide', ' ': 'roll', delete: 'del', backspace: 'del' }[k];
   if (!cmd || barEl.classList.contains('hidden') || !barEl.querySelector(`[data-cmd="${cmd}"]`)) return;
   e.preventDefault();
   runCmd(cmd, undefined, true);
 });
-/** Reveals a peeked card {d, i} or piece {t, f} to this player only (the host's answer to a peek action). */
+/** Reveals a peeked card {d, i} or piece {t, f} to this player only (the
+ *  host's answer to a peek action); the terminal hears "peek: 3|5 Domino"
+ *  (a piece: its face's label, then its type: cliPiece). */
 function showPeek(c) {
   showZoom(c, 'Only you can see this — everyone knows you peeked. Click to close.');
-  if (CLI) cliMsgs.push(`peek: ${'t' in c ? pieceName(boxes, c.t, c.f) : cardName(decks, c.d, c.i)}`);
+  if (CLI) cliMsgs.push(`peek: ${'t' in c ? cliPiece(c.t, c.f) : cardName(decks, c.d, c.i)}`);
 }
 
 // --- dragging table items / pan / pinch -------------------------------------
@@ -5064,6 +5154,8 @@ function cliFace(t, f) {
   const label = face.label ?? (face.pips !== undefined ? faceLabel(face, f) : undefined);
   return { kind: ty.kind, type: ty.name, typeRef: t, face: f, ...(label !== undefined && { label }), ...(face.text && { text: face.text }) };
 }
+/** A shown piece face {t, f} in one phrase, as the REPLs print a piece: its label (or pips), then its type ("3|5 Domino"). */
+const cliPiece = (t, f) => { const { type = 'an unknown piece', label } = cliFace(t, f); return label !== undefined ? `${label} ${type}` : type; };
 /** A public item as the terminal sees it (spec §2i). */
 function cliItemInfo(id, it) {
   const at = { x: it.x | 0, y: it.y | 0, ...(it.at && { at: it.at }) }, mine = { ...(it.owner && { owner: cliOwner(it.owner) }), ...(it.lock && { locked: true }) };
@@ -5077,7 +5169,8 @@ function cliItemInfo(id, it) {
   const face = 't' in it ? cliFace(it.t, it.f) : null;
   if (it.k === 's') return { id, kind: 'supply', ...(!face ? { hidden: true } : face.kind ? { ...face, kind: 'supply', pieceKind: face.kind } : { unknown: true, typeRef: it.t }), ...at, ...mine };
   if (!face) return { id, kind: 'hidden', ...(it.n > 1 && { n: it.n }), ...at, ...mine };
-  return face.kind ? { id, ...face, ...(it.n > 1 && { n: it.n }), ...at, ...mine } : { id, kind: 'unknown', typeRef: it.t, ...at, ...mine };
+  const veiled = pieces.veiled(it) && { hiddenFromOthers: true }; // (spec §5i: we see it, the others its back)
+  return face.kind ? { id, ...face, ...(it.n > 1 && { n: it.n }), ...at, ...mine, ...veiled } : { id, kind: 'unknown', typeRef: it.t, ...at, ...mine, ...veiled };
 }
 
 function cliSnapshot() {
@@ -5211,10 +5304,23 @@ function cliExec(c) {
       }
       case 'rot': act({ t: 'rot', id: cliItem(c.id), rot: +c.deg || 0 }); break;
       case 'toHand': act({ t: 'toHand', id: cliItem(c.id) }); break;
-      case 'peek': { // a face-up card is public; anything else is answered privately by the host (showPeek)
+      case 'peek': { // a face-up card, or a piece this player sees, is said here; anything else is answered privately by the host (showPeek)
         const id = cliItem(c.id), it = view.items[id];
         if (it.k === 'c' && it.up) cliMsgs.push(`peek: ${cardName(decks, it.d, it.i)}`);
+        else if (it.k === 'g' && 't' in it) cliMsgs.push(`peek: ${cliPiece(it.t, it.f)}`);
         else act({ t: 'peek', id });
+        break;
+      }
+      case 'hide': { // (spec §5i) the pieces named, hidden from the others at once (dice: under a cup)
+        const ids = (Array.isArray(c.ids) ? c.ids : [c.ids]).map((id) => cliItem(id));
+        if (!ids.length) throw new Error('hide <id…>');
+        act({ t: 'hide', ids });
+        break;
+      }
+      case 'reveal': { // (spec §5i) a hidden piece (or a face-down card) face up for everyone: a flip — never of one face up, which it would hide
+        const id = cliItem(c.id), it = view.items[id];
+        if (!('b' in it) && it.up !== false) throw new Error(`reveal ${id}: it is not face down`);
+        act({ t: 'flip', id });
         break;
       }
       case 'btn': act({ t: 'rulesBtn', id: String(c.id) }); break;
@@ -5238,7 +5344,7 @@ function cliExec(c) {
       case 'owner': act({ t: 'owner', id: cliItem(c.id), to: c.to ?? null }); break;
       case 'group': { // (spec §4i) one op on many items, one action: `op` as the terminal says it (unlock: lock off; bag: into a bag)
         const op = { unlock: 'lock', bag: 'toBag' }[c.op] || String(c.op ?? ''), ids = (Array.isArray(c.ids) ? c.ids : [c.ids]).map((id) => cliItem(id));
-        if (!GROUP_OPS.includes(op)) throw new Error(`group: no such op "${c.op}" — move, rot, flip, roll, lock, unlock, del, bag`);
+        if (!GROUP_OPS.includes(op)) throw new Error(`group: no such op "${c.op}" — move, rot, flip, roll, lock, unlock, del, bag, hide`);
         act({ t: 'group', op, ids, ...(op === 'move' && { dx: +c.dx || 0, dy: +c.dy || 0 }), ...(op === 'rot' && { rot: +(c.deg ?? c.rot) || 0 }),
           ...(op === 'lock' && { on: c.op !== 'unlock' && c.on !== false }), ...(op === 'toBag' && { bag: cliItem(c.bag, 'b') }) });
         break;

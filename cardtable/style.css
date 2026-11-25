@@ -323,11 +323,11 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
    the view (--view: the view sheet's, app.js layout) and their item's own
    turn (--rot, on the item's element); and on a table drawn small they grow
    (--bz: the view sheet's too). */
-.item > .count, .item > .fanb, .bag > .bagbox, .item > .lockb { rotate: calc(-1 * (var(--view, 0deg) + var(--rot, 0deg))); }
+.item > .count, .item > .fanb, .bag > .bagbox, .item > .lockb, .item > .visb { rotate: calc(-1 * (var(--view, 0deg) + var(--rot, 0deg))); }
 /* …and so does the label (and text) of an `upright` type's face (D160): a chess
    piece's glyph reads upright for the player across the board too */
 .uptext { rotate: calc(-1 * (var(--view, 0deg) + var(--rot, 0deg))); }
-.item > .count, .item > .fanb, .item > .odot, .item > .lockb { scale: var(--bz, 1); }
+.item > .count, .item > .fanb, .item > .odot, .item > .lockb, .item > .visb { scale: var(--bz, 1); }
 /* a crowded spot's "×k" (app.js fanBadge, spec §3g): on its top piece, at the
    bottom left, dark on amber — never mistaken for a stack's blue ×N; the
    spot's, so it stays out of a drag that takes that piece away */
@@ -451,6 +451,27 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 .item .lockb { display: none; position: absolute; left: 50%; bottom: -12px; translate: -50% 0; font-size: 15px; font-style: normal; pointer-events: none; filter: drop-shadow(0 1px 2px #000); }
 .item.selected .lockb { display: block; }
 .item.board .lockb { bottom: 8px; }
+/* "Only you can see this" (spec §5g): a piece this player sees while the
+   others see its back — 🙈 on its bottom-right corner, always (a thumbnail
+   shows none), over a faint hatched corner of its face (clipped to its shape) */
+.visb { display: none; }
+.item > .visb {
+  display: block; position: absolute; right: -9px; bottom: -9px; padding: 2px; border-radius: 50%; z-index: 1;
+  font-size: 14px; font-style: normal; line-height: 1; background: #0f172ad9; box-shadow: 0 1px 3px #000a; pointer-events: none;
+}
+.item.veiled .pface { position: relative; }
+.item.veiled .pface::after {
+  content: ''; position: absolute; right: 0; bottom: 0; width: 50%; height: 50%; pointer-events: none;
+  background: repeating-linear-gradient(-45deg, #0f172a80 0 3px, #f8fafc66 3px 6px); clip-path: polygon(100% 0, 100% 100%, 0 100%);
+}
+/* a private zone's label (pieces.js privateSVG) turns as a zone's label does and grows with the badges on a
+   table drawn small, at most twice — about its own origin, where its <g> puts it (SVG's default transform
+   box), not its fill box: WebKit turned and grew a text about the SVG's origin, and the label flew off its
+   zone — moved away from the zone (--side: -1 above it, 1 below) by half what it grew (its font is 26) */
+.psvg .zlabel {
+  transform-box: view-box; transform-origin: 0 0;
+  transform: translate(0, calc(var(--side, -1) * 13px * (min(var(--bz, 1), 2) - 1))) rotate(calc(-1 * round(nearest, var(--view, 0deg) + var(--rot, 0deg), 180deg))) scale(min(var(--bz, 1), 2));
+}
 /* The snap preview (app.js previewSnap, spec §3g): the spot a dragged piece
    would land on (an outline in table units, grown on a table drawn small),
    and its address in a chip by the finger (screen space: above the other

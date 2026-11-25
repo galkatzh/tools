@@ -93,10 +93,14 @@ class Bridge {
   reset() { this.send({ t: 'reset' }); }
   /** One op on many items, as one action (spec §4i): `op` is move ({dx, dy}),
    *  rot ({deg}: a turn by that much each), flip, roll (the dice among them),
-   *  lock, unlock, del or bag ({bag}: an id or a name); `ids` a list of item
-   *  ids (or names). The host skips the members you may not handle, and says
-   *  how many in one notice. */
+   *  lock, unlock, del, bag ({bag}: an id or a name) or hide; `ids` a list of
+   *  item ids (or names). The host skips the members you may not handle, and
+   *  says how many in one notice. */
   group(op, ids, kw = {}) { this.send({ t: 'group', op, ids: [...ids], ...kw }); }
+  /** Hides pieces (ids) from the others, at once (spec §5i): you alone see their faces, and they are yours until revealed — dice under a cup. */
+  hide(...ids) { this.send({ t: 'hide', ids }); }
+  /** Turns hidden piece `id` face up for everyone (a flip; never of a piece face up already). */
+  reveal(id) { this.send({ t: 'reveal', id }); }
   route(req, res) {
     const url = new URL(req.url, 'http://x');
     if (url.searchParams.get('token') !== this.token) {
@@ -174,7 +178,9 @@ const HELP = `commands:
   draw [pile]             draw from a pile (default: biggest; id or name)
   deal [pile] [--up]      deal the top card onto the table
   shuffle [pile]          shuffle a pile
-  flip|peek|tohand <id>   flip / peek at / take a table card
+  flip|peek|tohand <id>   flip / peek at / take a table card (peek: a face-down card, a pile's top, a hidden piece)
+  hide <id...>            hide pieces from the others: you alone see their faces (dice: a cup)
+  reveal <id>             turn a hidden piece face up for everyone
   move <id> <x> <y>       move an item (table coords)
   roll <id...> | roll all roll dice together (all: every die you may handle, at most 20)
   face <id> <f>           turn a piece to face f (0, 1, …; not a die)
@@ -185,7 +191,7 @@ const HELP = `commands:
   bag <id> <bag>          put a piece into a bag
   lock|unlock <id>        lock an item in place, or free it
   claim|release <id>      make an item yours, or nobody's
-  group <op> <id,id,…> [dx dy | deg | bag]  one op on many items: move dx dy, rot deg, flip, roll, lock, unlock, del, bag <bag>
+  group <op> <id,id,…> [dx dy | deg | bag]  one op on many items: move dx dy, rot deg, flip, roll, lock, unlock, del, bag <bag>, hide
   seat <id> | seat - | seat +   sit in a named seat; - stand up to watch; + sit down again
   btn <id>                press a rules button (see "buttons")
   asks                    the rules' questions waiting for you (new ones print as they come)
@@ -200,9 +206,11 @@ const HELP = `commands:
 /** A card for the terminal: a text-only card's name is its (cut) quoted text, so show the full text instead. */
 function fmtCard(c) { return c.text && c.name.startsWith('“') ? `“${c.text}”` : c.name + (c.text && c.text !== c.name ? ` — ${c.text}` : ''); }
 /** A table item as one line: every line keeps the `  [id] … @x,y` frame
- *  (parsers split on it), then the owner and 🔒 when present (spec §2i). */
+ *  (parsers split on it), then the owner, 🔒 and "🙈 hidden from others" (a
+ *  piece you see whose back the others see, spec §5i) when present (spec §2i). */
 function fmtItem(it) {
-  const at = ` @${it.x},${it.y}${it.at ? ` at:${it.at}` : ''}`, tail = `${it.owner ? ` owner:${it.owner}` : ''}${it.locked ? ' 🔒' : ''}`, n = it.n ? ` ×${it.n}` : '';
+  const at = ` @${it.x},${it.y}${it.at ? ` at:${it.at}` : ''}`, n = it.n ? ` ×${it.n}` : '';
+  const tail = `${it.owner ? ` owner:${it.owner}` : ''}${it.locked ? ' 🔒' : ''}${it.hiddenFromOthers ? ' 🙈 hidden from others' : ''}`;
   const head = `  [${it.id}] `;
   switch (it.kind) {
     case 'card': return `${head}${it.up ? fmtCard(it) : 'face-down card'}${at}${tail}`;
@@ -241,7 +249,7 @@ function need(args, n, usage) {
   if (args.length < n || args.slice(1, n).some((a) => !Number.isFinite(+a))) throw new Error(usage);
 }
 const STALE_MS = 25000; // a live tab re-polls at least every 20 s
-const GROUP_USAGE = 'group <op> <id,id,…> [dx dy | deg | bag] — op: move dx dy, rot deg, flip, roll, lock, unlock, del, bag <bag>';
+const GROUP_USAGE = 'group <op> <id,id,…> [dx dy | deg | bag] — op: move dx dy, rot deg, flip, roll, lock, unlock, del, bag <bag>, hide';
 
 function repl(bridge) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: '🂡 > ' });
@@ -308,6 +316,12 @@ function runCmd(bridge, line) {
     case 'flip': case 'peek': case 'tohand': case 'btn':
       need(args, 1, `${cmd} <id>`);
       return bridge.send({ t: cmd === 'tohand' ? 'toHand' : cmd, id: args[0] });
+    case 'hide':
+      if (!args.length) throw new Error('hide <id...>');
+      return bridge.hide(...args);
+    case 'reveal':
+      need(args, 1, 'reveal <id>');
+      return bridge.reveal(args[0]);
     case 'move':
       need(args, 3, 'move <id> <x> <y>');
       return bridge.send({ t: 'move', id: args[0], x: +args[1], y: +args[2] });

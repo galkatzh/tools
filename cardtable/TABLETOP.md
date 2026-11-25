@@ -885,6 +885,20 @@ sync and rendering, and the Worker together with `handle`.
      - Exported games keep it all: a cup's dice, a screen's units that
        left it, and a script's hidden pieces as they were; a rack's tiles
        are hidden again by their rack when the game is set up.
+   - The table and the terminal (part 2 of the phase):
+     - A piece you see while the others see its back is drawn face up with
+       🙈 on its corner and that corner faintly hatched; its tooltip names
+       who else sees it. Everyone else sees its back, and nothing more.
+     - Its bar: 🙈 Hide (on a die, a cup over it and the dice touching it),
+       Reveal for a hidden piece, Peek for one hidden from you; the group
+       bar hides a selection, and H hides from the keyboard. Rolled under
+       the cup, the dice tumble as backs on the others' screens.
+     - A rack or a screen is hatched in its owner's colour and says whose
+       it is ("🔒 Alice's rack", "🔒 Your rack" on your own screen, "🔓
+       Nobody's rack" while it hides nothing); a bag's 🔒 Draw to my rack
+       draws straight into a free slot of yours.
+     - The terminal hides, reveals and peeks at pieces, and marks the
+       pieces only you see.
 
 The terminal bridge follows each phase:
 - pieces and boxes appear in its snapshot;
@@ -1037,3 +1051,13 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
   revealed there; off a rack it is played face up, out from behind a screen
   it stays hidden; a board moved under or away from a piece changes
   nothing, and a piece with no hidden side can't go in (§2, §3).
+- **What only you see is marked as yours:** a piece hidden from the others
+  but not from you shows its face with 🙈 and a hatched corner, wherever it
+  lies — in a rack too, whose label a phone may not show — so it is never
+  mistaken for one the table sees (§2).
+- **A rack says whose it is on every screen:** hatched in its owner's
+  colour, labelled with their name (yours: "Your rack") beside it, on the
+  side of the table's middle where no piece in it covers the label (§2, §4).
+- **Drawing into your rack shows nothing:** Draw to my rack sets the piece
+  down straight in a free slot of your rack, hidden as it lands, rather
+  than face down beside the bag to be dragged over (§2).
