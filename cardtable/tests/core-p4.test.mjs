@@ -29,7 +29,8 @@
 // (10) The facade: t.boxes, t.box, t.layout.
 // Then the test author's own sections, (1′) to (W′), written apart from the
 // implementation (see their header below): items 1, 2, 4, 5 and 6 again,
-// and the Worker contract of §4f.
+// and the Worker contract of §4f; and (3′), item 3 (`group`) again, written
+// apart from 4B's implementation.
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import fs from 'node:fs';
@@ -1863,6 +1864,384 @@ function indepWorker() {
 }
 
 // -----------------------------------------------------------------------------
+// (3′) group (§4l item 3: §4c, §3f.4, §3f.5, §3f.6, §2c; D217–D219), written
+//      apart from the implementation. §4c expands a group into "one
+//      sub-action per member", each the player's own single action — so a
+//      twin table sent those single actions one by one, bottom to top, must
+//      end the same (positions, turns, faces, addresses), and a member its
+//      single action would refuse is skipped alone. Then the ruled pipeline
+//      per member from a savepoint of its own, the whole job failing closed
+//      on a handle or validate that throws, the ONE line and the ONE notice,
+//      the costs (flood control, the watchdog's budget), and the host's
+//      checks of a Worker's group patch. "Muster" is an original test box.
+// -----------------------------------------------------------------------------
+/** Muster's item ids, by role (setup order: bottom to top). */
+const MU = Object.fromEntries(['field', 'p1', 'p2', 'f1', 'f2', 'f3', 'f9', 'b1', 'l1', 'plank', 'hexa', 'wedge', 'crate', 'd1', 'd2', 'd3', 'gem', 'pebble', 'spare', 'sack', 'c1', 'c2']
+  .map((k, j) => [k, `ba5e10${j.toString(16).padStart(2, '0')}`]));
+/** The face-down die's faces: never in a line or a notice while it lies face down. */
+const GEM_FACES = ['Ruby', 'Opal', 'Jade', 'Onyx'];
+/** Each Muster piece type's side (all are square: §2a, h defaults to w) and
+ *  rotStep (§2a's defaults: a token 0, a tile 90, a die 0). */
+const SIDE = { pawn: 60, plank: 80, hexa: 60, wedge: 50, crate: 80, d4: 56, gem: 56, pebble: 56 };
+const STEP = { pawn: 0, plank: 90, hexa: 60, wedge: 45, crate: 90, d4: 0, gem: 0, pebble: 0 };
+/** Where each Muster item is laid out (top-left), and its type. */
+const MU_AT = {
+  p1: [1220, 720], p2: [1520, 920], f1: [300, 300], f2: [400, 300], f3: [500, 300], f9: [600, 300], b1: [300, 500], l1: [400, 500],
+  plank: [300, 800], hexa: [420, 800], wedge: [540, 800], crate: [660, 800], d1: [2400, 300], d2: [2480, 300], d3: [1333, 777],
+  gem: [2560, 300], pebble: [2640, 300], spare: [800, 300],
+};
+const MU_TYPE = { p1: 'pawn', p2: 'pawn', f1: 'pawn', f2: 'pawn', f3: 'pawn', f9: 'pawn', b1: 'pawn', l1: 'pawn', plank: 'plank', hexa: 'hexa', wedge: 'wedge', crate: 'crate', d1: 'd4', d2: 'd4', d3: 'd4', gem: 'gem', pebble: 'pebble', spare: 'pawn' };
+/** "Muster": a 10 × 8 square field (cells of 100) centred on a 3000 × 2000
+ *  table — so at (1000, 600) — with pawns (two faces, free turns) on it
+ *  (p1, p2) and off it; a tile, a hex token (60°) and a wedge (45°); a crate
+ *  (a tile with a back) face down; dice with labelled faces, one (d3) on the
+ *  field; a face-down die ("gem") and a face-down token ("pebble") under ONE
+ *  back, alike from outside (§2a: the back carries the flags); a locked pawn
+ *  (l1); a bag; two face-down cards. Anyone may lock (§2c). */
+const muster = () => ({
+  name: 'Muster', id: 'ba5e0001', players: [2, 4], imgs: [], lockable: 'anyone',
+  table: { shape: 'rect', w: 3000, h: 2000 },
+  backs: [{ id: 'tarp', color: '#3f3f46' }, { id: 'cup', color: '#7c2d12', label: '?' }],
+  pieces: [
+    { id: 'field', kind: 'board', w: 1000, h: 800, grid: { type: 'square', cols: 10, rows: 8, cell: 100 } },
+    { id: 'pawn', kind: 'token', w: 60, faces: ['P', 'p'] },
+    { id: 'plank', kind: 'tile', w: 80, faces: ['L'] },
+    { id: 'hexa', kind: 'token', shape: 'hex', w: 60, rotStep: 60, faces: ['H'] },
+    { id: 'wedge', kind: 'token', shape: 'rect', w: 50, rotStep: 45, faces: ['W'] },
+    { id: 'crate', kind: 'tile', w: 80, back: 'tarp', faces: ['salt', 'silk'] },
+    { id: 'd4', kind: 'die', faces: ['I', 'II', 'III', 'IV'] },
+    { id: 'gem', kind: 'die', back: 'cup', faces: GEM_FACES },
+    { id: 'pebble', kind: 'token', shape: 'rect', w: 56, stack: 'none', back: 'cup', faces: ['Grit'] },
+  ],
+  decks: [{ name: 'Omens', id: 'ba5e0002', back: '#1e293b', imgs: [], cards: [{ n: 'Zephyr Crown' }, { n: 'Quiet Lantern' }] }],
+  setup: [
+    { piece: 'field', at: 'center', id: MU.field },
+    ...Object.entries(MU_TYPE).map(([k, t]) => ({ piece: t, at: MU_AT[k], id: MU[k], ...(['crate', 'gem', 'pebble'].includes(k) && { up: false }), ...(k === 'l1' && { lock: true }) })),
+    { bag: ['pawn'], name: 'Sack', at: [2400, 1600], id: MU.sack },
+    { card: { deck: 'Omens', i: 0 }, up: false, at: [2700, 900], id: MU.c1 },
+    { card: { deck: 'Omens', i: 1 }, up: false, at: [2820, 900], id: MU.c2 },
+  ],
+});
+/** A Muster table (hostTable: the rules off): Alice hosts, Bob and Carol
+ *  join; set up; Bob given the pawn b1 and the card c1 (the host may give
+ *  anything, §2c). The same seed makes a twin, randomness included. */
+function mustered(seed = 31) {
+  const T = hostTable({ seed, players: [[BOB, 'Bob'], [CAROL, 'Carol']], prefix: '7' });
+  T.box = act(T, HOST, { t: 'addBox', box: muster() }).id;
+  act(T, HOST, { t: 'setup', box: T.box });
+  for (const id of [MU.b1, MU.c1]) act(T, HOST, { t: 'owner', id, to: BOB });
+  return T;
+}
+/** A Muster room (room(): the host's table, and a mirror while rules run), set up as mustered() does. */
+function musterRoom(prefix) {
+  const R = room(HOST, 'Alice', [[BOB, 'Bob'], [CAROL, 'Carol']], prefix);
+  R.box = R.add(HOST, muster()).id;
+  R.job(HOST, { t: 'setup', box: R.box });
+  for (const id of [MU.b1, MU.c1]) R.job(HOST, { t: 'owner', id, to: BOB });
+  return R;
+}
+/** Player p's action `a` on table T, as the host's own table runs it:
+ *  {changed, lines: [[who, txt]], notes: p's [[msg, ruled]], bulbs (the fx
+ *  markers), sent (the items the next state re-sends)}. */
+function play(T, p, a) {
+  const q = quietly(() => T.apply(p, a)), fx = T.drain(), d = T.takeDirty();
+  return { changed: q.value, lines: d.log.map((e) => [e.p, e.txt]), notes: fx.filter((e) => e.t === 'note' && e.p === p).map((e) => [e.msg, e.ruled === true]), bulbs: fx.filter((e) => e.t === 'fx').map((e) => e.f), sent: d.items };
+}
+/** Room R's job (p, a) (room().job), with the lines it added as [who, txt] and p's notices as [msg, ruled]. */
+function rjob(R, p, a) {
+  const n0 = R.H.state.log.length, r = R.job(p, a);
+  return { ...r, said: R.H.state.log.slice(n0).map((e) => [e.p, e.txt]), told: r.fx.filter((e) => e.t === 'note' && e.p === p).map((e) => [e.msg, e.ruled === true]) };
+}
+/** What the eye compares of item `id` on table T: position, turn, face, side, address, lock, count — or 'gone'. */
+const look = (T, id) => { const x = own(T.state.items, id); return x ? J([x.x, x.y, x.rot ?? 0, x.f ?? null, x.up ?? null, x.at ?? null, !!x.lock, x.n ?? 1]) : 'gone'; };
+/** A refusal's words without its leading mark ("🚫 ", "🔒 "). */
+const bare = (msg) => msg.replace(/^(?:🚫|🔒) /u, '');
+const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Whether `msg` is a group's one notice (§4c, D218): "{k} of {N} were
+ *  skipped: {reason}" ("was" taken for one too), "🚫 " first exactly when
+ *  `none` applied; the reason with or without its own leading mark. */
+const isSkip = (msg, k, N, reason, none = false) => new RegExp(`^${none ? '🚫 ' : ''}${k} of ${N} (?:were|was) skipped: (?:🚫 |🔒 )?${reEsc(bare(reason))}$`, 'u').test(msg || '');
+/** Where Muster item `id` of table T lands moved by (dx, dy) (§3a, D112): a
+ *  piece (not a die) whose new centre lies on the field is centred on the
+ *  cell holding that centre; anything else lands at (x + dx, y + dy). */
+function landing(T, id, dx, dy) {
+  const it = T.state.items[id], ty = tid(it.t), w = SIDE[ty], x = it.x + dx, y = it.y + dy, cx = x + w / 2, cy = y + w / 2;
+  if (ty === 'd4' || ty === 'gem' || cx < 1000 || cx >= 2000 || cy < 600 || cy >= 1400) return [x, y];
+  return [1000 + 100 * Math.floor((cx - 1000) / 100) + 50 - w / 2, 600 + 100 * Math.floor((cy - 600) / 100) + 50 - w / 2];
+}
+/** §2c's turn: rotation `r` snapped to `step` (step ? round(r/step)·step : r), as an angle in [0, 360). */
+const turned = (r, step) => (((step ? Math.round(r / step) * step : r) % 360) + 360) % 360;
+/** app.js's watchdog budget for an action (spec §3f.5): app.js is a page,
+ *  so its `budget` is cut from its text (as h.js cuts WholeOffers) and run
+ *  here, on the engine's own groupIds. */
+function appBudget() {
+  const src = fs.readFileSync(path.join(APP_ROOT, 'cardtable/app.js'), 'utf8');
+  const fn = /^function budget\(a\) \{\n[\s\S]*?\n\}$/m.exec(src)?.[0], ms = /\bRULES_TIMEOUT_MS = (\d+)/.exec(src)?.[1];
+  if (!fn || !ms) throw new Error("app.js: no `function budget(a)` or no RULES_TIMEOUT_MS — the watchdog's budget can't be checked");
+  return new Function('RULES_TIMEOUT_MS', 'groupIds', 'own', 'countSetup', 'T', `${fn}\nreturn budget;`)(Number(ms), groupIds, own, () => 0, { state: { boxes: {}, players: {}, items: {} } });
+}
+
+function indepGroup() {
+  const I = MU, it = (T, k) => T.state.items[k];
+  section("(3′) a group is one sub-action per member, each the player's own single action: the table ends as those single moves leave a twin, each piece snapping on its own (§4c, §3a, D112)");
+  {
+    const T = mustered(), U = mustered();
+    ok(J([it(T, I.field).x, it(T, I.field).y]) === J([1000, 600]) && canon(T.state.items) === canon(U.state.items) && it(T, I.b1).owner === BOB && it(T, I.l1).lock === true,
+      'twin tables, laid out alike: the field at (1000, 600), Bob\'s pawn, the locked pawn');
+    const mem = [I.p1, I.p2, I.f1, I.d3], dx = 130, dy = -20, want = mem.map((k) => landing(T, k, dx, dy));
+    const r = play(T, CAROL, { t: 'group', op: 'move', ids: mem, dx, dy });
+    ok(J(mem.map((k) => [it(T, k).x, it(T, k).y])) === J(want),
+      `each member where its own move puts it: the pawns on the field centred on the cell under them, the pawn off it and the die (dice never snap) moved by (${dx}, ${dy}) (${J(mem.map((k) => [it(T, k).x, it(T, k).y]))})`);
+    const singles = [...mem].sort((a, b) => it(U, a).z - it(U, b).z).map((k) => play(U, CAROL, { t: 'move', id: k, x: it(U, k).x + dx, y: it(U, k).y + dy }));
+    ok(mem.every((k) => look(T, k) === look(U, k)), `…exactly as the four single moves {id, x: it.x + dx, y: it.y + dy} leave the twin (position, turn, face, address: ${J(mem.map((k) => JSON.parse(look(T, k))[5]))})`);
+    ok(J(r.lines) === J([[CAROL, 'moved 4 items']]) && singles.every((s) => s.lines.length === 1), `ONE line, the actor's, where the singles wrote four (${J(r.lines)})`);
+    const b = r.bulbs[0];
+    ok(r.bulbs.length === 1 && b.p === CAROL && mem.includes(b.id) && b.x === it(T, b.id).x && b.y === it(T, b.id).y, `one name bulb, on a member, where it lies now (${J(r.bulbs)})`);
+    ok(r.changed && !r.notes.length, 'nothing skipped: no notice');
+    const near0 = [I.p1, I.d1], edge = play(T, CAROL, { t: 'group', op: 'move', ids: near0, dx: 5000, dy: 0 });
+    const shift = near0.map((k, j) => it(T, k).x - [it(U, I.p1).x, it(U, I.d1).x][j]);
+    ok(edge.changed && shift[0] > 0 && it(T, I.d1).x + 56 <= 3000 && it(T, I.d1).y === it(U, I.d1).y, `a shift past the table's edge: the group slides only as far as its members stay on the table (§3c, D118: the shift ${J(shift)})`);
+  }
+
+  section("(3′) every member takes its single action's checks — owner, lock — and only it is skipped; ONE notice, \"{k} of {N} were skipped: {the first reason}\", a refusal only when none applied (§4c, §2c, D218)");
+  {
+    const T = mustered(), U = mustered(), single = (p, a) => play(U, p, a).notes.map(([m]) => m);
+    const owned = single(CAROL, { t: 'move', id: I.b1, x: 300, y: 600 }), locked = single(CAROL, { t: 'move', id: I.l1, x: 400, y: 600 });
+    ok(J(owned) === J(['🚫 That belongs to Bob']) && J(locked) === J(['🔒 That is locked in place']), `the single moves' refusals, on the twin (§2c: ${J([owned, locked])})`);
+    const was = Object.fromEntries(Object.values(I).map((k) => [k, look(T, k)]));
+    let r = play(T, CAROL, { t: 'group', op: 'move', ids: [I.f1, I.b1, I.l1, I.f2], dx: 0, dy: 100 });
+    ok(it(T, I.f1).y === 400 && it(T, I.f2).y === 400 && look(T, I.b1) === was[I.b1] && look(T, I.l1) === was[I.l1], "Carol's group: her two free pawns moved; Bob's pawn and the locked one stayed");
+    ok(r.notes.length === 1 && isSkip(r.notes[0][0], 2, 4, owned[0]) && r.notes[0][1] === false,
+      `one notice; its reason the lowest skipped member's (Bob's pawn lies under the locked one); no "🚫": some applied; not the rules' (${J(r.notes)})`);
+    ok(J(r.lines) === J([[CAROL, 'moved 2 items']]), `one line, counting the members moved (${J(r.lines)})`);
+    ok(r.sent.has(I.b1) && r.sent.has(I.l1), 'the skipped members are re-sent: an optimistic drop of them snaps back (the refusal touch, §2c)');
+    const st = canon(T.state.items);
+    r = play(T, CAROL, { t: 'group', op: 'move', ids: [I.l1, I.b1], dx: 50, dy: 0 });
+    ok(canon(T.state.items) === st && !r.lines.length && r.notes.length === 1 && isSkip(r.notes[0][0], 2, 2, owned[0], true) && r.sent.has(I.b1) && r.sent.has(I.l1),
+      `none of them Carol's to move: nothing changes, one refusal ("🚫 …"), both re-sent (${J(r.notes)})`);
+    const one = play(T, CAROL, { t: 'group', op: 'move', ids: [I.l1], dx: 50, dy: 0 }).notes.map(([m]) => m);
+    ok(J(one) === J(locked), `a group of one says what its single action says (D218: ${J(one)}; the single move: ${J(locked)})`);
+    r = play(T, BOB, { t: 'group', op: 'move', ids: [I.b1, I.l1], dx: 0, dy: 100 });
+    ok(it(T, I.b1).y === 600 && look(T, I.l1) === was[I.l1] && r.notes.length === 1 && isSkip(r.notes[0][0], 1, 2, locked[0]), `Bob's group: his own pawn moves, the locked one is skipped (${J(r.notes)})`);
+    r = play(T, CAROL, { t: 'group', op: 'lock', ids: [I.f3, I.b1], on: true });
+    ok(it(T, I.f3).lock === true && !it(T, I.b1).lock && J(r.lines) === J([[CAROL, 'locked 1 item']]) && r.notes.length === 1 && isSkip(r.notes[0][0], 1, 2, owned[0]),
+      `lock (anyone may, on what they may handle): Carol locks the free pawn, not Bob's (${J(r.lines)}, ${J(r.notes)})`);
+    r = play(T, CAROL, { t: 'group', op: 'move', ids: [I.f3, I.f1], dx: 10, dy: 0 });
+    ok(it(T, I.f3).x === 500 && it(T, I.f1).x === 310 && r.notes.length === 1 && isSkip(r.notes[0][0], 1, 2, locked[0]), `…and it no longer moves with a group (${J(r.notes)})`);
+    r = play(T, CAROL, { t: 'group', op: 'lock', ids: [I.f3], on: false });
+    ok(!it(T, I.f3).lock && J(r.lines) === J([[CAROL, 'unlocked 1 item']]), `unlocked (${J(r.lines)})`);
+  }
+
+  section('(3′) the hidden-item rule, per member: a group rolls ONE roll of the dice among its members that the player sees; a face-down die is no die to them — the outcome word for word a face-down pebble\'s under the same back — and its value never shows (§4c, §2c, D217, D218)');
+  {
+    const T = mustered(), U = mustered(), g0 = it(T, I.gem).f;
+    const rT = play(T, CAROL, { t: 'group', op: 'roll', ids: [I.f1, I.gem, I.d2, I.d1] }), rU = play(U, CAROL, { t: 'group', op: 'roll', ids: [I.f1, I.pebble, I.d2, I.d1] });
+    const lab = (k) => ['I', 'II', 'III', 'IV'][it(T, k).f];
+    ok(J(rT.lines) === J([[CAROL, `rolled 2 dice: ${lab(I.d1)} · ${lab(I.d2)}`]]), `one line, the two dice's faces in id order, as a roll says them (§2c: ${J(rT.lines)})`);
+    ok(it(T, I.gem).f === g0 && it(T, I.gem).up === false && look(T, I.f1) === look(U, I.f1), 'the face-down die is not rolled, the pawn neither');
+    ok(J([rT.lines, rT.notes]) === J([rU.lines, rU.notes]) && it(T, I.d1).f === it(U, I.d1).f, `the twin, where a face-down pebble stood in for that die, said the same: nothing tells a hidden die from a hidden token (${J(rU.lines)}, ${J(rU.notes)})`);
+    ok(rT.bulbs.length === 1 && J([...(rT.bulbs[0].roll || [])].sort()) === J([I.d1, I.d2]), `one bulb, tumbling the two dice (${J(rT.bulbs)})`);
+    const alone = play(T, CAROL, { t: 'group', op: 'roll', ids: [I.gem] }), twin = play(U, CAROL, { t: 'group', op: 'roll', ids: [I.pebble] });
+    ok(!alone.lines.length && alone.notes.length === 1 && /^🚫 /u.test(alone.notes[0][0]) && J(alone.notes) === J(twin.notes) && it(T, I.gem).f === g0,
+      `a group of the face-down die alone: refused, word for word as the pebble's (${J(alone.notes)} / ${J(twin.notes)})`);
+    const all = J([rT.lines, rT.notes, rU.lines, alone, twin, T.state.log, U.state.log]);
+    ok(!GEM_FACES.some((w) => all.includes(w)), 'no face of the hidden die in any line or notice');
+  }
+
+  section("(3′) rot is a per-member DELTA, each member's new turn snapped to its own rotStep (a hidden one's: its back's) — as the single rot {rot: it.rot + delta} turns it (§4c, §2c)");
+  {
+    const T = mustered(), U = mustered(), turn = [I.plank, I.hexa, I.wedge, I.f1, I.crate];
+    for (const d of [50, 50, -100, 120]) {
+      const was = turn.map((k) => it(T, k).rot ?? 0), r = play(T, CAROL, { t: 'group', op: 'rot', ids: turn, rot: d });
+      const got = turn.map((k) => it(T, k).rot ?? 0), want = turn.map((k, j) => turned(was[j] + d, STEP[tid(it(T, k).t)]));
+      for (const k of turn) play(U, CAROL, { t: 'rot', id: k, rot: (it(U, k).rot ?? 0) + d });
+      ok(J(got) === J(want) && J(turn.map((k) => it(U, k).rot ?? 0)) === J(got) && J(r.lines) === J([[CAROL, 'rotated 5 items']]),
+        `rot ${d > 0 ? '+' : ''}${d}: tile (90°), hex (60°), wedge (45°), free pawn, face-down crate ${J(was)} → ${J(got)} (want ${J(want)}); the singles agree; one line (${J(r.lines)})`);
+    }
+  }
+
+  section('(3′) flip, into a bag, remove: each member as its single action does it, one line each (§4c, §2c, D218)');
+  {
+    const T = mustered(), U = mustered(), f0 = it(T, I.p1).f;
+    let r = play(T, CAROL, { t: 'group', op: 'flip', ids: [I.p1, I.crate, I.d1] });
+    const die = play(U, CAROL, { t: 'flip', id: I.d1 }).notes.map(([m]) => m);
+    for (const k of [I.p1, I.crate]) play(U, CAROL, { t: 'flip', id: k });
+    ok(it(T, I.p1).f === 1 - f0 && it(T, I.crate).up !== false && [I.p1, I.crate, I.d1].every((k) => look(T, k) === look(U, k)), 'the pawn turned to its other face, the crate face up, the die as it was — as the single flips left the twin');
+    ok(J(r.lines) === J([[CAROL, 'flipped 2 items']]) && r.notes.length === 1 && isSkip(r.notes[0][0], 1, 3, die[0]), `one line; the die skipped with its single flip's reason (${J(r.notes)}; the single: ${J(die)})`);
+    const n0 = it(T, I.sack).of.length;
+    r = play(T, CAROL, { t: 'group', op: 'toBag', ids: [I.f1, I.f2, I.pebble], bag: I.sack });
+    ok([I.f1, I.f2, I.pebble].every((k) => !own(T.state.items, k)) && it(T, I.sack).of.length === n0 + 3 && J(r.lines) === J([[CAROL, 'put 3 items into the bag Sack']]),
+      `into the bag: three pieces in, gone from the table; one line (${J(r.lines)})`);
+    r = play(T, CAROL, { t: 'group', op: 'del', ids: [I.p2, 'dead0001', I.b1] });
+    ok(!own(T.state.items, I.p2) && !!own(T.state.items, I.b1) && J(r.lines) === J([[CAROL, 'removed 1 item']]) && r.notes.length === 1 && /^2 of 3 (?:were|was) skipped: /u.test(r.notes[0][0]),
+      `remove: Carol's one goes; an id that names nothing and Bob's pawn are skipped (${J(r.notes)})`);
+  }
+
+  section('(3′) the payload: the first 200 ids, each once — 500 ids, duplicates, someone else\'s, a locked one, a face-down card of Bob\'s, ids that name nothing; a malformed group changes nothing (§4c, §4j case 8, D217)');
+  {
+    const T = mustered(), fake = Array.from({ length: 47 }, (_, k) => `dead${k.toString(16).padStart(4, '0')}`);
+    const ids = [...Array(150).fill(I.f1), I.b1, I.l1, I.c1, ...fake, I.f9, ...Array(299).fill(I.f2)];
+    const was = Object.fromEntries(Object.values(I).map((k) => [k, look(T, k)]));
+    const r = play(T, CAROL, { t: 'group', op: 'move', ids, dx: 0, dy: 50 });
+    ok(ids.length === 500 && it(T, I.f1).y === 350, `500 ids: the pawn named 150 times moved once, by 50 (y ${it(T, I.f1).y})`);
+    ok(look(T, I.f9) === was[I.f9] && look(T, I.f2) === was[I.f2], 'the ids past the 200th — a free pawn at 201, another 299 times — are never looked at');
+    ok([I.b1, I.l1, I.c1].every((k) => look(T, k) === was[k]) && it(T, I.c1).up === false, "Bob's pawn, the locked one and Bob's face-down card: untouched");
+    ok(r.notes.length === 1 && /^50 of 51 (?:were|was) skipped: /u.test(r.notes[0][0]) && J(r.lines) === J([[CAROL, 'moved 1 item']]),
+      `one notice counting the 51 distinct members of the first 200 ids, 50 skipped (${J(r.notes)}); one line (${J(r.lines)})`);
+    ok(!/Zephyr|Quiet Lantern/.test(J([r.notes, T.state.log])), 'the face-down card is never named');
+    for (const a of [{ op: 'hide', ids: [I.f1] }, { op: 'spin', ids: [I.f1] }, { op: 'move', ids: [] }, { op: 'move' }, { op: 'lock', ids: [I.f1] }, { op: 'toBag', ids: [I.f1], bag: I.f9 }, { op: 'toBag', ids: [I.f1], bag: 'dead0001' }]) {
+      const s0 = canon(T.state), q = play(T, CAROL, { t: 'group', dx: 5, dy: 5, ...a });
+      ok(canon(T.state) === s0 && !q.lines.length && q.notes.length === 1 && /^🚫 /u.test(q.notes[0][0]), `${J(a)}: refused with a notice, nothing changed (${J(q.notes)})`);
+    }
+  }
+
+  section('(3′) flood control: a group costs 1 + ⌊N/20⌋ of the 40-token burst, N its members (the first 200 ids, each once); a group drag one, whatever its size (§4c, §3c, §0.1, D219)');
+  {
+    /** How many of action `a` a guest gets through a fresh bucket (the clock stopped: no refill). */
+    const passes = (a) => {
+      const F = quietly(() => createTable({}, { pid: HOST, now: () => 1.7e12, uid: () => 'f0000001' })).value;
+      let n = 0;
+      while (n < 100 && F.mayAct(BOB, a)) n++;
+      return n;
+    };
+    const many = (n) => Array.from({ length: n }, (_, k) => `ab${k.toString(16).padStart(6, '0')}`);
+    for (const [n, N] of [[1, 1], [19, 19], [20, 20], [39, 39], [40, 40], [199, 199], [200, 200], [500, 200]]) {
+      const want = Math.floor(40 / (1 + Math.floor(N / 20))), got = passes({ t: 'group', op: 'move', ids: many(n), dx: 1, dy: 0 });
+      ok(got === want, `a group of ${n} ids (${N} members) costs ${1 + Math.floor(N / 20)}: ${got} pass a burst of 40 (want ${want})`);
+    }
+    ok(passes({ t: 'group', op: 'del', ids: Array(300).fill('ab000001') }) === 40, '300 copies of one id: one member, one token');
+    ok(passes({ t: 'drag', ids: many(200), dx: 3, dy: 4 }) === 40 && passes({ t: 'move', id: 'ab000001', x: 0, y: 0 }) === 40, "a group drag of 200 and a single move: one token each, 40 pass");
+  }
+
+  section("(3′) the watchdog's budget: 4000 ms, and for a group 10 ms more per member — the members as the engine counts them, the first 200 ids each once (§3f.5, §4c, D219; app.js's budget, run here)");
+  {
+    const budget = appBudget(), many = (n) => Array.from({ length: n }, (_, k) => `ab${k.toString(16).padStart(6, '0')}`);
+    for (const [what, a, ms] of [
+      ['a single move', { t: 'move', id: 'ab000001', x: 0, y: 0 }, 4000],
+      ['a group of 1', { t: 'group', op: 'move', ids: many(1) }, 4010],
+      ['a group of 7', { t: 'group', op: 'rot', ids: many(7), rot: 90 }, 4070],
+      ['a group of 200', { t: 'group', op: 'del', ids: many(200) }, 6000],
+      ['500 ids (Mallory\'s: only the first 200 count)', { t: 'group', op: 'move', ids: many(500) }, 6000],
+      ['300 copies of one id', { t: 'group', op: 'flip', ids: Array(300).fill('ab000001') }, 4010],
+    ]) {
+      const got = budget(a);
+      ok(got === ms, `${what}: ${got} ms (want ${ms})`);
+    }
+  }
+
+  section('(3′) the rules on: each member through handle and validate from a savepoint of its own — a veto, or the engine\'s refusal, rolls back that member\'s writes alone, the rest apply; onAction per member; buttons() once (§4c, §3f.4, D217)');
+  {
+    const R = musterRoom('b'), H = R.H;
+    const QM = (o = {}) => `({ name: 'Quartermaster',
+      handle(t, a) {
+        if (a.t !== 'move') return;
+        (t.data.h ||= []).push(a.id);
+        if (a.id === ${J(o.veto ?? '')}) t.flip(${J(I.spare)});
+        ${o.handle ? `if (a.id === ${J(o.handle)}) throw new Error('handle broke');` : ''}
+      },
+      ${o.async ? 'async ' : ''}validate(t, a) {
+        if (a.t === 'move' && a.id === ${J(o.veto ?? '')}) return 'Not that one';
+        ${o.validate ? `if (a.id === ${J(o.validate)}) throw new Error('validate broke');` : ''}
+      },
+      onAction(t, a) {
+        (t.data.seen ||= []).push([a.t, a.id ?? null, a.group ?? null, a.x ?? null, a.y ?? null]);
+        ${o.onAction ? `if (a.id === ${J(o.onAction)}) { t.data.bad = 1; throw new Error('onAction broke'); }` : ''}
+      },
+      buttons(t) { t.data.b = (t.data.b || 0) + 1; return []; },
+    })`;
+    rjob(R, HOST, { t: 'setRules', enabled: true, reset: true, code: QM({ veto: I.f2 }) });
+    const mem = [I.f1, I.f2, I.f3, I.b1], pre = Object.fromEntries(mem.map((k) => [k, [H.state.items[k].x, H.state.items[k].y]])), spare = look(H, I.spare), b0 = H.state.rules.data.b;
+    const r = rjob(R, CAROL, { t: 'group', op: 'move', ids: mem, dx: 0, dy: 100 });
+    const d = H.state.rules.data;
+    ok(R.same() && !r.error && H.state.rules.enabled, "the host took the mirror's patch (the digests agree); the rules still on");
+    ok(H.state.items[I.f1].y === 400 && H.state.items[I.f3].y === 400 && J([H.state.items[I.f2].x, H.state.items[I.f2].y]) === J(pre[I.f2]) && J([H.state.items[I.b1].x, H.state.items[I.b1].y]) === J(pre[I.b1]),
+      'the vetoed pawn and Bob\'s (the engine\'s refusal) stayed; the other two moved');
+    ok(!d.h.includes(I.f2) && d.h.includes(I.f1) && d.h.includes(I.f3) && look(H, I.spare) === spare, `the vetoed member's handle writes (its push, its flip of another pawn) were rolled back with it; the members done kept theirs (t.data.h ${J(d.h)})`);
+    ok(!d.h.includes(I.b1), `…and so were those of the member the engine refused (Bob's pawn): "a veto or a refusal calls rollbackTo for that member only" (§4c, D217; t.data.h ${J(d.h)})`);
+    ok(J(d.seen) === J([I.f1, I.f3].map((k) => ['move', k, 4, pre[k][0], pre[k][1] + 100])),
+      `onAction ran for each member applied, as its single move {t: 'move', id, x: it.x + dx, y: it.y + dy, group: N} (${J(d.seen)})`);
+    ok(d.b === b0 + 1, `buttons() ran once for the group (${b0} → ${d.b})`);
+    ok(J(r.said.filter(([p]) => p === CAROL)) === J([[CAROL, 'moved 2 items']]) && r.said.filter(([p, txt]) => p === RULES && txt.startsWith('blocked Carol: Not that one')).length === 1,
+      `one line in Carol's name; one "blocked" line for the veto (${J(r.said)})`);
+    ok(r.told.length === 1 && isSkip(r.told[0][0], 2, 4, 'Not that one') && r.told[0][1] === true, `one notice, its first reason the veto (it lies lowest), marked as the rules' (D211: ${J(r.told)})`);
+    rjob(R, CAROL, { t: 'move', id: I.f1, x: 300, y: 500, group: 9 });
+    ok(J(H.state.rules.data.seen.at(-1)) === J(['move', I.f1, null, 300, 500]) && R.same(), `a single move that says {group: 9}: the hooks never see it (only the host sets it, D217: ${J(H.state.rules.data.seen.at(-1))})`);
+
+    section('(3′) a handle or validate that throws — or returns a thenable — fails the WHOLE group closed, as it fails a single action: nothing of it applies, the rules go off (§4c, §3f.4)');
+    const three = [I.f1, I.f2, I.f3], order = [...three].sort((a, b) => H.state.items[a].z - H.state.items[b].z); // (bottom to top: the order the members run in)
+    for (const [hook, o] of [['handle', { handle: order[2] }], ['validate', { validate: order[2] }], ['validate', { async: true }]]) {
+      const what = o.async ? 'an async validate (a thenable)' : `${hook}() throwing at the last member (the first two done)`;
+      /** The same script, the same move of f3 alone, in a twin room. */
+      const V = musterRoom('d');
+      rjob(R, HOST, { t: 'setRules', enabled: true, reset: true, code: QM(o) });
+      rjob(V, HOST, { t: 'setRules', enabled: true, reset: true, code: QM(o) });
+      const xy = (Z) => J(three.map((k) => [Z.H.state.items[k].x, Z.H.state.items[k].y]));
+      const p0 = xy(R), data0 = canon(H.state.rules.data);
+      const g = rjob(R, CAROL, { t: 'group', op: 'move', ids: three, dx: 0, dy: 100 });
+      const s = rjob(V, CAROL, { t: 'move', id: order[2], x: V.H.state.items[order[2]].x, y: V.H.state.items[order[2]].y + 100 });
+      ok(xy(R) === p0 && canon(H.state.rules.data) === data0 && !H.state.rules.enabled, `${what}: no member moved, not even those before it; none of the hooks' writes kept; the rules off`);
+      ok(J(g.told.map(([m]) => m)) === J(['🚫 rules script error']) && J(g.told) === J(s.told) && J(g.said) === J(s.said) && /handle|validate/.test(g.error?.hook || ''),
+        `…said as the single move's failure is, word for word (${J(g.told)}, ${J(g.said)}; error ${J(g.error)})`);
+    }
+
+    section('(3′) an onAction that throws keeps the members done (its own writes undone); the rest are skipped, the rules off (§3f.4\'s atomicity table, D217)');
+    rjob(R, HOST, { t: 'setRules', enabled: true, reset: true, code: QM({ onAction: order[1] }) });
+    const ys = order.map((k) => H.state.items[k].y), q = rjob(R, CAROL, { t: 'group', op: 'move', ids: three, dx: 0, dy: 100 });
+    ok(J(order.map((k, j) => H.state.items[k].y - ys[j])) === J([100, 100, 0]) && J(H.state.rules.data.seen) === J([['move', order[0], 3, H.state.items[order[0]].x, ys[0] + 100]]) && !('bad' in H.state.rules.data) && !H.state.rules.enabled,
+      `the first member, and the second's own move, kept; the failing onAction's writes undone; the third skipped; the rules off (${J(H.state.rules.data)})`);
+    ok(q.told.length === 1 && isSkip(q.told[0][0], 1, 3, 'rules script error') && q.said.some(([p, txt]) => p === CAROL && txt === 'moved 2 items'), `said once (${J(q.told)}, ${J(q.said)})`);
+
+    section('(3′) strict, per member: a move no `allow` lists is refused for each; a rot it lists goes through (§3c, §4c)');
+    rjob(R, HOST, { t: 'setRules', enabled: true, reset: true, code: "({ name: 'Strict', strict: true, allow: ['rot'] })" });
+    const s0 = J([I.f1, I.f3].map((k) => look(H, k))), m = rjob(R, CAROL, { t: 'group', op: 'move', ids: [I.f1, I.f3], dx: 0, dy: 100 });
+    ok(J([I.f1, I.f3].map((k) => look(H, k))) === s0 && m.told.length === 1 && isSkip(m.told[0][0], 2, 2, 'Not a move in this game', true) && R.same(), `the move: refused for both, said once (${J(m.told)})`);
+    const t1 = rjob(R, CAROL, { t: 'group', op: 'rot', ids: [I.plank, I.hexa], rot: 90 });
+    ok(J(t1.said.filter(([p]) => p === CAROL)) === J([[CAROL, 'rotated 2 items']]) && !t1.told.length && R.same(), `the rot: done (${J(t1.said)})`);
+  }
+
+  section("(3′) the host takes an honest group job's patch whole — every op, the rules on — and refuses a forged one, applying nothing (§3f.6 checkPatch, D144, D219)");
+  {
+    const R = musterRoom('e'), H = R.H, WATCH = "({ name: 'Watch', onAction(t, a) { t.data.n = (t.data.n || 0) + 1; } })";
+    rjob(R, HOST, { t: 'setRules', enabled: true, reset: true, code: WATCH });
+    for (const [what, p, a, line] of [
+      ["Carol's move", CAROL, { op: 'move', ids: [I.f1, I.f2, I.b1], dx: 0, dy: 100 }, /^moved 2 items$/],
+      ["Bob's rot", BOB, { op: 'rot', ids: [I.plank, I.hexa, I.wedge, I.crate], rot: 50 }, /^rotated 4 items$/],
+      ["Carol's flip", CAROL, { op: 'flip', ids: [I.p1, I.crate, I.d1] }, /^flipped 2 items$/],
+      ["Bob's roll", BOB, { op: 'roll', ids: [I.d1, I.d2, I.gem, I.f1] }, /^rolled 2 dice: \S+ · \S+$/],
+      ["Carol's lock", CAROL, { op: 'lock', ids: [I.f3, I.b1], on: true }, /^locked 1 item$/],
+      ["the host's into the bag", HOST, { op: 'toBag', ids: [I.f1, I.f2], bag: I.sack }, /^put 2 items into the bag Sack$/],
+      ["Carol's remove", CAROL, { op: 'del', ids: [I.p2, 'dead0001', I.b1] }, /^removed 1 item$/],
+    ]) {
+      let r = null, threw = '';
+      try { r = rjob(R, p, { t: 'group', ...a }); } catch (e) { threw = e.message; }
+      ok(!threw && R.same() && H.state.rules.enabled && r.said.filter(([q, txt]) => q === p && line.test(txt)).length === 1, `${what}: taken, the digests agree${threw ? ` — REFUSED: ${threw}` : ''} (${J(r?.said)})`);
+    }
+    const ga = { t: 'group', op: 'move', ids: [I.p1, I.d2], dx: 0, dy: 100 };
+    const state = () => canon({ items: H.state.items, players: H.state.players, rules: H.state.rules, log: H.state.log, lastSetup: H.state.lastSetup ?? null });
+    const forged = (what, p, a, forge) => {
+      const r0 = quietly(() => R.M.job(p, a)).value, P = structuredClone(r0.patch), O = structuredClone(r0.out);
+      forge(P, O);
+      const was = state();
+      let threw = '';
+      try { quietly(() => H.applyStatePatch(P, O, { p, a })); } catch (e) { threw = e.message; }
+      ok(!!threw && state() === was, `${what}: refused, nothing applied (${threw || 'TAKEN'})`);
+      rjob(R, HOST, { t: 'setRules', enabled: true, reset: true, code: WATCH }); // (a fresh mirror, from the host's table)
+    };
+    const line = (P) => (Array.isArray(P.log) ? P.log : []).find((e) => e.txt === 'moved 2 items');
+    forged("the group's line said in Bob's name", CAROL, ga, (P) => { line(P).p = BOB; });
+    forged("the group's name bulb in Bob's name", CAROL, ga, (P, O) => { for (const e of O.effects) if (e.t === 'fx') e.f.p = BOB; });
+    forged('a chat line in the group', CAROL, ga, (P) => { P.log.push({ ...line(P), txt: 'Carol: psst', c: 1 }); });
+    forged("a peek at Bob's face-down card, for Carol, in her group", CAROL, ga, (P, O) => { O.effects.push({ t: 'peek', p: CAROL, c: { d: 'ba5e0002', i: 0 } }); });
+    forged('Carol renamed by her group', CAROL, ga, (P) => { P.players = { ...P.players, [CAROL]: { ...H.state.players[CAROL], name: 'Queen' } }; });
+    forged('Bob sent offline by Carol\'s group', CAROL, ga, (P) => { P.players = { ...P.players, [BOB]: { ...H.state.players[BOB], online: false } }; });
+    forged('lastSetup dropped in a group', CAROL, ga, (P) => { P.lastSetup = null; });
+    forged("an `enable` (a box's rules to start) in a group", CAROL, ga, (P, O) => { O.effects.push({ t: 'enable', box: R.box, remap: {} }); });
+    const before = [I.p1, I.d2].map((k) => H.state.items[k].y), honest = rjob(R, CAROL, ga);
+    ok(R.same() && J([I.p1, I.d2].map((k, j) => H.state.items[k].y - before[j])) === J([100, 100]) && honest.said.some(([q, txt]) => q === CAROL && txt === 'moved 2 items'), 'the same group, honest: taken');
+  }
+}
+
+// -----------------------------------------------------------------------------
 // (F) The 4A fix-up's regressions (D196–D203)
 // -----------------------------------------------------------------------------
 function testFixup() {
@@ -2131,6 +2510,7 @@ function testFixup3() {
   await guard("(5′) dedup", indepDedup);
   await guard("(6′) MIGRATE[4], reset after a reload", indepMigrate);
   await guard("(W′) Worker contract", indepWorker);
+  await guard("(3′) group", indepGroup);
   await guard('(F) fix-up regressions', testFixup);
   await guard('(G) fix-up 2 regressions', testFixup2);
   await guard('(H) fix-up 3 regressions', testFixup3);
