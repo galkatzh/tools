@@ -43,7 +43,7 @@ node t-smoke.js         # one suite, output on the terminal
   within 1 s; go's stone #300 within 10 ms of Worker time), run alone, one
   at a time after the parallel batch, under the same lock: `SERIAL`, a
   comma-separated list of suite names, default
-  `t-p1-bench,core-p1-bench,core-p2-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench`.
+  `t-p1-bench,core-p1-bench,core-p2-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench`.
   A listed suite that doesn't exist fails the run.
 - Runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
   `/tmp/cardtable-tests.lock`): concurrent runs on a small machine starve each
@@ -1885,6 +1885,89 @@ own, beside the implementer's `t-p3-ui.js` and `t-p3-cli.js`.
 - **Mechanism changes**: `run-all.sh`'s serial batch adds `t-p4-bench`;
   `t-p3-term.js` keeps only the snapshots a tab sends to its bridge of the
   moment (see its entry). No assertion changed.
+
+### The 4A suites written from the spec (independent of the implementation)
+
+`t-p4-box-ui.js`, `t-p4-box-files.js` and `t-p4-box-bench.js` check §4l's
+t-p4-boxes items 1–7 and 9–12 and §4j's attacker cases 1–7 and 9–12 (case 8,
+`group`, is 4B's) against the spec and its decisions, beside the
+implementer's t-p4-boxes.js. Every upload is files picked in the 📦
+dialog's file input (`setInputFiles`), every Set up, Reset, Export and
+answer a press of the dialog's own buttons; nothing they test goes through
+`__ct.act`.
+
+- **`fixtures/lantern/`** (made by `node fixtures/make-lantern.js`, which
+  draws its 6 PNGs with a canvas in Chromium — original content — and writes
+  the rest; commit what it writes): "Lantern Isles", a `game.json` (a board
+  with a grid, a lantern with two faces on a transparent ground, a cache
+  hidden under a back, a die, a deck of two image cards and four text
+  cards; a setup using `id`, `forEachSeat`, an address, a `pile` and
+  `hands` by "#k"), its 6 PNGs (the board 1,400 px, the cache 700 px: drawn
+  at 560), and `rules.js` ("Lantern Watch": a 🏮 button counting in
+  `t.data.lit`, the script finding its own box id with `t.boxes()`);
+  **`fixtures/lantern.zip`**: the same files in one folder.
+- **`p4-lib.js`**: `zip(entries)` (each `{name, data, store?, declared?,
+  dir?}`: a directory may claim any size, names are written as given) and
+  `unzip(buf)` (reads an exported file); `png(w, h, fill)`, `pixels`,
+  `photo(w, h, seed)` (a "photograph": a 4,000 × 3,000 is 4.9 MB of PNG),
+  `noise(w, h, seed)`, `hugePNG(w, h)` (a header that lies), `magic`;
+  init scripts `watchers` (`window.__toasts` and `window.__boxSays`: every
+  text the toast and the dialog's progress, error and messages show, two
+  in one task included) and the JSZip spy (`zipSpy(page)`: the app's
+  `+esm` URL is served as a module that wraps the real build, fetched as
+  `+esm?real`, and records in `window.__zip` each `loadAsync`, each
+  `async` / `nodeStream` / `internalStream` call per entry and the bytes
+  each stream delivered; `page.jszipAt` the times the page asked for the
+  URL); the dialog: `openBoxes`, `closeBoxes` (its own close control),
+  `upload(p, files, {now, done})`, `asked(p, kind)` (`{title, lines,
+  checks, labels, buttons}` of `#box-ask`), `reply(p, label, {label: on})`,
+  `row(p, boxId)`, `says`, `boxSaid`, `toasts`, `inView`; the host:
+  `S` (`__ct.hostState()`), `settle` (the queue idle 300 ms), `asset(p,
+  id)` (an image as IndexedDB holds it: `{mime, size, magic, w, h}`),
+  `drawnWithImages`, `ranked(state)` (the seated players in "#k" order,
+  computed as §4a says).
+- **`t-p4-box-ui.js`** (Alice hosts on a desktop, Bob on an iPhone 13
+  upright, Carol watches on one sideways, Mallory joins for case 7): the
+  fixture picked as files (progress per image, the confirm, the layout:
+  ids kept, "#k" hands, the images stored as WebP by their bytes, a board
+  at its own 1,400 px, a piece at 560; drawn with their pictures on all
+  three screens, Bob pulling them over the asset channel); the same zip
+  (one box, "That box is already on this table", set up again; JSZip
+  requested only now, read by streams only, its build pinned:
+  `_data.uncompressedSize`, `internalStream`, `unsafeOriginalName`); Bob's
+  box with rules (registers only; by Bob, 📜, read-only on every guest; no
+  setup or rules on a guest), the confirm naming him with rules and shuffle
+  ticked, the trust dialog's words and buttons, "Set up without rules"
+  (piles shuffled), Reset without rules, Cancel (nothing changes), "Enable
+  rules" (piles in order, rules.box), a .json export; the host's box with a
+  saved rules state ("@#k" secrets and asks mapped, "@#3" dropped with its
+  toast), Reset (layout and state again), a host reload, Reset again;
+  mid-game Export (a .zip: ids, "#k", "@#k", no pid in it), play on, the
+  export uploaded and set up: the position compared item by item (ids,
+  faces, places within 0.5, z order, hands, the rules and their state; the
+  catalog keeps the first box, so its box and deck ids are mapped back, and
+  the box id the script stored must be the new one), both guests' views and
+  hands as exported, and Mallory's messages on every channel scanned for
+  the hidden marks of its state (a public mark reaches her: the control);
+  the guests' budget shared by a deck and boxes (measured, refused with its
+  words); a built-in box twice: one entry.
+- **`t-p4-box-files.js`** (Alice hosts on an iPhone 13 upright, Bob on a
+  desktop, Mallory is a raw peer): every hostile zip and file refused in
+  the dialog (on the phone's screen) and a toast, naming the file or the
+  field, nothing registered, and what the spy saw: the bomb's entry never
+  read, nothing read of a zip with a bad path, too many entries or too many
+  declared bytes, the 64 MB + 1 zip never opened, the liar's stream
+  stopped (≈ 16.8 MB came out of 100 MB: one compressed block's output,
+  D188), no markup or 30,000² PNG ever decoded; a Finder zip read; storage
+  full: no box (§4h); a guest's bomb refused on his screen; the 4,000 ×
+  3,000 photograph at 2,048 px, the 2,048² noise board stepped down to
+  1,740 px, the Safari stub (`toDataURL('image/webp')` answering PNG):
+  JPEG for the opaque, PNG for the transparent, a deck's card JPEG too;
+  Mallory's cases 5, 6 (a peer hears one refusal per 10 s: the reset waits),
+  10 and 11 — each forged entry on its own as well as together.
+- **`t-p4-box-bench.js`** (serial): B20 and B21 on a generated board game
+  (a 2,400 × 1,800 board and 63 counters, 64 photographs, 21 MB zipped),
+  the clock started by the file input's change event.
 
 ## Storage and images (Phase 1B)
 

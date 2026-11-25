@@ -1,0 +1,188 @@
+{
+  "name": "Lantern Isles",
+  "players": [
+    2,
+    4
+  ],
+  "table": {
+    "shape": "rect",
+    "w": 1600,
+    "h": 1100,
+    "felt": "#1b3b4f"
+  },
+  "backs": [
+    {
+      "id": "tide",
+      "color": "#2b4a5e",
+      "label": "~"
+    }
+  ],
+  "pieces": [
+    {
+      "id": "sea",
+      "name": "Sea chart",
+      "kind": "board",
+      "img": "board.png",
+      "w": 700,
+      "h": 500,
+      "grid": {
+        "type": "square",
+        "cols": 7,
+        "rows": 5,
+        "cell": 100,
+        "labels": "chess",
+        "draw": "none"
+      }
+    },
+    {
+      "id": "lantern",
+      "name": "Lantern",
+      "kind": "token",
+      "shape": "round",
+      "w": 64,
+      "faces": [
+        {
+          "img": "lantern-dark.png",
+          "name": "Dark lantern"
+        },
+        {
+          "img": "lantern-lit.png",
+          "name": "Lit lantern"
+        }
+      ]
+    },
+    {
+      "id": "cache",
+      "name": "Cache",
+      "kind": "token",
+      "shape": "rect",
+      "w": 50,
+      "img": "cache.png",
+      "back": "tide"
+    },
+    {
+      "id": "d6",
+      "kind": "die"
+    }
+  ],
+  "decks": [
+    {
+      "name": "Winds",
+      "back": "#24435a",
+      "cards": [
+        {
+          "file": "wind-north.png",
+          "name": "North wind"
+        },
+        {
+          "file": "wind-south.png",
+          "name": "South wind"
+        },
+        {
+          "name": "Calm",
+          "text": "Nothing stirs"
+        },
+        {
+          "name": "Squall",
+          "text": "Move a lantern one cell"
+        },
+        {
+          "name": "Fog",
+          "text": "Hide a cache"
+        },
+        {
+          "name": "Gale",
+          "text": "Every lantern goes dark"
+        }
+      ]
+    }
+  ],
+  "setup": [
+    {
+      "piece": "sea",
+      "at": "center",
+      "id": "5ea0c4a7"
+    },
+    {
+      "forEachSeat": [
+        {
+          "piece": "lantern",
+          "at": "seat",
+          "owner": "seat"
+        }
+      ]
+    },
+    {
+      "piece": "lantern",
+      "f": 1,
+      "at": "d3",
+      "id": "1a7e0001"
+    },
+    {
+      "piece": "cache",
+      "up": false,
+      "at": "b4"
+    },
+    {
+      "piece": "cache",
+      "up": false,
+      "at": "f2"
+    },
+    {
+      "piece": "d6",
+      "at": [
+        1380,
+        160
+      ]
+    },
+    {
+      "pile": [
+        {
+          "deck": "Winds",
+          "i": 1,
+          "up": false
+        },
+        {
+          "deck": "Winds",
+          "i": 2,
+          "up": false
+        },
+        {
+          "deck": "Winds",
+          "i": 4,
+          "up": false
+        },
+        {
+          "deck": "Winds",
+          "i": 5,
+          "up": false
+        }
+      ],
+      "at": [
+        1360,
+        820
+      ],
+      "name": "Winds",
+      "id": "0dec0a11"
+    },
+    {
+      "hands": {
+        "#1": [
+          {
+            "deck": "Winds",
+            "i": 0
+          }
+        ],
+        "#2": [
+          {
+            "deck": "Winds",
+            "i": 3
+          }
+        ]
+      }
+    }
+  ],
+  "meta": {
+    "goal": "Light every lantern before the gale"
+  }
+}
