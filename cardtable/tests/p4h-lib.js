@@ -54,9 +54,9 @@ function wireLog() {
               try {
                 const w = JSON.parse(dec.decode(all)), body = typeof w?.b === 'string' ? JSON.parse(w.b) : w;
                 kind = body?.kind ?? null;
-                items = Object.keys(body?.items || {});
+                items = Object.keys({ ...body?.items, ...body?.pos }); // (an item that only moved travels as its new place, in pos: D233)
                 chars = typeof w?.b === 'string' ? w.b.length : JSON.stringify(w).length;
-                itemChars = JSON.stringify(body?.items || {}).length;
+                itemChars = JSON.stringify(body?.items || {}).length + JSON.stringify(body?.pos || {}).length;
               } catch (err) { console.error('wireLog: an unreadable message', type, err); }
               W.push({ type, bytes: rec.bytes, kind, items, chars, itemChars, at: performance.now() });
             }

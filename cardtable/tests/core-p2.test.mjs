@@ -1794,6 +1794,10 @@ function testPubFuzz() {
       if (!first.order && pids.join() !== inOrder(pids).join()) first.order = `${at}: a patch lists items in another order than sorted insertion (${pids.join()})`;
       if (!V) { const sc = json(T.snapContent()); V = { items: sc.items, table: sc.table, seats: sc.seats, handy: sc.handy }; return; }
       Object.assign(V.items, json(c.items || {}));
+      for (const [id, [x, y, rot, z, at]] of Object.entries(json(c.pos || {}))) { // (an item that only moved: its new place, D233)
+        V.items[id] = { ...V.items[id], x, y, rot, z, at };
+        if (at === undefined) delete V.items[id].at;
+      }
       for (const id of c.del || []) delete V.items[id];
       for (const k of ['table', 'seats', 'handy']) if (k in c) V[k] = json(c[k]);
       const sc = T.snapContent();

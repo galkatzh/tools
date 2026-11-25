@@ -157,7 +157,7 @@ const ms = (x) => `${x.toFixed(3)} ms`;
       const sealed = await Promise.all(sealing);
       if (k < 20) continue;
       moveMs.push(dt);
-      wide += Object.keys(content.items || {}).length !== 1;
+      wide += Object.keys({ ...content.items, ...content.pos }).length !== 1; // (a moved piece travels as its new place, in pos: D233)
       moveSizes.push(...sealed.map((x) => JSON.stringify(x).length));
     }
     const b1 = Math.max(...moveSizes), b2 = quantile(moveMs, 0.95);

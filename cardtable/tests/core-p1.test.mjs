@@ -92,6 +92,10 @@ function specReceive(r, d) {
   }
   if (V && d.boot === V.boot && d.base === V.seq) {
     Object.assign(V.items, d.items);
+    for (const [id, [x, y, rot, z, at]] of Object.entries(d.pos || {})) { // (an item that only moved: its new place, D233)
+      V.items[id] = { ...V.items[id], x, y, rot, z, at };
+      if (at === undefined) delete V.items[id].at;
+    }
     for (const id of d.del || []) delete V.items[id];
     Object.assign(V.players, d.players);
     if ('rules' in d) V.rules = d.rules;
@@ -104,7 +108,7 @@ function specReceive(r, d) {
   return V && (d.boot < V.boot || (d.boot === V.boot && d.seq <= V.seq)) ? 'stale' : 'gap';
 }
 
-const PATCH_KEYS = ['table', 'seats', 'handy', 'rules', 'items', 'del', 'players', 'log', 'fx', 'ann'], SNAP_KEYS = ['table', 'seats', 'handy', 'rules', 'items', 'players', 'log'];
+const PATCH_KEYS = ['table', 'seats', 'handy', 'rules', 'items', 'pos', 'del', 'players', 'log', 'fx', 'ann'], SNAP_KEYS = ['table', 'seats', 'handy', 'rules', 'items', 'players', 'log'];
 /** The host's 'state' channel in Node. Each tick (§1b.3) takes the dirty sets
  *  once, serializes the shared part once, then sends each peer a snapshot (a
  *  new connection, or its `to` changed), a patch from that peer's own base, or

@@ -20,7 +20,7 @@ flock 9
 echo "[run-all] APP_ROOT=${APP_ROOT:-$(cd ../.. && pwd)}"
 node --experimental-vm-modules parse.js || exit 1
 shopt -s nullglob
-IFS=, read -ra names <<< "${SERIAL-t-p1-bench,core-p1-bench,core-p2-bench,core-p4-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench,t-p4-resume-bench,t-p4-hex-bench}"
+IFS=, read -ra names <<< "${SERIAL-t-p1-bench,core-p1-bench,core-p2-bench,core-p4-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench,t-p4-resume-bench,t-p4-hexfront,t-p4-hex-bench,t-p4-select}"
 serial=() missing=()
 for n in "${names[@]}"; do
   [[ $n == *"$1"* ]] || continue

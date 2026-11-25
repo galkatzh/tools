@@ -606,7 +606,10 @@ author … A rules script sees every hand and hidden piece and can reveal
 them") — for every box but a built-in one, whoever added it, the host
 included, and from the terminal too (its buttons wake half a second after
 it shows, and its Cancel lies where the confirm's Set up was, so a double
-click on Set up never enables the rules). A box with rules and no layout
+click on Set up never enables the rules). A built-in box's rules — Hexfront's
+turn script — start with its Set up from 📦's Built-in section, in the same
+job (`loadBox {setup, clear, rules: true}`), with no dialog: built in by its
+content, nothing a peer sends can make a box so. A box with rules and no layout
 — one its rules lay out with `t.layout` — is set up by them alone: there
 is no "Set up without rules" for it, and the engine refuses a `setup` or a
 `reset` of it that wouldn't start them (its rules switched off, other rules
@@ -675,6 +678,41 @@ runs no `onAction`. `peek` IS validated:
 on a free table peeking stays a social (logged) action, but a game may
 close its piles (CAH vetoes every peek, Hold'em the deck, muck and burns
 mid-hand).
+
+**A group** (Phase 4: the multi-selection's bar, the terminal's `group`)
+is one action, `{t: 'group', op, ids, dx?, dy?, rot?, on?, bag?}` (`op`
+one of move, rot, flip, roll, lock, del, toBag; at most 200 ids, each
+once), run by the engine as one sub-action per member, bottom to top, each
+exactly as if the player had sent it alone — `{t: op, id, …, group: N}`,
+so a script tells a member by `a.group` (the group's size); a move carries
+its `a.to` / `a.from` as any move does. Every member takes every check of
+the single action (owner, lock, a hidden piece) and the whole pipeline
+above from a **savepoint** of its own: `handle`, `strict`, `validate`,
+the default effect, then its own `onAction` — so the next member's hooks
+see this one's done, as two actions in a row would. A veto, or an engine
+refusal, rolls back that member alone (`rollbackTo` its savepoint) — what
+its `handle` and `validate` wrote too — and re-sends it; the others apply. A `handle` or `validate` that throws fails
+the whole group closed (nothing of it stays, the rules switch off); an
+`onAction` that throws keeps the members already done, undoes its own
+writes, and skips the rest (the rules switch off). `buttons()` runs once,
+at the end. A `roll` is one sub-action, `{t: 'roll', ids}`, of the dice
+among the members the player can see. A move shifts every member by the
+same `dx, dy` — cut, as the live drag's glide is, so that all of them stay
+on the table — and each piece snaps on its own; a `rot` is a delta, each
+member snapping it to its own turn step. The log has one line in the
+player's name ("moved 8 items", "rolled 3 dice: 4 · 1 · 6": a hidden die's
+value never shows; the faces as they were rolled, whatever an `onAction`
+does with the dice after) and, when the rules vetoed members, one "blocked
+Bob: {the first reason} (k of N)"; the player gets one notice, "k of N were
+skipped: {the first reason}" (a refusal only when none applied; a group of
+one says just what its single action would). There is
+no `t.group` call: a script moves many pieces with the ops it has. A group
+costs 1 + ⌊N/20⌋ of flood control's tokens — while the rules run, that
+times ⌈t.data's size / 100 KB⌉, at most the whole burst, since each member
+passes over the rules' state (its savepoint, its gates) — and its watchdog
+budget grows by 10 ms a member, plus 20 ms a member for each MB of
+`t.data`; a stop names the limit the job had. A group drag (`drag {ids, dx, dy}`, the live glide) is
+one token however many it carries, and never reaches the rules.
 
 Flood control (host): a guest may send a burst of 40 actions, then 20 per
 second; beyond that they are dropped and the sender is told to slow down

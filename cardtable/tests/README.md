@@ -43,7 +43,7 @@ node t-smoke.js         # one suite, output on the terminal
   within 1 s; go's stone #300 within 10 ms of Worker time), run alone, one
   at a time after the parallel batch, under the same lock: `SERIAL`, a
   comma-separated list of suite names, default
-  `t-p1-bench,core-p1-bench,core-p2-bench,core-p4-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench,t-p4-resume-bench,t-p4-hex-bench`.
+  `t-p1-bench,core-p1-bench,core-p2-bench,core-p4-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench,t-p4-resume-bench,t-p4-hexfront,t-p4-hex-bench`.
   A listed suite that doesn't exist fails the run.
 - Runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
   `/tmp/cardtable-tests.lock`): concurrent runs on a small machine starve each
@@ -122,7 +122,8 @@ top of `core.js` and README "How it works".
   later redraws nothing, so it doesn't count: after a guest's (re)load
   this is its cold render of the whole table;
   `lastTickMs`, the host's broadcast tick (signing and sending start; its
-  own screen's redraw is not in it).
+  own screen's redraw is not in it); `lastJobMs`, the host's last job on
+  its own table, rules off (`T.apply` alone: B19's apply).
 - **The tick in Node.** `T.takeDirty()`, then `T.patchContent(d)` (or
   `T.snapContent()` in the same tick), wrapped in `{v, kind, boot, seq,
   host}`, serialized once (`sharedText`), and `spliceBody({to, tp, base,
@@ -2147,6 +2148,68 @@ answer a press of the dialog's own buttons; nothing they test goes through
 - **Mechanism changes**: `core-p2.test.mjs`'s exact PUBLIC_ACTIONS set
   gains `group`; `run-all.sh`'s serial batch adds `core-p4-bench`.
 
+## Phase 4 (4B part 2: multi-select, the group bar, the stack inspector, Hexfront played)
+
+- **`p4s-lib.js`** (helpers, not a suite): what a page shows of the
+  selection (`shown(p)`: the `.selected` ids, the bar's text, the chip's),
+  boxes and overlaps (`box`, `itemsBox`, `overlap`, `inside`), the toasts
+  (`toasts`, `said`), the open inspector (`inspector(p)`: its text, its
+  list's ids, whether it shows a back, Take's k), a badge's centre
+  (`badgeAt(p, id, 'count' | 'fanb')`), a point outside the inspector and
+  the bar (`outside`), and touch gestures by CDP: `tap`, `press` (a
+  button), `pinch(p, c, d0, d1)` (two fingers spread: the view zooms in
+  there), `hold(p, q, ms)` (a long press).
+- **`t-p4-select.js`** (§4l t-p4-select; desktop, iPhone 13 upright and
+  sideways): a test box of 200 tokens on a 22 × 12 board, a crowded cell, a
+  flag, stacks (one hidden), dice, a bag and chits. Item 1: a Shift+drag
+  band on the locked board (six picked, never the board), the chip "2 not
+  selectable …", Shift+click in and out, Esc, a click on the felt, one
+  picked = its own bar, ⬚ on a desktop (a plain drag draws the band, a
+  click picks, ⬚ off clears). Item 3: the group bar's buttons and the keys
+  (R by the chits' rotStep, ⟲, F, Space rolling the three dice as one, 🔒
+  then 🔓 — the locked stay picked —, ✕, 👜 Into bag ▸ Sack, Delete), each
+  one log line. Item 4: a forged group naming a locked and someone else's
+  token, "2 of 3 were skipped". Item 5: rules that veto the flag: "1 of 4
+  was skipped: The flag stays put", the flag back on Bob's screen, the
+  others moved, "blocked Bob: … (1 of 4)". Item 2: a band of the board's
+  195 tokens plus five more by Shift+click (a 201st refused: "200 at
+  most"), dragged 8 s by the mouse: every `drag` names 200 ids, at most 17
+  in any second (`actTap`), the host's screen glides all 200 mid-drag, one
+  `group` move of 200 on the drop, every member a cell right on both
+  screens, no flood notice, one line; B19 in the browser (the host's
+  `perf.lastJobMs` ≤ 15 ms; the patch that brought it to Bob ≤ 30 KB).
+  Item 6: the inspector by a click on ×10 (beside the stack), the stepper,
+  Take 3, following the stack (Alice takes one: ×6), Take all arming ✥ and
+  the next drag carrying the stack, a hidden stack's back, Esc, the ×3 of
+  a crowded cell (its pegs, top first), a click outside, a click on a
+  member (its bar), a drag out of the list onto a cell. The iPhone (Carol,
+  pinched in): ⬚, a one-finger band, a tap picks a fifth (one the bar
+  doesn't cover), the bar on the screen beside the group with 40 px+
+  buttons, a finger drags the five, ✕; a long press on the ×6 stack (the
+  inspector beside it, 44 px buttons, Take 2 by taps); sideways (reloaded at
+  844 × 390): the band, the bar and the inspector on the screen. Screenshots
+  `shots/p4-select-*.png`, `shots/p4-inspector-*.png`.
+- **`t-p4-hexfront.js`** (§4l t-p4-hexfront; serial): Alice hosts on a
+  desktop, Bob plays on an iPhone 13, Carol watches (a third player: no
+  seat). Hexfront from 📦's Built-in section; 400 counters in 40 stacks on
+  every screen. Each side plays turn 1 with real gestures (`turn()`): the
+  other side's drag out of turn refused ("It's Azure's turn") and the
+  counter back; three stacks picked (Shift+clicks, or ⬚ and taps on the
+  phone after a pinch) and dragged a hex forward ("moved 3 items"); a stack
+  split by the inspector (Take 3; a long press on the phone) and joined
+  again (Take all, a drag onto the ×7); an event drawn (a double-click, or
+  a tap and Draw) and a second refused; ⚔ To combat, the two dice rolled
+  as a group (Space, or 🎲 Roll), a loss taken by the other side (Flip, F),
+  ⏭ End turn; "Turn 2 — Azure moves". The watcher's table equals the
+  host's; her drag on a stack sends nothing. B18 in the browser: Carol's
+  cold render (≤ 600 ms), Bob's at 2× CPU throttle (≤ 2 s), the snapshot
+  and the boxes channel ≤ 120 KB; B21: Hexfront exported from 📦 ≤ 5 s
+  (`Hexfront.json`, its rules and turn 2 in its state). Screenshots
+  `shots/p4-hexfront-iphone.png`, `shots/p4-hexfront-watcher.png`.
+- **Mechanism changes**: `t-p2-pieces.js`'s exact bar of a ×N stack the
+  player may handle gains `inspect` (⋯ Inspect, §4g); `run-all.sh`'s
+  serial batch adds `t-p4-hexfront`.
+
 ### The 4B group suites written from the spec (independent of the implementation)
 
 - **`core-p4.test.mjs` (3′)** (Node; §4l item 3: §4c, §3f.4–§3f.6, §2c,
@@ -2347,6 +2410,58 @@ answer a press of the dialog's own buttons; nothing they test goes through
   📜, `perf.lastJobMs` of five more drags (median ≤ 15 ms).
 - No existing suite changed; `run-all.sh`'s serial batch adds
   `t-p4-hex-bench`.
+
+## Phase 4B fix-up (the review's findings)
+
+- **`t-p4-fix.js`** (Alice hosts, Bob on a desktop, Carol on an iPhone 13;
+  the box «Corner yard»: two rows of tokens on a 12 × 6 yard, three pegs
+  crowding a cell, a ×6 stack, 22 dice, two bags). 1: two Shift+clicks —
+  the group bar docks at the table area's top edge, no token is under it,
+  and the next Shift+click on the row above the picks picks (D236); a
+  Shift+click on the bar selects no page text. 2: a Shift+double-click on a
+  token and on a die picks and puts back, nothing flips or rolls. 3: 👜
+  Into bag ▸ Pouch with the bag Sack among the picks: "put 2 items into the
+  bag Pouch", no "skipped" notice; a band of the 22 dice and 🎲 Roll: the
+  chip "20 dice at most: 2 left out", one "rolled 20 dice" line, no
+  refusal. 4: with a group picked, a row of the crowded cell's list selects
+  that peg (its own bar), and a stack's Take all arms ✥ (D238). 5: the
+  phone, pinched in, ⬚ on: the chip above ⬚, no seat label under it; a
+  tap-tap only picks and puts back; a finger drag that starts on a token
+  draws a box (the four inside picked, the token unmoved — D237); a band
+  turned into a pinch by a second finger leaves no band. 6: chess (strict,
+  takes selections): two of your pieces Shift+clicked, no bar. Screenshots
+  `shots/p4-fix-desktop-dock.png`, `shots/p4-fix-iphone-corner.png`.
+- **`core-p4.test.mjs` (I)**: a group roll whose onAction removes a die (one
+  line from the faces rolled, the rules on); Hexfront laid out without its
+  rules — loadBox, Set up, Reset after a Disable — in two rooms: the Events
+  pile never in templates.js's order, the line says the shuffle, and
+  `shuffle: false` still lays it in order (D232); Hexfront's script on
+  Ember's deal, peek, flip, shuffle and remove of the Events pile out of
+  turn, a dealt card's ✋, and a draw after a deal (D239); patches: a group
+  move as `pos` places, a flip and a refusal's re-send whole, folded = the
+  snapshot, a place for an unknown item dropped loudly (D233); a ruled
+  group's price at 1 MB of t.data and its watchdog budget from `T.rulesChars`
+  (D234).
+- **Mechanism changes** (the wire's `pos`, D233, and the fixes' texts; no
+  assertion removed or weakened): the folds of patches written outside
+  core — `core-p1.test.mjs`'s spec model (and its list of a patch's keys),
+  `core-p2.test.mjs`'s fuzz, `h.js`'s `viewFrom`, `p2-lib.js`'s Mallory —
+  take an item's new place from `pos`; `p4h-lib.js`'s wire log counts the
+  items in `pos` too, and so do `t-p4-select.js`'s B19 patch filter,
+  `t-p1-review.js`'s "a guest's move carries its item and log line only",
+  and the benches' "each move's patch carries exactly one item"
+  (`core-p1-bench`, `core-p2-bench`) and "every group move took all 200"
+  (`core-p4-bench`); `run-all.sh`'s serial batch adds `t-p4-select` (its
+  B19 row times the host's apply, which a loaded parallel batch slowed to
+  16.7 ms);
+  `t-p4-attack.js`'s scan counts a hidden item met in `pos` as met (and
+  refuses a place that says more than four numbers and an address), Bob
+  makes one more move before the scan so Mallory has a sixth body to scan
+  (how many the ticks coalesce into varies with the load: 5 or 6), and the
+  watchdog's toast names the job's limit ("4.2 seconds", D234);
+  `core-p4.test.mjs`'s group of one expects the single action's refusal
+  word for word ("🔒 …", D235) and its `appBudget()` passes a table with
+  `rulesChars`; `t-p4-select.js`'s ⬚ chip reads "drag a box" (D237).
 
 ## Storage and images (Phase 1B)
 

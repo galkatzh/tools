@@ -393,7 +393,8 @@ async function pass(env, mode) {
   const HOST = ['lock', 'give'];
   for (const [id, what, want, extra = []] of [
     // (a plain disc — no image, label, text or pips on the side up — looks the same at any angle: no ⟲ ⟳, the fix-up's change to §2g)
-    [I.A, 'a ×5 coin stack (plain discs: no ⟲ ⟳)', ['flip', 'split', 'all', 'claim', 'del']],
+    // (⋯ Inspect on a ×N stack this player may handle: Phase 4's stack inspector, spec §4g)
+    [I.A, 'a ×5 coin stack (plain discs: no ⟲ ⟳)', ['flip', 'split', 'all', 'inspect', 'claim', 'del']],
     [I.C, 'a single coin (no ⟲ ⟳)', ['flip', 'claim', 'del']],
     [I.chit, 'a chit with a back (no ⟲ ⟳)', ['flip', 'claim', 'del']],
     [I.hex, 'a one-face hex tile (no back)', ['rl', 'rr', 'claim', 'del']],
@@ -403,7 +404,7 @@ async function pass(env, mode) {
     [I.L, 'a die', ['roll', 'claim', 'del']],
     [I.hdie, 'a hidden die', ['flip', 'rl', 'rr', 'claim', 'del']],
     [I.htok, 'a hidden token sharing its back', ['flip', 'rl', 'rr', 'claim', 'del']],
-    [I.hch, 'a hidden ×2 chit stack (the back says count; a plain back: no ⟲ ⟳)', ['flip', 'split', 'all', 'claim', 'del']],
+    [I.hch, 'a hidden ×2 chit stack (the back says count; a plain back: no ⟲ ⟳)', ['flip', 'split', 'all', 'inspect', 'claim', 'del']],
   ]) {
     // (🔍 on a face with a label, text or image: the implementer's documented addition to §2g's list)
     const tag = extra.length ? ' (+🔍: the face has a label)' : '';

@@ -67,8 +67,9 @@ const sameTable = async (x, y) => { const [a, b] = [await L.view(x), await L.vie
   await L.act(bob, { t: 'move', id: cards[5], x: 333, y: 444 });
   ok(await L.until(() => carol.evaluate((id) => window.__ct.view().items[id].x === 333, cards[5])), 'Carol sees the move');
   const bodies = await carol.evaluate(() => window.__rtc.bodies.map((b) => b.body));
-  const mv = bodies.find((b) => b.kind === 'patch' && b.items?.[cards[5]]);
-  ok(mv && !('players' in mv) && Object.keys(mv.items).length === 1, `the patch Carol got holds ${mv ? Object.keys(mv).filter((k) => !['v', 'kind', 'boot', 'seq', 'base', 'host', 'to', 'tp'].includes(k)).join(', ') : 'nothing'}`);
+  // (a card that only moved travels as its new place, in the patch's `pos`: D233)
+  const mv = bodies.find((b) => b.kind === 'patch' && (b.items?.[cards[5]] || b.pos?.[cards[5]]));
+  ok(mv && !('players' in mv) && Object.keys({ ...mv.items, ...mv.pos }).length === 1, `the patch Carol got holds ${mv ? Object.keys(mv).filter((k) => !['v', 'kind', 'boot', 'seq', 'base', 'host', 'to', 'tp'].includes(k)).join(', ') : 'nothing'}`);
   await carol.evaluate(() => { window.__rtc.keep = false; });
 
   section('log: with the action bucket full, a patch appends one row');

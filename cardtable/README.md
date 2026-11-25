@@ -70,7 +70,8 @@ boards, from a *game box* (a few KB of JSON: the piece types, their faces
 and backs, the table, the seats and the starting layout). Draughts and
 Backgammon ship built in, art-free: pick them from 🎲 (on a table in use the
 host is asked first — the table is cleared, and the rules switched off:
-these are played by hand). Pieces look like pieces — discs with a rim,
+these are played by hand); so does **Hexfront**, a hex-map wargame
+skeleton with its turn script, set up from 📦 (see *Game boxes*). Pieces look like pieces — discs with a rim,
 tiles, dice with pips, meeples, pawns, hexes — and a board's squares,
 points, lines and coordinates (a–h, 1–8) are drawn crisp at any zoom. The
 coordinates read upright for every player, as on a chess app's flipped
@@ -150,6 +151,37 @@ Playing on the free table:
   where it lies, and counted, and a press on it takes that very piece —
   until a piece is put on that spot: then the spot fans them all, so none
   hides another.
+- **Several at once.** **Shift+drag** on the felt — or on a board, which
+  counts as felt (a plain drag still pans) — draws a box: every piece drawn
+  inside it is picked, up to 200; **Shift+click** picks one more, or puts a
+  picked one back. On a touch screen, tap **⬚** (the table's bottom-left
+  corner): then one finger draws the box — wherever it starts, but on a
+  picked piece, which carries the lot — and a tap picks a piece or puts it
+  back (a quick second tap puts it back: it never flips or rolls anything).
+  Only what you may move is picked — never a board, nor anything
+  locked or someone else's: a chip says how many were left out ("3 not
+  selectable (locked or someone else's)"). The picked pieces wear the
+  selection ring; drag any one of them and they all go, together — the
+  others see them glide, one message every 60 ms however many there are —
+  and land each on its own spot. Their bar waits at the top edge of the
+  table (beside them when it would cover one), off the pieces you are still
+  picking, and acts on them all with one action each: **⟲ ⟳** (by the
+  largest turn step among them), **Flip**, **🎲 Roll** (their dice, as one
+  throw, 20 at most), **🔒 / 🔓**, **👜 Into bag ▸** (the bags on the
+  table; only pieces go in), **🗑**, and **✕**; so do
+  **R**, **F**, **Space** and **Delete**. **Esc**, a click on the felt, ✕ or
+  ⬚ off clears them. One action for the lot means one log line ("moved 8
+  items", "rolled 3 dice: 4 · 1 · 6"), and one notice for the members the
+  table or the rules refused ("2 of 8 were skipped: That belongs to Bob").
+- **What's in a stack or on a spot.** Tap a stack's **×N** (on a touch
+  screen, press and hold the stack), a crowded spot's **×k**, or **⋯
+  Inspect** in a piece's bar: the **inspector** opens beside it — for a
+  stack its face (its back, when hidden), the count, **Take [k]** with a
+  stepper (k pieces off, set down beside it) and **Take all** (arms ✥: the
+  next drag carries the whole stack); for a crowded spot its pieces, the
+  top one first, each with its face, name and owner's dot — tap one for its
+  bar, or drag it out of the list. It follows what it shows as the table
+  changes, and closes on Esc, ✕ or a tap outside it.
 - **Live drags.** While someone drags a piece, everyone sees it glide; the
   table itself only changes when they let go (the drop is the one move, so
   a rules script judges only the drop).
@@ -395,7 +427,23 @@ A **game box** is a whole game in one upload: its table, seats, boards,
 pieces, dice, decks, starting layout and, optionally, its rules. The **📦**
 button (next to 🎲) lists the boxes on this table — each with its size, who
 added it and 📜 when it brings rules — the built-in ones (Draughts,
-Backgammon), **Upload a game…**, and, for the host, **Export this table**.
+Backgammon, Hexfront), **Upload a game…**, and, for the host, **Export this table**.
+
+**Hexfront**, the built-in demo (original, generated from a fixed seed, so
+it is the same box every time), is a hex-map wargame skeleton for two:
+Azure (bottom) against Ember (top) on a 24 × 16 map — a river with three
+fords, woods, hills, eight towns — with 400 counters in 40 ×10 stacks
+(infantry, armour, artillery, scouts; flip one to its reduced face for a
+lost step), two dice and 24 event cards. Its turn script keeps the turns:
+the side to play moves, splits and joins its own stacks, then **⚔ To
+combat** — the dice, and losses each side takes on its own units — and
+**⏭ End turn**; one event card a turn — drawn, or dealt out and taken up
+— for the side to play alone. The rest — what a
+roll means, what an event does — the players settle, as on a kitchen
+table. Built in, its rules start with it: no trust dialog. Laid out
+without them (unticked, or a Reset after they were switched off), its
+face-down event cards are shuffled all the same, as every built-in box's
+are: everyone can read their order in the source.
 
 **The format** is a `game.json` (the one of [TABLETOP.md](TABLETOP.md) §4, a
 little extended), uploaded with its images and its `rules.js` — picked
@@ -717,6 +765,7 @@ Game pieces have their own commands (both REPLs; `help` lists them):
 | `boxes` | lists the game boxes on this table: `[cd34ef56] Beacon Watch — 2 piece types · 📜 rules · a guest's upload · set up` (📜: it brings rules; "set up": the box set up last) |
 | `setup <box> [--keep] [--rules]` | the host's: sets a box up, named by its id or its name; `--keep` keeps the table's items, `--rules` runs its rules — which, unless the box is built in, still wait for the host's click in the trust dialog on the page |
 | `reset` | the host's: lays the box set up last out again (its rules restarted when they run; a box its rules lay out, with them off, is refused — `setup <box> --rules` starts them again) |
+| `group <op> <id,id,…> [dx dy \| deg \| bag]` | one action on many items, as the group bar does: `move dx dy`, `rot deg`, `flip`, `roll`, `lock`, `unlock`, `del`, `bag <bag>` (items and the bag by id or name); one log line, one notice for the members refused |
 
 New questions, a new hint (`💡 hint: e3, e4`) and a new `t.secret`
 (`🔒 for you: …`) print as they arrive, the same text in both REPLs (the
@@ -741,7 +790,8 @@ bridge as a small API — the same in both languages: `state`, `send`,
 `take(supply, x, y, hand)`, `place(ref, addr)`, `seat(id)` (`'-'`
 stands up, `'+'` sits down again), `answer(id, value)` (a value as the
 `answer` command takes it — a number is an option's index —, or a list of hand indices), `select(id)`,
-`setup(box, keep, rules)` and `reset()`. A game box is uploaded from the
+`setup(box, keep, rules)`, `reset()` and `group(op, ids, kw)` (Python:
+`group(op, ids, **kw)`; kw `dx`, `dy`, `deg`, `bag`). A game box is uploaded from the
 page's 📦 only (its images are read and redrawn by the tab).
 The state also carries your own parts of the rules: `asks` (`[{id, prompt,
 options: [labels]} | {id, prompt, pick, among?, count?, min?, max?}]`),
@@ -897,10 +947,23 @@ the setup grammar, addBox, setup, reset, export and import),
 `t-p4-wire.js`, `t-p4-boxes.js` (the 📦 dialog on a desktop and on phones:
 uploads, every hostile zip, the trust dialog, Reset, export and re-import,
 chess and Hold'em resumed in another room), `t-p4-cli.js` (`boxes`,
-`setup`, `reset` in both REPLs) and `t-p4-bench.js` (a 64-photo zip
-imported, and a box exported, against the clock); the suites written from
+`setup`, `reset`, `group` in both REPLs) and `t-p4-bench.js` (a 64-photo zip
+imported, and a box exported, against the clock); groups and Hexfront have
+`t-p4-group.js` (the group action in the rules Worker), `t-p4-select.js`
+(the band, Shift+click and ⬚, a 200-piece group drag, the group bar and
+keys, the inspector — on a desktop and on a phone held both ways),
+`t-p4-hexfront.js` (two turns played on a desktop and a phone, with a
+watcher; B18 and B21, serial) and `core-p4-bench.mjs` (B18, B19); the suites written from
 the spec apart from the code check the same again — `t-p4-box-ui.js` and
 `t-p4-box-files.js` (every upload, hostile file and dialog on a desktop and
 on phones), `t-p4-resume.js` (chess and Hold'em exported mid-game and
-played on in fresh rooms) — with their benches `t-p4-box-bench.js` and
-`t-p4-resume-bench.js` in the serial batch.
+played on in fresh rooms), `t-p4-attack.js` (§4j's attacker case 8 and a
+group's watchdog budget in a real Worker), `t-p4-gcli.js` (the terminal's
+`group` in both REPLs), `t-p4-multi.js` and `t-p4-inspect.js` (multi-select,
+the group bar and the inspector on a desktop and phones held both ways),
+`t-p4-hexplay.js` and `t-p4-hexbox.js` (Hexfront played turn by turn, and
+exported and resumed) — with their benches `t-p4-box-bench.js`,
+`t-p4-resume-bench.js` and `t-p4-hex-bench.js` (B18 and B19 on Hexfront) in
+the serial batch; `t-p4-fix.js` keeps the 4B review's fix-ups (the bar
+docked while picking, ⬚'s corner, a double click that only picks, chess's
+group bar).

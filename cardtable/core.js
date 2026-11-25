@@ -1313,6 +1313,8 @@ export const STRICT_ACTIONS = Object.freeze(RULED_ACTIONS.filter((t) => t !== 's
 export const PUBLIC_ACTIONS = Object.freeze([...RULED_ACTIONS, 'hello', 'snap', 'need', 'name', 'chat', 'rulesBtn', 'drag', 'answer', 'select', 'group']);
 /** The most items one action names at once: a group's live drag, and a `group`. */
 export const MAX_GROUP = 200;
+/** While the rules run, a `group` costs floodCost once more for each this many characters of t.data (mayAct, D234). */
+export const GROUP_DATA_CHARS = 100e3;
 /** What a `group` does to each member (spec §4c): the single action of that
  *  name, run per member — `roll` once, for the dice among them. */
 export const GROUP_OPS = Object.freeze(['move', 'rot', 'flip', 'roll', 'lock', 'del', 'toBag']);
@@ -1794,19 +1796,21 @@ export const MAX_TIMERS = 1000, TIMER_TAG_MAX = 100;
  *  load and by t.schedule: a list of at most MAX_TIMERS {at: a finite
  *  number, tag: a string of at most TIMER_TAG_MAX chars}; anything else is
  *  dropped with console.error (a list that isn't one, whole). In place, on
- *  rules `r`. */
+ *  rules `r`. True when that changed what the timers are as JSON. */
 export function gateTimers(r) {
   const t = isObj(r?.data) ? r.data._timers : undefined;
-  if (t === undefined) return;
+  if (t === undefined) return false;
   if (!Array.isArray(t)) {
     console.error('rules.data._timers is not a list: dropped', t);
     delete r.data._timers;
-    return;
+    return true;
   }
   const kept = t.filter((x) => isObj(x) && Number.isFinite(x.at) && typeof x.tag === 'string' && x.tag.length <= TIMER_TAG_MAX).map(({ at, tag }) => ({ at, tag }));
   if (kept.length < t.length) console.error(`rules.data._timers: dropped ${t.length - kept.length} malformed ${t.length - kept.length === 1 ? 'timer' : 'timers'}`);
   if (kept.length > MAX_TIMERS) console.error(`rules.data._timers: dropped ${kept.length - MAX_TIMERS} timers past ${MAX_TIMERS}`);
+  const was = JSON.stringify(t);
   r.data._timers = kept.slice(0, MAX_TIMERS);
+  return JSON.stringify(r.data._timers) !== was;
 }
 /** Lifts state `s` to STATE_V through MIGRATE (in place); a state from a
  *  newer Card Table is refused, never downgraded. */
@@ -1916,14 +1920,26 @@ export function viewFromSnap(d) {
     ask: viewAsks(d.ask), hint: viewHint(d.hint), sec: d.sec ?? null,
   };
 }
+/** What a patch's `pos` sends of an item that only moved: its place. */
+const PLACE_KEYS = ['x', 'y', 'rot', 'z', 'at'];
 /** Folds a patch body into view V, in place: items and players are replaced
- *  whole, `del` removed, log entries appended (then trimmed), the hand, the
- *  asks, the hint, the secret, the table, the seats and `handy` replaced when
- *  present. Returns what it replaced, for the renderer: {items: Map<id, old
- *  public item | undefined (new)>, players: Map<pid, old | undefined>}. */
+ *  whole, an item in `pos` takes its new place ([x, y, rot, z, at?]: no
+ *  address, none), `del` removed, log entries appended (then trimmed), the
+ *  hand, the asks, the hint, the secret, the table, the seats and `handy`
+ *  replaced when present. Returns what it replaced, for the renderer: {items:
+ *  Map<id, old public item | undefined (new)>, players: Map<pid, old | undefined>}. */
 export function applyViewPatch(V, d) {
   const items = new Map(), players = new Map();
   for (const [id, it] of Object.entries(dict(d.items))) { items.set(id, V.items[id]); V.items[id] = it; }
+  for (const [id, m] of Object.entries(dict(d.pos))) {
+    const it = V.items[id];
+    if (!it || !Array.isArray(m) || !m.slice(0, 4).every(Number.isFinite)) { console.error('the host moved an item this view lacks, or sent a bad place', id, m); continue; }
+    items.set(id, it);
+    const o = { ...it, x: m[0], y: m[1], rot: m[2], z: m[3] };
+    if (typeof m[4] === 'string') o.at = m[4];
+    else delete o.at;
+    V.items[id] = o;
+  }
   for (const id of Array.isArray(d.del) ? d.del : []) {
     if (!items.has(id)) items.set(id, V.items[id]);
     delete V.items[id];
@@ -2628,7 +2644,7 @@ export function createTable(host, env = {}) {
    *  `chat` marks a chat line (talk), `loud` an on-the-record one (a peek); the
    *  buckets are capped separately (LOG_CAPS, trimLog), and a line at LOG_TXT_MAX. */
   function logEvent(p, txt, { chat, as, loud, keep } = {}) {
-    if (gather?.p === p) return; // (a group member's line: the group writes one)
+    if (gather?.p === p) { gather.line ??= txt; return; } // (a group member's line: the group writes one — a roll's names its faces)
     if (runs.length) flushRuns(); // (an aggregating run ends at any other line)
     txt = cut(txt);
     const last = host.log.at(-1);
@@ -3531,7 +3547,8 @@ export function createTable(host, env = {}) {
    *  catalog (deduplicated), then with `o.clear` the table cleared, the box's
    *  table and named seats set, and with `o.setup` its setup laid out (the
    *  item total checked first: at most MAX_SETUP_ITEMS, and room on the
-   *  table; then setupProblem), all or nothing (atomic); with `o.rules` its
+   *  table; then setupProblem; a built-in box's face-down piles shuffled),
+   *  all or nothing (atomic); with `o.rules` its
    *  rules start right after the job, as a setup's do (the `enable` effect:
    *  📦's Built-in Set up of a box with a turn script, Hexfront). Returns the
    *  box's id, or false. */
@@ -3560,10 +3577,10 @@ export function createTable(host, env = {}) {
       if (o.setup && box.setup) {
         const why = setupProblem(box, box.setup);
         if (why) throw new Error(why);
-        const laid = lay(id, box, box.setup);
+        const laid = lay(id, box, box.setup, { shuffle: isBuiltin(box) }); // (D232: everyone has read a built-in box's layout)
         remap = laid.remap;
         host.lastSetup = id;
-        logEvent(actor, `set up «${box.name}» (${laid.n} pieces)`, { keep: true });
+        logEvent(actor, `set up «${box.name}» (${laid.n} pieces)${laid.shuffled ? ', face-down piles shuffled' : ''}`, { keep: true });
       } else logEvent(actor, `added the box «${box.name}»`);
       if (o.rules) emit({ t: 'enable', box: id, remap });
       took();
@@ -3573,7 +3590,7 @@ export function createTable(host, env = {}) {
   /** The host's `setup` of a box of the catalog, or `reset` of the last one
    *  set up (spec §4c), as one atomic job: every check first, then clear (a
    *  reset always clears), the box's table and seats, its setup laid out
-   *  (lay: with `shuffle` — a guest's box by default — its face-down decks
+   *  (lay: with `shuffle` — a guest's box and a built-in one by default — its face-down decks
    *  and piles shuffled), lastSetup. With `rules` (setup) — for a reset, when
    *  the rules running are this box's — the `enable` effect asks the app to
    *  queue, right after this job commits, the setRules that starts the box's
@@ -3592,7 +3609,8 @@ export function createTable(host, env = {}) {
     if (!box.setup?.length && !rules) {
       return no(p, `🚫 «${box.name}» ${!box.rules ? 'has nothing to set up (no layout, no rules)' : reset ? "is laid out by its rules, which aren't running: Set up starts them again" : 'has no layout — its rules lay the table out: set it up with them'}`);
     }
-    const shuffle = !reset && typeof a.shuffle === 'boolean' ? a.shuffle : host.boxSrc[id]?.src === 'upload'; // (D83: a guest's box knows its layout)
+    // Face-down piles are shuffled by default where someone knows their order: a guest's box (its author, D83) and a built-in one (everyone: its source is public, D232)
+    const shuffle = !reset && typeof a.shuffle === 'boolean' ? a.shuffle : host.boxSrc[id]?.src === 'upload' || isBuiltin(box);
     return atomic(p, `Couldn't set up «${box.name}»`, () => {
       if (reset || a.clear !== false) clearTable(p);
       if (box.table) setTable(p, box.table);
@@ -3976,7 +3994,8 @@ export function createTable(host, env = {}) {
    *  A member of a `group` (`g`: group's context; `a` its sub-action, the
    *  engine's own) runs the same pipeline from its own savepoint `base`,
    *  with no buttons() (the group runs it once): a veto rolls back to it and
-   *  is kept for the group's notice (g.why), a handle or validate that
+   *  is kept for the group's notice (g.why), as is an engine refusal (and a
+   *  member that did nothing: its hooks' writes go too), a handle or validate that
    *  fails — or broke the gates — rolls back the whole group (g.base) and
    *  stops it (g.stop). Then: 'took', 'handled', or false (skipped, or a no-op). */
   function act(p, a, base, g = null) {
@@ -4031,8 +4050,17 @@ export function createTable(host, env = {}) {
     // no-op (a card not in hand, a vanished item) or a refusal never reaches
     // the script, and for the ones that did happen the payload's ids were matched host-side.
     const fx0 = marks, then = handled ? [] : effect(p, a, pl, A);
-    if (!then) return false; // (refused before anything happened: no hook, no new state)
+    if (!then) return false; // (refused before anything happened: no hook after it, no new state)
     const took = marks > fx0;
+    // A group's member that did nothing (the engine refused it, or its target
+    // had gone) leaves nothing behind — what its handle and validate wrote is
+    // rolled back with it, as a veto's is (§4c, D217), and what it named is
+    // re-sent; a single action's job keeps them, as it always has.
+    if (g && J && !took && !handled) {
+      rollbackTo(base);
+      touchNamed(p, a);
+      return false;
+    }
     // A ruled action that did nothing (refused, or its target had just gone: a
     // pile merged away under a drop), or that the script handled, re-sends what
     // it named: the actor's screen still shows its optimistic move, and deltas
@@ -4096,14 +4124,17 @@ export function createTable(host, env = {}) {
     for (const sub of subs) {
       if (g.stop) { skipped.push({ msg: 'rules script error', ruled: true }); continue; }
       if (sub.id !== undefined && !own(host.items, sub.id)) { skipped.push({ msg: 'it is gone' }); continue; } // (an earlier member's hook took it)
-      Object.assign(g, { why: null, mark: null });
+      Object.assign(g, { why: null, mark: null, line: null });
+      const sp = J ? savepoint(json) : -1;
+      json = J?.frames[sp].json; // (the rules' state as JSON — each member's savepoint takes it from the one before: one pass over t.data, not one per member)
       gather = g;
       let r;
-      try { r = act(p, sub, J ? savepoint(json) : -1, g); } finally { gather = null; }
+      try { r = act(p, sub, sp, g); } finally { gather = null; }
       if (g.stop === 'closed') break;
       if (r === 'took') { took++; fx ??= g.mark; } else if (!r && g.why) skipped.push(g.why);
       // a hook after the member's checkpoint failed (the rules are off), or broke the gates: the members done stay, the rest are skipped
-      if (on && !g.stop && (!host.rules?.enabled || (json = settle()) === null)) g.stop = 'off';
+      // (a member that did nothing was rolled back to its savepoint: the state is `json` still, nothing to settle)
+      if (on && !g.stop && (!host.rules?.enabled || (r && (json = settle()) === null))) g.stop = 'off';
     }
     if (g.stop === 'closed') { // (the job rolled back whole: every member re-sent, one refusal)
       for (const id of ids) refreshItem(id);
@@ -4111,15 +4142,15 @@ export function createTable(host, env = {}) {
     }
     if (!dice) for (let k = here.length; k < ids.length; k++) skipped.push({ msg: 'it is gone' });
     if (took && fx) {
-      logEvent(p, groupLine(a, dice ? N : took, dice, bag), { keep: true }); // (kept: the line names no item — two groups alike are two gestures, not a repeat)
+      logEvent(p, groupLine(a, dice ? N : took, dice && g.line, bag), { keep: true }); // (kept: the line names no item — two groups alike are two gestures, not a repeat)
       const it = own(host.items, fx.id); // (where the first member is now: a removed one's bulb stays where it was)
       emit({ t: 'fx', f: { ...fx, ...(it && { x: it.x, y: it.y }) } });
     }
     const vetoes = skipped.filter((s) => s.ruled), k = skipped.length, many = !dice && N > 1;
     if (vetoes.length) logEvent(RULES, `blocked ${own(host.players, p)?.name || 'a player'}: ${vetoes[0].msg}${many ? ` (${vetoes.length} of ${N})` : ''}`);
-    if (k) { // (a roll is one: its refusal is the single action's)
-      const [{ msg, ruled }] = skipped, why = msg.replace(/^(🚫|🔒)\s*/u, '');
-      notify(p, many ? `${took || k < N ? '' : '🚫 '}${k} of ${N} ${k === 1 ? 'was' : 'were'} skipped: ${why}` : `🚫 ${why}`, !!ruled);
+    if (k) { // (a group of one, and a roll, which is one, say the single action's refusal word for word: a veto's bare words get its 🚫)
+      const [{ msg, ruled }] = skipped, marked = /^(🚫|🔒)/u.test(msg);
+      notify(p, many ? `${took || k < N ? '' : '🚫 '}${k} of ${N} ${k === 1 ? 'was' : 'were'} skipped: ${msg.replace(/^(🚫|🔒)\s*/u, '')}` : marked ? msg : `🚫 ${msg}`, !!ruled);
     }
     if (on && host.rules?.enabled) {
       J.cp = savepoint(json);
@@ -4128,14 +4159,13 @@ export function createTable(host, env = {}) {
     return bump();
   }
   /** A group's one line (group): "moved 8 items", "rolled 4 dice: 3 · 5 ·
-   *  1 · 6" (each die as opRoll says it: never a hidden one's value), "put 3
-   *  items into the bag Sack" — `n` members (dice) of group `a`. */
-  function groupLine(a, n, dice, bag) {
+   *  1 · 6", "put 3 items into the bag Sack" — `n` members (dice) of group
+   *  `a`; `rolled` is the roll's own line ("rolled 3 · 5 · 1 · 6", the faces
+   *  as opRoll said them as it rolled: never a hidden one's value, and never
+   *  read back from dice a hook may since have taken away). */
+  function groupLine(a, n, rolled, bag) {
     const items = `${n} ${n === 1 ? 'item' : 'items'}`;
-    if (dice) {
-      const faces = dice.map((id) => { const it = host.items[id], ty = typeOf(it.t); return it.up === false ? 'a hidden die' : faceLabel(ty.faces[it.f], it.f); });
-      return `rolled ${n} ${n === 1 ? 'die' : 'dice'}: ${faces.join(' · ')}`;
-    }
+    if (rolled) return `rolled ${n} ${n === 1 ? 'die' : 'dice'}: ${rolled.replace(/^rolled /, '')}`;
     const verb = { move: 'moved', rot: 'rotated', flip: 'flipped', del: 'removed', lock: a.on ? 'locked' : 'unlocked' }[a.op];
     return a.op === 'toBag' ? `put ${items} into ${label(bag)}` : `${verb} ${items}`;
   }
@@ -4592,9 +4622,12 @@ export function createTable(host, env = {}) {
   /** A job's final gates while the rules are on (spec §3f.4): the timers
    *  (gateTimers), then gateProblem. Returns the rules' state as JSON, ready
    *  to commit — or, when a gate fails, null, having undone every hook since
-   *  the checkpoint and disabled the rules, naming those hooks. */
+   *  the checkpoint and disabled the rules, naming those hooks. When no hook
+   *  ran since the checkpoint, the checkpoint's JSON is the state's. */
   function settle() {
-    gateTimers(host.rules);
+    const cp = J.frames[J.cp];
+    // No hook since the checkpoint and the timers as they were: the state is the checkpoint's, its JSON checked then (a group's member that took effect, with no onAction to run, passes over t.data once, not twice)
+    if (!gateTimers(host.rules) && jobHooks.length === cp.hooks && cp.json) return cp.json;
     let json, bad;
     try {
       json = rulesJSON();
@@ -4726,8 +4759,25 @@ export function createTable(host, env = {}) {
   }
   /** Every action re-renders the host (the one authority): a guest may send
    *  bursts of 40 tokens (a drag, a reconnect's queue), then 20 per second;
-   *  action `a` costs floodCost(a) of them (a `group`: 1 + ⌊N/20⌋). */
-  const mayAct = (p, a) => flood(acts, p, 40, 20, floodCost(a));
+   *  action `a` costs floodCost(a) of them (a `group`: 1 + ⌊N/20⌋) — while
+   *  the rules run, a group's times ⌈t.data's size / GROUP_DATA_CHARS⌉, at
+   *  most the whole burst: each member passes over the rules' state (its
+   *  savepoint, its gates), so a group costs the Worker what as many single
+   *  actions would, and is priced so (D234). */
+  const mayAct = (p, a) => flood(acts, p, 40, 20, a?.t === 'group' && host.rules?.enabled ? Math.min(40, floodCost(a) * Math.max(1, Math.ceil(rulesChars() / GROUP_DATA_CHARS))) : floodCost(a));
+  const dataChars = new WeakMap(); // the rules' t.data object → its length as JSON (rulesChars)
+  /** How large the running rules' state is: t.data's length as JSON (0 with
+   *  the rules off), kept per t.data object (the host's is replaced, never
+   *  changed, by each Worker patch that writes it) — what a group's price
+   *  (mayAct) and its watchdog budget (app.js) grow with. */
+  function rulesChars() {
+    const d = host.rules?.enabled && host.rules.data;
+    if (!isObj(d)) return 0;
+    if (!dataChars.has(d)) {
+      try { dataChars.set(d, JSON.stringify(d).length); } catch (err) { console.error('rulesChars: t.data is not JSON', err); return 0; }
+    }
+    return dataChars.get(d);
+  }
   /** A guest may chat or rename at most 5 times per 5 s. The host itself is
    *  exempt — it is the authority over the log anyway. */
   function mayTalk(p) {
@@ -5390,9 +5440,27 @@ export function createTable(host, env = {}) {
     }
     return d;
   }
+  const sent = new Map(); // id → its public item as the last patch or snapshot sent it: what every peer in step holds
+  /** The new place of an item whose public record `was` (what the peers
+   *  hold) became `o` by its place alone — x, y, rot, z and its address —
+   *  as [x, y, rot, z] plus its address when it has one; else null (no
+   *  record sent yet, nothing new, or anything else changed too). */
+  function placeOf(was, o) {
+    if (!was) return null;
+    let moved = false;
+    for (const k of new Set([...Object.keys(was), ...Object.keys(o)])) {
+      if (PLACE_KEYS.includes(k)) moved ||= was[k] !== o[k];
+      else if (was[k] !== o[k] && JSON.stringify(was[k]) !== JSON.stringify(o[k])) return null;
+    }
+    return moved ? [o.x, o.y, o.rot, o.z, ...(o.at === undefined ? [] : [o.at])] : null;
+  }
   /** The part of a patch every recipient shares, from a takeDirty() result:
-   *  only what changed — whole public items and players, removed ids, new log
-   *  entries, the table, seats and `handy` — item ids in sorted order (creation order never shows). */
+   *  only what changed — public items (whole, or, when only its place
+   *  changed, the new place alone in `pos`: a 200-counter group move costs
+   *  each peer a third of what whole records did, B19), players, removed ids,
+   *  new log entries, the table, seats and `handy` — item ids in sorted order
+   *  (creation order never shows). An item re-sent unchanged (a refusal's
+   *  touch) goes whole. */
   function patchContent(d) {
     refresh();
     const c = {};
@@ -5400,8 +5468,14 @@ export function createTable(host, env = {}) {
     if (d.seats) c.seats = host.seats;
     if (d.handy) c.handy = handy.size > 0;
     if (d.rules) c.rules = rulesView();
-    if (d.items.size) c.items = Object.fromEntries([...d.items].sort().map((id) => [id, pub.get(id)]));
+    for (const id of [...d.items].sort()) {
+      const o = pub.get(id), at = placeOf(sent.get(id), o);
+      if (at) (c.pos ||= {})[id] = at;
+      else (c.items ||= {})[id] = o;
+      sent.set(id, o);
+    }
     if (d.removed.size) c.del = [...d.removed].sort();
+    for (const id of d.removed) sent.delete(id);
     const ps = [...d.players].filter((p) => own(host.players, p)).sort();
     if (ps.length) c.players = Object.fromEntries(ps.map((p) => [p, pubPlayer(host.players[p])]));
     if (d.log.length) c.log = trimLog(d.log); // entries this tick both appends and trims need not travel
@@ -5412,6 +5486,8 @@ export function createTable(host, env = {}) {
   function snapContent() {
     refresh();
     const items = Object.fromEntries(Object.keys(host.items).sort().map((id) => [id, pub.get(id)]));
+    sent.clear();
+    for (const id in items) sent.set(id, items[id]);
     return { table: host.table, seats: host.seats, handy: handy.size > 0, rules: rulesView(), items, players: publicPlayers(), log: host.log };
   }
   /** Marks the items action `a` names (id, pile, onto, bag, and the first
@@ -5844,7 +5920,7 @@ export function createTable(host, env = {}) {
     get rulesError() { return lastRulesError; },
     /** Whether a rules hook is running now (spec §3f.7: the facade is live only then). */
     get inHook() { return inHook > 0; },
-    apply, join, bindKey, open, resume, mayAct, publicItems, publicPlayers, unsaveable, drag, exportBox,
+    apply, join, bindKey, open, resume, mayAct, rulesChars, publicItems, publicPlayers, unsaveable, drag, exportBox,
     /** Player p's last connection closed (the _leave job). True if they had a seat (now offline). */
     leave: (p) => apply(p, { t: '_leave' }),
     /** Fires the script timers that are due (the _tick job); true if any ran. */

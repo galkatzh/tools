@@ -54,7 +54,7 @@ const pageHooks = { load: () => '', has: () => false, flag: () => undefined, cal
       sync.set(g, s.seq);
       return sealText(text, kp.privateKey, pub);
     }));
-    return { sizes: sealed.map((x) => JSON.stringify(x).length), items: Object.keys(content.items || {}).length, log: content.log?.length ?? 0 };
+    return { sizes: sealed.map((x) => JSON.stringify(x).length), items: Object.keys({ ...content.items, ...content.pos }).length /* (members that only moved travel as their new places, in pos: D233) */, log: content.log?.length ?? 0 };
   }
 
   for (const seed of seeds([1])) {

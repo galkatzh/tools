@@ -22,7 +22,7 @@ import {
   CARD_W, CARD_H, RANKS, RULES, playR, clampToTable, seatAt, seatAngles, sizeOf, flagsOf, typeAt, PID_RE, ASSET_RE, rand, clamp, own, num, peerText,
   cleanDeck, cleanDeckV1, cleanBox, isBuiltin, deckOverBudget, assetRefs, cleanName, standardDeck, cardName, pieceName, faceLabel, createTable,
   MODULE_V as CORE_V, PROTO, PUBLIC_ACTIONS, HOST_ACTIONS, MAX_ROLL, MAX_N, MAX_BAG, MAX_HAND, MAX_PILE, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch, roundTable, FELT,
-  tableBoards, snapTo, snapAt, snaps, displayAddr, resolveAddr, liveFx, countSetup, checkTransportBox, boxOverBudget, publicBox, groupIds, GROUP_OPS,
+  tableBoards, snapTo, snapAt, snaps, displayAddr, resolveAddr, liveFx, countSetup, checkTransportBox, boxOverBudget, publicBox, groupIds, GROUP_OPS, clampShift, MAX_GROUP,
 } from './core.js?v=1';
 import { MODULE_V as GRID_V, turn, spotOf } from './grid.js?v=1';
 import * as pieces from './pieces.js?v=1';
@@ -207,6 +207,7 @@ const early = new Map(), EARLY_MAX = 16; // guest: peer → its catalog messages
 /** Counters and the last durations, for the tests and benchmarks (window.__ct). */
 const perf = {
   snaps: 0, patches: 0, gaps: 0, snapRequests: 0, lastApplyMs: 0, lastRenderMs: 0, lastSnapRenderMs: 0, drawn: 0, lastTickMs: 0, lastSaveSyncMs: 0, saves: 0,
+  lastJobMs: 0, // the host's last job on its own table (the rules off): T.apply alone (B19)
   // the rules Worker: Workers started and ended, jobs it ran, the last job's round trip (host: post to done applied),
   // its time in the Worker, the last start (spawn to ready), and the digest checks of test builds (checkDigest)
   workerStarts: 0, workerStops: 0, workerJobs: 0, lastRulesRoundtripMs: 0, lastRulesWorkerMs: 0, lastRulesInitMs: 0, digestChecks: 0, digestMismatches: 0,
@@ -285,7 +286,9 @@ function runJob(job) {
 function hostJob({ p, a, resolve }) {
   let changed = true; // a job that threw may have changed something: broadcast and save it
   try {
+    const t0 = performance.now();
     changed = T.apply(p, a);
+    perf.lastJobMs = performance.now() - t0;
   } catch (err) {
     console.error('action failed', a, err);
     toast(`Error: ${err.message}`);
@@ -617,13 +620,16 @@ function toWorker({ p, a, resolve }) {
     rulesDown(`a job could not be sent: ${err.message}`, `Rules disabled — ${err.message}`);
     return;
   }
-  watchStart(budget(job.a), () => rulesDown('the script took longer than 4 s (stopped)', "Rules stopped — the script didn't answer within 4 seconds"));
+  const ms = budget(job.a), s = +(ms / 1000).toFixed(1); // (the stop names the limit this job had: a group's or a setup's is longer)
+  watchStart(ms, () => rulesDown(`the script took longer than ${s} s (stopped)`, `Rules stopped — the script didn't answer within ${s} seconds`));
 }
-/** A job's watchdog budget (spec §3f.5, §4c): RULES_TIMEOUT_MS, and 10 ms
- *  more per member of a group, or per item a box's setup lays out (a
- *  loadBox's, a setup's, a reset's: forEachSeat counted for every player). */
+/** A job's watchdog budget (spec §3f.5, §4c): RULES_TIMEOUT_MS, and more
+ *  per member of a group — 10 ms, and 20 ms for each MB of t.data its
+ *  savepoint and gates pass over (T.rulesChars, D234) — or 10 ms per item a
+ *  box's setup lays out (a loadBox's, a setup's, a reset's: forEachSeat
+ *  counted for every player). */
 function budget(a) {
-  if (a.t === 'group') return RULES_TIMEOUT_MS + 10 * groupIds(a).length;
+  if (a.t === 'group') return RULES_TIMEOUT_MS + Math.round(groupIds(a).length * (10 + 20 * T.rulesChars() / 1e6));
   const box = a.t === 'loadBox' ? a.setup === true && a.box : a.t === 'setup' ? own(T.state.boxes, a.box) : a.t === 'reset' ? own(T.state.boxes, T.state.lastSetup) : null;
   return RULES_TIMEOUT_MS + (Array.isArray(box?.setup) ? 10 * countSetup(box.setup, Object.keys(T.state.players).length || 1) : 0);
 }
@@ -1517,6 +1523,9 @@ function connect() {
     const { _pid: p, _name: name, _key: key, _v, ...action } = a;
     if (HOST_ACTIONS.includes(action.t)) { refuse(peer, 'Only the host can do that'); return; }
     if (!PUBLIC_ACTIONS.includes(action.t)) { refuse(peer, 'Unknown action — reload this page'); return; }
+    // No action names more than MAX_GROUP items, and a group or a group drag reads only its first MAX_GROUP: cut
+    // the rest here, so a million ids cost the host no mapping, no queue and no clone to the rules Worker
+    if (Array.isArray(action.ids) && action.ids.length > MAX_GROUP) action.ids = action.ids.slice(0, MAX_GROUP);
     const reason = p === pid ? 'This seat is already open in another tab'
       : typeof p !== 'string' || !PID_RE.test(p) ? 'Invalid player id' // (a crafted {"toString": 1} would make test() throw)
       : typeof key !== 'string' || key.length < 16 ? 'Missing seat key — please reload'
@@ -1831,6 +1840,7 @@ function checkPending(save) {
 // --- rendering ------------------------------------------------------------
 const itemEls = new Map();
 let sel = null, drag = null, handDrag = null, facedown = false;
+let multi = new Set(); // the multi-selection (spec §4g): two or more items picked together, whose bar is the group bar (one picked is `sel`)
 let scale = 1;
 
 /** The image a card side shows — a face's, or its deck's image back — as
@@ -1919,8 +1929,22 @@ function ownerColor(o) {
 // while hands grew sends card backs flying to those seats, and a flip turns
 // the card. Web Animations only: nothing to clean up, no forced reflows.
 const calm = matchMedia('(prefers-reduced-motion: reduce)');
-let landing = null; // {id, x, y, ox, oy}: our own drop (and the drag's origin), held until the host confirms or vetoes it
+const landings = new Map(); // item id → {id, x, y, ox, oy}: our own drop (and the drag's origin), held until the host confirms or vetoes it
 const MOTION_MS = 260;
+/** Holds our own drops `list` ([{id, x, y, ox, oy}]: a drag's, or a group
+ *  drag's members) where we let go: the states the host sent before it
+ *  applied the drop carry a stale spot from mid-drag. Each is let go when a
+ *  state shows it there or back at its origin (a veto: renderItems), and
+ *  the rest after 1.5 s, quiet table or not — a script moved it elsewhere,
+ *  coalescing merged the state away — shown where the host has them. */
+function hold(list) {
+  for (const L of list) landings.set(L.id, L);
+  setTimeout(() => {
+    const due = list.filter((L) => landings.get(L.id) === L);
+    for (const L of due) landings.delete(L.id);
+    if (due.length) renderItems(new Map(due.map((L) => [L.id, view.items[L.id]])));
+  }, 1500);
+}
 
 /** Where player p sits, in table coords: on the rim at their seat's angle,
  *  or a named seat placed with `at` at that very point (core's seatAt). */
@@ -2090,10 +2114,10 @@ function topOf(id) {
 /** Puts item `id`'s element where it is drawn — its fanned place, or its
  *  own — and, while someone else drags it, on its live spot by a
  *  translation (a per-frame move never lays the table out). Our own drag
- *  and drop (`landing`) keep it where the finger left it. */
+ *  (a group's too) and drop (`landings`) keep it where the finger left it. */
 function placeEl(id) {
   const el = itemEls.get(id), it = view.items[id];
-  if (!el || !it || drag?.id === id || landing?.id === id) return;
+  if (!el || !it || drag?.id === id || drag?.group?.has(id) || landings.has(id)) return;
   const p = fanPos.get(id) || it, L = lives.get(id);
   if (!L && el.classList.contains('live')) { endLive(el, p); return; }
   el.style.left = `${p.x}px`;
@@ -2204,16 +2228,16 @@ function renderItems(prev, prevPlayers = new Map()) {
     // carry a stale spot from mid-drag; keep the card where we let go until
     // the host confirms it (or vetoes it: the card was back at its origin).
     // Anything else (a script moved it on) is shown once the hold times out.
-    const at = (x, y) => Math.abs(it.x - x) < 0.5 && Math.abs(it.y - y) < 0.5;
-    if (landing?.id === id && (at(landing.x, landing.y) || at(landing.ox, landing.oy))) landing = null;
+    const at = (x, y) => Math.abs(it.x - x) < 0.5 && Math.abs(it.y - y) < 0.5, L = landings.get(id);
+    if (L && (at(L.x, L.y) || at(L.ox, L.oy))) landings.delete(id);
     lives.delete(id); // (a committed update: no glide outlives it)
     if (!atOf.has(id)) placeEl(id); // (a piece on a spot is placed by layoutFans below, in its fan)
     el.style.transform = `rotate(${it.rot}deg)`;
     // its badges, and a board's printed text, turn back against it (style.css, D91)
     if (it.rot) el.style.setProperty('--rot', `${num(it.rot)}deg`);
     else el.style.removeProperty('--rot');
-    el.style.zIndex = it.z;
-    el.classList.toggle('selected', sel === id);
+    if (!drag?.group?.has(id)) el.style.zIndex = it.z; // (a group being dragged stays on top)
+    el.classList.toggle('selected', sel === id || multi.has(id));
   }
   layoutFans();
   // Cards a pile lost without landing on the table went into hands: fly them there.
@@ -2307,6 +2331,8 @@ let seatSpots = ''; // where placeSeats last put the button row and the notices
 // phone held upright), HINT_GAP clear of them; HINT_MIN_W at least (and
 // always its longest word: min-width: min-content).
 const HINT_FELT = 0.6, HINT_BAND = 75, HINT_GAP = 8, HINT_MIN_W = 140;
+/** The bottom-left corner ⬚ takes (CSS #sel-mode: 8 px in, 44 px wide, and a gap), which no seat label covers. */
+const SEL_CORNER = 56;
 /** Puts the seat labels where this view shows their seats. It runs on every
  *  pan, zoom and pinch frame, so it moves things by transform only: a
  *  layout per frame would also make the browser hit-test the whole table
@@ -2322,8 +2348,10 @@ function placeSeats() {
     // size moves it, and layout() places the labels again then)
     const at = p ? seatXY(p) : seatAt(TABLE, angles.get(seat.id), seat), [sx, sy] = tableToScreen(at.x, at.y);
     // Keep the whole label on screen (side seats sit on the rim, which a
-    // phone's fit zoom puts right at the screen edge).
-    const x = clamp(sx, hw, W - hw), y = clamp(sy, hh, H - hh);
+    // phone's fit zoom puts right at the screen edge), and clear of ⬚
+    // (#sel-mode), which owns the bottom-left corner: a label that would run
+    // under it moves right of it (your own, zoomed in, is clamped there).
+    const y = clamp(sy, hh, H - hh), x0 = clamp(sx, hw, W - hw), x = y + hh > H - SEL_CORNER && x0 - hw < SEL_CORNER ? Math.min(W - hw, SEL_CORNER + hw) : x0;
     el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
     if (x + hw > W - 8 - watchW && y < H / 2) corner.push([y - hh, y + hh]);
     // Your own label in the lower half: lift the rules button row just above
@@ -2357,6 +2385,7 @@ function placeSeats() {
   // sideways with an ask open leaves the table area about 100 px).
   $('rules-row').style.translate = `0 ${12 - rowBottom}px`;
   $('rules-row').style.setProperty('--row-room', `${Math.max(0, H - rowBottom - 4)}px`);
+  $('sel-chip').style.bottom = `${Math.max(60, rowBottom + 50)}px`; // (⬚'s chip: above ⬚, and above a row of the rules' buttons lifted over your label)
   $('notices').style.translate = `0 ${noticeTop - 10}px`;
   $('watch-box').style.translate = `0 ${watchTop - 8}px`;
   $('main').classList.toggle('gutters', gutters);
@@ -2902,6 +2931,7 @@ function renderAll(prev = new Map(), prevPlayers) {
   renderFacedown();
   renderCues();
   syncBar(prev);
+  renderInspector();
   updateNet();
   cliParts();
 }
@@ -2996,7 +3026,8 @@ function layout() {
   tableEl.style.left = `${(w - TABLE_W) / 2}px`;
   tableEl.style.top = `${(h - TABLE_H) / 2}px`;
   tableEl.style.transform = `translate(${panX}px, ${panY}px) rotate(${viewAngle}deg) scale(${scale})`;
-  if (sel) placeBar();
+  if (barHTML) placeBar();
+  placeInspector();
   for (const b of bulbs.values()) placeFx(b);
   renderPlayers(true); // seat labels live in screen space and track the view
 }
@@ -3057,28 +3088,38 @@ function applySeatView() {
 // --- selection & action bar ----------------------------------------------
 const ARM_MS = 5000; // how long ✥ Move stays armed
 let moveAll = null; // {id, at}: ✥ Move armed at `at` — the next drag of that ×N stack or supply moves all of it (until ARM_MS has passed)
-let giveOpen = false; // the host's Give ▸ list is open in the bar
-let barHTML = ''; // what the bar shows (barFor's markup)
-function select(id) {
+let giveOpen = false; // a list is open in the bar: the host's Give ▸, or the group bar's 👜 Into bag ▸
+let barHTML = ''; // what the bar shows (barFor's or groupBar's markup)
+/** Selects item `id` alone (null: nothing), with its bar; the multi-selection stays as it is.
+ *  `picked`: it is a selection being built by picks (Shift, ⬚), whose bar docks (placeBar). */
+function select(id, picked = false) {
   sel = id;
+  picking = picked;
   giveOpen = false;
-  for (const [i, el] of itemEls) el.classList.toggle('selected', i === sel);
+  markSelected();
   renderBar();
 }
-/** The selected item's bar as it should now be: barFor's markup — none
- *  while a tap only selects for the rules: strict rules that want
- *  selections (spec §3g, D154), whose game moves by drags, asks and
- *  buttons, and whose pieces' bar would offer what they refuse, over the
- *  very squares their hint marks. */
-function barNow() {
-  const it = sel && view.items[sel];
-  return it && !(strictRules() && view.rules.wants?.includes('select')) ? barFor(sel, it) : '';
+/** Gives .selected to the selected item and the multi-selection's members, and takes it from the rest. */
+function markSelected() {
+  for (const [i, el] of itemEls) el.classList.toggle('selected', i === sel || multi.has(i));
 }
-/** Builds the selected item's action bar (hidden when it offers nothing) and
- *  places it. An armed ✥ Move shows how much of its time is left (style.css). */
+/** The bar as it should now be: the group bar for a multi-selection, else
+ *  the selected item's (barFor's markup) — none while a tap only selects
+ *  for the rules: strict rules that want selections (spec §3g, D154), whose
+ *  game moves by drags, asks and buttons, and whose pieces' bar — or a
+ *  group's — would offer what they refuse, over the very squares their hint marks. */
+function barNow() {
+  if (strictRules() && view.rules.wants?.includes('select')) return '';
+  if (multi.size) return groupBar();
+  const it = sel && view.items[sel];
+  return it ? barFor(sel, it) : '';
+}
+/** Builds the bar (hidden when it offers nothing, while the inspector is
+ *  open, and while a group is carried) and places it. An armed ✥ Move shows
+ *  how much of its time is left (style.css). */
 function renderBar() {
   barEl.innerHTML = barHTML = barNow();
-  barEl.classList.toggle('hidden', !barHTML);
+  barEl.classList.toggle('hidden', !barHTML || !!insp || !!drag?.group);
   barEl.querySelector('.on[data-cmd="all"]')?.style.setProperty('animation-delay', `${moveAll.at - Date.now()}ms`);
   if (barHTML) placeBar();
 }
@@ -3087,13 +3128,24 @@ function renderBar() {
  *  or who may do what with it (a seat taken or left turns who owns a
  *  seat-bound piece, a player joins the Give ▸ list) — else moved along
  *  with its item. A bar that offers what the host would now refuse would
- *  send it, from a button or a key. */
+ *  send it, from a button or a key. The multi-selection loses the members
+ *  that are gone or that this player may no longer handle (a locked one
+ *  stays: 🔓 unlocks it). */
 function syncBar(prev) {
+  if (multi.size) {
+    const keep = [...multi].filter((id) => view.items[id] && mayTouch(view.items[id]));
+    if (keep.length < multi.size) setMulti(keep);
+    else if (barNow() !== barHTML) renderBar();
+    else if (!prev || keep.some((id) => prev.has(id))) placeBar();
+    return;
+  }
   const it = sel && view.items[sel];
   if (sel && !it) select(null);
   else if (it && barNow() !== barHTML) renderBar();
   else if (barHTML && (!prev || prev.has(sel))) placeBar();
 }
+/** Whether a pile `it` turns over: cards do, and pieces with a back. */
+const pileTurns = (it) => { const top = it.top || {}; return 'd' in top || 'b' in top || !!typeAt(boxes, top.t)?.back; };
 /** The buttons of public item `it`'s bar (spec §2g), built from the public
  *  view alone (a hidden piece's flags are its back's: flagsOf), and only
  *  with what this player may do. */
@@ -3108,10 +3160,9 @@ function barFor(id, it) {
       + (free ? b('rl', '⟲90') + b('rr', '⟳90') + (room ? b('hand', 'Hand') : '') : '') + unlock + del;
   }
   if (it.k === 'p') { // a pile of cards, or of pieces (a pile of pieces turns over when they have a back, and is drawn when they go in a hand)
-    const top = it.top || {}, cards = 'd' in top;
-    const turns = cards || 'b' in top || !!typeAt(boxes, top.t)?.back;
+    const cards = 'd' in (it.top || {});
     return (may && F.hand && room ? b('draw', 'Draw') : '') + (may ? b('peek', 'Peek') + b('dealup', 'Deal↑') + b('dealdn', 'Deal↓') + b('shuffle', 'Shuffle') : '')
-      + (free && turns ? b('flip', 'Flip') : '') + (free ? b('rr', cards ? '⟳90' : '⟳') : '') + unlock + del;
+      + (free && pileTurns(it) ? b('flip', 'Flip') : '') + (free ? b('rr', cards ? '⟳90' : '⟳') : '') + unlock + del;
   }
   if (it.k === 'b') return (may && it.n ? b('pull', 'Draw') + (it.hand && room ? b('pullHand', '✋ Draw to hand') : '') : '') + lock + del;
   if (it.k === 's') return (may ? b('take', 'Take 1') + (F.hand && room ? b('takeHand', '✋') : '') : '') + (free ? all('✥ Move') : '') + lock + del;
@@ -3123,6 +3174,7 @@ function barFor(id, it) {
     + (die && may ? b('roll', '🎲 Roll') : '')
     + (free && !die && pieces.turnShows(it, boxes) ? b('rl', '⟲') + b('rr', '⟳') : '') // (a plain checker looks the same at any angle)
     + (free && it.n >= 2 ? b('split', '✂ Take 1') + all('✥ Move all') : '')
+    + (free && inspectOf(id) ? b('inspect', '⋯ Inspect') : '') // (anyone's ×N or ×k badge opens it too: spec §4g)
     + (free && F.hand && room ? b('hand', '✋ Hand') : '')
     + (pieces.zoomable(it, boxes) ? b('zoom', '🔍') : '')
     + lock
@@ -3131,18 +3183,302 @@ function barFor(id, it) {
     + del;
 }
 
+/** Where items `ids` are drawn on the screen, together: {x0, x1, y0, y1}
+ *  (wrap px; each where it is drawn — fanned on a crowded spot, or where
+ *  our own drop holds it — its box grown to cover it turned), or null when
+ *  none is on the table. */
+function screenBox(ids) {
+  let b = null;
+  for (const id of ids) {
+    const it = view.items[id];
+    if (!it) continue;
+    const { w, h } = sizeOf(it, boxes), at = landings.get(id) || fanPos.get(id) || it, [sx, sy] = tableToScreen(at.x + w / 2, at.y + h / 2), half = Math.max(w, h) * 0.6 * scale;
+    b = b ? { x0: Math.min(b.x0, sx - half), x1: Math.max(b.x1, sx + half), y0: Math.min(b.y0, sy - half), y1: Math.max(b.y1, sy + half) }
+      : { x0: sx - half, x1: sx + half, y0: sy - half, y1: sy + half };
+  }
+  return b;
+}
+/** Puts popover `el` (in screen space, centred on its `left`) beside screen
+ *  box `b`, never over it while there is room: above it when it fits there
+ *  (its real size: it wraps into rows on a narrow screen), else below it,
+ *  else as low as it fits. */
+function placeBeside(el, b) {
+  const hw = el.offsetWidth / 2, bh = el.offsetHeight, above = b.y0 - bh - 4, below = b.y1 + 8;
+  el.style.left = `${clamp((b.x0 + b.x1) / 2, hw + 4, wrapW - hw - 4)}px`;
+  el.style.top = `${above >= 4 ? above : below + bh <= wrapH - 4 ? below : Math.max(4, wrapH - 4 - bh)}px`;
+}
 // The bar lives OUTSIDE the scaled table (in screen space) so its buttons stay
-// finger-sized on small screens; convert the item's table coords to screen px.
+// finger-sized on small screens; it goes beside what it acts on, where it is
+// drawn: the item — with the rest of its crowded spot, whose pieces a finger
+// presses to take the top one (topOf). A selection being built (two or more
+// picked, or one picked by Shift or ⬚) docks its bar at the top edge of the
+// table area instead (D236): beside the picks, it lay on the very pieces to
+// pick next, and moved with each pick, so a tap or a click meant for a piece
+// hit whichever button had come under it (🗑 removed the group). It stands
+// beside them only when the top edge would cover one of them.
 function placeBar() {
-  const it = view.items[sel];
-  if (!it) return;
-  const { w, h } = sizeOf(it, boxes), at = fanPos.get(sel) || it, [sx, sy] = tableToScreen(at.x + w / 2, at.y + h / 2); // (where it is drawn: fanned on a crowded spot)
-  const half = Math.max(w, h) * 0.6 * scale; // covers rotated items too
-  // The bar's real size: it wraps into rows on a narrow screen.
-  const hw = barEl.offsetWidth / 2, bh = barEl.offsetHeight;
-  const yAbove = sy - half - bh - 4;
-  barEl.style.left = `${clamp(sx, hw + 4, wrapW - hw - 4)}px`;
-  barEl.style.top = `${yAbove >= 4 ? yAbove : sy + half + 8}px`;
+  if (multi.size || picking) {
+    const ids = multi.size ? [...multi] : [sel], hw = barEl.offsetWidth / 2, x0 = wrapW / 2 - hw, x1 = wrapW / 2 + hw, y1 = 4 + barEl.offsetHeight;
+    if (!ids.some((id) => { const m = screenBox([id]); return m && m.x0 < x1 && m.x1 > x0 && m.y0 < y1; })) {
+      barEl.style.left = `${wrapW / 2}px`;
+      barEl.style.top = '4px';
+      return;
+    }
+  }
+  const b = screenBox(multi.size ? multi : fanPos.has(sel) ? spotMembers(atOf.get(sel)) : [sel]);
+  if (b) placeBeside(barEl, b);
+}
+
+// --- multi-select (spec §4g) -------------------------------------------------
+// Several items picked at once: a rubber band (Shift+drag on the felt — on
+// a locked board too, which counts as felt — or, with ⬚ select mode on, a
+// plain drag there: one finger on a phone), Shift+click (⬚: a tap) to pick
+// an item or put it back; Esc, a click on the felt, ✕ or ⬚ off clear them.
+// Only items this player may handle (nobody else's, not locked) are picked,
+// and boards never: the others are counted in a chip. Members are .selected;
+// a drag of one carries them all (one `drag {ids, dx, dy}` each LIVE_MS, one
+// `group` move on the drop); the group bar acts on them with one `group`
+// each (spec §4c). One picked item is just selected (its own bar).
+let selMode = false; // ⬚: a drag (but of a picked member) draws a band, a tap picks
+let picking = false; // the selection is being built by picks (Shift, ⬚): its bar docks (placeBar)
+const selBtn = $('sel-mode'), selChip = $('sel-chip'), bandEl = $('band');
+let chipT = 0;
+/** Says `msg` for a moment in the selection's chip (by ⬚). */
+function chip(msg) {
+  selChip.textContent = msg;
+  selChip.classList.remove('hidden');
+  clearTimeout(chipT);
+  chipT = setTimeout(() => selChip.classList.add('hidden'), 2600);
+}
+/** Whether public item `it` may join a multi-selection: not a board, nobody else's, not locked. */
+const pickable = (it) => !!it && !isBoard(it) && mayTouch(it) && !it.lock;
+/** Whether this player may move item `id` (a group's member the group's
+ *  moves, turns, flips and removals take): nobody else's, not locked. */
+const mayMove = (id) => { const it = view.items[id]; return !!it && mayTouch(it) && !it.lock; };
+/** Makes `ids` the multi-selection: two or more are a group (the group
+ *  bar); one is just selected (its own bar); none clears the selection. */
+function setMulti(ids) {
+  multi = new Set(ids);
+  giveOpen = false;
+  if (multi.size === 1) {
+    const [id] = multi;
+    multi.clear();
+    select(id, true);
+  } else {
+    sel = null;
+    picking = false;
+    markSelected();
+    renderBar();
+  }
+}
+/** What is picked now: the multi-selection, or the item selected alone when this player may pick it. */
+const picked = () => (multi.size ? [...multi] : pickable(view.items[sel]) ? [sel] : []);
+/** Picks items `ids` (a band's) into the selection: those this player may
+ *  handle, up to MAX_GROUP in all (a `group`'s most); the others are
+ *  counted in the chip ("3 not selectable"). */
+function pick(ids) {
+  const its = ids.filter((id) => view.items[id] && !isBoard(view.items[id])), ok = its.filter((id) => pickable(view.items[id]));
+  const all = [...new Set([...picked(), ...ok])], over = all.length - MAX_GROUP;
+  const no = [its.length > ok.length && `${its.length - ok.length} not selectable (locked or someone else's)`, over > 0 && `${MAX_GROUP} at most: ${over} left out`];
+  if (no.some(Boolean)) chip(no.filter(Boolean).join(' · '));
+  if (ok.length) setMulti(all.slice(0, MAX_GROUP));
+}
+/** Picks item `id`, or puts it back (Shift+click; a tap in ⬚ select mode). */
+function togglePick(id) {
+  const it = view.items[id], now = new Set(picked());
+  if (!it || isBoard(it)) return;
+  if (now.has(id)) now.delete(id);
+  else if (!pickable(it)) return chip("1 not selectable (locked or someone else's)");
+  else if (now.size >= MAX_GROUP) return chip(`${MAX_GROUP} at most`);
+  else now.add(id);
+  setMulti([...now]);
+}
+selBtn.addEventListener('click', () => {
+  selMode = !selMode;
+  selBtn.classList.toggle('on', selMode);
+  selBtn.setAttribute('aria-pressed', selMode);
+  if (selMode) chip('Select: drag a box, or tap pieces');
+  else {
+    setMulti([]);
+    selChip.classList.add('hidden');
+  }
+});
+/** The rubber band of felt drag `f` (its start, sx/sy, and the table area's
+ *  place, r) to pointer event `e`: {x0, x1, y0, y1} in wrap px. */
+function bandRect(f, e) {
+  const xs = [f.sx, e.clientX].map((x) => x - f.r.left).sort((a, b) => a - b), ys = [f.sy, e.clientY].map((y) => y - f.r.top).sort((a, b) => a - b);
+  return { x0: xs[0], x1: xs[1], y0: ys[0], y1: ys[1] };
+}
+/** Draws the band of felt drag `f` to pointer event `e`. */
+function drawBand(f, e) {
+  const b = bandRect(f, e);
+  Object.assign(bandEl.style, { translate: `${b.x0}px ${b.y0}px`, width: `${b.x1 - b.x0}px`, height: `${b.y1 - b.y0}px` });
+  bandEl.classList.remove('hidden');
+}
+/** The band of felt drag `f` let go at pointer event `e`: it picks every
+ *  item drawn with its centre inside it. */
+function endBand(f, e) {
+  bandEl.classList.add('hidden');
+  const b = bandRect(f, e), ids = [];
+  for (const [id, it] of Object.entries(view.items)) {
+    const { w, h } = sizeOf(it, boxes), at = fanPos.get(id) || it, [sx, sy] = tableToScreen(at.x + w / 2, at.y + h / 2);
+    if (sx >= b.x0 && sx <= b.x1 && sy >= b.y0 && sy <= b.y1) ids.push(id);
+  }
+  pick(ids);
+}
+
+/** The group bar (spec §4g): what this player may do with the members —
+ *  ⟲ ⟳ by the largest rotStep among them (else 90), Flip, 🎲 Roll (the
+ *  dice), 🔒 / 🔓, 👜 Into bag ▸ (the bags on the table), 🗑 — and ✕. */
+function groupBar() {
+  const ids = [...multi], its = ids.map((id) => view.items[id]), mine = ids.filter(mayMove).map((id) => view.items[id]);
+  const b = (cmd, text, cls = '') => `<button data-cmd="${cmd}"${cls ? ` class="${cls}"` : ''}>${text}</button>`;
+  const bags = mine.some((it) => it.k === 'g') ? Object.entries(view.items).filter(([id, it]) => it.k === 'b' && !multi.has(id) && mayTouch(it)) : [];
+  const locks = its.filter(mayLock);
+  return `<span class="gn">${ids.length} selected</span>`
+    + (mine.some(turnsAround) ? b('rl', '⟲') + b('rr', '⟳') : '')
+    + (mine.some(turnsOver) ? b('flip', 'Flip') : '')
+    + (its.some((it) => isDie(it) && mayTouch(it)) ? b('roll', '🎲 Roll') : '')
+    + (locks.length ? b('lock', locks.some((it) => !it.lock) ? '🔒 Lock' : '🔓 Unlock') : '')
+    + (bags.length ? b('bag', '👜 Into bag ▸', giveOpen ? 'on' : '') + (giveOpen ? `<span class="give">${
+      bags.map(([id, bg]) => `<button data-cmd="bagTo" data-to="${esc(id)}">👜 ${esc(bg.name || 'Bag')}</button>`).join('')}</span>` : '') : '')
+    + (mine.length ? b('del', '🗑') : '')
+    + b('none', '✕');
+}
+/** Whether a turn of public item `it` shows (the bar's ⟲ ⟳): cards and piles; a piece that isn't a die and doesn't look the same at any angle. */
+const turnsAround = (it) => it.k === 'c' || it.k === 'p' || (it.k === 'g' && !isDie(it) && pieces.turnShows(it, boxes));
+/** Whether public item `it` turns over (the bar's Flip): a card, a pile that turns, a piece that flips. */
+const turnsOver = (it) => it.k === 'c' || (it.k === 'p' ? pileTurns(it) : it.k === 'g' && flips(it));
+/** The step the group bar's ⟲ ⟳ turn by: the largest rotStep among members `ids`, else 90 (each member snaps it to its own). */
+const groupStep = (ids) => Math.max(0, ...ids.map((id) => flagsOf(view.items[id], boxes).rotStep || 0)) || 90;
+/** Sends one `group` `op` of the members among `ids` this player may move, that `fit` takes (`o`: its other fields). */
+const groupAct = (op, ids, o = {}, fit = () => true) => act({ t: 'group', op, ids: ids.filter((id) => mayMove(id) && fit(view.items[id])), ...o });
+/** The group bar's commands on members `ids` (the keys run them too: see keydown). */
+const GROUP_CMDS = {
+  rl: (ids) => groupAct('rot', ids, { rot: -groupStep(ids) }, turnsAround),
+  rr: (ids) => groupAct('rot', ids, { rot: groupStep(ids) }, turnsAround),
+  flip: (ids) => groupAct('flip', ids, {}, turnsOver),
+  roll: (ids) => { // (the host rolls them as one: at most MAX_ROLL, as a single roll; the chip says what was left out)
+    const dice = ids.filter((id) => isDie(view.items[id]) && mayTouch(view.items[id]));
+    if (dice.length > MAX_ROLL) chip(`${MAX_ROLL} dice at most: ${dice.length - MAX_ROLL} left out`);
+    act({ t: 'group', op: 'roll', ids: dice.slice(0, MAX_ROLL) });
+  },
+  lock: (ids) => { const its = ids.filter((id) => mayLock(view.items[id])); act({ t: 'group', op: 'lock', ids: its, on: its.some((id) => !view.items[id].lock) }); },
+  bag: () => { giveOpen = !giveOpen; renderBar(); },
+  bagTo: (ids, bag) => groupAct('toBag', ids, { bag }, (it) => it.k === 'g' && bagTakes(view.items[bag], it, it.n || 1)), // (pieces only: what core's toBag takes)
+  del: (ids) => groupAct('del', ids),
+  none: () => setMulti([]),
+};
+
+// --- the stack inspector (spec §4g) --------------------------------------------
+// A popover in screen space beside what it shows, never over it: a ×N stack —
+// its face (its back when hidden), the count, Take [k] (a stepper, 1 … N−1:
+// `split {n: k}` beside the stack, where the host snaps it) and Take all
+// (arms the whole-stack drag, ✥) — or a crowded spot's members, top first,
+// each with its face (or back), its name and its owner's dot: a tap selects
+// that piece (its bar), a drag out of the list carries it. It opens on a
+// tap of a ×N badge or a spot's ×k, a long press of a ×N stack (touch: in
+// place of the zoom) and ⋯ Inspect in the bar; it closes on Esc, ✕, a tap
+// outside it, or when what it shows is gone, and is drawn again when that
+// changes (renderAll). The bar hides while it is open.
+const inspEl = $('inspector');
+let insp = null; // what it shows: {id} a ×N stack, or {at} a crowded spot's display address; k: Take's count; html: what it drew
+let inspPress = null; // a press on a member of its list: {id, x, y} (client px), until it lifts or becomes a drag out (dragOut)
+/** What the inspector shows for item `id`: on `badge` 'stack', its ×N
+ *  stack; on 'spot', its crowded spot; with no badge (⋯ Inspect), the spot
+ *  when it is crowded, else the stack — or null, when there is none. */
+function inspectOf(id, badge = '') {
+  const it = view.items[id], at = atOf.get(id);
+  if (badge !== 'stack' && at !== undefined && spotMembers(at).length > 1) return { at };
+  return badge !== 'spot' && it?.k === 'g' && it.n >= 2 ? { id } : null;
+}
+/** Opens the inspector on `o` (inspectOf's); false when there is nothing to show. */
+function openInspector(o) {
+  if (!o) return false;
+  insp = { ...o, k: 1, html: '' };
+  renderInspector();
+  renderBar();
+  return true;
+}
+function closeInspector() {
+  insp = null;
+  inspPress = null;
+  inspEl.classList.add('hidden');
+  renderBar();
+}
+/** What public piece `it` is called in the inspector: its type's name and
+ *  the face's label ("Azure infantry · 4-3"), or that it is hidden. */
+function pieceTitle(it) {
+  if (!('t' in it)) return 'A hidden piece';
+  const name = typeAt(boxes, it.t)?.name, face = pieceName(boxes, it.t, it.f);
+  return name && name !== face ? `${name} · ${face}` : face;
+}
+/** A small picture of public piece `it`, its face — its back when hidden —
+ *  as pieces.js draws it on the table, scaled to fit `px` (no badges). */
+function thumb(it, px) {
+  const v = pieces.itemView({ ...it, n: 1, owner: null, lock: false }, boxes, faceImage), f = px / Math.max(v.w, v.h, 1);
+  return `<span class="ithumb" style="width:${Math.round(v.w * f)}px;height:${Math.round(v.h * f)}px"><span class="${v.cls.join(' ')}" style="width:${num(v.w)}px;height:${num(v.h)}px;scale:${f}">${v.html}</span></span>`;
+}
+/** Draws the inspector as the view now has it (when that changed), or closes it when what it shows is gone; then places it. */
+function renderInspector() {
+  if (!insp) return;
+  let html;
+  const x = '<button data-ins="x" title="Close" aria-label="Close">✕</button>';
+  if (insp.id) {
+    const it = view.items[insp.id];
+    if (it?.k !== 'g' || !(it.n >= 2)) { closeInspector(); return; }
+    const k = (insp.k = clamp(insp.k, 1, it.n - 1)), free = mayTouch(it) && !it.lock;
+    html = `<div class="ins-head">${thumb(it, 44)}<div class="ins-what"><b>${esc(pieceTitle(it))}</b><small>×${num(it.n)} in this stack</small></div>${x}</div>`
+      + (free ? `<div class="ins-take"><span>Take</span><button data-ins="less" aria-label="One fewer"${k <= 1 ? ' disabled' : ''}>−</button><output>${k}</output>`
+        + `<button data-ins="more" aria-label="One more"${k >= it.n - 1 ? ' disabled' : ''}>+</button><button data-ins="take" class="main">Take ${k}</button></div>`
+        + '<button data-ins="all" class="ins-all">✥ Take all</button>'
+        : `<p class="ins-note">${it.lock ? '🔒 Locked' : "Someone else's stack"}</p>`);
+  } else {
+    const ids = spotMembers(insp.at).reverse();
+    if (ids.length < 2) { closeInspector(); return; }
+    html = `<div class="ins-head"><div class="ins-what"><b>${esc(insp.at)}</b><small>${ids.length} pieces here, the top one first</small></div>${x}</div><ul class="ins-list">${
+      ids.map((id) => {
+        const m = view.items[id];
+        return `<li data-id="${esc(id)}">${thumb(m, 36)}<span>${esc(pieceTitle(m))}${m.n >= 2 ? ` ×${num(m.n)}` : ''}</span>${
+          m.owner ? `<i class="odot" style="background:${safeColor(ownerColor(m.owner))}"></i>` : ''}</li>`;
+      }).join('')}</ul>`;
+  }
+  if (html !== insp.html) inspEl.innerHTML = insp.html = html;
+  inspEl.classList.remove('hidden');
+  placeInspector();
+}
+/** Puts the inspector beside its stack, or its spot's members. */
+function placeInspector() {
+  const b = insp && screenBox(insp.id ? [insp.id] : spotMembers(insp.at));
+  if (b) placeBeside(inspEl, b);
+}
+inspEl.addEventListener('click', (e) => {
+  if (!insp) return; // (a click that ends a drag out of the list, after it closed)
+  const b = e.target.closest('[data-ins]'), it = insp.id && view.items[insp.id];
+  // (a piece chosen here — a member of the list, a stack whose Take all is armed — is the selection: a group picked before ends)
+  if (!b) { const li = e.target.closest('li[data-id]'); if (li && view.items[li.dataset.id]) { closeInspector(); setMulti([]); tapSelect(li.dataset.id); } return; }
+  switch (b.dataset.ins) {
+    case 'x': closeInspector(); break;
+    case 'less': case 'more': insp.k += b.dataset.ins === 'more' ? 1 : -1; renderInspector(); break;
+    case 'take': if (it) act({ t: 'split', id: insp.id, n: insp.k, ...dealSpot(it) }); break;
+    case 'all': { const id = insp.id; closeInspector(); setMulti([]); select(id); CMDS.all(id); break; } // (the bar's ✥ Move all, armed: the next drag moves the whole stack)
+  }
+});
+inspEl.addEventListener('pointerdown', (e) => {
+  const li = e.button === 0 && e.target.closest('li[data-id]');
+  inspPress = li ? { id: li.dataset.id, x: e.clientX, y: e.clientY } : null;
+});
+// A tap outside the inspector closes it (and anything it held: the press itself goes on).
+document.addEventListener('pointerdown', (e) => { if (insp && !inspEl.contains(e.target)) closeInspector(); }, true);
+/** A press on a member of the inspector's list moved (pointer event e): the
+ *  list closes and that piece is carried, held by its centre, as a drag that
+ *  started on it would (dragMode: nothing when this player may not drag it). */
+function dragOut(e) {
+  const { id } = inspPress, it = view.items[id], mode = it && dragMode(id, it, e);
+  closeInspector();
+  if (!mode) return;
+  const { w, h } = sizeOf(it, boxes), d0 = fanPos.get(id) || it;
+  drag = { id, el: itemEls.get(id), mode, ghost: false, dx: w / 2, dy: h / 2, sx: d0.x + w / 2, sy: d0.y + h / 2, x: d0.x, y: d0.y, ox: it.x, oy: it.y, moved: false, last: 0 };
 }
 
 // --- announcement banner (t.announce / t.win) -------------------------------
@@ -3232,12 +3568,20 @@ const CMDS = {
   release: (id) => act({ t: 'owner', id, to: null }),
   give: () => { giveOpen = !giveOpen; renderBar(); },
   giveTo: (id, it, to) => act({ t: 'owner', id, to }),
+  inspect: (id) => openInspector(inspectOf(id)),
 };
 /** The step ⟲ and ⟳ turn item `it` by: a card's 90°; a piece's rotStep (45 when it turns freely). */
 const rotStep = (it) => (pieceLike(it) ? flagsOf(it, boxes).rotStep || 45 : 90);
+/** Runs bar command `cmd` (`to`: its button's data-to): on the multi-selection's members, or on the selected item. */
+function runCmd(cmd, to) {
+  const it = sel && view.items[sel];
+  if (multi.size) GROUP_CMDS[cmd]?.([...multi], to);
+  else if (it) CMDS[cmd]?.(sel, it, to);
+}
+barEl.addEventListener('mousedown', (e) => { if (e.shiftKey) e.preventDefault(); }); // (a Shift+click on a button, picking along, would select the page's text up to it)
 barEl.addEventListener('click', (e) => {
-  const btn = e.target.closest('[data-cmd]'), it = sel && view.items[sel];
-  if (btn && it) CMDS[btn.dataset.cmd]?.(sel, it, btn.dataset.to);
+  const btn = e.target.closest('[data-cmd]');
+  if (btn) runCmd(btn.dataset.cmd, btn.dataset.to);
 });
 
 /** The dice a roll of die `id` takes along (spec §2g, a handful): every die
@@ -3305,25 +3649,27 @@ document.addEventListener('click', (e) => {
 });
 document.addEventListener('close', () => { letGo(true); setTimeout(() => letGo(true)); }, true); // (at once, and after a browser that restores the focus later)
 // Keys, outside inputs (an open <dialog> keeps them, Escape included: the
-// browser closes it). Escape closes the zoom or peek overlay, else the seat
-// menu, else dismisses the action bar. The others are the bar's shortcuts on
-// the selected item, run only when its bar offers them: R / Shift+R rotate,
-// F flips, Space rolls a die (and its handful), Delete removes.
+// browser closes it). Escape closes the stack inspector, else the zoom or
+// peek overlay, else the seat menu, else clears the selection (the
+// multi-selection too) and its bar. The others are the bar's shortcuts — on
+// the selected item, or the group bar's on the multi-selection — run only
+// when the bar shows and offers them: R / Shift+R rotate, F flips, Space
+// rolls a die (and its handful; the group's dice), Delete removes.
 document.addEventListener('keydown', (e) => {
   if (document.querySelector('dialog[open]')) return;
   if (e.key === 'Escape') {
-    if (!peekEl.classList.contains('hidden')) peekEl.classList.add('hidden');
+    if (insp) closeInspector();
+    else if (!peekEl.classList.contains('hidden')) peekEl.classList.add('hidden');
     else if (!seatMenuEl.classList.contains('hidden')) closeSeatMenu();
-    else select(null);
+    else setMulti([]);
     return;
   }
   // (a held key fires once: an auto-repeat would roll, flip or delete again and again, for everyone)
   if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.target.closest?.('input, textarea, select, button')) return;
   const k = e.key.toLowerCase(), cmd = k === 'r' ? (e.shiftKey ? 'rl' : 'rr') : { f: 'flip', ' ': 'roll', delete: 'del', backspace: 'del' }[k];
-  const it = sel && view.items[sel];
-  if (!cmd || !it || !barEl.querySelector(`[data-cmd="${cmd}"]`)) return;
+  if (!cmd || barEl.classList.contains('hidden') || !barEl.querySelector(`[data-cmd="${cmd}"]`)) return;
   e.preventDefault();
-  CMDS[cmd](sel, it);
+  runCmd(cmd);
 });
 /** Reveals a peeked card {d, i} or piece {t, f} to this player only (the host's answer to a peek action). */
 function showPeek(c) {
@@ -3344,10 +3690,61 @@ const dropEl = (d) => (d.ghost ? d.el.remove() : d.el.classList.remove('dragging
  *  moved item stays where it is; a piece being taken out goes back. */
 function cancelItemDrag() {
   if (!drag) return;
-  dropEl(drag);
-  hideSnap();
-  if (drag.moved && drag.mode === 'move' && view.items[drag.id]) act({ t: 'move', id: drag.id, x: drag.x, y: drag.y });
+  const d = drag;
   drag = null;
+  if (d.group) { dropGroup(d); return; }
+  dropEl(d);
+  hideSnap();
+  if (d.moved && d.mode === 'move' && view.items[d.id]) act({ t: 'move', id: d.id, x: d.x, y: d.y });
+}
+
+// A group drag (spec §4g): a drag of a member of the multi-selection carries
+// every member this player may move, by one shift, cut as the host cuts it
+// (clampShift over their centres: the group keeps its shape at the table's
+// edge), each drawn by a translation; the other screens follow one `drag
+// {ids, dx, dy}` every LIVE_MS (one flood token however many), and the drop
+// is one `group` move — each piece then snaps on its own, as the host does.
+/** A group drag of the members (`ids`, bottom to top) begins with a press at table point p. */
+function groupDrag(id, ids, p) {
+  const cs = ids.map((m) => { const it = view.items[m], { w, h } = sizeOf(it, boxes); return [it.x + w / 2, it.y + h / 2]; });
+  return { id, group: new Set(ids), cs, sx: p.x, sy: p.y, dx: 0, dy: 0, moved: false, last: 0 };
+}
+/** Group drag `d` follows table point p (pointer event e). */
+function moveGroup(d, p, e) {
+  if (!d.moved) {
+    if (Math.hypot(p.x - d.sx, p.y - d.sy) < 5 / scale) return;
+    d.moved = true;
+    let z = 100000; // (on top, in their order, while carried: the host sets their real z on the drop)
+    for (const id of d.group) { const el = itemEls.get(id); if (el) { el.classList.add('dragging'); el.style.zIndex = z++; } }
+    barEl.classList.add('hidden');
+  }
+  ({ dx: d.dx, dy: d.dy } = clampShift(TABLE, d.cs, p.x - d.sx, p.y - d.sy));
+  for (const id of d.group) { const el = itemEls.get(id); if (el) el.style.translate = `${d.dx}px ${d.dy}px`; }
+  if (e.timeStamp - d.last > LIVE_MS) {
+    d.last = e.timeStamp;
+    act({ t: 'drag', ids: [...d.group], dx: d.dx, dy: d.dy });
+  }
+}
+/** Group drag `d` ends (drag is null by now): each member lands where the
+ *  host will put it (its own snap: snapTo), held there until the host's
+ *  state shows it (hold); one `group` move. Not moved: nothing is sent. */
+function dropGroup(d) {
+  const B = boardsNow(), held = [];
+  for (const id of d.group) {
+    const el = itemEls.get(id), it = view.items[id];
+    if (!el || !it) continue;
+    el.classList.remove('dragging');
+    el.style.zIndex = it.z;
+    el.style.translate = '';
+    if (!d.moved) { placeEl(id); continue; } // (a state that came meanwhile wasn't drawn: the press held it)
+    const { w, h } = sizeOf(it, boxes), s = snapTo(B, TABLE, w, h, it.x + d.dx, it.y + d.dy, { free: !snaps(it, boxes) });
+    Object.assign(el.style, { left: `${s.x}px`, top: `${s.y}px` });
+    held.push({ id, x: s.x, y: s.y, ox: it.x, oy: it.y });
+  }
+  renderBar();
+  if (!held.length) return;
+  hold(held);
+  act({ t: 'group', op: 'move', ids: [...d.group], dx: d.dx, dy: d.dy });
 }
 
 // The snap preview (spec §3g): while a piece is dragged over a structured
@@ -3453,9 +3850,14 @@ function dropAction(d, it, tgtId, tgt, onHand) {
  *  or card pile top; a piece's face with an image, a text or a label; else null. */
 const pressFace = (it) => (it.k === 'c' ? it.up && it : it.k === 'p' && 'd' in (it.top || {}) ? it.top.up && it.top : pieces.zoomable(it, boxes));
 
+/** A felt drag ends without its own end (a pinch, a long press, a cancel): its band, if it drew one, goes too. */
+function dropFelt() {
+  feltDrag = null;
+  bandEl.classList.add('hidden');
+}
 function startPinch() {
   cancelItemDrag();
-  feltDrag = null;
+  dropFelt();
   const [p1, p2] = [...tPtrs.values()];
   const m = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
   pinch = {
@@ -3537,8 +3939,16 @@ tableEl.addEventListener('pointerdown', (e) => {
   const near = !mode && e.pointerType !== 'mouse' && !askOpen()?.among && nearTouch(toTable(e), e);
   if (near) [id, it, mode] = [near, view.items[near], dragMode(near, view.items[near], e)];
   const el = id && itemEls.get(id);
-  if (mode) e.preventDefault();
-  const p = mode && toTable(e);
+  // Shift and a press where a plain drag would pan — the felt, a locked board,
+  // an item this player may not drag — draw a band; so does, in ⬚ select
+  // mode, a press anywhere but on a picked member (which carries the
+  // selection): the mode's drag draws a box, its tap picks (D225, D237).
+  const band = selMode ? !(mode && picked().includes(id)) : e.shiftKey && !mode;
+  if (band) mode = null;
+  if (mode || band) e.preventDefault();
+  const p = toTable(e);
+  // (a tap on a ×N stack's count, or on a crowded spot's ×k, opens the inspector)
+  const badge = hit && hit === id && (e.target.closest('.fanb') ? 'spot' : e.target.closest('.count') ? 'stack' : '');
   // An item drag, or a pan: felt, and items this player may not drag (spec
   // §2g: locked, or someone else's), pan the view; a tap on such an item
   // still selects it. An item drag's live position lives on its record (x,
@@ -3548,23 +3958,29 @@ tableEl.addEventListener('pointerdown', (e) => {
   // drags a copy of one piece (made once the drag starts: a tap leaves nothing behind).
   // An item drag starts where the item is drawn (fanned on a crowded spot:
   // a press anywhere on the crowd takes its top piece, into the finger).
+  // A member of the multi-selection carries the whole group (groupDrag).
   let g;
-  if (mode) {
+  if (mode && multi.has(id)) {
+    g = drag = { ...groupDrag(id, [...multi].filter(mayMove).sort((a, b) => view.items[a].z - view.items[b].z), p), badge };
+  } else if (mode) {
     // (the grip: where the finger or the mouse took it — but a touch take from a supply drawn smaller than a fingertip
     // holds the new piece by its centre, as nearTouch's does: by its corner, it would land off the spot the finger is on)
     const d0 = fanPos.get(id) || it, { w, h } = sizeOf(it, boxes), tiny = mode === 'take' && e.pointerType !== 'mouse' && Math.max(w, h) * scale < 2 * TOUCH_REACH;
     const [dx, dy] = hit === id && !tiny ? [p.x - d0.x, p.y - d0.y] : [w / 2, h / 2];
-    g = drag = { id, el, mode, ghost: false, dx, dy, sx: p.x, sy: p.y, x: d0.x, y: d0.y, ox: it.x, oy: it.y, moved: false, last: 0 };
-  } else g = feltDrag = { sx: e.clientX, sy: e.clientY, px: panX, py: panY, moved: false, tap: it ? id : null };
+    g = drag = { id, el, mode, ghost: false, dx, dy, sx: p.x, sy: p.y, x: d0.x, y: d0.y, ox: it.x, oy: it.y, moved: false, last: 0, badge };
+  } else g = feltDrag = { sx: e.clientX, sy: e.clientY, px: panX, py: panY, moved: false, tap: it ? id : null, badge, band, r: band && wrapEl.getBoundingClientRect() };
   // Touch long-press (≈450 ms without moving) zooms a face-up card, a pile's
-  // top or a piece's face until the finger lifts (UX-I5); a drag, a pinch or
-  // an early lift cancels it. Release-to-close also swallows the tap the
-  // browser may synthesize on release, which would otherwise land on the overlay.
-  const face = it && pressFace(it);
-  if (face && e.pointerType !== 'mouse') {
+  // top or a piece's face until the finger lifts (UX-I5) — on a ×N stack it
+  // opens the inspector instead (spec §4g); a drag, a pinch or an early lift
+  // cancels it. Release-to-close also swallows the tap the browser may
+  // synthesize on release, which would otherwise land on the overlay.
+  const face = it && pressFace(it), stack = it?.k === 'g' && it.n >= 2;
+  if ((face || stack) && e.pointerType !== 'mouse') {
     setTimeout(() => {
       if ((drag !== g && feltDrag !== g) || g.moved || pinch) return;
-      drag = feltDrag = null;
+      drag = null;
+      dropFelt();
+      if (stack) { openInspector({ id }); return; }
       holdZoom = true;
       showZoom(face, 'Release to close');
     }, 450);
@@ -3588,13 +4004,16 @@ window.addEventListener('pointermove', (e) => {
   if (feltDrag) {
     if (!feltDrag.moved && Math.hypot(e.clientX - feltDrag.sx, e.clientY - feltDrag.sy) < 5) return;
     feltDrag.moved = true;
+    if (feltDrag.band) { drawBand(feltDrag, e); return; }
     panX = feltDrag.px + (e.clientX - feltDrag.sx);
     panY = feltDrag.py + (e.clientY - feltDrag.sy);
     layout();
     return;
   }
+  if (inspPress && Math.hypot(e.clientX - inspPress.x, e.clientY - inspPress.y) >= 8) dragOut(e);
   if (!drag) return;
   const p = toTable(e);
+  if (drag.group) { moveGroup(drag, p, e); return; }
   if (!view.items[drag.id]) { dropEl(drag); drag = null; return; }
   if (!drag.moved) {
     if (Math.hypot(p.x - drag.sx, p.y - drag.sy) < 5 / scale) return;
@@ -3639,7 +4058,8 @@ window.addEventListener('pointercancel', (e) => {
   endHoldZoom();
   if (pinch && tPtrs.size < 2) endPinch();
   handResize = null;
-  feltDrag = null;
+  dropFelt();
+  inspPress = null;
   if (handDrag?.moved) { ghost?.remove(); ghost = null; }
   handDrag = null;
   cancelItemDrag();
@@ -3659,23 +4079,35 @@ window.addEventListener('pointerup', (e) => {
     return;
   }
   if (handDrag) { dropGhost(e); return; }
+  inspPress = null;
   if (feltDrag) {
-    const { moved, tap } = feltDrag;
+    const f = feltDrag;
     feltDrag = null;
+    if (f.band && f.moved) { endBand(f, e); return; }
     // A plain click on empty felt deselects; on an item that can't be
     // dragged, (de)selects it — a board only when nothing else is selected:
     // a tap beside a selected piece mostly lands on the board, and only puts
     // its bar away. An open ask that picks on the table takes the tap instead.
-    if (!moved && !seatTap(e) && !askTap(e, tap)) tapSelect(tap && sel !== tap && !(sel && isBoard(view.items[tap] || {})) ? tap : null);
+    // With Shift or ⬚, a tap picks (togglePick); the felt and boards keep the selection.
+    if (f.moved || seatTap(e) || askTap(e, f.tap)) return;
+    if (f.band) { if (f.tap) togglePick(f.tap); return; }
+    if (f.badge && openInspector(inspectOf(f.tap, f.badge))) return;
+    if (multi.size) setMulti([]);
+    tapSelect(f.tap && sel !== f.tap && !(sel && isBoard(view.items[f.tap] || {})) ? f.tap : null);
     return;
   }
   if (!drag) return;
   const d = drag;
   drag = null;
+  if (d.group) {
+    dropGroup(d);
+    if (!d.moved && !seatTap(e) && !askTap(e, d.id)) tapItem(e, d.id, d.badge);
+    return;
+  }
   const it = view.items[d.id];
   if (!it || !d.moved) {
     dropEl(d);
-    if (it && !seatTap(e) && !askTap(e, d.id)) tapSelect(sel === d.id ? null : d.id);
+    if (it && !seatTap(e) && !askTap(e, d.id)) tapItem(e, d.id, d.badge);
     return;
   }
   // The drop target: hit-test BEFORE the dragged element takes the pointer
@@ -3689,15 +4121,20 @@ window.addEventListener('pointerup', (e) => {
   // (drawn where the preview showed it — its place in the spot's fan — while
   // the landing hold waits for the state to centre it on the spot)
   if (a.t === 'move' && d.spot) { d.el.style.left = `${d.spot.slot.x}px`; d.el.style.top = `${d.spot.slot.y}px`; }
-  if (a.t === 'move') {
-    // The hold heals itself: with no confirming state (a script moved the
-    // card elsewhere, a veto left it mid-drag, coalescing merged the state
-    // away) we show where the host has it after 1.5 s, quiet table or not.
-    const L = landing = { id: d.id, x: d.x, y: d.y, ox: d.ox, oy: d.oy };
-    setTimeout(() => { if (landing === L) { landing = null; renderItems(new Map([[L.id, view.items[L.id]]])); } }, 1500);
-  }
+  if (a.t === 'move') hold([{ id: d.id, x: d.x, y: d.y, ox: d.ox, oy: d.oy }]);
   act(a);
 });
+
+/** A tap (a click) on item `id` that dragged nothing (`badge`: the pressed
+ *  one's 'stack' or 'spot' badge, or ''): with Shift or ⬚ select mode it
+ *  picks the item or puts it back; on a badge it opens the inspector; else
+ *  it selects the item alone — or deselects it, tapped again. */
+function tapItem(e, id, badge) {
+  if (e.shiftKey || selMode) { togglePick(id); return; }
+  if (badge && openInspector(inspectOf(id, badge))) return;
+  if (multi.size) setMulti([]);
+  tapSelect(sel === id ? null : id);
+}
 
 /** What a double-click on public item `it` does (spec §2g), or null: a card
  *  flips; a pile is drawn from; a die rolls with its handful; another piece
@@ -3715,6 +4152,7 @@ function dblAction(id, it) {
   }
 }
 tableEl.addEventListener('dblclick', (e) => {
+  if (e.shiftKey || selMode) return; // (two clicks that pick a piece and put it back are no double-click: nothing flips, rolls or draws)
   const id0 = e.target.closest('.item')?.dataset.id, id = id0 && topOf(id0), a = id && view.items[id] && dblAction(id, view.items[id]);
   if (a) act(a);
 });
@@ -3857,9 +4295,11 @@ $('add-deck-btn').addEventListener('click', () => $('deck-dialog').showModal());
 let askGame = false; // a brand-new table: invite the host to pick a game (the strip)
 
 /** The picker entry matching what the host is running now: a rules
- *  template, else the built-in box last set up (rules off), else the free table. */
+ *  template, else the built-in box last set up (rules off), else the free
+ *  table — or none ('') while a box's own rules run (📦's: Hexfront). */
 function currentGame() {
-  if (T?.state.rules?.enabled) return GAMES.find((g) => RULES_TEMPLATES[g.k] === T.state.rules.code)?.k || 'custom';
+  const rules = T?.state.rules;
+  if (rules?.enabled) return rules.box ? '' : GAMES.find((g) => RULES_TEMPLATES[g.k] === rules.code)?.k || 'custom';
   const last = T?.state.boxes[T.state.lastSetup];
   return (last && isBuiltin(last) && GAMES.find((g) => g.box && BOXES[g.box].name === last.name)?.k) || 'free';
 }

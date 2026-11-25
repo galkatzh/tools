@@ -749,8 +749,9 @@ sync and rendering, and the Worker together with `handle`.
    - A box picker next to 🎲 Games.
    - *Demo:* a generated hex-map strategy skeleton: one map, 400 counters in
      ×N stacks, dice, a card deck and a turn script.
-   - *In progress.* Its engine (game boxes: state v5, wire version 5) is in;
-     the decisions taken on the way:
+   - *Done* (game boxes: state v5, wire version 5), in two parts: the
+     engine, 📦, uploads and export, then groups, multi-select, the stack
+     inspector and Hexfront. The decisions taken on the way:
      - A box's setup happens whole or not at all: everything it needs is
        checked first — its decks, the seated players a "#k" names, the
        room on the table — and a spot it names that the table doesn't have
@@ -806,6 +807,37 @@ sync and rendering, and the Worker together with `handle`.
        every time, so it is built in by what it is — and set up from 📦's
        built-in boxes with its turn script, which needs no trust dialog.
        Its event cards are tiles, so the box carries everything it needs.
+     - Multi-select picks only what the player may move — never a board,
+       nor what is locked or someone else's, each counted in a chip — up
+       to the 200 one group takes. With Shift, a band starts wherever a
+       plain drag would pan (the felt, a locked board, someone else's
+       piece), and a press on a piece the player may move still drags it;
+       with ⬚ on, any press but on a picked piece draws one, and a click
+       only picks (a double one never flips or rolls). One piece picked is
+       just selected, with its own bar.
+       A member locked while picked stays picked, so the group bar can
+       unlock it; the group's moves, turns and flips leave it out, as the
+       host would.
+     - A piece's bar and the inspector stand beside what they act on —
+       above it when there is room, else below, else as low as they fit —
+       never over it, and a piece's bar stands clear of the whole crowd on
+       its spot, so a finger's next tap there never lands on a button.
+       While a selection is being built its bar waits at the top edge of
+       the table instead, still under the finger and off the pieces still
+       to pick. On a touch screen the bar's buttons are a fingertip tall
+       (44 px).
+     - What review found and fixed: a group member refused by the table
+       leaves nothing of what the rules wrote for it; a group move sends
+       each peer the members' new places alone (a third of the bytes); a
+       built-in box shuffles its face-down piles whenever it is laid out;
+       a group under rules pays for the rules' state each member passes
+       over, in flood tokens and in watchdog time; Hexfront's events are
+       the side to play's alone, by any route.
+     - A tap on a ×N badge or a spot's ×k opens the inspector (a long press
+       on a phone, in place of the zoom, for a stack); ⋯ Inspect is in the
+       bar of a stack or crowded piece the player may move. Take all arms
+       the whole-stack drag (✥) rather than moving the stack somewhere
+       itself.
 5. **Private material.**
    - `vis` (owner-visible pieces, dice under a cup), private areas beyond the
      hand (a tile rack, a screen), and peeking at any hidden piece.
@@ -910,3 +942,23 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
 - **A built-in box may bring its own rules:** they start with the box, with
   no trust dialog, because the box is known by its content (Hexfront's turn
   script, §4).
+- **A selection holds only what its player may move:** boards, locked
+  pieces and other players' are never picked (a chip counts them), so the
+  group bar never offers what the host would refuse (§3).
+- **Tools stand beside what they act on:** the stack inspector and a
+  piece's bar are placed next to their pieces — a crowded spot counted
+  whole — never over them while the screen has room, with fingertip-sized
+  buttons on a touch screen; a selection being built keeps its bar at the
+  top edge of the table instead, off the pieces still to pick and still
+  under the finger (§3, §4).
+- **A selection mode means selecting:** with ⬚ on, a drag draws a box
+  wherever it starts (but on a picked piece, which carries the lot) and a
+  click only picks — a double one never flips or rolls (§3).
+- **Nothing hidden is in a known order:** a built-in box's face-down piles
+  are shuffled whenever it is laid out, as a guest's box's are, since
+  everyone can read its source (§4).
+- **A move sends where things went:** a patch carries a moved item's new
+  place alone, so a 200-piece group move costs each peer about 11 KB (§1,
+  §3).
+- **A group pays for what it costs:** while rules run, its price and its
+  watchdog time grow with the rules' state each member passes over (§5).

@@ -261,6 +261,10 @@ function viewFrom(list) {
     if (d.kind === 'snap') v = { boot: d.boot, seq: d.seq, items: { ...d.items }, players: { ...d.players }, rules: d.rules, table: d.table, seats: d.seats, handy: d.handy, log: [...d.log], hand: d.hand || v?.hand || [] };
     else if (d.kind === 'patch' && v && d.boot === v.boot && d.base === v.seq) {
       Object.assign(v.items, d.items);
+      for (const [id, [x, y, rot, z, at]] of Object.entries(d.pos || {})) { // (an item that only moved: its new place, D233)
+        v.items[id] = { ...v.items[id], x, y, rot, z, at };
+        if (at === undefined) delete v.items[id].at;
+      }
       for (const id of d.del || []) delete v.items[id];
       Object.assign(v.players, d.players);
       if ('rules' in d) v.rules = d.rules;

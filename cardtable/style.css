@@ -244,7 +244,7 @@ body.nohand #hand-bar { display: none; }
    wide margins — the notices go in the left one, the button row in the right */
 .gutters #notices { right: auto; width: var(--gutter); }
 .gutters #rules-row { left: auto; right: 8px; transform: none; max-width: calc(var(--gutter) - 16px); align-items: flex-end; }
-#main.gutters #turn-cue { right: auto; left: 12px; } /* the button row owns the right margin */
+#main.gutters #turn-cue { right: auto; left: 60px; } /* the button row owns the right margin, ⬚ the bottom-left corner */
 #rules-btns button:hover { background: #8b5cf6; }
 #rules-btn.on { background: #7c3aed; }
 /* the table's hint ("The host left — …"): in screen space, over the table
@@ -329,8 +329,8 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 /* a crowded spot's "×k" (app.js fanBadge, spec §3g): on its top piece, at the
    bottom left, dark on amber — never mistaken for a stack's blue ×N; the
    spot's, so it stays out of a drag that takes that piece away */
-.item > .fanb {
-  position: absolute; bottom: -9px; left: -9px; min-width: 22px; text-align: center; pointer-events: none;
+.item > .fanb { /* (a tap on it opens the spot's member list: app.js inspector) */
+  position: absolute; bottom: -9px; left: -9px; min-width: 22px; text-align: center;
   background: #fbbf24; color: #1c1917; font-size: 12px; font-weight: 800; font-style: normal;
   border-radius: 6px; padding: 1px 5px; box-shadow: 0 1px 3px #0009; z-index: 1;
 }
@@ -493,6 +493,7 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
   z-index: 100000; transform: translateX(-50%);
 }
 #action-bar button { font-size: 14px; padding: 8px 10px; white-space: nowrap; }
+@media (pointer: coarse) { #action-bar button { min-height: 44px; } } /* a fingertip's target */
 /* a toggle that is on (✥ Move armed, the Give ▸ list open); an armed ✥
    shows its time running out (app.js renderBar sets how much has gone) */
 #action-bar button.on { background-color: #0f766e; box-shadow: inset 0 0 0 2px #2dd4bf; }
@@ -502,6 +503,52 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 }
 @keyframes armed { to { background-size: 0 4px; } }
 #action-bar .give { display: contents; } /* the Give ▸ list's buttons are the bar's, spaced like them */
+#action-bar .gn { align-self: center; padding: 0 6px; font-size: 13px; font-weight: 700; color: #fde68a; white-space: nowrap; } /* the group bar's "8 selected" */
+
+/* --- multi-select (app.js, spec §4g) ---
+   The rubber band (screen space, above the pieces, never taking the
+   pointer); ⬚, the select mode's toggle, in the table area's bottom-left
+   corner (a thumb's reach on a phone), amber while on; and its chip above
+   it ("3 not selectable…"), which takes no pointer either: clear of the
+   bottom row, where your own seat label stands, and of a row of the rules'
+   buttons above it (app.js placeSeats lifts it). */
+#band { position: absolute; left: 0; top: 0; z-index: 99990; pointer-events: none; border: 2px dashed #fbbf24; background: #fbbf2426; border-radius: 4px; }
+#sel-mode {
+  position: absolute; left: 8px; bottom: 8px; z-index: 9550; width: 44px; height: 44px; padding: 0;
+  font-size: 22px; line-height: 1; border-radius: 12px; background: #0f172ad9; box-shadow: 0 2px 10px #000a;
+}
+#sel-mode.on { background: #b45309; box-shadow: inset 0 0 0 2px #fbbf24, 0 2px 10px #000a; }
+#sel-chip {
+  position: absolute; left: 8px; bottom: 60px; z-index: 9550; max-width: min(300px, calc(100% - 16px)); pointer-events: none;
+  background: #0f172ae6; color: #fde68a; border-radius: 12px; padding: 5px 12px; font-size: 13px; box-shadow: 0 2px 8px #0009;
+}
+
+/* --- the stack inspector (app.js, spec §4g): screen space, beside its stack or spot --- */
+#inspector {
+  position: absolute; left: 0; top: 0; z-index: 100002; transform: translateX(-50%);
+  display: flex; flex-direction: column; gap: 8px; width: max-content; max-width: min(340px, calc(100% - 8px)); max-height: calc(100% - 8px);
+  padding: 8px; background: #0f172af2; border: 1px solid #334155; border-radius: 12px; box-shadow: 0 4px 16px #000c;
+}
+.ins-head { display: flex; align-items: center; gap: 10px; }
+.ins-what { flex: 1; min-width: 0; }
+.ins-what b { display: block; font-size: 14px; overflow-wrap: anywhere; }
+.ins-what small { color: #94a3b8; font-size: 12px; }
+.ins-head [data-ins="x"] { background: none; padding: 6px 8px; align-self: flex-start; }
+.ins-take { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+.ins-take output { min-width: 2em; text-align: center; font-weight: 700; font-size: 16px; }
+.ins-take .main, .ins-all { background: #0f766e; }
+.ins-take .main:hover, .ins-all:hover { background: #0d9488; }
+.ins-take button:disabled { opacity: 0.4; cursor: default; }
+.ins-note { margin: 0; font-size: 13px; color: #cbd5e1; }
+/* a crowded spot's members: a sideways drag carries one out, an up-down one scrolls the list */
+.ins-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow-y: auto; touch-action: pan-y; }
+.ins-list li { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 4px 8px; border-radius: 8px; background: #1e293b; cursor: grab; user-select: none; -webkit-user-select: none; font-size: 13px; }
+.ins-list li:hover { background: #273449; }
+.ins-list .odot { flex: none; width: 12px; height: 12px; margin-left: auto; border-radius: 50%; border: 2px solid #f8fafc; }
+/* a piece's picture: drawn as on the table (pieces.js itemView), scaled down from its top-left */
+.ithumb { position: relative; flex: none; display: inline-block; }
+.ithumb > span { position: absolute; left: 0; top: 0; display: block; transform-origin: 0 0; }
+@media (pointer: coarse) { #inspector button { min-height: 44px; min-width: 44px; } }
 
 /* --- hand --- */
 #hand-bar {

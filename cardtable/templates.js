@@ -1910,6 +1910,10 @@ const HEXFRONT_RULES = `(() => {
   const NAMES = { azure: 'Azure', ember: 'Ember' };
   /** Who sits in side \`side\`'s seat, or undefined. */
   const holder = (t, side) => t.players().find((p) => p.seatId === side)?.id;
+  /** Whether action \`a\` concerns the event cards: the Events pile (named by id, pile or onto), or an event card dealt out of it. */
+  const events = (t, a) => [a.id, a.pile, a.onto].some((id) => { const x = typeof id === 'string' && t.item(id); return x && (x.name === 'Events' || (x.t && t.type(x.t)?.name === 'Event')); });
+  /** Whether \`a\` takes the turn's event: a draw or a deal from the pile (onAction: what it named, once it happened). */
+  const taking = (a) => a.t === 'draw' || a.t === 'deal';
   return {
     name: 'Hexfront',
     setup(t) { // (a fresh game: the event cards shuffled, Azure to move; a re-enable keeps the game going)
@@ -1925,10 +1929,14 @@ const HEXFRONT_RULES = `(() => {
       if (unit && ['move', 'split', 'join', 'rot'].includes(a.t)) return theirs || (d.phase === 'move' ? undefined : 'Movement is over this turn — fight, or End turn');
       if (unit && ['flip', 'del'].includes(a.t) && d.phase !== 'combat') return 'Losses are taken in the combat phase';
       if (a.t === 'roll') return theirs ? 'Only ' + side + ' rolls this turn' : d.phase === 'combat' ? undefined : 'Dice are rolled in the combat phase';
-      if (a.t === 'draw' && it && it.name === 'Events') return theirs ? 'Only ' + side + ' draws an event this turn' : d.drew ? 'One event a turn' : undefined;
+      // The events: one a turn, the side to play's — drawn, or dealt out and taken up; nobody else peeks, flips, shuffles or clears the pile, or takes a dealt one
+      if (events(t, a) && !['move', 'rot'].includes(a.t)) {
+        if (theirs) return 'Only ' + side + (taking(a) ? ' draws an event this turn' : ' touches the events this turn');
+        if (taking(a) && d.drew) return 'One event a turn';
+      }
     },
     onAction(t, a) {
-      if (a.t === 'draw') t.data.drew = true;
+      if (taking(a)) t.data.drew = true;
     },
     onButton(t, id) {
       const d = t.data;

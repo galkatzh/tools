@@ -49,6 +49,10 @@ async function arm(M) {
           M.view = { boot: d.boot, seq: d.seq, to: d.to, items: { ...d.items }, players: { ...d.players }, table: d.table, seats: d.seats, handy: d.handy, rules: d.rules, log: [...(d.log || [])], hand: d.hand || [] };
         } else if (d.kind === 'patch' && v && d.boot === v.boot && d.base === v.seq) {
           Object.assign(v.items, d.items);
+          for (const [id, [x, y, rot, z, at]] of Object.entries(d.pos || {})) { // (an item that only moved: its new place, D233)
+            v.items[id] = { ...v.items[id], x, y, rot, z, at };
+            if (at === undefined) delete v.items[id].at;
+          }
           for (const id of d.del || []) delete v.items[id];
           Object.assign(v.players, d.players);
           for (const k of ['rules', 'table', 'seats', 'handy']) if (k in d) v[k] = d[k];

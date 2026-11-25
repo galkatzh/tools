@@ -93,10 +93,12 @@ function scan(bodies, box, words = true) {
     if (Array.isArray(v)) return v.forEach((x, k) => walk(x, `${at}[${k}]`));
     for (const [k, x] of Object.entries(v)) {
       text(k, `${at} key`);
-      if ((cards.includes(k) || pieces.includes(k)) && x && typeof x === 'object' && !Array.isArray(x)) {
+      if ((cards.includes(k) || pieces.includes(k)) && x && typeof x === 'object') {
         seen++;
-        if (cards.includes(k) && 'i' in x) found.push(`${at}.${k}: a face-down card with its index (${J(x)})`);
-        if (pieces.includes(k) && ['t', 'f', 'up'].some((f) => f in x)) found.push(`${at}.${k}: a hidden piece shown (${J(x)})`);
+        // (a hidden item that only moved travels as its new place, a patch's `pos` (D233): four numbers and an address — nothing else)
+        if (Array.isArray(x)) { if (x.length > 5 || !x.slice(0, 4).every((v) => typeof v === 'number') || (x.length === 5 && typeof x[4] !== 'string')) found.push(`${at}.${k}: a place that says more (${J(x)})`); }
+        else if (cards.includes(k) && 'i' in x) found.push(`${at}.${k}: a face-down card with its index (${J(x)})`);
+        else if (pieces.includes(k) && ['t', 'f', 'up'].some((f) => f in x)) found.push(`${at}.${k}: a hidden piece shown (${J(x)})`);
       }
       walk(x, `${at}.${k}`);
     }
@@ -173,6 +175,10 @@ function scan(bodies, box, words = true) {
   ok(slow.includes('🚫 Too many actions — slow down'), `the rest refused by flood control (${J(slow.filter((m) => !/skipped/.test(m)))})`);
 
   section('nothing hidden in anything Mallory or Bob received: no face-down card\'s index, no hidden piece\'s type, face or side, no hidden word (§0.1 item 3, §2d)');
+  // (one more broadcast for her: how many bodies the earlier ticks coalesced into varies with the load — 5 or 6 — and the check below wants 6)
+  const b1 = (await S()).items[ID.b1];
+  await act(bob, { t: 'move', id: ID.b1, x: b1.x + 10, y: b1.y });
+  await until(async () => ((await sawM(M)).state || []).length > 5, 10000);
   await h.sleep(1500); // (the last broadcasts)
   const got = await sawM(M), box = added.id;
   const play = scan(Object.fromEntries(Object.entries(got).filter(([ch]) => ch !== 'boxes' && ch !== 'decks')), box);
@@ -209,7 +215,8 @@ function scan(bodies, box, words = true) {
   const stopped = Date.now() - t0, st5 = await S();
   ok(stopped >= 4000 && stopped < 7900, `stopped ${stopped} ms after Bob sent it: after its budget (4000 + 10 × 20), before the job could end`);
   ok(twenty.every((k) => st5.items[k].y === 1600), 'none of the 20 moved: the job was dropped whole');
-  ok(await until(async () => (await toastsOf(alice)).slice(tA).includes("Rules stopped — the script didn't answer within 4 seconds"), 5000), "Alice's toast: \"Rules stopped — the script didn't answer within 4 seconds\"");
+  // (the stop names the limit this job had, 4000 + 10 × 20 ms: a flat "4 seconds" would mislead)
+  ok(await until(async () => (await toastsOf(alice)).slice(tA).includes("Rules stopped — the script didn't answer within 4.2 seconds"), 5000), "Alice's toast: \"Rules stopped — the script didn't answer within 4.2 seconds\"");
   ok(await until(async () => (await toastsOf(bob)).slice(tB).includes('🚫 The rules stopped responding — your action was not applied'), 5000), 'Bob is told his action was not applied');
   await env.done();
 })().catch(h.crash);
