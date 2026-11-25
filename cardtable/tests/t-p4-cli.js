@@ -1,8 +1,9 @@
-// Phase 4A, the terminal bridges (spec §4i, minus 4B's group): cli.js and
-// cli.py in parity. To a fake tab: `boxes` prints the snapshot's box list in
-// the same words in both REPLs; `setup <box> [--keep] [--rules]` and `reset`
-// send exactly their commands (a box named in words, too); the help lists
-// them the same; the Bridge API's setup() and reset(). Then real tabs, Alice
+// Phase 4, the terminal bridges (spec §4i): cli.js and cli.py in parity. To
+// a fake tab: `boxes` prints the snapshot's box list in the same words in
+// both REPLs; `setup <box> [--keep] [--rules]`, `reset` and (4B) `group <op>
+// <id,id,…> [dx dy | deg | bag]` send exactly their commands (a box named in
+// words, too); the help lists them the same; the Bridge API's setup(),
+// reset() and group(). Then real tabs, Alice
 // hosting on cli.js and Bob on cli.py: the snapshot's `boxes` ({id, name,
 // types, rules, src, builtin}) on both, `lastSetup` the host's alone; the
 // host's terminal sets a box up (by its name), resets it, and asks for a
@@ -39,11 +40,18 @@ const COMMANDS = [
   ['setup Harbor Run --keep', { t: 'setup', box: 'Harbor Run', keep: true, rules: false }],
   ['setup --rules Beacon Watch', { t: 'setup', box: 'Beacon Watch', keep: false, rules: true }],
   ['reset', { t: 'reset' }],
+  ['group move a1,a2,a3 100 -50', { t: 'group', op: 'move', ids: ['a1', 'a2', 'a3'], dx: 100, dy: -50 }],
+  ['group rot a1 90', { t: 'group', op: 'rot', ids: ['a1'], deg: 90 }],
+  ['group flip a1,a2', { t: 'group', op: 'flip', ids: ['a1', 'a2'] }],
+  ['group roll d1,d2', { t: 'group', op: 'roll', ids: ['d1', 'd2'] }],
+  ['group unlock a1,,a2', { t: 'group', op: 'unlock', ids: ['a1', 'a2'] }],
+  ['group bag a1,a2 Old Sack', { t: 'group', op: 'bag', ids: ['a1', 'a2'], bag: 'Old Sack' }],
 ];
 const API = [
   [['setup', 'Harbor Run'], { t: 'setup', box: 'Harbor Run', keep: false, rules: false }],
   [['setup', 'cd34ef56', true, true], { t: 'setup', box: 'cd34ef56', keep: true, rules: true }],
   [['reset'], { t: 'reset' }],
+  [['group', 'flip', ['a1', 'a2']], { t: 'group', op: 'flip', ids: ['a1', 'a2'] }],
 ];
 
 (async () => {
@@ -69,6 +77,11 @@ const API = [
   }
   const usage = await Promise.all(fakes.map((b) => type(b, 'setup --keep', (ls) => ls.some((l) => l.includes('setup <box> [--keep] [--rules]')), 3000)));
   ok(usage.every((ls) => ls.some((l) => l.includes('setup <box> [--keep] [--rules] — see "boxes"'))), '"setup" without a box prints its usage in both');
+  ok(helpText.every((t) => t.includes('  group <op> <id,id,…> [dx dy | deg | bag] ')), "both REPLs' help lists group");
+  for (const bad of ['group', 'group move a1', 'group move a1 100', 'group move a1 x 2', 'group rot a1', 'group bag a1']) {
+    const u = await Promise.all(fakes.map((b) => type(b, bad, (ls) => ls.some((l) => l.includes('group <op> <id,id,…>')), 3000)));
+    ok(u.every((ls) => ls.some((l) => l.includes('group <op> <id,id,…> [dx dy | deg | bag] — op: move dx dy, rot deg, flip, roll, lock, unlock, del, bag <bag>'))), `"${bad}" prints the group usage in both`);
+  }
   await Promise.all(fakes.map((b) => push(b, { ...FAKE, boxes: [] })));
   const none = await Promise.all(fakes.map((b) => type(b, 'boxes', (ls) => ls.includes('(no game boxes on this table)'), 5000)));
   ok(none.every((ls) => ls.includes('(no game boxes on this table)')), 'no box: both say so');
@@ -122,6 +135,15 @@ const API = [
   m = R.Alice.c.buf.length;
   R.Alice.c.stdin.write('reset\n');
   ok(await until(() => printed('Alice', m, /▸ Alice reset «Harbor Run»/).length === 1, 10000, 100) && await until(() => snap('Alice').items.find((it) => it.type === 'Boat' && it.owner === 'Alice')?.x === boat.x, 10000, 100), '"reset" lays it out again: the boat back where it was');
+  // (4B) group: one op on many items, one action — the members one may not handle skipped, said once
+  const boats = snap('Alice').items.filter((it) => it.type === 'Boat'), mine = boats.find((it) => it.owner === 'Alice'), crates = snap('Alice').items.filter((it) => it.kind === 'hidden');
+  m = R.Alice.c.buf.length;
+  R.Alice.c.stdin.write(`group move ${[mine.id, ...crates.map((c) => c.id)].join(',')} 0 -100\n`);
+  ok(await until(() => printed('Alice', m, /▸ Alice moved 3 items/).length === 1, 10000, 100) && await until(() => snap('Bob').items.find((it) => it.id === mine.id)?.y === mine.y - 100, 10000, 100),
+    `Alice's "group move <her boat, two crates> 0 -100": one line, every member a cell up on Bob's screen too (${printed('Alice', m, /▸/).join(' | ')})`);
+  const theirs = await type(R.Bob, `group del ${boats.map((b) => b.id).join(',')}`, (ls) => ls.some((l) => /✉ /.test(l)), 5000);
+  ok(theirs.some((l) => l.includes('✉ note: 1 of 2 was skipped: That belongs to Alice')) && snap('Bob').items.filter((it) => it.type === 'Boat').length === 1,
+    `Bob's "group del <both boats>": his own goes, Alice's is skipped, said once (${theirs.filter((l) => /✉/.test(l)).join(' | ')})`);
   for (const line of ['setup Harbor Run', 'reset']) {
     const outs = await type(R.Bob, line, (ls) => ls.some((l) => /✉ error: (setup|reset): only the host/.test(l)), 5000);
     ok(outs.some((l) => l.includes(`✉ error: ${line.split(' ')[0]}: only the host ${line === 'reset' ? 'resets a game' : 'sets up a game'}`)), `Bob's "${line}": the host's alone, said in his REPL`);

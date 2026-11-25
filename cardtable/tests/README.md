@@ -43,7 +43,7 @@ node t-smoke.js         # one suite, output on the terminal
   within 1 s; go's stone #300 within 10 ms of Worker time), run alone, one
   at a time after the parallel batch, under the same lock: `SERIAL`, a
   comma-separated list of suite names, default
-  `t-p1-bench,core-p1-bench,core-p2-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench,t-p4-resume-bench`.
+  `t-p1-bench,core-p1-bench,core-p2-bench,core-p4-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench,t-p4-resume-bench`.
   A listed suite that doesn't exist fails the run.
 - Runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
   `/tmp/cardtable-tests.lock`): concurrent runs on a small machine starve each
@@ -2085,6 +2085,67 @@ answer a press of the dialog's own buttons; nothing they test goes through
 - **`t-p4-cli.js`**: `setup Laid by its rules --rules` (Enable on the
   page), its rules switched off, then `reset`: refused in the terminal
   with the same message, still the box set up (D215).
+
+## Phase 4 (4B part 1: the group engine, the terminal's group, Hexfront)
+
+- **`core-p4.test.mjs` (3)** (§4l item 3, D217–D219): a group on the
+  host's own table (the rules off) and in a mirror (the rules on, the host
+  taking each patch): one sub-action per member, bottom to top, each under
+  the single action's checks — a move by the group's shift, each piece
+  snapping on its own, its shape kept at the table's edge (the live drag's
+  cut, `groupShift`); `rot` a per-member delta snapped to each rotStep;
+  flip, lock (lockable "anyone"; one locked already is no skip), del,
+  toBag; `roll` one roll of the dice the player sees (a face-down die isn't
+  one to them, its value never in the line; more than 20 dice: the single
+  roll's refusal). One line (`keep`), one bulb at the first member, one
+  notice "k of N were skipped: {first reason}" — "🚫 …" only when none
+  applied, a group of one saying the single action's words — and the
+  skipped members re-sent. `groupIds` (200, each once, numbers as their
+  digits), `floodCost` (1 + ⌊N/20⌋; three 200-member groups fit a fresh
+  burst of 40), Mallory's 500 ids capped and deduplicated, malformed groups
+  refused. Rules on: a veto rolls back its member alone (the notice
+  `ruled`, one "blocked … (k of N)" line), onAction runs per member seeing
+  `{group: N}` and its `a.to` / `a.from`, buttons() once; strict per
+  member; a handle or validate that throws fails the whole group closed;
+  an onAction that throws keeps the members done and skips the rest; a
+  single action's forged `group` never reaches the hooks; the host refuses
+  a forged bulb in a group's patch and takes the honest one.
+- **`core-p4.test.mjs` (Hx)** (§4's demo in Node): `BOXES.hexfront` is the
+  same box from a second evaluation of templates.js (a fixed seed), built
+  in; 400 counters in 40 stacks, 20 a side owned by its seat; the map's
+  fills, towns and zones; two dice; 24 event tiles in a face-down pile.
+  Set up as 📦's Built-in does (`loadBox {setup, clear, rules}`, D221), the
+  turn script running as the box's: Ember refused out of turn, the owner
+  check, a group move of five stacks, an out-of-turn group vetoed whole,
+  split and join, no dice before combat, ⚔ To combat, the defender's loss,
+  a group roll, one event a turn, End turn (Ember's press refused by the
+  engine), turn 2. loadBox `rules` refused for a box without; its `enable`
+  from a mirror taken only as the engine writes it.
+- **`core-p4-bench.mjs`** (serial; D222, D223): B18 — Hexfront's snapshot
+  and its PublicBox ≤ 120 KB (16 KB); B19 — a group move of 200 tokens on
+  a hex map, alternately by the host and 8 guests: the host's apply p95 ≤
+  15 ms with the rules off (T.apply) and on (applyStatePatch of a mirror's
+  patch; the mirror's own time printed), every sealed per-peer patch ≤ 30
+  KB (as B9 measures it).
+- **`t-p4-group.js`** (real tabs, desktop): Hexfront from 📦's Built-in
+  section (its pitch in the row; no trust dialog; rules.box), 400 counters
+  on a guest's screen, the turn cue; played through `__ct.act` and the
+  page's own phase buttons and a double-click draw: a move out of turn
+  refused, a group move (one log line), the host's and the Worker's digests
+  equal, a vetoed group's one notice, a split, a group roll, the event card
+  in the hand bar, one a turn, End turn; a group with another side's stack
+  (skipped, said once); a group drag (`drag {ids, dx, dy}`) gliding on the
+  other screen with the dragger's name, ended by the drop's group; the rules
+  off, a group flip on the host's own table. Screenshot:
+  `shots/p4-hexfront-desktop.png`.
+- **`t-p4-cli.js`** adds `group`: the REPL commands (`move dx dy`, `rot
+  deg`, flip, roll, `unlock`, `bag <bag>`, ids comma-separated) and the
+  Bridge API's `group()` send the same in both languages, bad ones print
+  the usage, the help lists it; with real tabs, Alice's `group move` (one
+  line, every member moved on Bob's screen) and Bob's `group del` of both
+  boats (his own goes; Alice's skipped, said once in his REPL).
+- **Mechanism changes**: `core-p2.test.mjs`'s exact PUBLIC_ACTIONS set
+  gains `group`; `run-all.sh`'s serial batch adds `core-p4-bench`.
 
 ## Storage and images (Phase 1B)
 

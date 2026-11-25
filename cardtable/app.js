@@ -22,7 +22,7 @@ import {
   CARD_W, CARD_H, RANKS, RULES, playR, clampToTable, seatAt, seatAngles, sizeOf, flagsOf, typeAt, PID_RE, ASSET_RE, rand, clamp, own, num, peerText,
   cleanDeck, cleanDeckV1, cleanBox, isBuiltin, deckOverBudget, assetRefs, cleanName, standardDeck, cardName, pieceName, faceLabel, createTable,
   MODULE_V as CORE_V, PROTO, PUBLIC_ACTIONS, HOST_ACTIONS, MAX_ROLL, MAX_N, MAX_BAG, MAX_HAND, MAX_PILE, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch, roundTable, FELT,
-  tableBoards, snapTo, snapAt, snaps, displayAddr, resolveAddr, liveFx, countSetup, checkTransportBox, boxOverBudget, publicBox,
+  tableBoards, snapTo, snapAt, snaps, displayAddr, resolveAddr, liveFx, countSetup, checkTransportBox, boxOverBudget, publicBox, groupIds, GROUP_OPS,
 } from './core.js?v=1';
 import { MODULE_V as GRID_V, turn, spotOf } from './grid.js?v=1';
 import * as pieces from './pieces.js?v=1';
@@ -620,9 +620,10 @@ function toWorker({ p, a, resolve }) {
   watchStart(budget(job.a), () => rulesDown('the script took longer than 4 s (stopped)', "Rules stopped — the script didn't answer within 4 seconds"));
 }
 /** A job's watchdog budget (spec §3f.5, §4c): RULES_TIMEOUT_MS, and 10 ms
- *  more per item a box's setup lays out (a loadBox's, a setup's, a reset's:
- *  forEachSeat counted for every player). */
+ *  more per member of a group, or per item a box's setup lays out (a
+ *  loadBox's, a setup's, a reset's: forEachSeat counted for every player). */
 function budget(a) {
+  if (a.t === 'group') return RULES_TIMEOUT_MS + 10 * groupIds(a).length;
   const box = a.t === 'loadBox' ? a.setup === true && a.box : a.t === 'setup' ? own(T.state.boxes, a.box) : a.t === 'reset' ? own(T.state.boxes, T.state.lastSetup) : null;
   return RULES_TIMEOUT_MS + (Array.isArray(box?.setup) ? 10 * countSetup(box.setup, Object.keys(T.state.players).length || 1) : 0);
 }
@@ -1523,7 +1524,7 @@ function connect() {
       : own(T.state.keys, p) && T.state.keys[p] !== key ? 'That seat belongs to another player'
       : '';
     if (reason) { refuse(peer, reason); return; }
-    if (!T.mayAct(p)) {
+    if (!T.mayAct(p, action)) {
       refuse(peer, 'Too many actions — slow down');
       refused(p, action); // what it named goes out again (rate-limited): the guest's optimistic move snaps back
       return;
@@ -2133,7 +2134,8 @@ function showLive(f) {
     if (it) lives.set(id, { ...clampToTable(TABLE, it.x + num(f.dx), it.y + num(f.dy), sizeOf(it, boxes).w, sizeOf(it, boxes).h), at: now });
   }
   for (const id of f.id ? [f.id] : f.ids || []) placeEl(id);
-  if (f.id) showFx(f);
+  const first = f.id || f.ids?.find((id) => lives.has(id)); // (a group's dragger's name rides its first member)
+  if (first) showFx({ ...f, id: first });
   liveT ||= setInterval(() => { // the holds that ran out
     const t = performance.now();
     for (const [id, L] of lives) if (t - L.at > LIVE_HOLD_MS) { lives.delete(id); placeEl(id); }
@@ -3895,7 +3897,8 @@ function pickGame(k) {
 
 /** Sets up a game that needs a cleared table: a box game (`box`: BOXES[box],
  *  spec §2g, played by hand — the rules are switched off, then the box set
- *  up) or a rules game that builds its own board (`clear`: chess, go,
+ *  up, its own rules started after it when it has some: Hexfront's turn
+ *  script, built in) or a rules game that builds its own board (`clear`: chess, go,
  *  reversi, §3g — the table cleared, then the rules enabled afresh, their
  *  setup laying the game out; `code`: its text, the 📜 dialog's perhaps
  *  edited). On a table with items or a rules state, only once the host
@@ -3907,7 +3910,7 @@ function pickCleared(game, code = RULES_TEMPLATES[game.k]) {
   $('games-dialog').close();
   if (game.box) {
     if (T.state.rules?.enabled) act({ t: 'setRules', enabled: false });
-    return act({ t: 'loadBox', box: BOXES[game.box], setup: true, clear: true });
+    return act({ t: 'loadBox', box: BOXES[game.box], setup: true, clear: true, ...(BOXES[game.box].rules && { rules: true }) });
   }
   act({ t: 'clear' });
   $('rules-code').value = code; // the 📜 dialog shows what runs
@@ -4064,7 +4067,7 @@ function renderBoxes() {
   if (!host) return;
   if (!$('box-builtins').children.length) {
     $('box-builtins').innerHTML = Object.entries(BOXES).map(([k, b]) => `<div class="box-row"><div class="box-info"><b>${esc(b.name)}</b>
-      <small>${esc(GAMES.find((g) => g.box === k)?.pitch || boxSize({ types: Object.keys(b.types).length }))}</small></div><span class="box-btns"><button data-builtin="${k}">Set up</button></span></div>`).join('');
+      <small>${esc(GAMES.find((g) => g.box === k)?.pitch || b.meta?.pitch || boxSize({ types: Object.keys(b.types).length }))}</small></div><span class="box-btns"><button data-builtin="${k}">Set up</button></span></div>`).join('');
   }
   const code = !!T.state.rules?.code;
   $('box-x-rules').disabled = $('box-x-state').disabled = !code;
@@ -4625,6 +4628,13 @@ function cliExec(c) {
       case 'toBag': act({ t: 'toBag', id: cliItem(c.id), bag: cliItem(c.bag, 'b') }); break;
       case 'lock': act({ t: 'lock', id: cliItem(c.id), on: c.on !== false }); break;
       case 'owner': act({ t: 'owner', id: cliItem(c.id), to: c.to ?? null }); break;
+      case 'group': { // (spec §4i) one op on many items, one action: `op` as the terminal says it (unlock: lock off; bag: into a bag)
+        const op = { unlock: 'lock', bag: 'toBag' }[c.op] || String(c.op ?? ''), ids = (Array.isArray(c.ids) ? c.ids : [c.ids]).map((id) => cliItem(id));
+        if (!GROUP_OPS.includes(op)) throw new Error(`group: no such op "${c.op}" — move, rot, flip, roll, lock, unlock, del, bag`);
+        act({ t: 'group', op, ids, ...(op === 'move' && { dx: +c.dx || 0, dy: +c.dy || 0 }), ...(op === 'rot' && { rot: +(c.deg ?? c.rot) || 0 }),
+          ...(op === 'lock' && { on: c.op !== 'unlock' && c.on !== false }), ...(op === 'toBag' && { bag: cliItem(c.bag, 'b') }) });
+        break;
+      }
       case 'seat': act(c.watch ? { t: 'seat', watch: true } : c.sit ? { t: 'seat', sit: true } : { t: 'seat', id: String(c.id) }); break;
       case 'answer': { // the rules' question `id`, answered with `v` as typed (answerV converts it: spec §3i)
         const q = view.ask.find((x) => x.id === String(c.id ?? ''));

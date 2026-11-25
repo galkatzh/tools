@@ -1,7 +1,7 @@
-// Phase 4A (game boxes) in plain Node (spec §4l, core-p4.test.mjs), on the
+// Phase 4 (game boxes) in plain Node (spec §4l, core-p4.test.mjs), on the
 // state core as app.js runs it: a host table, and — while rules run — a
 // Worker-like mirror whose every job's patch the host checks and takes
-// (room()). The sections follow §4l's list (item 3, `group`, is Phase 4B's):
+// (room()). The sections follow §4l's list:
 //  (1) cleanBox over the game.json authoring format (boxOfDef): the board
 //      structure on the piece, the img shorthand, backs' defaults, decks,
 //      rules and rulesState (shape and caps), h from w, "at": "seat", src
@@ -11,6 +11,11 @@
 //      players failing before any op, {board, at} and address strings, the
 //      item caps, a missing deck, ids reused or re-minted (remap), the
 //      shuffle of face-down decks and piles; setup and reset as actions.
+//  (3) `group` (Phase 4B): one sub-action per member under every check and,
+//      with the rules on, the ruled pipeline from a savepoint of its own;
+//      one line, one bulb, one notice; the flood cost; the patches.
+// (Hx) Hexfront (Phase 4B): the generated box, set up as 📦's Built-in
+//      does (loadBox with its rules), and its turn script played.
 //  (4) Export → import round trips: a varied position, ids included, in a
 //      fresh room with other players; chess and Hold'em mid-game, set up
 //      there with their rules and played on.
@@ -35,6 +40,7 @@ const { BOXES, RULES_TEMPLATES } = templates;
 const {
   createTable, cleanBox, boxOfDef, checkTransportBox, publicBox, isBuiltin, scriptHooks, MIGRATE, migrate, STATE_V, PROTO, RULES,
   MAX_SETUP_ITEMS, GUEST_DECK_CHARS, MAX_BOX_CHARS, HOST_ACTIONS, PUBLIC_ACTIONS, RULED_ACTIONS, CATALOG_ID_RE,
+  GROUP_OPS, MAX_GROUP, groupIds, floodCost, snapRot, faceLabel, spliceBody, sealText, SIG,
 } = core;
 
 // --- small tools ----------------------------------------------------------------
@@ -618,6 +624,299 @@ function testWorkerPath() {
     ["an addBox's `added` naming another box", BOB, { t: 'addBox', box: mini, cost: 100 }, (P, O) => { O.effects.find((e) => e.t === 'added').id = gbid; }, /^the script rewrote Bob's box$/],
     ["the rules' box set in a rot", HOST, ROT, (P) => { P.rules = { ...P.rules, box: gbid }; }, /^the script set the rules' box$/],
   ]) refused(what, p, a, forge, re);
+}
+
+// =============================================================================
+// (3) group: one sub-action per member, each under every check and the
+//     ruled pipeline, from a savepoint of its own (§4c, §3f.4, §4l item 3)
+// =============================================================================
+/** A box for group tests: a 10 × 8 grid map, tokens (free turns), a tile
+ *  (90°), a hex token (60°), dice (one with a back), a bag; every placed
+ *  item under an id "cafe00NN". */
+function squad() {
+  const id = (k) => `cafe00${k.toString(16).padStart(2, '0')}`;
+  return {
+    name: 'Squad', players: [2, 4], imgs: [], lockable: 'anyone',
+    table: { shape: 'rect', w: 3000, h: 2000 },
+    backs: [{ id: 'hid', color: '#333333' }],
+    pieces: [
+      { id: 'map', kind: 'board', w: 1000, h: 800, grid: { type: 'square', cols: 10, rows: 8, cell: 100 } },
+      { id: 'inf', kind: 'token', shape: 'rect', w: 60, faces: [{ label: 'I' }, { label: 'i' }] },
+      { id: 'sq', kind: 'tile', w: 80, faces: ['A', 'B'] },
+      { id: 'hx', kind: 'token', shape: 'hex', w: 60, rotStep: 60, faces: ['H'] },
+      { id: 'd6', kind: 'die' },
+      { id: 'hd', kind: 'die', back: 'hid' },
+    ],
+    setup: [
+      { piece: 'map', at: 'center', id: id(0) },
+      ...[1, 2, 3, 4, 5].map((k) => ({ piece: 'inf', at: [1000 + 100 * k + 20, 620], id: id(k) })), // cells (k, 0)
+      { piece: 'inf', at: [1120, 920], owner: '#2', id: id(6) },
+      { piece: 'inf', at: [1220, 920], lock: true, id: id(7) },
+      { piece: 'sq', at: [400, 300], id: id(8) },
+      { piece: 'hx', at: [600, 300], id: id(9) },
+      { piece: 'inf', n: 4, at: [800, 300], id: id(10) },
+      { piece: 'd6', at: [2600, 200], id: id(11) },
+      { piece: 'd6', at: [2700, 200], id: id(12) },
+      { piece: 'hd', at: [2800, 200], up: false, id: id(13) },
+      { bag: ['inf'], name: 'Sack', at: [300, 1600], id: id(14) },
+    ],
+  };
+}
+const C = (k) => `cafe00${k.toString(16).padStart(2, '0')}`;
+function testGroup() {
+  section('(3) group, rules off: one sub-action per member, every check; one line, one bulb, one notice');
+  const R = room(HOST, 'Alice', [[BOB, 'Bob'], [CAROL, 'Carol']], '3'), H = R.H, bid = R.add(HOST, squad()).id;
+  R.job(HOST, { t: 'setup', box: bid });
+  const it = (k) => H.state.items[C(k)], xy = (ks) => ks.map((k) => [it(k).x, it(k).y]);
+  // (the "#2" token's owner, and the third player, who owns nothing: their names from the seating)
+  const two = it(6).owner, third = [BOB, CAROL].find((q) => q !== two), [TWO, THIRD] = [two, third].map((q) => H.state.players[q].name);
+  ok(two === ranked(H)[1] && two !== HOST, `the setup: ${Object.keys(H.state.items).length} items, the "#2" token is ${TWO}'s`);
+  const free = [1, 2, 3, 4, 5], before = xy(free), seq0 = H.state.seq;
+  /** Player p's action on the host's table, as the app runs it (no Worker): what it said, and what the tick re-sends. */
+  const run = (p, a) => { const q = quietly(() => H.apply(p, a)), fx = H.drain(), d = H.takeDirty(); return { changed: q.value, fx, lines: d.log.map((e) => [e.p, e.txt]), notes: fx.filter((e) => e.t === 'note' && e.p === p), sent: d.items }; };
+  let r = run(HOST, { t: 'group', op: 'move', ids: [...free, 6, 7].map(C), dx: 100, dy: 0 });
+  ok(J(xy(free)) === J(before.map(([x, y]) => [x + 100, y])) && free.every((k) => it(k).at?.endsWith(`:${k + 1},0`)), `the five free tokens moved one cell right, each snapped on its own (${J(free.map((k) => it(k).at))})`);
+  ok(J(xy([6, 7])) === J([[1120, 920], [1220, 920]]), `${TWO}'s token and the locked one stay put`);
+  ok(J(r.lines) === J([[HOST, 'moved 5 items']]), `one line, the actor's (${J(r.lines)})`);
+  const bulbs = r.fx.filter((e) => e.t === 'fx');
+  ok(bulbs.length === 1 && bulbs[0].f.p === HOST && bulbs[0].f.id === C(1) && bulbs[0].f.x === it(1).x, `one name bulb, on the first member moved, where it is now (${J(bulbs)})`);
+  ok(J(r.notes.map((e) => [e.msg, !!e.ruled])) === J([[`2 of 7 were skipped: That belongs to ${TWO}`, false]]), `one notice, the first reason (bottom to top) — not a refusal: some applied (${J(r.notes)})`);
+  ok(r.sent.has(C(6)) && r.sent.has(C(7)) && H.state.seq > seq0, 'the skipped members are re-sent (their optimistic drop snaps back)');
+
+  r = run(two, { t: 'group', op: 'move', ids: [6, 7].map(C), dx: 100, dy: 0 });
+  ok(J(r.lines) === J([[two, 'moved 1 item']]) && J(r.notes.map((e) => e.msg)) === J(['1 of 2 was skipped: That is locked in place']) && it(6).x === 1220, `${TWO} moves their own token; the locked one is skipped (${J(r.notes.map((e) => e.msg))})`);
+  r = run(third, { t: 'group', op: 'move', ids: [6, 7].map(C), dx: 50, dy: 50 });
+  ok(!r.lines.length && J(r.notes.map((e) => e.msg)) === J(['🚫 2 of 2 were skipped: That is locked in place']) && r.sent.has(C(6)) && r.sent.has(C(7)), `none of them ${THIRD}'s to move: one refusal (the first reason bottom to top: the locked one lies under the token just moved), both re-sent (${J(r.notes.map((e) => e.msg))})`);
+  r = run(third, { t: 'group', op: 'move', ids: [C(7)], dx: 50, dy: 50 });
+  ok(J(r.notes.map((e) => e.msg)) === J(['🚫 That is locked in place']), `a group of one says the single action's refusal (${J(r.notes.map((e) => e.msg))})`);
+
+  section('(3) a group move keeps its shape at the table\'s edge (groupShift: the live drag\'s clamp)');
+  const edge = [11, 12, 13], e0 = xy(edge);
+  r = run(HOST, { t: 'group', op: 'move', ids: edge.map(C), dx: 5000, dy: -5000 });
+  const e1 = xy(edge), dxs = e1.map(([x], j) => x - e0[j][0]), dys = e1.map(([, y], j) => y - e0[j][1]);
+  ok(new Set(dxs).size === 1 && new Set(dys).size === 1 && e1.every(([x, y]) => x + 56 <= 3000 && y >= 0) && dxs[0] > 0 && dys[0] < 0, `the three dice slid as one, to the corner (shift ${dxs[0]}, ${dys[0]})`);
+  const L = H.drag(HOST, { ids: edge.map(C), dx: 5000, dy: -5000 }), live = H.drain().find((e) => e.t === 'fx')?.f;
+  ok(L && live.dx === 0 && live.dy === 0, `…and a live drag of them past the corner now relays no shift at all (${J(live)})`);
+
+  section('(3) rot is a per-member delta, snapped to each member\'s rotStep; flip, lock, del, toBag');
+  const r0 = [8, 9, 10].map((k) => it(k).rot);
+  r = run(HOST, { t: 'group', op: 'rot', ids: [8, 9, 10].map(C), rot: 90 });
+  ok(J([8, 9, 10].map((k) => it(k).rot)) === J([snapRot(r0[0] + 90, 90), snapRot(r0[1] + 90, 60), snapRot(r0[2] + 90, 0)]) && it(9).rot % 60 === 0,
+    `tile +90 → ${it(8).rot}, hex (60° steps) → ${it(9).rot}, free token → ${it(10).rot}`);
+  ok(J(r.lines) === J([[HOST, 'rotated 3 items']]), 'one line');
+  r = run(HOST, { t: 'group', op: 'rot', ids: [8, 9].map(C), rot: -90 });
+  ok(it(8).rot === r0[0] && J(r.lines) === J([[HOST, 'rotated 2 items']]), `turned back by −90: the tile is where it was (${it(8).rot})`);
+  const f0 = [1, 2].map((k) => it(k).f);
+  r = run(HOST, { t: 'group', op: 'flip', ids: [1, 2, 11].map(C) });
+  ok(J([1, 2].map((k) => it(k).f)) === J(f0.map((f) => 1 - f)) && J(r.lines) === J([[HOST, 'flipped 2 items']]) && J(r.notes.map((e) => e.msg)) === J(['1 of 3 was skipped: Dice are rolled, not turned']),
+    `two tokens flipped, the die skipped (${J(r.notes.map((e) => e.msg))})`);
+  r = run(BOB, { t: 'group', op: 'lock', ids: [1, 2, 7].map(C), on: true });
+  ok(it(1).lock && it(2).lock && J(r.lines) === J([[BOB, 'locked 2 items']]) && !r.notes.length, `lockable "anyone": Bob locks two; the one locked already is no skip, just nothing to do (${J(r.lines)})`);
+  r = run(BOB, { t: 'group', op: 'lock', ids: [1, 2].map(C), on: false });
+  ok(!it(1).lock && !it(2).lock && J(r.lines) === J([[BOB, 'unlocked 2 items']]), 'and unlocks them');
+  const sack = it(14), n0 = sack.of.length;
+  r = run(HOST, { t: 'group', op: 'toBag', ids: [3, 10, 11].map(C), bag: C(14) });
+  ok(!it(3) && !it(10) && !it(11) && it(14).of.length === n0 + 1 + 4 + 1 && J(r.lines) === J([[HOST, 'put 3 items into the bag Sack']]), `into the bag: a token, a ×4 stack, a die (${it(14).of.length - n0} pieces) — one line (${J(r.lines)})`);
+  r = run(HOST, { t: 'group', op: 'del', ids: [4, 5].map(C).concat(['dead0001']) });
+  ok(!it(4) && !it(5) && J(r.lines) === J([[HOST, 'removed 2 items']]) && J(r.notes.map((e) => e.msg)) === J(['1 of 3 was skipped: it is gone']), `two removed, a gone one said (${J(r.notes.map((e) => e.msg))})`);
+
+  section('(3) roll: one roll of the dice the player sees among the members; a hidden die is no die to them, and its value never shows');
+  const hd0 = it(13).f;
+  r = run(BOB, { t: 'group', op: 'roll', ids: [1, 2, 12, 13].map(C) });
+  const want = `rolled 1 die: ${faceLabel(H.state.boxes[bid].types.d6.faces[it(12).f], it(12).f)}`;
+  ok(J(r.lines) === J([[BOB, want]]) && it(13).f === hd0 && !r.notes.length, `the tokens aren't dice and the face-down die is hidden: Bob rolls the one die (${J(r.lines)})`);
+  const rb = r.fx.filter((e) => e.t === 'fx');
+  ok(rb.length === 1 && J(rb[0].f.roll) === J([C(12)]), `one bulb, with the tumble (${J(rb)})`);
+  r = run(BOB, { t: 'group', op: 'roll', ids: [1, 13].map(C) });
+  ok(!r.changed && J(r.notes.map((e) => e.msg)) === J(['🚫 Only dice can be rolled: none of those is a die']), `no die he can see: refused, nothing changes (${J(r.notes.map((e) => e.msg))})`);
+  const box2 = { ...squad(), name: 'Dice tray', setup: [...Array(22)].map((_, k) => ({ piece: 'd6', at: [200 + 60 * k, 1700], id: `dd00${k.toString(16).padStart(4, '0')}` })) };
+  const R2 = room(HOST, 'Alice', [[BOB, 'Bob']], '4'), b2 = R2.add(HOST, box2).id;
+  R2.job(HOST, { t: 'setup', box: b2 });
+  const many = Object.keys(R2.H.state.items);
+  let q = R2.job(BOB, { t: 'group', op: 'roll', ids: many.slice(0, 4) });
+  ok(/^rolled 4 dice: \d · \d · \d · \d$/.test(q.lines[0]) && q.lines.length === 1, `four dice: "${q.lines[0]}"`);
+  q = R2.job(BOB, { t: 'group', op: 'roll', ids: many });
+  ok(!q.lines.length && J(q.notes) === J(['🚫 Roll 1 to 20 different dice']), `22 dice: one roll takes at most 20, as the single roll says (${J(q.notes)})`);
+
+  section('(3) the payload: ids capped at MAX_GROUP and deduplicated, a flood cost of 1 + ⌊N/20⌋; malformed groups refused');
+  ok(MAX_GROUP === 200 && GROUP_OPS.join() === 'move,rot,flip,roll,lock,del,toBag' && PUBLIC_ACTIONS.includes('group') && !RULED_ACTIONS.includes('group'), 'GROUP_OPS; group is a public action, ruled per member (not as a whole)');
+  const big = [...Array(500)].map((_, k) => `e${String(k).padStart(7, '0')}`);
+  ok(groupIds({ ids: big }).length === 200 && groupIds({ ids: [C(1), C(1), 7, '7', null, {}, C(2)] }).join() === [C(1), '7', C(2)].join(), 'groupIds: the first 200, each once, as text (a number its digits, as textIds reads it), nothing else');
+  ok(floodCost({ t: 'group', ids: [...Array(200)].map((_, k) => 10000000 + k) }) === 11, 'a payload of 200 numeric ids costs what 200 text ids do (the job runs on them all)');
+  ok([[1, 1], [19, 1], [20, 2], [200, 11], [500, 11]].every(([n, c]) => floodCost({ t: 'group', ids: big.slice(0, n) }) === c) && floodCost({ t: 'drag', ids: big }) === 1 && floodCost({ t: 'move' }) === 1,
+    'floodCost: 1 + ⌊N/20⌋ for a group (N ≤ 200), 1 for anything else — a group drag too');
+  const T3 = createTable({}, { pid: HOST, now: () => 1.7e12, uid: () => 'f0000001' }), g200 = { t: 'group', op: 'del', ids: big };
+  const passed = [1, 2, 3, 4].filter(() => T3.mayAct(BOB, g200)).length, singles = [...Array(10)].filter(() => T3.mayAct(BOB, { t: 'move' })).length;
+  ok(passed === 3 && singles === 7, `flood control: three 200-member groups (11 tokens each) pass a fresh burst of 40, the fourth doesn't; 7 single actions then do (${passed}, ${singles})`);
+  const x1 = it(1).x;
+  r = run(third, { t: 'group', op: 'move', ids: [...Array(300).fill(C(6)), ...Array(200).fill(C(1))], dx: 10, dy: 0 });
+  ok(J(r.notes.map((e) => e.msg)) === J([`🚫 That belongs to ${TWO}`]) && it(1).x === x1, `Mallory's 500 ids, one of them ${TWO}'s 300 times: capped (the free token at 301 never looked at), deduplicated, skipped (${J(r.notes.map((e) => e.msg))})`);
+  for (const [a, msg] of [
+    [{ op: 'hide', ids: [C(1)] }, '🚫 A group can only move, rot, flip, roll, lock, del, toBag'], [{ op: 'move', ids: [] }, "🚫 Name the group's items"], [{ op: 'move', ids: 'x' }, "🚫 Name the group's items"],
+    [{ op: 'lock', ids: [C(1)] }, '🚫 Say lock or unlock (on: true or false)'], [{ op: 'toBag', ids: [C(1)], bag: C(2) }, '🚫 That is not a bag'],
+  ]) {
+    const s0 = H.state.seq;
+    r = run(HOST, { t: 'group', ...a });
+    ok(!r.changed && H.state.seq === s0 && J(r.notes.map((e) => e.msg)) === J([msg]), `${J(a)}: refused, nothing changes (${J(r.notes.map((e) => e.msg))})`);
+  }
+
+  section('(3) rules on: each member through handle / strict / validate from its own savepoint; a veto rolls back that member only');
+  const picky = `({ name: 'Picky',
+    validate(t, a) { if (a.id === '${C(3)}') return 'Not that one'; },
+    onAction(t, a) { (t.data.seen ||= []).push([a.t, a.id, a.group ?? null, a.to ?? null, a.from ?? null]); t.say('saw ' + a.id); },
+    buttons(t) { t.data.btn = (t.data.btn || 0) + 1; return []; } })`;
+  const W = room(HOST, 'Alice', [[BOB, 'Bob']], '5'), wb = W.add(HOST, squad()).id;
+  W.job(HOST, { t: 'setup', box: wb });
+  W.job(HOST, { t: 'setRules', enabled: true, code: picky });
+  const wit = (k) => W.H.state.items[C(k)], btn0 = W.H.state.rules.data.btn;
+  const at0 = free.map((k) => wit(k).at);
+  q = W.job(HOST, { t: 'group', op: 'move', ids: free.map(C), dx: 0, dy: 100 });
+  ok(free.every((k) => (k === 3 ? wit(k).y === 620 : wit(k).y === 720)) && W.same(), `four moved down a cell; the vetoed one stays put; the host took the mirror's patch, the digests agree (${J(free.map((k) => wit(k).y))})`);
+  const seen = W.H.state.rules.data.seen;
+  const local = (at) => at.slice(at.indexOf(':') + 1); // (the display form: one board, its local address)
+  ok(seen.length === 4 && seen.every(([t, id, g, to, from]) => t === 'move' && g === 5 && to === local(wit(+id.slice(-2)).at) && from === local(at0[free.indexOf(+id.slice(-2))])) && !seen.some(([, id]) => id === C(3)),
+    `onAction ran for each member applied, seeing {group: 5} and its own a.to / a.from (${J(seen.map((s) => s.slice(1)))})`);
+  ok(W.H.state.rules.data.btn === btn0 + 1, `buttons() ran once for the group (${btn0} → ${W.H.state.rules.data.btn})`);
+  ok(J(q.lines) === J(['saw cafe0001', 'saw cafe0002', 'saw cafe0004', 'saw cafe0005', 'moved 4 items', 'blocked Alice: Not that one (1 of 5)']), `the rules' own lines, one line for the moves, one "blocked" line (${J(q.lines)})`);
+  const note = (x) => J(x.fx.filter((e) => e.t === 'note' && e.p === HOST).map((e) => [e.msg, e.ruled === true]));
+  ok(note(q) === J([['1 of 5 was skipped: Not that one', true]]), `one notice, flagged as the rules' refusal (${note(q)})`);
+  q = W.job(HOST, { t: 'group', op: 'move', ids: [3, 6].map(C), dx: 0, dy: 100 });
+  ok(note(q) === J([['🚫 2 of 2 were skipped: Not that one', true]]), `the first reason (bottom to top) the rules', the second the engine's (Bob's token): flagged as the first is (${note(q)})`);
+  q = W.job(HOST, { t: 'group', op: 'move', ids: [6, 7].map(C), dx: 0, dy: 100 });
+  ok(note(q) === J([['🚫 2 of 2 were skipped: That belongs to Bob', false]]) && !q.lines.length, `the engine's refusals alone: not flagged, no "blocked" line (${note(q)})`);
+
+  W.job(HOST, { t: 'setRules', enabled: true, code: "({ name: 'Strict', strict: true, allow: ['rot'] })" });
+  const y0 = free.map((k) => wit(k).y);
+  q = W.job(HOST, { t: 'group', op: 'move', ids: [1, 2].map(C), dx: 0, dy: 100 });
+  ok(J(free.map((k) => wit(k).y)) === J(y0) && J(q.notes) === J(['🚫 2 of 2 were skipped: Not a move in this game']) && W.same(), `strict, per member: a move is refused for each (${J(q.notes)})`);
+  q = W.job(HOST, { t: 'group', op: 'rot', ids: [8, 9].map(C), rot: 90 });
+  ok(J(q.lines) === J(['rotated 2 items']) && W.same(), 'a rot its `allow` lists goes through');
+
+  section('(3) a handle or validate that throws fails the whole group closed; a later hook keeps the members done');
+  for (const hook of ['handle', 'validate']) {
+    W.job(HOST, { t: 'setRules', enabled: true, code: `({ name: 'Boom', ${hook}(t, a) { t.data.n = (t.data.n || 0) + 1; if (a.id === '${C(3)}') throw new Error('boom'); } })` });
+    const xs = free.map((k) => [wit(k).x, wit(k).y]), log0 = W.H.state.log.length;
+    q = W.job(HOST, { t: 'group', op: 'move', ids: free.map(C), dx: 0, dy: 100 });
+    ok(J(free.map((k) => [wit(k).x, wit(k).y])) === J(xs) && !W.H.state.rules.enabled && !W.H.state.rules.data.n, `${hook}() throws at the third member: nothing moved, not even the first two; no hook's writes kept; the rules off`);
+    ok(J(q.notes) === J(['🚫 rules script error']) && J(W.H.state.log.slice(log0).map((e) => e.txt)) === J([`rules disabled — script error in ${hook}()`, 'blocked Alice: rules script error']), `one refusal, the single action's words (${J(q.notes)}, ${J(q.lines)})`);
+  }
+  const order = [...free].sort((x, y) => wit(x).z - wit(y).z), ys = order.map((k) => wit(k).y); // (bottom to top: the order the members run in)
+  W.job(HOST, { t: 'setRules', enabled: true, code: `({ name: 'Late', onAction(t, a) { t.data.done = (t.data.done || 0) + 1; if (a.id === '${C(order[1])}') { t.data.bad = 1; throw new Error('late'); } } })` });
+  q = W.job(HOST, { t: 'group', op: 'move', ids: free.map(C), dx: 0, dy: 100 });
+  ok(J(order.map((k, j) => wit(k).y - ys[j])) === J([100, 100, 0, 0, 0]) && W.H.state.rules.data.done === 1 && !('bad' in W.H.state.rules.data) && !W.H.state.rules.enabled,
+    `onAction throws at the second member: the first two moved (their effects kept), the hook's own writes undone, the rest skipped, the rules off (${J(W.H.state.rules.data)})`);
+  ok(J(q.notes) === J(['3 of 5 were skipped: rules script error']) && q.lines.includes('moved 2 items'), `said once (${J(q.notes)})`);
+
+  section('(3) the host takes a group job\'s patch whole, and still refuses a forged one; `group` on a single action is the host\'s');
+  W.job(HOST, { t: 'setRules', enabled: true, code: "({ name: 'Mark', onAction(t, a) { t.data.g = a.group ?? 'none'; } })" });
+  q = W.job(BOB, { t: 'move', id: C(6), x: 1320, y: 920, group: 9 });
+  ok(W.H.state.rules.data.g === 'none' && W.same(), `a single move's forged {group: 9} never reaches the hooks (${W.H.state.rules.data.g})`);
+  const ga = { t: 'group', op: 'move', ids: [1, 2].map(C), dx: 0, dy: -100 }, m0 = quietly(() => W.M.job(HOST, ga)).value, y1 = wit(1).y;
+  const forged = structuredClone(m0.out);
+  forged.effects.push({ t: 'fx', f: { p: BOB, id: C(1), x: 0, y: 0 } });
+  let threw = '';
+  try { quietly(() => W.H.applyStatePatch(structuredClone(m0.patch), forged, { p: HOST, a: ga })); } catch (e) { threw = e.message; }
+  ok(/name bulb into Alice's group/.test(threw), `a bulb in Bob's name in Alice's group: refused (${threw})`);
+  quietly(() => W.H.applyStatePatch(structuredClone(m0.patch), structuredClone(m0.out), { p: HOST, a: ga }));
+  ok(W.same() && wit(1).y === y1 - 100, 'the honest patch: taken');
+}
+
+// =============================================================================
+// (Hx) Hexfront: the generated hex-map skeleton and its turn script (§4, §4l
+//      t-p4-hexfront items 1–6 in Node), and loadBox's `rules`
+// =============================================================================
+async function testHexfront() {
+  section('(Hx) BOXES.hexfront: built in by content, the same box on every load (a fixed seed), original');
+  const fresh = (await import(pathToFileURL(path.join(APP_ROOT, 'cardtable/templates.js')).href + '?again')).BOXES.hexfront;
+  const HX = BOXES.hexfront, B = cleanBox(json(HX));
+  ok(fresh !== HX && canon(cleanBox(json(fresh))) === canon(B) && isBuiltin(HX) && isBuiltin(cleanBox(json(fresh))), 'a second evaluation of templates.js generates the same box: built in by content');
+  const units = B.setup.filter((e) => B.types[e.piece]?.meta?.side), g = B.types.map.board.grid;
+  ok(units.length === 40 && units.every((e) => e.n === 10 && e.owner === `seat:${B.types[e.piece].meta.side}`) && units.filter((e) => e.owner === 'seat:azure').length === 20,
+    `400 counters in 40 stacks of ten, 20 a side, each owned by its side's seat (${units.length} stacks)`);
+  ok(g.type === 'hex' && g.cols === 24 && g.rows === 16 && Object.keys(g.fills).length > 60 && g.marks.length === 8 && B.types.map.board.zones.length === 2,
+    `one hex map, 24 × 16: ${Object.keys(g.fills).length} terrain fills, 8 towns, two deployment zones`);
+  const ev = B.setup.find((e) => e.pile);
+  ok(B.types.d6.kind === 'die' && B.setup.filter((e) => e.piece === 'd6').reduce((n, e) => n + (e.count ?? 1), 0) === 2 && ev?.pile.length === 24 && ev.name === 'Events' && B.types.event.back && B.types.event.hand,
+    'two dice; 24 event cards, a face-down pile of tiles one may hold in a hand');
+  ok(J(B.seats.map((s) => s.id)) === J(['azure', 'ember']) && B.rules.includes("name: 'Hexfront'") && J(HX.players) === J([2, 2]) && HX.meta.pitch, 'two seats, Azure and Ember; its turn script; a pitch for 📦');
+
+  section('(Hx) Set up as 📦\'s Built-in does: loadBox {setup, clear, rules} — the box\'s rules start right after it');
+  const R = room(HOST, 'Alice', [[BOB, 'Bob']], '7'), H = R.H;
+  let q = R.job(HOST, { t: 'loadBox', box: json(HX), setup: true, clear: true, rules: true });
+  const bid = H.state.lastSetup, items = () => Object.entries(H.state.items);
+  ok(q.enabled && H.state.rules.enabled && H.state.rules.name === 'Hexfront' && H.state.rules.box === bid && isBuiltin(H.state.boxes[bid]) && R.same(), `set up, its turn script running as the box's (rules.box): ${J(q.lines)}`);
+  ok(items().length === 44 && items().filter(([, it]) => it.n === 10).length === 40 && items().reduce((n, [, it]) => n + (it.n || 0), 0) === 400, `on the table: 44 items, 400 counters in 40 stacks (${items().length})`);
+  const holder = (side) => Object.keys(H.state.players).find((p) => H.state.players[p].seatId === side), az = holder('azure'), em = holder('ember');
+  ok(az && em && az !== em && H.state.rules.public.turn === az && J(H.state.rules.public.buttons) === J([{ id: 'combat', label: '⚔ To combat', pid: az }]) && H.state.rules.data.turn === 1,
+    `Azure (${H.state.players[az].name}) to move: the turn cue and the phase button are theirs`);
+  ok(q.enabled.lines.includes('shuffled the Events pile (24 pieces)'), 'the event cards were shuffled when the rules started');
+  const mine = (side) => items().filter(([, it]) => it.owner === `seat:${side}`).map(([id]) => id), AZ = mine('azure'), EM = mine('ember');
+  const dice = items().filter(([, it]) => it.t?.endsWith('/d6')).map(([id]) => id), events = items().find(([, it]) => it.name === 'Events')[0];
+  const dy = 1.5 * (100 / Math.sqrt(3)), it = (id) => H.state.items[id];
+
+  section('(Hx) the turn script: only the side to play moves its own units; split, join, combat, an event card');
+  q = R.job(em, { t: 'move', id: EM[0], x: it(EM[0]).x, y: it(EM[0]).y + dy });
+  ok(J(q.notes) === J(["🚫 It's Azure's turn"]) && R.same(), `Ember moves out of turn: refused (${J(q.notes)})`);
+  q = R.job(az, { t: 'move', id: EM[0], x: it(EM[0]).x, y: it(EM[0]).y + dy });
+  ok(J(q.notes) === J(['🚫 That belongs to Ember']), `Azure moves Ember's stack: the engine's owner check (${J(q.notes)})`);
+  const at0 = AZ.slice(0, 5).map((id) => it(id).at);
+  q = R.job(az, { t: 'group', op: 'move', ids: AZ.slice(0, 5), dx: 0, dy: -dy });
+  ok(J(q.lines) === J(['moved 5 items']) && AZ.slice(0, 5).every((id, k) => it(id).at !== at0[k] && it(id).at) && R.same(), `Azure moves five stacks a row up as a group, each on a hex (${J(AZ.slice(0, 5).map((id) => it(id).at.split(':')[1]))})`);
+  q = R.job(em, { t: 'group', op: 'move', ids: EM.slice(0, 5), dx: 0, dy });
+  ok(J(q.notes) === J(["🚫 5 of 5 were skipped: It's Azure's turn"]) && q.lines.includes("blocked Bob: It's Azure's turn (5 of 5)"), `Ember's group out of turn: every member vetoed, one notice (${J(q.notes)})`);
+  q = R.job(az, { t: 'split', id: AZ[0], n: 4, x: it(AZ[0]).x + 100, y: it(AZ[0]).y });
+  const part = items().find(([id, x]) => x.n === 4 && x.t === it(AZ[0]).t && id !== AZ[0])?.[0];
+  ok(part && it(AZ[0]).n === 6 && it(part).owner === 'seat:azure', `split: 4 off a stack of ten, still Azure's (${J(q.lines)})`);
+  q = R.job(az, { t: 'join', id: part, onto: AZ[0] });
+  ok(!it(part) && it(AZ[0]).n === 10, `join: back to ten (${J(q.lines)})`);
+  q = R.job(az, { t: 'roll', ids: dice });
+  ok(J(q.notes) === J(['🚫 Dice are rolled in the combat phase']), 'no dice in the movement phase');
+  q = R.job(az, { t: 'rulesBtn', id: 'combat' });
+  ok(H.state.rules.data.phase === 'combat' && J(H.state.rules.public.buttons) === J([{ id: 'end', label: '⏭ End turn', pid: az }]) && H.state.rules.public.badges[az] === '⚔ Combat', '⚔ To combat: the phase moves on, End turn offered');
+  q = R.job(az, { t: 'move', id: AZ[6], x: it(AZ[6]).x, y: it(AZ[6]).y - dy });
+  ok(J(q.notes) === J(['🚫 Movement is over this turn — fight, or End turn']), 'no movement in combat');
+  q = R.job(em, { t: 'group', op: 'roll', ids: dice });
+  ok(J(q.notes) === J(['🚫 Only Azure rolls this turn']), "the defender doesn't roll");
+  q = R.job(az, { t: 'group', op: 'roll', ids: dice });
+  ok(/^rolled 2 dice: \d · \d$/.test(q.lines[0]) && R.same(), `the attacker rolls both dice, as a group: "${q.lines[0]}"`);
+  const f0 = it(EM[1]).f;
+  q = R.job(em, { t: 'flip', id: EM[1] });
+  ok(it(EM[1]).f === 1 - f0 && R.same(), 'the defender takes a loss on their own stack (a flip to its reduced face) in combat');
+  q = R.job(em, { t: 'draw', id: events });
+  ok(J(q.notes) === J(['🚫 Only Azure draws an event this turn']), 'only the side to play draws an event');
+  q = R.job(az, { t: 'draw', id: events });
+  const hand = H.state.players[az].hand;
+  ok(hand.length === 1 && hand[0].t === `${bid}/event` && q.lines.some((l) => l.startsWith('drew a piece from')), `Azure draws an event card into their hand (${J(hand)})`);
+  q = R.job(az, { t: 'draw', id: events });
+  ok(J(q.notes) === J(['🚫 One event a turn']) && H.state.players[az].hand.length === 1, 'one a turn');
+  q = R.job(em, { t: 'rulesBtn', id: 'end' });
+  ok(J(q.notes) === J(['🚫 That button is not available to you right now']) && H.state.rules.data.side === 'azure', "End turn is Azure's button: Ember's press is refused by the engine");
+  q = R.job(az, { t: 'rulesBtn', id: 'end' });
+  ok(H.state.rules.data.side === 'ember' && H.state.rules.data.turn === 1 && H.state.rules.public.turn === em && q.lines.includes('📣 Turn 1 — Ember moves') && R.same(), `End turn: Ember moves (${J(q.lines)})`);
+  q = R.job(em, { t: 'move', id: EM[2], x: it(EM[2]).x, y: it(EM[2]).y + dy });
+  ok(!q.notes.length && q.lines[0]?.startsWith('moved'), 'now Ember moves');
+  R.job(em, { t: 'rulesBtn', id: 'combat' });
+  R.job(em, { t: 'rulesBtn', id: 'end' });
+  ok(H.state.rules.data.turn === 2 && H.state.rules.data.side === 'azure' && !H.state.rules.data.drew && R.same(), 'and back to Azure: turn 2, a fresh event draw');
+
+  section('(Hx) loadBox {rules}: only for a box with rules; its `enable` taken from a Worker only as the engine writes it');
+  const plain = { ...cleanBox(json(BOXES.draughts)) };
+  q = R.job(HOST, { t: 'loadBox', box: plain, setup: true, clear: true, rules: true });
+  ok(J(q.notes) === J(['🚫 «Draughts» has no rules']) && H.state.lastSetup === bid, `a box without rules: refused, nothing changes (${J(q.notes)})`);
+  const L = room(HOST, 'Alice', [[BOB, 'Bob']], '8');
+  L.job(HOST, { t: 'setRules', enabled: true, code: "({ name: 'Plain' })" });
+  const la = { t: 'loadBox', box: json(HX), setup: true, clear: true, rules: true }, m0 = quietly(() => L.M.job(HOST, la)).value;
+  const forge = (f) => { const o = structuredClone(m0.out); f(o); try { quietly(() => L.H.applyStatePatch(structuredClone(m0.patch), o, { p: HOST, a: la })); return ''; } catch (e) { return e.message; } };
+  ok(forge((o) => { o.effects.find((e) => e.t === 'enable').remap = { abcd0001: 'abcd0002' }; }) === 'the script asked for rules the host never chose', 'a remap the clearing loadBox never made: refused');
+  const off = forge((o) => { o.effects.find((e) => e.t === 'enable').box = 'ffff0001'; });
+  ok(off === 'the script asked for rules the host never chose', `an enable naming another box: refused (${off})`);
+  const wo = { t: 'loadBox', box: json(HX), setup: true, clear: true }, m1 = quietly(() => L.M.job(HOST, wo)).value;
+  let threw = '';
+  try { quietly(() => L.H.applyStatePatch(structuredClone(m1.patch), { ...structuredClone(m1.out), effects: [...structuredClone(m1.out.effects), { t: 'enable', box: m1.out.effects.find((e) => e.t === 'box')?.id ?? '', remap: {} }] }, { p: HOST, a: wo })); } catch (e) { threw = e.message; }
+  ok(threw === 'the script asked for rules the host never chose', `an enable in a loadBox without rules: refused (${threw})`);
+  L.job(HOST, { t: 'setRules', enabled: true, code: "({ name: 'Plain' })" }); // (a fresh mirror: the two above were never taken)
+  q = L.job(HOST, la);
+  ok(q.enabled && L.H.state.rules.name === 'Hexfront' && L.H.state.rules.box === L.H.state.lastSetup && L.same(), `from running rules, the honest loadBox: taken, Hexfront's rules start after it (${J(q.lines.slice(-2))})`);
 }
 
 // =============================================================================
@@ -1815,6 +2114,8 @@ function testFixup3() {
 (async () => {
   await guard('(1) format', testFormat);
   await guard('(2) setup', testSetup);
+  await guard('(3) group', testGroup);
+  await guard('(Hx) Hexfront', testHexfront);
   await guard('(4) round trip', testRoundTrip);
   await guard('(4) resume elsewhere', testResumeElsewhere);
   await guard('(5)(6) dedup, migrate', testDedupMigrate);

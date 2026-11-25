@@ -1898,6 +1898,192 @@ function backgammon() {
   };
 }
 
-/** The built-in boxes, by key: what the 🎲 picker's box games load (built
- *  in by content, core.js isBuiltin). */
-export const BOXES = { draughts: draughts(), backgammon: backgammon() };
+/** Hexfront's turn script (spec §4): two sides, Azure then Ember, each turn
+ *  a movement phase, then combat. Only the side to play moves its units
+ *  (and splits and joins their stacks) and draws one event card; in combat
+ *  it rolls the dice, and each side flips (a step lost) or removes its own
+ *  units; the phase buttons (⚔ To combat, ⏭ End turn) are the active
+ *  player's. The engine keeps each side to its own units (their owner is the
+ *  seat), so this script only keeps the turn. Not strict: anything else —
+ *  the dice moved aside, an event card played — is free. */
+const HEXFRONT_RULES = `(() => {
+  const NAMES = { azure: 'Azure', ember: 'Ember' };
+  /** Who sits in side \`side\`'s seat, or undefined. */
+  const holder = (t, side) => t.players().find((p) => p.seatId === side)?.id;
+  return {
+    name: 'Hexfront',
+    setup(t) { // (a fresh game: the event cards shuffled, Azure to move; a re-enable keeps the game going)
+      if (t.data.turn) return;
+      const events = t.find({ kind: 'pile', name: 'Events' })[0];
+      if (events) t.shuffle(events.id);
+      Object.assign(t.data, { turn: 1, side: 'azure', phase: 'move', drew: false });
+      t.announce('Turn 1 — Azure moves');
+    },
+    validate(t, a) {
+      const d = t.data, side = NAMES[d.side], it = typeof a.id === 'string' && t.item(a.id), unit = it && it.t && t.type(it.t)?.meta?.side;
+      const theirs = a.p === holder(t, d.side) ? '' : holder(t, d.side) ? "It's " + side + "'s turn" : side + "'s seat is empty — sit there to play";
+      if (unit && ['move', 'split', 'join', 'rot'].includes(a.t)) return theirs || (d.phase === 'move' ? undefined : 'Movement is over this turn — fight, or End turn');
+      if (unit && ['flip', 'del'].includes(a.t) && d.phase !== 'combat') return 'Losses are taken in the combat phase';
+      if (a.t === 'roll') return theirs ? 'Only ' + side + ' rolls this turn' : d.phase === 'combat' ? undefined : 'Dice are rolled in the combat phase';
+      if (a.t === 'draw' && it && it.name === 'Events') return theirs ? 'Only ' + side + ' draws an event this turn' : d.drew ? 'One event a turn' : undefined;
+    },
+    onAction(t, a) {
+      if (a.t === 'draw') t.data.drew = true;
+    },
+    onButton(t, id) {
+      const d = t.data;
+      if (id === 'combat') {
+        d.phase = 'combat';
+        t.say(NAMES[d.side] + ': combat');
+      } else if (id === 'end') {
+        d.side = d.side === 'azure' ? 'ember' : 'azure';
+        if (d.side === 'azure') d.turn++;
+        Object.assign(d, { phase: 'move', drew: false });
+        t.announce('Turn ' + d.turn + ' — ' + NAMES[d.side] + ' moves');
+      }
+    },
+    buttons(t) { // (after every action: the turn cue and the phase follow whoever sits in the side's seat)
+      const d = t.data, p = holder(t, d.side);
+      t.public.turn = p || null;
+      t.public.badges = p ? { [p]: d.phase === 'move' ? '🚶 Move' : '⚔ Combat' } : {};
+      return p ? [d.phase === 'move' ? { id: 'combat', label: '⚔ To combat', pid: p } : { id: 'end', label: '⏭ End turn', pid: p }] : [];
+    },
+  };
+})()`;
+
+/** Hexfront (spec §4's demo, original: D42): a generated hex-map strategy
+ *  skeleton — a 24 × 16 hex map whose terrain (a river with three fords,
+ *  woods, hills, eight towns) comes from a fixed seed, so the box is the
+ *  same on every load (built in by content); 400 counters, each side's 200
+ *  in 20 stacks of ten (infantry, armour, artillery, scouts; a reduced face
+ *  on the back of each, flipped for a step lost; their labels read upright
+ *  on every screen) on its own rows; two dice;
+ *  24 event cards (tiles with a back, held in a hand); and its turn script. */
+function hexfront() {
+  // (mulberry32: a tiny seeded generator — the map is drawn the same on every load)
+  let seed = 0x4e3f2a1d;
+  const rnd = () => {
+    seed = (seed + 0x6d2b79f5) >>> 0;
+    let x = Math.imul(seed ^ (seed >>> 15), seed | 1);
+    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
+    return ((x ^ (x >>> 14)) >>> 0) / 2 ** 32;
+  };
+  const COLS = 24, ROWS = 16, CELL = 100, R = CELL / Math.sqrt(3), W = 3400, H = 2400;
+  const BW = COLS * CELL + CELL / 2 + 30, BH = Math.ceil(2 * R + (ROWS - 1) * 1.5 * R) + 30;
+  /** A cell's axial address ("q,r") on the pointy, odd-row-offset grid (grid.js toAxial). */
+  const addr = (c, r) => `${c - (r - (r & 1)) / 2},${r}`;
+  const inMap = (c, r) => c >= 0 && r >= 0 && c < COLS && r < ROWS;
+  /** The six neighbours of cell (c, r) (odd rows sit half a cell to the right). */
+  const around = (c, r) => (r & 1 ? [[1, 0], [-1, 0], [0, -1], [1, -1], [0, 1], [1, 1]] : [[1, 0], [-1, 0], [-1, -1], [0, -1], [-1, 1], [0, 1]])
+    .map(([dc, dr]) => [c + dc, r + dr]).filter(([x, y]) => inMap(x, y));
+  const fills = {}, key = (c, r) => `${c},${r}`, terrain = new Map(); // "c,r" → 'water' | 'wood' | 'hill' | 'town'
+  const COLOR = { water: '#4f7fae', wood: '#4c7a3d', hill: '#a98a56', town: '#d8c7a0' };
+  // the river: west to east across the middle rows, wandering a row at a time, with three fords
+  let rr = 7 + Math.floor(rnd() * 2);
+  const fords = new Set([4, 12, 19].map((c) => c + Math.floor(rnd() * 3) - 1));
+  for (let c = 0; c < COLS; c++) {
+    if (!fords.has(c)) terrain.set(key(c, rr), 'water');
+    const step = rnd();
+    if (step < 0.25 && rr > 6) rr--;
+    else if (step > 0.75 && rr < 9) rr++;
+    else continue;
+    if (!fords.has(c)) terrain.set(key(c, rr), 'water'); // (the bend: the river stays joined)
+  }
+  /** A patch of `kind` grown from a random free cell to `n` cells (not the deployment rows, nor the river). */
+  const patch = (kind, n) => {
+    const free = (c, r) => r > 2 && r < ROWS - 3 && !terrain.has(key(c, r));
+    let cells = [];
+    for (let tries = 0; !cells.length && tries < 50; tries++) {
+      const c = Math.floor(rnd() * COLS), r = 3 + Math.floor(rnd() * (ROWS - 6));
+      if (free(c, r)) cells = [[c, r]];
+    }
+    while (cells.length && cells.length < n) {
+      const [c, r] = cells[Math.floor(rnd() * cells.length)], next = around(c, r).filter(([x, y]) => free(x, y) && !cells.some(([a, b]) => a === x && b === y));
+      if (!next.length) break;
+      cells.push(next[Math.floor(rnd() * next.length)]);
+    }
+    for (const [c, r] of cells) terrain.set(key(c, r), kind);
+  };
+  for (let k = 0; k < 9; k++) patch('wood', 3 + Math.floor(rnd() * 5));
+  for (let k = 0; k < 6; k++) patch('hill', 2 + Math.floor(rnd() * 3));
+  for (let k = 0; k < 8; k++) patch('town', 1);
+  const marks = [];
+  for (const [k, kind] of terrain) {
+    const [c, r] = k.split(',').map(Number);
+    fills[addr(c, r)] = COLOR[kind];
+    if (kind === 'town') marks.push(addr(c, r));
+  }
+  // the deployment rows, as zones: Azure's three at the bottom, Ember's three at the top
+  const gx = 15, gy = 15, rowY = (r) => gy + R + r * 1.5 * R;
+  const zone = (id, label, color, y0, y1) => ({ id, label, color, owner: `seat:${id}`, poly: [[0, y0], [BW, y0], [BW, y1], [0, y1]].map(([x, y]) => [Math.round(x), Math.round(y)]) });
+  const zones = [zone('ember', 'Ember deployment', '#dc2626', 0, rowY(2) + R), zone('azure', 'Azure deployment', '#2563eb', rowY(ROWS - 3) - R, BH)];
+  // the counters: a type per side and arm, its full-strength face, then its reduced one (attack-move)
+  const ARMS = [['inf', 'infantry', '●', '4-3', '2-3', 8], ['arm', 'armour', '◆', '6-5', '3-5', 5], ['art', 'artillery', '▲', '5-2', '2-2', 4], ['rec', 'scouts', '✦', '2-6', '1-6', 3]];
+  const SIDES = [['azure', 'Azure', '#2563eb', '#93b4f5', ROWS - 3], ['ember', 'Ember', '#dc2626', '#f2a3a3', 0]];
+  const types = {
+    map: {
+      kind: 'board', name: 'Hexfront map', w: BW, h: BH, faces: [{ color: '#a7b56b' }],
+      board: { grid: { type: 'hex', hex: 'pointy', cols: COLS, rows: ROWS, cell: CELL, x: gx, y: gy, draw: 'cells', fills, marks }, zones },
+    },
+    d6: { kind: 'die', name: 'Die' },
+    event: { kind: 'tile', name: 'Event', w: 100, h: 140, rotStep: 0, back: 'event', faces: EVENTS.map(([name, text]) => ({ name, text: `${name}\n${text}`, color: '#fdf6e3' })) },
+  };
+  const setup = [{ piece: 'map', at: 'center' }];
+  for (const [side, Side, full, faded, row0] of SIDES) {
+    const spots = []; // twenty hexes of the side's three rows, every other one: stacks stand apart
+    for (let r = row0; r < row0 + 3; r++) for (let c = 1 + (r - row0); c < COLS - 1 && spots.length < 20; c += 3) spots.push(addr(c, r));
+    for (const [arm, what, glyph, a, b, n] of ARMS) {
+      const face = (color, label) => ({ color, label, text: `${glyph} ${arm}` }); // (its strength large, its arm small along the bottom)
+      types[`${side}-${arm}`] = { kind: 'token', name: `${Side} ${what}`, shape: 'rect', w: 56, upright: true, faces: [face(full, a), face(faded, b)], meta: { side, arm } };
+      for (let k = 0; k < n; k++) setup.push({ piece: `${side}-${arm}`, n: 10, at: spots.shift(), owner: `seat:${side}` });
+    }
+  }
+  const bx = (W - BW) / 2, by = (H - BH) / 2;
+  setup.push(
+    { piece: 'd6', count: 2, spread: [70, 0], at: [bx + BW + 60, H / 2 - 28] },
+    { pile: EVENTS.map((_, f) => ({ piece: 'event', f })), at: [bx - 160, H / 2 - 70], name: 'Events' },
+  );
+  return {
+    name: 'Hexfront',
+    imgs: [],
+    table: { shape: 'rect', w: W, h: H, felt: '#27352a' },
+    seats: [{ id: 'azure', name: 'Azure', color: '#2563eb', edge: 'bottom' }, { id: 'ember', name: 'Ember', color: '#dc2626', edge: 'top' }],
+    players: [2, 2],
+    backs: { event: { face: { color: '#1f2a44', label: '⚡' } } },
+    types,
+    setup,
+    rules: HEXFRONT_RULES,
+    meta: { pitch: 'A hex-map wargame skeleton: 400 counters in stacks, dice, event cards and a turn script' },
+  };
+}
+/** Hexfront's event cards: [title, what it does] — the players apply them by hand. */
+const EVENTS = [
+  ['Supply convoy', 'Flip one of your reduced units back to full strength.'],
+  ['Heavy rain', 'Nobody crosses the river this turn, not even at a ford.'],
+  ['Forced march', 'One of your stacks moves two hexes further this turn.'],
+  ['Dug in', 'One of your stacks in woods or hills ignores its first loss this turn.'],
+  ['Morning fog', 'No artillery fires this turn.'],
+  ['Scout report', 'Look at the top event card, then put it back.'],
+  ['Ford washed out', 'Choose a ford: it is river until your next turn.'],
+  ['Night attack', 'Your attacks roll one more die this turn; the defender may not retreat.'],
+  ['Short of shells', 'Your artillery stays silent this turn.'],
+  ['Local guides', 'Woods cost your units no extra movement this turn.'],
+  ['Bad orders', 'One of your stacks may not move this turn (your opponent picks it).'],
+  ['Rally', 'Flip up to two of your reduced units in a town back to full strength.'],
+  ['Ambush', 'One enemy stack next to your woods loses a step at once.'],
+  ['Clear skies', 'Your attacks this turn reroll one die each.'],
+  ['Mud', 'Armour moves only two hexes this turn, for both sides.'],
+  ['Engineers', 'Make a new ford anywhere on the river until the end of the game.'],
+  ['Deserters', 'Your opponent removes one counter from any of their stacks.'],
+  ['Veterans', 'One of your stacks counts double in its next attack.'],
+  ['Messenger lost', 'End your movement phase now.'],
+  ['Hold the line', 'Your units in towns ignore losses this turn.'],
+  ['Flanking ride', 'Your scouts may move after combat this turn.'],
+  ['Spent ammunition', 'Your opponent rolls one die fewer in their next attack.'],
+  ['Fresh reserves', 'Join two of your stacks standing on neighbouring hexes, even mid-combat.'],
+  ['Quiet front', 'Neither side attacks this turn. Draw again next turn.'],
+];
+
+/** The built-in boxes, by key: what the 🎲 picker's box games load, and
+ *  📦's Built-in section (built in by content, core.js isBuiltin). */
+export const BOXES = { draughts: draughts(), backgammon: backgammon(), hexfront: hexfront() };

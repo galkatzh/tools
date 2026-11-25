@@ -794,6 +794,18 @@ sync and rendering, and the Worker together with `handle`.
          alone, never cleared for nothing while they are off; only the
          rules' own refusal of an upload is blamed on them, and only rules
          that run name an export.
+     - A group (the selection acted on at once) is its members, each
+       taken as if sent alone — the same owner, lock and hidden-piece
+       checks, the same rules, its own undo — in one job: a member refused
+       or vetoed is skipped alone, a rules script that fails while judging
+       one stops the whole group, and the player hears one notice for the
+       skipped ones; the log has one line for the group. Its cost against
+       flood control grows with its size, and a group drag is one message
+       however many it carries. The terminal has `group` too.
+     - *Hexfront*, the demo, is generated from a fixed seed — the same box
+       every time, so it is built in by what it is — and set up from 📦's
+       built-in boxes with its turn script, which needs no trust dialog.
+       Its event cards are tiles, so the box carries everything it needs.
 5. **Private material.**
    - `vis` (owner-visible pieces, dice under a cup), private areas beyond the
      hand (a tile rack, a screen), and peeking at any hidden piece.
@@ -892,3 +904,9 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
   set up or reset only with those rules starting; with them off, 📦 offers
   no Reset and the engine refuses one, so the table is never cleared for
   nothing (§4).
+- **A group is its members, each judged alone:** acting on a selection
+  applies each item as if it were sent alone — the same checks, the same
+  rules — skipping the ones refused and saying so once (§3, §5).
+- **A built-in box may bring its own rules:** they start with the box, with
+  no trust dialog, because the box is known by its content (Hexfront's turn
+  script, §4).

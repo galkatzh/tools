@@ -1551,8 +1551,8 @@ function testFacade() {
   ok(!newIds(T, s0).length && r.notes.includes('🚫 not now'), 'and a take');
   const NEW = ['roll', 'face', 'split', 'join', 'take', 'pull', 'toBag', 'lock', 'owner', 'seat'];
   ok(NEW.every((x) => RULED_ACTIONS.includes(x)) && ['table', 'loadBox', 'clear', 'size', 'setRules'].every((x) => !RULED_ACTIONS.includes(x)), 'RULED_ACTIONS: today\'s set plus roll, face, split, join, take, pull, toBag, lock, owner and seat; not table, loadBox or clear');
-  ok(isDeepStrictEqual(new Set(PUBLIC_ACTIONS), new Set([...RULED_ACTIONS, 'hello', 'snap', 'need', 'name', 'chat', 'rulesBtn', 'drag', 'answer', 'select'])) && [...PUBLIC_ACTIONS].every((x) => !x.startsWith('_')),
-    'PUBLIC_ACTIONS: the ruled actions plus hello, snap, need, name, chat, rulesBtn and (Phase 3) drag, answer and select — never an internal _ job');
+  ok(isDeepStrictEqual(new Set(PUBLIC_ACTIONS), new Set([...RULED_ACTIONS, 'hello', 'snap', 'need', 'name', 'chat', 'rulesBtn', 'drag', 'answer', 'select', 'group'])) && [...PUBLIC_ACTIONS].every((x) => !x.startsWith('_')),
+    'PUBLIC_ACTIONS: the ruled actions plus hello, snap, need, name, chat, rulesBtn, (Phase 3) drag, answer and select, and (Phase 4) group — never an internal _ job');
 }
 
 function testLogNamesNothingHidden() {

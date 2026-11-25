@@ -1310,9 +1310,21 @@ export const STRICT_ACTIONS = Object.freeze(RULED_ACTIONS.filter((t) => t !== 's
 /** Every action type a guest may send: the host refuses anything else at the
  *  network boundary. The host's own actions (HOST_ACTIONS) and its internal
  *  jobs (_join, _leave, _tick, _rulesOff, _name: spec §3c) never come from the wire. */
-export const PUBLIC_ACTIONS = Object.freeze([...RULED_ACTIONS, 'hello', 'snap', 'need', 'name', 'chat', 'rulesBtn', 'drag', 'answer', 'select']);
-/** The most items one action names at once: a group's live drag (Phase 4's group too). */
+export const PUBLIC_ACTIONS = Object.freeze([...RULED_ACTIONS, 'hello', 'snap', 'need', 'name', 'chat', 'rulesBtn', 'drag', 'answer', 'select', 'group']);
+/** The most items one action names at once: a group's live drag, and a `group`. */
 export const MAX_GROUP = 200;
+/** What a `group` does to each member (spec §4c): the single action of that
+ *  name, run per member — `roll` once, for the dice among them. */
+export const GROUP_OPS = Object.freeze(['move', 'rot', 'flip', 'roll', 'lock', 'del', 'toBag']);
+/** The members a `group` names: its first MAX_GROUP ids, each once, as
+ *  text (a number is the item named by its digits, as textIds reads it: the
+ *  flood cost of a payload counts what the job will run on); anything else
+ *  names nothing. */
+export const groupIds = (a) => (Array.isArray(a?.ids) ? [...new Set(a.ids.slice(0, MAX_GROUP).map((id) => (typeof id === 'number' ? String(id) : id)))].filter((id) => typeof id === 'string') : []);
+/** The flood tokens action `a` costs (spec §4c): a `group` 1 + ⌊N/20⌋ — 20
+ *  members a token, so a flood of group deletes costs what a flood of
+ *  single ones does — anything else 1 (a group drag too, whatever its size). */
+export const floodCost = (a) => (a?.t === 'group' ? 1 + Math.floor(groupIds(a).length / 20) : 1);
 /** Actions only the host may take: a guest's is refused with "🚫 Only the host can do that". */
 export const HOST_ACTIONS = Object.freeze(['size', 'setRules', 'table', 'loadBox', 'clear', 'setup', 'reset']);
 /** Actions that take from or give to the actor's hand: a refusal re-sends it. */
@@ -2016,6 +2028,7 @@ export function createTable(host, env = {}) {
   });
   let dirty = newDirty();
   let J = null;          // the open journal (see begin)
+  let gather = null;     // a member of player gather.p's group is running: what its ops say in p's name is gathered (group)
   let restoring = false; // a rollback is putting things back: its writes record nothing
   let lastJSON = null;   // the rules' state as the last commit left it (rulesJSON), for guard()
   let carried = null;    // the rules' fields the last commit's patch carries (guard(), once: see there)
@@ -2224,9 +2237,10 @@ export function createTable(host, env = {}) {
     const f = frame(json ?? undefined); // (first: a state that isn't JSON throws here, and no journal is open)
     J = { frames: [f], first: new Map(), refresh: new Set(), refreshHands: new Set(), log0: dirty.log.length, cp: 0 };
   }
-  /** A savepoint in the open journal: its token, for rollbackTo. */
-  function savepoint() {
-    J.frames.push(frame());
+  /** A savepoint in the open journal: its token, for rollbackTo (`json`:
+   *  the rules' state as JSON, when just taken). */
+  function savepoint(json) {
+    J.frames.push(frame(json ?? undefined));
     return J.frames.length - 1;
   }
   /** Undoes every write since savepoint `token` (0: since begin), newest
@@ -2600,9 +2614,10 @@ export function createTable(host, env = {}) {
    *  name item "12" as 12): the host takes a Worker's marker in exactly this
    *  shape, and no other (checkPatch, D149). */
   function mark(p, id, roll) {
-    const it = host.items[id];
+    const it = host.items[id], f = { p, id: String(id), x: it?.x ?? 0, y: it?.y ?? 0, ...(roll && { roll: roll.map(String) }) };
     marks++;
-    emit({ t: 'fx', f: { p, id: String(id), x: it?.x ?? 0, y: it?.y ?? 0, ...(roll && { roll: roll.map(String) }) } });
+    if (gather?.p === p) gather.mark ??= f; // (a group member's: the group shows one bulb)
+    else emit({ t: 'fx', f });
   }
   /** An action that happened with no item to mark (a seat change): counts for onAction. */
   const took = () => { marks++; };
@@ -2613,6 +2628,7 @@ export function createTable(host, env = {}) {
    *  `chat` marks a chat line (talk), `loud` an on-the-record one (a peek); the
    *  buckets are capped separately (LOG_CAPS, trimLog), and a line at LOG_TXT_MAX. */
   function logEvent(p, txt, { chat, as, loud, keep } = {}) {
+    if (gather?.p === p) return; // (a group member's line: the group writes one)
     if (runs.length) flushRuns(); // (an aggregating run ends at any other line)
     txt = cut(txt);
     const last = host.log.at(-1);
@@ -2700,9 +2716,11 @@ export function createTable(host, env = {}) {
   // named (the refusal touch) and runs no hook. Script ops (RULES) skip the
   // owner and lock checks (scripts own the rules); their other refusals return
   // false with a console.warn.
-  /** Refuses actor p's action with notice `msg`; false. */
+  /** Refuses actor p's action with notice `msg`; false. A member of p's
+   *  `group` keeps its first refusal for the group's one notice (gather). */
   function no(p, msg) {
     if (p === RULES) console.warn(`a rules op was refused: ${msg}`);
+    else if (gather?.p === p) gather.why ??= { msg };
     else notify(p, msg);
     return false;
   }
@@ -3513,13 +3531,17 @@ export function createTable(host, env = {}) {
    *  catalog (deduplicated), then with `o.clear` the table cleared, the box's
    *  table and named seats set, and with `o.setup` its setup laid out (the
    *  item total checked first: at most MAX_SETUP_ITEMS, and room on the
-   *  table; then setupProblem), all or nothing (atomic). Returns the box's id, or false. */
+   *  table; then setupProblem), all or nothing (atomic); with `o.rules` its
+   *  rules start right after the job, as a setup's do (the `enable` effect:
+   *  📦's Built-in Set up of a box with a turn script, Hexfront). Returns the
+   *  box's id, or false. */
   function loadBox(actor, raw, o) {
     let box;
     try { box = cleanBox(raw); } catch (err) {
       console.error('loadBox: the box was refused', err);
       return no(actor, `🚫 Box rejected: ${err.message}`);
     }
+    if (o.rules && !box.rules) return no(actor, `🚫 «${box.name}» has no rules`);
     if (o.setup && box.setup) {
       const seated = Object.values(host.players).filter((pl) => pl.seat != null).length;
       const n = countSetup(box.setup, box.seats ? box.seats.length : host.seats ? Object.keys(host.players).length : seated);
@@ -3534,13 +3556,16 @@ export function createTable(host, env = {}) {
       if (o.clear) clearTable(actor);
       if (box.table) setTable(actor, box.table);
       setSeats(actor, box.seats ?? null);
+      let remap = {};
       if (o.setup && box.setup) {
         const why = setupProblem(box, box.setup);
         if (why) throw new Error(why);
-        const { n } = lay(id, box, box.setup);
+        const laid = lay(id, box, box.setup);
+        remap = laid.remap;
         host.lastSetup = id;
-        logEvent(actor, `set up «${box.name}» (${n} pieces)`, { keep: true });
+        logEvent(actor, `set up «${box.name}» (${laid.n} pieces)`, { keep: true });
       } else logEvent(actor, `added the box «${box.name}»`);
+      if (o.rules) emit({ t: 'enable', box: id, remap });
       took();
       return id;
     });
@@ -3811,8 +3836,9 @@ export function createTable(host, env = {}) {
   const BOX_JOBS = ['setup', 'reset', 'loadBox', 'addBox'];
   /** The fields of an action only the host sets (spec §3c, §3e, D117):
    *  whatever a payload says of them is dropped before anything reads it —
-   *  `to` too, except on `owner`, whose `to` names the new owner (§2c). */
-  const HOST_SET = ['from', 'pick', 'handled'];
+   *  `to` too, except on `owner`, whose `to` names the new owner (§2c); and
+   *  `group`, which marks a group's member to the hooks (§4c). */
+  const HOST_SET = ['from', 'pick', 'handled', 'group'];
   /** Action `a` of player p as the hooks and the default effect see it (spec
    *  §3c): a copy whose `to` is the display address the piece it places
    *  would snap to — the moved piece, or for take, split, play and a deal
@@ -3866,6 +3892,16 @@ export function createTable(host, env = {}) {
     drawn.set(id, { k, m: memberKey(bag.of[k]) });
     return k;
   }
+  /** Item `id` when player p may move it — nobody owns it or p does, and it
+   *  isn't locked — else null: asked quietly (a live drag, a group's shift). */
+  const movable = (p, id) => {
+    const it = typeof id === 'string' && own(host.items, id);
+    return it && (!it.owner || resolveOwner(it.owner) === p) && !it.lock ? it : null;
+  };
+  /** The shift (dx, dy) of the items `its`, cut so that every one of them
+   *  lands on the table (clampShift, D118): a group's live drag and its drop
+   *  (group move) cut it alike, so the drop lands where the glide was. */
+  const groupShift = (its, dx, dy) => clampShift(host.table, its.map((it) => { const { w, h } = size(it); return [it.x + w / 2, it.y + h / 2]; }), num(dx), num(dy));
   /** A live drag (spec §3c, `drag`): player p's piece, or group, on its way —
    *  {id, x, y} or {ids (the first MAX_GROUP), dx, dy} — for the other
    *  screens to show. It changes nothing, and runs no hook: what p may move
@@ -3874,18 +3910,11 @@ export function createTable(host, env = {}) {
    *  live: 1} or {p, ids, dx, dy, live: 1}, finite, every member landing on
    *  the table (clampShift, D118). True when one was queued. */
   function drag(p, a) {
-    const ok = (id) => {
-      const it = typeof id === 'string' && own(host.items, id);
-      if (it && (!it.owner || resolveOwner(it.owner) === p) && !it.lock) return it;
-      console.warn('drag: not relayed', id, 'from', p);
-      return null;
-    };
+    const ok = (id) => movable(p, id) || (console.warn('drag: not relayed', id, 'from', p), null);
     if (Array.isArray(a.ids)) {
       const ids = [...new Set(a.ids.slice(0, MAX_GROUP))].filter(ok);
       if (!ids.length) return false;
-      // (the group's shift, cut so that every member lands on the table: clampShift)
-      const cs = ids.map((id) => { const it = host.items[id], { w, h } = size(it); return [it.x + w / 2, it.y + h / 2]; });
-      emit({ t: 'fx', f: { p, ids, ...clampShift(host.table, cs, num(a.dx), num(a.dy)), live: 1 } });
+      emit({ t: 'fx', f: { p, ids, ...groupShift(ids.map((id) => host.items[id]), a.dx, a.dy), live: 1 } });
       return true;
     }
     const it = ok(a.id);
@@ -3943,30 +3972,52 @@ export function createTable(host, env = {}) {
    *  handle or validate fail CLOSED (nothing of the action applies), any
    *  later one is undone back to the checkpoint (the action's own effect is
    *  kept). A is `a` as the hooks see it: a frozen copy, with p, to, from,
-   *  pick (and handled). True when the table changed. */
-  function act(p, a, base) {
-    a = { ...a };
-    for (const k of a.t === 'owner' ? HOST_SET : [...HOST_SET, 'to']) delete a[k];
+   *  pick (and handled). True when the table changed.
+   *  A member of a `group` (`g`: group's context; `a` its sub-action, the
+   *  engine's own) runs the same pipeline from its own savepoint `base`,
+   *  with no buttons() (the group runs it once): a veto rolls back to it and
+   *  is kept for the group's notice (g.why), a handle or validate that
+   *  fails — or broke the gates — rolls back the whole group (g.base) and
+   *  stops it (g.stop). Then: 'took', 'handled', or false (skipped, or a no-op). */
+  function act(p, a, base, g = null) {
+    if (!g) {
+      a = { ...a };
+      for (const k of a.t === 'owner' ? HOST_SET : [...HOST_SET, 'to']) delete a[k];
+    }
     syncSpots(); // (an address read from here on is where each piece now lies: D106)
     if (J) J.cp = base;
+    if (!g && a.t === 'group') return group(p, a, base);
     let A0; // (built once, when a hook first needs it: `a` is prepared by then)
     const pl = own(host.players, p), ruled = RULED_ACTIONS.includes(a.t), A = () => (A0 ??= frozen({ ...a, p }));
     let handled = false;
+    /** The whole job fails closed (spec §3f.4): a group's too, every member undone. */
+    const closed = (hook, err) => {
+      rollbackTo(g ? g.base : base);
+      hookFailed(hook, err);
+      if (!g) return veto(p, a, 'rules script error');
+      g.stop = 'closed';
+      return false;
+    };
     if (ruled && host.rules?.enabled) {
       const h = host.rules.hints;
       if (h && own(h, p)) delete h[p]; // (journaled: a veto puts it back)
       if (PREPARED.has(a.t)) a = prepare(p, a);
-      const failClosed = (hook, err) => { rollbackTo(base); hookFailed(hook, err); return veto(p, a, 'rules script error'); };
-      const vetoed = (why) => { rollbackTo(base); return veto(p, a, why); };
+      const vetoed = (why) => {
+        rollbackTo(base);
+        if (!g) return veto(p, a, why);
+        g.why = { msg: String(why).slice(0, 300), ruled: true };
+        touchNamed(p, a);
+        return false;
+      };
       let r = tryHook('handle', A());
-      if (r.err) return failClosed('handle()', r.err);
+      if (r.err) return closed('handle()', r.err);
       if (typeof r.v === 'string' && r.v) return vetoed(r.v);
       handled = r.v === true;
       if (!handled) {
         const allow = hooks.flag?.('allow');
         if (hooks.flag?.('strict') === true && STRICT_ACTIONS.includes(a.t) && !(Array.isArray(allow) && allow.includes(a.t))) return vetoed('Not a move in this game');
         r = tryHook('validate', A());
-        if (r.err) return failClosed('validate()', r.err);
+        if (r.err) return closed('validate()', r.err);
         if (typeof r.v === 'string' && r.v) return vetoed(r.v);
       }
     } else if (PREPARED.has(a.t)) a = prepare(p, a);
@@ -3987,7 +4038,8 @@ export function createTable(host, env = {}) {
     // it named: the actor's screen still shows its optimistic move, and deltas
     // carry only what is marked.
     if (ruled && (handled || !took)) touchNamed(p, a);
-    if (!host.rules?.enabled) return bump();
+    const done = handled ? 'handled' : took && 'took';
+    if (!host.rules?.enabled) return g ? done : bump();
     // The checkpoint: what is kept even if a later hook fails. Its gates
     // (data's size, secret, asks) already hold unless handle or validate broke them.
     let bad;
@@ -3995,10 +4047,97 @@ export function createTable(host, env = {}) {
       J.cp = savepoint();
       bad = jobHooks.length && gateProblem(J.frames[J.cp].json, J.frames[base].json);
     } catch (err) { bad = `the rules' state is not JSON (${err.message})`; }
-    if (bad) { rollbackTo(base); hookFailed(hooksSince(base), new Error(bad)); return ruled ? veto(p, a, 'rules script error') : bump(); }
+    if (bad) {
+      const names = hooksSince(base);
+      if (ruled) return closed(names, new Error(bad));
+      rollbackTo(base);
+      hookFailed(names, new Error(bad));
+      return bump();
+    }
     if (ruled && (took || handled)) then.push(['onAction', handled ? frozen({ ...a, p, handled: true }) : A()]);
-    for (const [hook, ...args] of [...then, ['buttons']]) afterHook(hook, ...args);
+    for (const [hook, ...args] of g ? then : [...then, ['buttons']]) afterHook(hook, ...args);
+    return g ? done : bump();
+  }
+  /** Player p's `group` (spec §4c, D37): op `a.op` (GROUP_OPS) on each of
+   *  its members (groupIds: the first MAX_GROUP ids, each once), as one job —
+   *  one sub-action per member, bottom to top, as if p had sent each ({t: op,
+   *  id, …, group: N}): a move by the group's shift (cut as its live drag's:
+   *  groupShift), each piece snapping on its own; a turn by `rot` more,
+   *  snapped to the member's rotStep; `roll` ONE sub-action for the dice p
+   *  sees among the members. Every member takes every check of the single
+   *  action (owner, lock, the hidden-item rule) and, with the rules on, the
+   *  ruled pipeline (act) from a savepoint of its own: a refusal or a veto
+   *  skips that member alone (its writes undone, what it named re-sent); a
+   *  handle or validate that throws fails the whole job closed; a later hook
+   *  that fails keeps the members done and skips the rest (the rules are off
+   *  by then). What the members' ops would say in p's name is gathered
+   *  (`gather`: their lines, bulbs and refusals): one line ("moved 8 items",
+   *  "rolled 4 dice: 3 · 5 · 1 · 6", its labels itemLabel's: a hidden die's
+   *  value never shows), one bulb, one "blocked" line for the rules' vetoes,
+   *  and one notice — "2 of 8 were skipped: {the first reason}", a refusal
+   *  ("🚫 …") when none applied, `ruled` when that reason is the rules'.
+   *  buttons() runs once, at the end. True: the table changed (renumbered);
+   *  false: the group was malformed (said). */
+  function group(p, a, base) {
+    const op = a.op, ids = groupIds(a), bag = op === 'toBag' && own(host.items, a.bag);
+    const bad = !GROUP_OPS.includes(op) ? `🚫 A group can only ${GROUP_OPS.join(', ')}` : !ids.length ? "🚫 Name the group's items"
+      : op === 'lock' && typeof a.on !== 'boolean' ? '🚫 Say lock or unlock (on: true or false)' : op === 'toBag' && bag?.k !== 'b' ? '🚫 That is not a bag' : '';
+    if (bad) { console.warn('refused a group', a, 'from', p); notify(p, bad); return false; }
+    const here = ids.filter((id) => own(host.items, id)).sort((x, y) => host.items[x].z - host.items[y].z || (x < y ? -1 : 1));
+    const dice = op === 'roll' && here.filter((id) => { const it = host.items[id]; return it.k === 'g' && !hiddenFrom(p, it) && typeOf(it.t)?.kind === 'die'; }).sort();
+    if (dice && !dice.length) { notify(p, '🚫 Only dice can be rolled: none of those is a die'); return false; }
+    const N = dice ? dice.length : ids.length, shift = op === 'move' && groupShift(here.map((id) => movable(p, id)).filter(Boolean), a.dx, a.dy);
+    const subs = dice ? [{ t: 'roll', ids: dice, group: N }] : here.map((id) => {
+      const it = host.items[id];
+      return { t: op, id, ...(shift && { x: it.x + shift.dx, y: it.y + shift.dy }), ...(op === 'rot' && { rot: it.rot + num(a.rot) }), ...(op === 'lock' && { on: a.on }), ...(bag && { bag: a.bag }), group: N };
+    });
+    const g = { p, base, stop: '' }, on = !!host.rules?.enabled, skipped = []; // (skipped: each member's reason, {msg, ruled?})
+    let took = 0, fx = null, json;
+    for (const sub of subs) {
+      if (g.stop) { skipped.push({ msg: 'rules script error', ruled: true }); continue; }
+      if (sub.id !== undefined && !own(host.items, sub.id)) { skipped.push({ msg: 'it is gone' }); continue; } // (an earlier member's hook took it)
+      Object.assign(g, { why: null, mark: null });
+      gather = g;
+      let r;
+      try { r = act(p, sub, J ? savepoint(json) : -1, g); } finally { gather = null; }
+      if (g.stop === 'closed') break;
+      if (r === 'took') { took++; fx ??= g.mark; } else if (!r && g.why) skipped.push(g.why);
+      // a hook after the member's checkpoint failed (the rules are off), or broke the gates: the members done stay, the rest are skipped
+      if (on && !g.stop && (!host.rules?.enabled || (json = settle()) === null)) g.stop = 'off';
+    }
+    if (g.stop === 'closed') { // (the job rolled back whole: every member re-sent, one refusal)
+      for (const id of ids) refreshItem(id);
+      return veto(p, a, 'rules script error');
+    }
+    if (!dice) for (let k = here.length; k < ids.length; k++) skipped.push({ msg: 'it is gone' });
+    if (took && fx) {
+      logEvent(p, groupLine(a, dice ? N : took, dice, bag), { keep: true }); // (kept: the line names no item — two groups alike are two gestures, not a repeat)
+      const it = own(host.items, fx.id); // (where the first member is now: a removed one's bulb stays where it was)
+      emit({ t: 'fx', f: { ...fx, ...(it && { x: it.x, y: it.y }) } });
+    }
+    const vetoes = skipped.filter((s) => s.ruled), k = skipped.length, many = !dice && N > 1;
+    if (vetoes.length) logEvent(RULES, `blocked ${own(host.players, p)?.name || 'a player'}: ${vetoes[0].msg}${many ? ` (${vetoes.length} of ${N})` : ''}`);
+    if (k) { // (a roll is one: its refusal is the single action's)
+      const [{ msg, ruled }] = skipped, why = msg.replace(/^(🚫|🔒)\s*/u, '');
+      notify(p, many ? `${took || k < N ? '' : '🚫 '}${k} of ${N} ${k === 1 ? 'was' : 'were'} skipped: ${why}` : `🚫 ${why}`, !!ruled);
+    }
+    if (on && host.rules?.enabled) {
+      J.cp = savepoint(json);
+      afterHook('buttons');
+    }
     return bump();
+  }
+  /** A group's one line (group): "moved 8 items", "rolled 4 dice: 3 · 5 ·
+   *  1 · 6" (each die as opRoll says it: never a hidden one's value), "put 3
+   *  items into the bag Sack" — `n` members (dice) of group `a`. */
+  function groupLine(a, n, dice, bag) {
+    const items = `${n} ${n === 1 ? 'item' : 'items'}`;
+    if (dice) {
+      const faces = dice.map((id) => { const it = host.items[id], ty = typeOf(it.t); return it.up === false ? 'a hidden die' : faceLabel(ty.faces[it.f], it.f); });
+      return `rolled ${n} ${n === 1 ? 'die' : 'dice'}: ${faces.join(' · ')}`;
+    }
+    const verb = { move: 'moved', rot: 'rotated', flip: 'flipped', del: 'removed', lock: a.on ? 'locked' : 'unlocked' }[a.op];
+    return a.op === 'toBag' ? `put ${items} into ${label(bag)}` : `${verb} ${items}`;
   }
   /** The default effect of action `a` of player p (the op switch, shared by
    *  every path: no hook runs here): the hooks it implies, to run after the
@@ -4139,7 +4278,7 @@ export function createTable(host, env = {}) {
         setTable(p, tb);
         break;
       }
-      case 'loadBox': if (hostOnly(p, a)) loadBox(p, a.box, { setup: a.setup === true, clear: a.clear === true }); break;
+      case 'loadBox': if (hostOnly(p, a)) loadBox(p, a.box, { setup: a.setup === true, clear: a.clear === true, rules: a.rules === true }); break;
       case 'setup': case 'reset': if (!hostOnly(p, a) || !setupBox(p, a)) return null; break;
       case 'addBox': if (!addBox(p, a)) return null; break; // (refused, or the same box found: nothing changed — act() resolves {ok: false, id})
       case 'clear': if (hostOnly(p, a)) clearTable(p); break;
@@ -4576,18 +4715,19 @@ export function createTable(host, env = {}) {
   const talk = new Map(); // player id → timestamps of recent chats/renames
   /** Token bucket: true while `key` may act — a burst of `burst`, refilling
    *  at `perSec`. `map` keeps each key's {n, at}. */
-  function flood(map, key, burst, perSec) {
+  function flood(map, key, burst, perSec, cost = 1) {
     const ts = now(), b = map.get(key) || { n: burst, at: ts };
     b.n = Math.min(burst, b.n + ((ts - b.at) / 1000) * perSec);
     b.at = ts;
     map.set(key, b);
-    if (b.n < 1) return false;
-    b.n--;
+    if (b.n < cost) return false;
+    b.n -= cost;
     return true;
   }
   /** Every action re-renders the host (the one authority): a guest may send
-   *  bursts of 40 (a drag, a reconnect's queue), then 20 per second. */
-  const mayAct = (p) => flood(acts, p, 40, 20);
+   *  bursts of 40 tokens (a drag, a reconnect's queue), then 20 per second;
+   *  action `a` costs floodCost(a) of them (a `group`: 1 + ⌊N/20⌋). */
+  const mayAct = (p, a) => flood(acts, p, 40, 20, floodCost(a));
   /** A guest may chat or rename at most 5 times per 5 s. The host itself is
    *  exempt — it is the authority over the log anyway. */
   function mayTalk(p) {
@@ -5484,14 +5624,15 @@ export function createTable(host, env = {}) {
     if (job) boxJobProblem(s, decks, boxes, log, effects, p, a, no);
     return { decks, boxes, items, asks, table, seats, effects };
   }
-  /** The box the host's loadBox `a` lays out, as the engine finds it
+  /** The box the host's loadBox `a` registers or finds, as the engine does
    *  (registerBox): the one of that content the patch adds (`boxes`:
-   *  checkPatch's) or the catalog holds — when `a` asks for its setup and it
-   *  has one (loadBox sets lastSetup only then); else undefined. */
-  function laidOut(a, boxes) {
+   *  checkPatch's) or the catalog holds — or, with `laid`, only when `a`
+   *  asks for its setup and it has one (loadBox sets lastSetup only then);
+   *  else undefined. */
+  function laidOut(a, boxes, laid = true) {
     let box;
     try { box = cleanBox(a.box); } catch (err) { console.error('checkPatch: a loadBox of a box the engine refuses', err); return undefined; }
-    if (a.setup !== true || !box.setup) return undefined;
+    if (laid && (a.setup !== true || !box.setup)) return undefined;
     return boxes.find(([, r]) => canon(r.box) === canon(box))?.[0] ?? boxWith(storedText(box));
   }
   /** checkPatch's part for game boxes (spec §4c), job `a` of player p: a
@@ -5546,10 +5687,12 @@ export function createTable(host, env = {}) {
         if (canon(want) !== canon(box)) no(`the script rewrote ${who}'s box`);
       }
     }
-    if (en.length) {
-      const [{ box: id, remap }] = en, box = own(host.boxes, id), clear = a.t === 'reset' || a.clear !== false;
-      const asked = box && !clear ? setupIds(box.setup || []).filter((x) => own(host.items, x)).sort() : [], vals = Object.values(remap);
-      if (en.length > 1 || p !== pid || !box?.rules || !(a.t === 'setup' ? a.rules === true && id === a.box : a.t === 'reset' && id === host.lastSetup && host.rules?.enabled && host.rules.box === id)
+    if (en.length) { // (a loadBox's box may be the one its own patch adds)
+      const [{ box: id, remap }] = en, box = own(host.boxes, id) ?? boxes.find(([x]) => x === id)?.[1].box;
+      const clear = a.t === 'reset' || (a.t === 'loadBox' ? a.clear === true : a.clear !== false), laid = a.t !== 'loadBox' || (a.setup === true && !!box?.setup);
+      const asked = box && !clear && laid ? setupIds(box.setup || []).filter((x) => own(host.items, x)).sort() : [], vals = Object.values(remap);
+      if (en.length > 1 || p !== pid || !box?.rules || !(a.t === 'setup' ? a.rules === true && id === a.box : a.t === 'reset' ? id === host.lastSetup && host.rules?.enabled && host.rules.box === id
+        : a.t === 'loadBox' && a.rules === true && id === laidOut(a, boxes, false))
         || Object.keys(remap).sort().join() !== asked.join() || new Set(vals).size !== vals.length || !vals.every((v) => isObj(own(s.items || {}, v)) && !own(host.items, v))) no('the script asked for rules the host never chose');
     }
   }

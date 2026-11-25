@@ -91,6 +91,12 @@ class Bridge {
   setup(box, keep = false, rules = false) { this.send({ t: 'setup', box, keep, rules }); }
   /** Host: lays the box last set up (state.lastSetup) out again. */
   reset() { this.send({ t: 'reset' }); }
+  /** One op on many items, as one action (spec §4i): `op` is move ({dx, dy}),
+   *  rot ({deg}: a turn by that much each), flip, roll (the dice among them),
+   *  lock, unlock, del or bag ({bag}: an id or a name); `ids` a list of item
+   *  ids (or names). The host skips the members you may not handle, and says
+   *  how many in one notice. */
+  group(op, ids, kw = {}) { this.send({ t: 'group', op, ids: [...ids], ...kw }); }
   route(req, res) {
     const url = new URL(req.url, 'http://x');
     if (url.searchParams.get('token') !== this.token) {
@@ -179,6 +185,7 @@ const HELP = `commands:
   bag <id> <bag>          put a piece into a bag
   lock|unlock <id>        lock an item in place, or free it
   claim|release <id>      make an item yours, or nobody's
+  group <op> <id,id,…> [dx dy | deg | bag]  one op on many items: move dx dy, rot deg, flip, roll, lock, unlock, del, bag <bag>
   seat <id> | seat - | seat +   sit in a named seat; - stand up to watch; + sit down again
   btn <id>                press a rules button (see "buttons")
   asks                    the rules' questions waiting for you (new ones print as they come)
@@ -234,6 +241,7 @@ function need(args, n, usage) {
   if (args.length < n || args.slice(1, n).some((a) => !Number.isFinite(+a))) throw new Error(usage);
 }
 const STALE_MS = 25000; // a live tab re-polls at least every 20 s
+const GROUP_USAGE = 'group <op> <id,id,…> [dx dy | deg | bag] — op: move dx dy, rot deg, flip, roll, lock, unlock, del, bag <bag>';
 
 function repl(bridge) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: '🂡 > ' });
@@ -330,6 +338,11 @@ function runCmd(bridge, line) {
     case 'lock': case 'unlock':
       need(args, 1, `${cmd} <id>`);
       return bridge.send({ t: 'lock', id: args[0], on: cmd === 'lock' });
+    case 'group': {
+      const [op, list, ...rest] = args, nums = rest.map(Number), n = { move: 2, rot: 1 }[op];
+      if (!list || (n !== undefined && (rest.length !== n || !nums.every(Number.isFinite))) || (op === 'bag' && !rest.length)) throw new Error(GROUP_USAGE);
+      return bridge.group(op, list.split(',').filter(Boolean), op === 'move' ? { dx: nums[0], dy: nums[1] } : op === 'rot' ? { deg: nums[0] } : op === 'bag' ? { bag: rest.join(' ') } : {});
+    }
     case 'claim': case 'release':
       need(args, 1, `${cmd} <id>`);
       return bridge.send({ t: 'owner', id: args[0], to: cmd === 'claim' ? s.pid : null });
