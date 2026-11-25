@@ -2147,6 +2147,60 @@ answer a press of the dialog's own buttons; nothing they test goes through
 - **Mechanism changes**: `core-p2.test.mjs`'s exact PUBLIC_ACTIONS set
   gains `group`; `run-all.sh`'s serial batch adds `core-p4-bench`.
 
+### The 4B group suites written from the spec (independent of the implementation)
+
+- **`core-p4.test.mjs` (3′)** (Node; §4l item 3: §4c, §3f.4–§3f.6, §2c,
+  D217–D219) on "Muster", an original box (pawns on and off a 10 × 8
+  field, a tile, a hex token, a wedge, a face-down crate, labelled dice, a
+  face-down die and a face-down token under one back, a bag, face-down
+  cards). A group's members end as the single actions sent one by one leave
+  a twin table (`mustered()`: the same seed, the same layout): moves
+  snapping on their own (dice never), `rot` a per-member delta snapped to
+  each rotStep; one line, one bulb. Each member is under the owner and lock
+  checks and is skipped alone: "k of N were skipped: {the lowest skipped
+  member's reason}", "🚫" only when none applied, a group of one saying its
+  single action's refusal. The hidden-item rule: a group roll is one roll
+  of the dice the player sees, and a face-down die in it says word for word
+  what a face-down token under the same back does. Flip, into a bag,
+  remove; the first 200 ids each once; malformed groups refused. Flood
+  control through `T.mayAct` (1 + ⌊N/20⌋ of the 40-token burst; a group
+  drag one token); the watchdog's budget through app.js's own `budget`, cut
+  from its text as h.js cuts WholeOffers (4000 + 10 ms × N, N ≤ 200). With
+  the rules on (`room()`'s mirror): a veto and an engine refusal roll back
+  that member's handle writes alone; onAction per member sees {group: N};
+  buttons() once; a forged {group} on a single action never reaches the
+  hooks; a handle or validate that throws (or an async validate) fails the
+  whole group closed, said word for word as the single action's failure
+  is; an onAction that throws keeps the members done; strict per member.
+  The host takes each op's honest patch and refuses eight forged ones whole
+  (another's line or bulb, a chat line, a peek, a rename, offline,
+  lastSetup, an `enable`).
+- **`t-p4-attack.js`** (real tabs; §4j attacker case 8, §3f.5): Alice sets
+  up "Muster" (with 200 drill pawns), Bob's state bodies are recorded,
+  Mallory is a raw peer. Her move of 500 ids (one pawn 150 times, Bob's
+  pawn and face-down card, a locked pawn, face-down pieces, 44 ids naming
+  nothing, a pawn at the 201st place): capped, deduplicated, skipped, "47
+  of 51 were skipped: …". Her roll of 500 ids: one roll of the dice she
+  sees, the face-down die never. Her flip and remove of what isn't hers:
+  refused, nothing changes. A burst of eight 500-id groups: 3 to 7 apply
+  (11 tokens each), the rest "Too many actions". Then a recursive scan of
+  every body she received and of Bob's: no face-down card's index, no
+  hidden piece's type, face or side, no hidden type's word outside the
+  public catalog. Last, the watchdog in a real Worker: 200 members × 22 ms
+  of validate() (4.4 s) are not stopped, 20 × 400 ms are, at about 4.2 s,
+  the group dropped whole and both told as §3f.5 words it. Its margins
+  (4.4 s against a 6 s budget, 8 s against 4.2 s) hold in the parallel
+  batch.
+- **`t-p4-gcli.js`** (cli.js and cli.py in parity; §4i, D224): to a fake
+  tab, every `group` form sends exactly {t: 'group', op, ids, dx, dy | deg
+  | bag} from both REPLs; malformed lines print the same usage and send
+  nothing; both helps list it alike; the Bridge API's group(op, ids, kw) /
+  group(op, ids, **kw) through a driver that passes keyword arguments
+  (`apiKw`). Real tabs, Alice hosting on cli.js and Bob a guest on cli.py,
+  on "Drill": move, rot, roll, bag (by its name), lock, unlock and del typed
+  in a terminal, one line in both REPLs, the skips said once in the
+  sender's; an unknown op said in the terminal.
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores
