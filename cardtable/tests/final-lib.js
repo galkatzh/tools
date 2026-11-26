@@ -8,6 +8,11 @@ const h = require('./h');
 async function mallory(env, invite, peers = 2) {
   const page = await h.rawPage(env, 'Mallory'); // no app code: a raw Trystero peer
   await page.evaluate(async ({ invite, relay, v, peers }) => {
+    // A raw peer sends whatever text it likes: {__raw: text} goes out as that very text (Trystero takes
+    // JSON.stringify as it loads, so this comes first) — M.deep below sends JSON nested deeper than a
+    // structured clone or a recursive walk can follow.
+    const stringify = JSON.stringify;
+    JSON.stringify = function (x, ...r) { return x && typeof x.__raw === 'string' ? x.__raw : stringify.call(this, x, ...r); };
     const { joinRoom } = await import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm');
     const [, roomId, password] = invite.match(/#room~([0-9a-f]+)~([0-9a-f]+)/);
     const room = joinRoom({ appId: 'gk-cardtable', password, rtcPolyfill: window.RawRTC, relayConfig: { urls: [relay] } }, roomId);
@@ -22,6 +27,11 @@ async function mallory(env, invite, peers = 2) {
     M.notes = () => M.got.note.map(({ m }) => body(m));
     // every action carries the wire version: without it the host refuses it before the code under test runs
     M.act = (a) => a && M.send.act({ _v: v, ...a, _pid: 'ffffffffffffffff', _name: 'Mallory', _key: 'm'.repeat(32) });
+    /** As M.act, with a junk field `j` nested `depth` arrays deep (JSON.parse takes any depth). */
+    M.deep = (a, depth) => {
+      const head = stringify({ _v: v, ...a, _pid: 'ffffffffffffffff', _name: 'Mallory', _key: 'm'.repeat(32) });
+      return M.send.act({ __raw: `${head.slice(0, -1)},"j":${'['.repeat(depth)}${']'.repeat(depth)}}` });
+    };
     await new Promise((r) => { const t = setInterval(() => { if (Object.keys(room.getPeers()).length >= peers) { clearInterval(t); r(); } }, 100); });
   }, { invite, relay: env.relayUrl, v: h.PROTO, peers });
   page.act = (a) => page.evaluate((x) => window.M.act(x), a);

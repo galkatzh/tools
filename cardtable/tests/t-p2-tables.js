@@ -110,7 +110,7 @@ const HINTS = ['Connecting…', "Can't reach the signaling relays — reconnecti
  *  of each leg's rest (`rests`), and after the lift (`end`). */
 const pinchTwist = (p, legs) => p.evaluate(async ([legs, restMs]) => {
   const table = document.getElementById('table'), r = document.getElementById('table-wrap').getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-  const bzRule = [...document.adoptedStyleSheets].flatMap((s) => [...s.cssRules]).find((x) => x.style?.getPropertyValue('--bz'));
+  const bzRule = [...document.styleSheets].flatMap((s) => [...s.cssRules]).find((x) => x.style?.getPropertyValue('--bz'));
   const ev = (type, id, d, a) => {
     const k = id === 7 ? d : -d, rad = (a * Math.PI) / 180;
     return new PointerEvent(type, { pointerId: id, pointerType: 'touch', isPrimary: id === 7, button: 0, buttons: type === 'pointerup' ? 0 : 1, clientX: cx + k * Math.cos(rad), clientY: cy + k * Math.sin(rad), bubbles: true, cancelable: true });

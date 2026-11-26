@@ -96,13 +96,16 @@ const centreOf = (p, id) => p.evaluate((id) => {
   return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
 }, id);
 /** The snap preview on page p, two frames on (touch moves reach the page
- *  frame-aligned: the last one may still be on its way): {ghost: its centre
- *  and size (client px) or null when hidden, chip: {text, l, t, r, b} or
- *  null, spot: __ct.spot(), vw, vh (the viewport)}. */
+ *  frame-aligned: the last one may still be on its way), and once the chip
+ *  shows the spot's address (the app writes it at most every 150 ms, D309:
+ *  waited for up to 500 ms): {ghost: its centre and size (client px) or null
+ *  when hidden, chip: {text, l, t, r, b} or null, spot: __ct.spot(), vw, vh
+ *  (the viewport)}. */
 const preview = (p) => p.evaluate(async () => {
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   const vis = (el) => el && !el.classList.contains('hidden') && getComputedStyle(el).display !== 'none' && el.getClientRects().length > 0;
   const g = document.querySelector('#table > .snap-ghost'), c = document.querySelector('#table-wrap > .snap-chip');
+  for (const t0 = performance.now(); vis(c) && c.textContent !== window.__ct.spot()?.to && performance.now() - t0 < 500;) await new Promise((r) => setTimeout(r, 20));
   const gr = vis(g) && g.getBoundingClientRect(), cr = vis(c) && c.getBoundingClientRect();
   return {
     ghost: gr ? { x: gr.left + gr.width / 2, y: gr.top + gr.height / 2, w: gr.width, h: gr.height } : null,

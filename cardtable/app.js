@@ -21,9 +21,9 @@ import { joinRoom, selfId, getRelaySockets } from 'https://cdn.jsdelivr.net/npm/
 import {
   CARD_W, CARD_H, RANKS, RULES, playR, clampToTable, seatAt, seatAngles, sizeOf, flagsOf, typeAt, PID_RE, ASSET_RE, rand, clamp, own, num, peerText,
   cleanDeck, cleanDeckV1, cleanBox, isBuiltin, deckOverBudget, assetRefs, cleanName, standardDeck, cardName, pieceName, faceLabel, createTable,
-  MODULE_V as CORE_V, PROTO, PUBLIC_ACTIONS, HOST_ACTIONS, MAX_ROLL, MAX_N, MAX_BAG, MAX_HAND, MAX_PILE, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch, roundTable, FELT,
+  MODULE_V as CORE_V, PROTO, STATE_V, PUBLIC_ACTIONS, HOST_ACTIONS, MAX_ROLL, MAX_N, MAX_BAG, MAX_HAND, MAX_PILE, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch, roundTable, FELT,
   tableBoards, snapTo, snapAt, snaps, displayAddr, resolveAddr, liveFx, countSetup, checkTransportBox, boxOverBudget, publicBox, groupIds, GROUP_OPS, clampShift, MAX_GROUP,
-  zonesUnder, PLACEHOLDER,
+  zonesUnder, PLACEHOLDER, tooDeep,
 } from './core.js?v=1';
 import { MODULE_V as GRID_V, turn, spotOf, fromLocal, toLocal } from './grid.js?v=1';
 import * as pieces from './pieces.js?v=1';
@@ -37,6 +37,15 @@ const { esc, safeColor, contrastFor } = pieces;
 export const MODULE_V = 1;
 
 const $ = (id) => document.getElementById(id);
+// Page skew: an index.html cached from before this version (the previous
+// Card Table's loads app.js with no ?v=, so it gets this one) lacks what
+// this script wires up. Stop before touching it, with the reload banner,
+// not a TypeError (boot() checks the modules' versions likewise, D306).
+if (!$('box-btn')) {
+  console.error('Card Table: this page (a cached index.html) is older than its script');
+  document.body.insertAdjacentHTML('afterbegin', '<div id="skew-banner">Card Table was updated while this page loaded — reload this page</div>');
+  await new Promise(() => {}); // (this module stops here, for good)
+}
 const tableEl = $('table'), wrapEl = $('table-wrap'), handEl = $('hand'), barEl = $('action-bar');
 const hintEl = $('table-hint'), toastEl = $('toast'), netEl = $('net-status');
 const sideEl = $('side'), logEl = $('log');
@@ -203,6 +212,9 @@ let decks = {}, boxes = {}, boxInfo = {};
 let T = null;
 let view = viewFromSnap({ seq: 0, boot: 0 });
 let peerPid = {};    // host only: Trystero peerId -> stable player id
+// host only: Trystero peerId -> the one player id it may ever register — kept past a leave, so a page that
+// rejoins can't mint a new player (a seat key and an image budget) each time (D302); a page's own id never changes
+const firstPid = new Map();
 let hostPeer = null; // guest only: peerId currently acting as host
 const early = new Map(), EARLY_MAX = 16; // guest: peer → its catalog messages held until it shows it hosts (see fromHost)
 /** Counters and the last durations, for the tests and benchmarks (window.__ct). */
@@ -619,8 +631,16 @@ function toWorker({ p, a, resolve }) {
   current = { ...job, id, t0: performance.now() };
   try {
     worker.w.postMessage({ type: 'act', id, p: job.p, a: job.a, now: Date.now() });
-  } catch (err) { // (an action that can't be copied: a bug, never a peer's — they come as JSON)
+  } catch (err) { // (an action that can't be copied: the network gate refuses a peer's that nests too deep, tooDeep)
     console.error('could not post a job to the rules Worker', job.a, err);
+    if (p !== pid && a.t[0] !== '_') { // still, a peer's is that action's failure alone, never the script's (D302)
+      current = null;
+      tell(p, '🚫 That action could not be read');
+      refused(p, a);
+      resolve({ ok: false, error: err.message });
+      pump();
+      return;
+    }
     rulesDown(`a job could not be sent: ${err.message}`, `Rules disabled — ${err.message}`);
     return;
   }
@@ -954,8 +974,8 @@ function broadcast() {
  *  (publicBox) and the rules code — through its lane, ahead of its first
  *  snapshot. Everything sent later to everyone is a delta. */
 function sendCatalog(peer) {
-  sendDecks(decks, peer);
-  sendBoxes(Object.fromEntries(Object.keys(boxes).map((id) => [id, pubBox(id)])), peer);
+  sendDecks({ ...decks, [WHOLE]: 1 }, peer);
+  sendBoxes({ ...Object.fromEntries(Object.keys(boxes).map((id) => [id, pubBox(id)])), [WHOLE]: 1 }, peer);
   if (T.state.rules) sendRules({ code: T.state.rules.code, name: T.state.rules.name }, peer);
 }
 
@@ -999,6 +1019,7 @@ function demote() {
   for (const st of sync.values()) clearTimeout(st.timer);
   sync.clear();
   peerPid = {};
+  firstPid.clear();
   clearTimeout(bcastT);
   clearTimeout(persistT);
   bcastT = persistT = 0;
@@ -1009,6 +1030,7 @@ function demote() {
   current = null;
   for (const box of outbox.values()) clearTimeout(box.wait);
   outbox.clear();
+  pulls.clear();
   T = null;
   view.boot = 0;
   $('size-sel').classList.add('hidden');
@@ -1066,17 +1088,21 @@ function introduce() {
   act({ t: 'hello' });
 }
 
-let skewWarned = false; // the "different version" toast shows once
+let skewWarned = false, newerWarned = false; // the "another version" toast, and the host's "a newer Card Table", show once
 /** A state body from the network: already unsealed and bound to this
  *  connection (fromHost). Checks the version, settles two-host collisions,
- *  then takes it as a guest (receive). */
+ *  then takes it as a guest (receive). Another version is never taken, and
+ *  the toast says who must reload: this page only when the host's is newer
+ *  (D304). */
 function handleState(d, peer) {
   if (!d || typeof d !== 'object') return;
   if (d.v !== PROTO) {
     if (!skewWarned) {
       skewWarned = true;
       console.error(`the host speaks wire protocol ${d.v}, this page ${PROTO}`);
-      toast('The host runs a different version of Card Table — reload this page');
+      toast(role === 'host' ? 'Another tab hosts this table on another Card Table version — close it or reload it'
+        : num(d.v) > PROTO ? 'The host runs a newer Card Table — reload this page'
+          : "The host's page runs an older Card Table — ask the host to reload it");
     }
     return;
   }
@@ -1159,6 +1185,21 @@ function requestSnap() {
   resyncT = setTimeout(() => { resyncT = 0; if (resyncing) requestSnap(); }, SNAP_MIN_MS);
 }
 
+const NEWCOMERS = 20, NEWCOMER_MS = 3000;
+let newcomers = { n: NEWCOMERS, at: 0 }; // host: the table's bucket of new players (newcomer)
+/** Host: whether a player new to this table may register now — NEWCOMERS at
+ *  once, then one every NEWCOMER_MS, for the whole table — so a page that
+ *  mints a player id at each reconnect (a seat key and an image budget
+ *  each, which the host keeps) mints few (D302). A refused one keeps
+ *  knocking (introduce) and gets in once there is room. */
+function newcomer() {
+  const now = Date.now();
+  newcomers = { n: Math.min(NEWCOMERS, newcomers.n + (now - newcomers.at) / NEWCOMER_MS), at: now };
+  if (newcomers.n < 1) return false;
+  newcomers.n--;
+  return true;
+}
+
 const refusedAt = {}; // host: peer → last refusal notice (no toast storms)
 /** Host: turns away a peer's action, loudly on both ends. */
 function refuse(peer, reason) {
@@ -1181,7 +1222,7 @@ function refuse(peer, reason) {
 // unanswered for NEED_TIMEOUT_MS is asked again once, then the image counts
 // as missing, as does one that arrives damaged twice.
 const NEED_BATCH = 64, NEED_PER_S = 8, NEED_TIMEOUT_MS = 20000;
-const ASSET_INFLIGHT = 2, PEER_ASSET_BUDGET = 64e6, ASSET_WINDOW_MS = 60000;
+const ASSET_INFLIGHT = 2, PEER_ASSET_BUDGET = 64e6, HOST_ASSET_BUDGET = 4 * PEER_ASSET_BUDGET, ASSET_WINDOW_MS = 60000;
 /** What this tab knows of each image it shows but doesn't hold yet
  *  (store.holds): 'load' (being read from IndexedDB — for good on a host
  *  whose storage went away: it was told to reload), 'missing' (it won't
@@ -1215,13 +1256,30 @@ function wantImages(ids) {
       if (unread.length) toast(`Couldn't read ${unread.length} card images from this browser's storage — reload this page`); // (they stay loading: never "missing")
     });
 }
-// Deck messages are deltas (or the full map for new joiners) — always merge,
-// re-sanitized here too (defense in depth, and legacy unsigned rooms).
-/** Guest: decks `d` ({deckId: deck}) from the host (or kept across a reload: keepPaused). */
+// Deck messages are deltas, merged — or the whole catalog for a new
+// connection, marked WHOLE: then a deck it lacks is gone from the host (it
+// resumed without it), and goes here too (D305). Each is re-sanitized here
+// (defense in depth, and legacy unsigned rooms).
+const WHOLE = '*';
+/** Guest: what `map` (this tab's decks or boxes) holds that whole catalog
+ *  `d` lacks, taken out of `map` (and `also`): [[id, its value, also's]];
+ *  none for a delta. */
+function dropMissing(d, map, also = {}) {
+  if (d[WHOLE] !== 1) return [];
+  return Object.keys(map).filter((id) => !own(d, id)).map((id) => {
+    const gone = [id, map[id], also[id]];
+    delete map[id];
+    delete also[id];
+    return gone;
+  });
+}
+/** Guest: decks `d` ({deckId: deck}, WHOLE or a delta) from the host (or kept across a reload: keepPaused). */
 function takeDecks(d) {
   if (role === 'host' || !d || typeof d !== 'object') return;
   const got = [];
+  dropMissing(d, decks); // (no item shows them: the host's next snapshot is drawn from what it holds)
   for (const [id, deck] of Object.entries(d)) {
+    if (id === WHOLE) continue;
     if (!/^[0-9a-f]{8}$/.test(id)) { console.warn('ignored a deck with a bad id', id); continue; }
     try { decks[id] = cleanDeck(deck); got.push(id); } catch (err) { console.error(`deck ${id} rejected`, err); }
   }
@@ -1237,11 +1295,18 @@ function takeDecks(d) {
 // connection), each passing cleanBox here. A box that fails is dropped,
 // loudly (once per box): its pieces draw as "?" placeholders. What the host
 // says of a box (src, by, builtin) is only ever displayed.
-/** Guest: game boxes `d` ({boxId: box and src, by, builtin}) from the host (or kept across a reload). */
+/** Guest: game boxes `d` ({boxId: box and src, by, builtin}, WHOLE or a
+ *  delta) from the host (or kept across a reload). A box of ours the
+ *  host's whole catalog lacks (its reload lost it) is said. */
 function takeBoxes(d) {
   if (role === 'host' || !d || typeof d !== 'object') return;
   const got = [];
+  for (const [id, box, info] of dropMissing(d, boxes, boxInfo)) {
+    console.warn(`the host no longer holds game box ${id}`);
+    if (info?.by === pid) toast(`The host's reload lost «${box.name}» — upload it again`);
+  }
   for (const [id, b] of Object.entries(d)) {
+    if (id === WHOLE) continue;
     if (!/^[0-9a-f]{8}$/.test(id)) { console.warn('ignored a game box with a bad id', id); continue; }
     try {
       boxes[id] = cleanBox(b);
@@ -1324,17 +1389,27 @@ function receiveImage(data, peer, meta) {
   });
 }
 
-const outbox = new Map(); // host: peer → its image queue {q, queued, inflight, sent: Map<id, {at, n}>, since, bytes, warned, wait}
+const outbox = new Map(); // host: peer → its image queue {q, queued, inflight, wait, warned (the window it was told of)}
+// host: player → what they were sent this window {since, bytes, last, sent: Map<id, {at, n}>}: all
+// their connections share it, and it outlives a leave until a window has passed since its last send;
+// '' → what the whole table was sent (D302)
+const pulls = new Map();
+/** Host: player p's image budget, now: kept while it sent anything within
+ *  ASSET_WINDOW_MS; one idle that long is dropped (and so starts afresh). */
+function pullOf(p, now) {
+  for (const [q, r] of pulls) if (now - r.last > ASSET_WINDOW_MS) pulls.delete(q);
+  return pulls.get(p) || pulls.set(p, { since: now, bytes: 0, last: now, sent: new Map() }).get(p);
+}
 /** Host: peer asked for images `list` (a need, ≤ NEED_BATCH ids): queues
  *  the ones this table shows and this browser holds, names the ones it lacks
- *  (missing), and ignores the rest. The same image goes to the same peer at
- *  most twice a minute (a guest asks again once, when one arrives damaged). */
+ *  (missing), and ignores the rest. The same image goes to the same player
+ *  at most twice a minute (a guest asks again once, when one arrives damaged). */
 async function serveImages(peer, list) {
-  const refs = T.assetRefs(), now = Date.now();
-  const box = outbox.get(peer) || outbox.set(peer, { q: [], queued: new Set(), inflight: 0, sent: new Map(), since: now, bytes: 0, warned: false, wait: 0 }).get(peer);
+  const refs = T.assetRefs(), now = Date.now(), sent = pullOf(peerPid[peer], now).sent;
+  const box = outbox.get(peer) || outbox.set(peer, { q: [], queued: new Set(), inflight: 0, wait: 0, warned: 0 }).get(peer);
   const want = (Array.isArray(list) ? list.slice(0, NEED_BATCH) : []).filter((h) => typeof h === 'string' && ASSET_RE.test(h));
   const ids = want.filter((h) => {
-    const s = box.sent.get(h);
+    const s = sent.get(h);
     return refs.has(h) && !box.queued.has(h) && !(s && now - s.at < ASSET_WINDOW_MS && s.n >= 2);
   });
   const foreign = want.filter((h) => !refs.has(h)).length;
@@ -1371,31 +1446,37 @@ function pumpImages(peer, box) {
     });
   }
 }
-/** Host: sends image h to peer, once its pending states are out. A peer
- *  gets at most PEER_ASSET_BUDGET bytes of images per ASSET_WINDOW_MS: past
- *  that, h and the rest of its queue wait for the next window (false), and
- *  the peer is told once, with how long (`wait`), so a guest pulling a big
- *  table keeps waiting rather than giving up, and nobody can make the host
- *  send more. True once h is sent, or reported missing. */
+/** Host: sends image h to peer, once its pending states are out. A player
+ *  gets at most PEER_ASSET_BUDGET bytes of images per ASSET_WINDOW_MS, over
+ *  all their connections, a reconnect's too, and the whole table at most
+ *  HOST_ASSET_BUDGET (pulls): past either, h and the rest of this
+ *  connection's queue wait for the next window (false), and the connection
+ *  is told once, with how long (`wait`), so a guest pulling a big table
+ *  keeps waiting rather than giving up — and no player ids minted at each
+ *  reconnect (the table takes few: newcomer) make the host send more. True
+ *  once h is sent, or reported missing. */
 async function sendImage(peer, box, h) {
+  const p = peerPid[peer];
   await laneIdle(peer); // states first: play stays live during a big pull
   const img = await store.getAsset(h), now = Date.now();
   if (!img) { missing(peer, [h]); return true; }
-  if (now - box.since > ASSET_WINDOW_MS) Object.assign(box, { since: now, bytes: 0, warned: false });
-  if (box.bytes + img.data.byteLength > PEER_ASSET_BUDGET) {
-    const wait = box.since + ASSET_WINDOW_MS - now;
+  const n = img.data.byteLength, mine = pullOf(p, now), all = pullOf('', now);
+  for (const b of [mine, all]) if (now - b.since > ASSET_WINDOW_MS) Object.assign(b, { since: now, bytes: 0 });
+  const full = mine.bytes + n > PEER_ASSET_BUDGET ? mine : all.bytes + n > HOST_ASSET_BUDGET ? all : null;
+  if (full) {
+    const wait = full.since + ASSET_WINDOW_MS - now;
     box.q.unshift(h);
     box.wait ||= setTimeout(() => { box.wait = 0; if (outbox.get(peer) === box) pumpImages(peer, box); }, wait + 1);
-    if (!box.warned) {
-      box.warned = true;
-      console.warn(`${peer} is over its image budget (${PEER_ASSET_BUDGET / 1e6} MB a minute): the rest waits ${Math.ceil(wait / 1000)} s`);
-      sendNote({ msg: '🚫 Too many image requests — slow down', wait, to: peerPid[peer] ?? null }, peer);
+    if (box.warned !== full.since) {
+      box.warned = full.since;
+      console.warn(`${peer}: over ${full === all ? "the table's image budget" : "its player's image budget"} a minute: the rest waits ${Math.ceil(wait / 1000)} s`);
+      sendNote({ msg: '🚫 Too many image requests — slow down', wait, to: p ?? null }, peer); // (a guest shows its own words for `wait`)
     }
     return false;
   }
-  box.bytes += img.data.byteLength;
-  const s = box.sent.get(h);
-  box.sent.set(h, s && now - s.at < ASSET_WINDOW_MS ? { at: s.at, n: s.n + 1 } : { at: now, n: 1 });
+  for (const b of [mine, all]) { b.bytes += n; b.last = now; }
+  const s = mine.sent.get(h);
+  mine.sent.set(h, s && now - s.at < ASSET_WINDOW_MS ? { at: s.at, n: s.n + 1 } : { at: now, n: 1 });
   await sendAsset(img.data, peer, { h, mime: img.mime });
   return true;
 }
@@ -1495,7 +1576,7 @@ function connect() {
     if (role === 'host' || !n || (n.to && n.to !== pid)) return;
     if (num(n.wait) > 0) { // the host paces our image pull (its budget a minute): we keep waiting, and say why
       heardAt = Math.max(heardAt, Date.now() + Math.min(num(n.wait), ASSET_WINDOW_MS));
-      note(`Card images are coming slowly — the host sends at most ${PEER_ASSET_BUDGET / 1e6} MB of them a minute`);
+      note(`Card images are coming slowly — the host sends at most ${PEER_ASSET_BUDGET / 1e6} MB of them a minute to a player, ${HOST_ASSET_BUDGET / 1e6} MB to all`);
     } else if (n.msg) note(String(n.msg), n.ruled === true); // toast + the terminal bridge
     if (Array.isArray(n.back) && n.to === pid) letGoOf(n.back.filter((id) => typeof id === 'string')); // our refused drop of our own hidden piece
     if (n.peek && n.to === pid) { // the host's private answer to our peek: a card {d, i}, or a piece {t, f}
@@ -1516,16 +1597,23 @@ function connect() {
 
   actA.onMessage = (a, { peerId: peer }) => {
     if (role !== 'host' || !a || typeof a !== 'object') return; // only the host adjudicates
-    // Another version of the app would misread our bodies: refuse it, and send it no state.
+    // Another version of the app would misread our bodies: refuse it, and send it no state —
+    // telling whoever runs the older page to reload (D304).
     if (a._v !== PROTO) {
       incompatible.add(peer);
-      refuse(peer, 'This table runs a different version of Card Table — reload this page');
+      if (num(a._v) > PROTO) {
+        refuse(peer, 'The host runs an older Card Table — ask them to reload');
+        if (!newerWarned) { newerWarned = true; toast('A player has a newer Card Table — reload this page to let them in'); }
+      } else refuse(peer, 'This table runs a different version of Card Table — reload this page');
       return;
     }
     incompatible.delete(peer);
     // An anonymous knock: answer with a (signed) public snapshot, so the guest
     // learns who the authenticated host is before revealing its identity.
     if (a._pid == null) { if (a.t === 'hello') wantSnap(peer); return; }
+    // Nested deeper than any action needs: a copy for the rules Worker, or a
+    // walk of it, would overflow the stack (D302).
+    if (tooDeep(a)) { refuse(peer, 'Malformed action'); return; }
     const { _pid: p, _name: name, _key: key, _v, ...action } = a;
     if (HOST_ACTIONS.includes(action.t)) { refuse(peer, 'Only the host can do that'); return; }
     if (!PUBLIC_ACTIONS.includes(action.t)) { refuse(peer, 'Unknown action — reload this page'); return; }
@@ -1535,7 +1623,8 @@ function connect() {
     const reason = p === pid ? 'This seat is already open in another tab'
       : typeof p !== 'string' || !PID_RE.test(p) ? 'Invalid player id' // (a crafted {"toString": 1} would make test() throw)
       : typeof key !== 'string' || key.length < 16 ? 'Missing seat key — please reload'
-      : peerPid[peer] && peerPid[peer] !== p ? 'One seat per connection'
+      : key.length > 64 ? 'Invalid seat key' // (ours are 32 characters: the host saves every one it binds, D302)
+      : firstPid.has(peer) && firstPid.get(peer) !== p ? 'One seat per connection'
       : own(T.state.keys, p) && T.state.keys[p] !== key ? 'That seat belongs to another player'
       : '';
     if (reason) { refuse(peer, reason); return; }
@@ -1544,6 +1633,7 @@ function connect() {
       refused(p, action); // what it named goes out again (rate-limited): the guest's optimistic move snaps back
       return;
     }
+    if (!own(T.state.players, p) && !own(T.state.keys, p) && !newcomer()) { refuse(peer, 'Many players are joining at once — you are next in a moment'); return; }
     // Register/refresh the sender on EVERY action, not just hello — if the
     // keyed hello was lost, the first real action still registers the player.
     // The seat key binds at once, here (two claims of one seat can't both
@@ -1556,6 +1646,7 @@ function connect() {
     // behind a slow hook (lastPresence).
     const newConn = peerPid[peer] !== p, known = own(T.state.players, p), will = lastPresence(p);
     peerPid[peer] = p;
+    firstPid.set(peer, p);
     if (T.bindKey(p, key)) persist();
     if (will === '_leave' || (!will && (!known?.online || !known.name))) enqueue(p, { t: '_join', name });
     else if (newConn) scheduleBroadcast(); // a second tab of a seated player: its first snapshot
@@ -1755,11 +1846,15 @@ function resumePaused() {
 // sends one — rules-worker.js send.)
 // A tab that goes away (pagehide), or is hidden (visibilitychange: a phone
 // may suspend, then discard it, with no pagehide), saves at once (flushSave).
-// An IndexedDB write started then may never commit, so it also leaves the
-// seq it meant to save in localStorage (synchronous): ct-pending-<room>. A
-// commit of that seq removes it; a boot that finds it ahead of the save says
-// the last moment of play was lost.
-const SAVE_DEFER_MS = 250;
+// An IndexedDB write started then may never commit — in WebKit (Safari,
+// every iOS browser) a pagehide's never does — so it also leaves what it
+// meant to save in localStorage (synchronous): ct-pending-<room>, the whole
+// state when it names no deck or box the room's catalog lacks and fits in
+// PENDING_MAX characters, else its seq alone. A commit of that seq removes
+// it; a boot that finds it ahead of the save resumes the state it holds
+// (and saves it), or, with a seq alone, says the last moment of play was
+// lost (D308).
+const SAVE_DEFER_MS = 250, PENDING_MAX = 2e6;
 let persistT = 0, lastSave = 0, again = false, persistWarned = false;
 let savedSeq = -1; // host: the seq of the last save that committed
 let savingSeq = -1; // host: a save is in flight (-1: none), holding this seq at least (it may take a later state: store.js saveTable)
@@ -1783,7 +1878,7 @@ async function doSave(leaving) {
     if (pruned) toast(`Browser storage was full — deleted ${pruned} old table save${pruned > 1 ? 's' : ''} to keep this one`);
     persistWarned = false;
     perf.saves++;
-    if (+localStorage.getItem(pendingKey()) <= state.seq) localStorage.removeItem(pendingKey());
+    if (pending()?.seq <= state.seq) localStorage.removeItem(pendingKey());
   } catch (err) {
     console.error('failed to persist game', err);
     savedCatalog.clear(); // the save is a lost marker now: the next one that fits writes every deck again
@@ -1818,7 +1913,12 @@ function persist() {
  *  a hidden page lives on, and its save waits its turn (`again`). */
 function flushSave(leaving) {
   if (role !== 'host' || noSave || T.state.seq === savedSeq) return;
-  try { localStorage.setItem(pendingKey(), String(T.state.seq)); } catch (err) { console.error('could not mark the save as pending', err); }
+  let whole = false;
+  try {
+    const { state, catalog } = snap(), text = !catalog.length && JSON.stringify({ seq: state.seq, state });
+    if (text && text.length <= PENDING_MAX) { localStorage.setItem(pendingKey(), text); whole = true; }
+  } catch (err) { console.error('could not leave the state itself pending (its seq, then)', err); } // (say, localStorage full)
+  if (!whole) try { localStorage.setItem(pendingKey(), String(T.state.seq)); } catch (err) { console.error('could not mark the save as pending', err); }
   clearTimeout(persistT);
   persistT = 0;
   if (T.state.seq !== savingSeq) doSave(leaving);
@@ -1832,15 +1932,29 @@ window.addEventListener('pagehide', () => {
   try { room?.leave(); } catch (err) { console.error('leaving the room failed', err); }
 });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(false); });
-/** Host, at boot: a save this tab left pending (flushSave) that never
- *  committed is said, once — unless the boot says worse (a save lost). */
-function checkPending(save) {
+/** The save this tab left pending (flushSave): {seq, state?}, or null. */
+function pending() {
   const mark = localStorage.getItem(pendingKey());
-  if (mark === null) return;
+  if (mark === null) return null;
+  try { return mark[0] === '{' ? JSON.parse(mark) : { seq: +mark }; } catch (err) { console.error('an unreadable pending save', err); return { seq: NaN }; }
+}
+/** Host, at boot: the save to resume — `save`, or the state a save this
+ *  tab left pending (flushSave) holds when it never committed and is ahead
+ *  of `save` (the catalog it needs is in `save`'s: D308); a pending seq
+ *  alone ahead of it is said, once — unless the boot says worse (a save
+ *  lost). */
+function checkPending(save) {
+  const p = pending();
+  if (!p) return save;
   localStorage.removeItem(pendingKey());
-  if (save?.lost || save?.behind || +mark <= num(save?.state?.seq)) return;
-  console.warn(`the last save before the reload never committed (seq ${mark}; the save has ${save?.state?.seq ?? 'none'})`);
+  if (save?.lost || save?.behind || !(p.seq > num(save?.state?.seq))) return save;
+  if (save?.state && p.state?.items && p.state.players && p.state.seq === p.seq && num(p.state.v) <= STATE_V) {
+    console.warn(`resumed the last moment of play from the save left pending (seq ${p.seq}; the save has ${save.state.seq})`);
+    return { ...save, state: p.state };
+  }
+  console.warn(`the last save before the reload never committed (seq ${p.seq}; the save has ${save?.state?.seq ?? 'none'})`);
   toast("The last moment of play before the reload wasn't saved (the browser closed first)");
+  return save;
 }
 
 // --- rendering ------------------------------------------------------------
@@ -1864,7 +1978,7 @@ const imageState = (h) => (!h ? '' : store.holds(h) ? 'u' : imgs.get(h) === 'mis
  *  while it is fetched (wantImages), or the missing look for good. */
 function imageHTML(h, cls) {
   const url = store.getAssetURL(h);
-  if (url) return `<img class="${cls}" src="${esc(url)}" alt="">`;
+  if (url) return `<img class="${cls}" src="${esc(url)}" alt="" draggable="false">`; // (no native drag of the picture: ours moves the card)
   wantImages([h]);
   if (imgs.get(h) === 'missing') return `<div class="${cls} missing" title="This card's image is missing"><s>🖼</s></div>`;
   return cls === 'face' ? '<div class="face loading">🂠</div>' : '<div class="back"></div>';
@@ -2220,6 +2334,7 @@ function placeEl(id) {
   if (!el || !it || drag?.id === id || drag?.group?.has(id) || landings.has(id)) return;
   const p = fanPos.get(id) || it, L = lives.get(id);
   if (!L && el.classList.contains('live')) { endLive(el, p); return; }
+  ending?.delete(el); // (a glide that ended and started again in one task goes on)
   el.style.left = `${p.x}px`;
   el.style.top = `${p.y}px`;
   el.style.translate = L ? `${L.x - p.x}px ${L.y - p.y}px` : '';
@@ -2230,16 +2345,31 @@ function placeEl(id) {
  *  has it now (untransitioned), and the translation alone then runs out —
  *  one composited property, so nothing is laid out per frame and the two
  *  never part (left/top's transition starts a frame after translate's: the
- *  piece would jump back half a man first). */
+ *  piece would jump back half a man first). The glides a task ends end
+ *  together, at its close (endLives). */
+let ending = null; // live glides ending in this task: element → where it is drawn now
 function endLive(el, p) {
-  const [tx, ty] = getComputedStyle(el).translate.split(' ').map(parseFloat); // ('none': NaN, so 0 below)
-  const x = parseFloat(el.style.left) + (tx || 0) - p.x, y = parseFloat(el.style.top) + (ty || 0) - p.y;
-  el.classList.remove('live');
-  el.style.transition = 'none';
-  Object.assign(el.style, { left: `${p.x}px`, top: `${p.y}px`, translate: `${x}px ${y}px` });
-  void getComputedStyle(el).translate; // (a style flush, no layout: this is where the transition starts from)
-  el.style.transition = '';
-  el.style.translate = '';
+  if (!ending) { ending = new Map(); queueMicrotask(endLives); }
+  ending.set(el, p);
+}
+/** Ends this task's live glides (endLive) together: every glide's place
+ *  read first, then all written, then one flush — the resolved `translate`
+ *  is a layout read, and one after another element's writes laid the whole
+ *  table out again: 282 layouts, a 924 ms task on the B4 phone, for a
+ *  200-member group drop a watcher saw dragged (D309). */
+function endLives() {
+  const list = [...ending];
+  ending = null;
+  if (!list.length) return;
+  const now = list.map(([el]) => getComputedStyle(el).translate.split(' ').map(parseFloat)); // ('none': NaN, so 0 below)
+  list.forEach(([el, p], k) => {
+    const [tx, ty] = now[k], x = parseFloat(el.style.left) + (tx || 0) - p.x, y = parseFloat(el.style.top) + (ty || 0) - p.y;
+    el.classList.remove('live');
+    el.style.transition = 'none';
+    Object.assign(el.style, { left: `${p.x}px`, top: `${p.y}px`, translate: `${x}px ${y}px` });
+  });
+  void getComputedStyle(list[0][0]).translate; // (one flush for all: where their transitions start from)
+  for (const [el] of list) { el.style.transition = ''; el.style.translate = ''; }
 }
 
 // --- live drags (spec §3c, §3g): someone else's piece on its way -------------
@@ -3076,7 +3206,7 @@ function rotv(x, y, a) {
   return [x * c - y * s, x * s + y * c];
 }
 
-// The view sheet: what follows the view, written as rules of one adopted
+// The view sheet: what follows the view, written as rules of one
 // stylesheet, so that only what they match restyles, and only when the view
 // changed. A rule, not a property on #table: an inherited property there
 // would restyle all 3,700 elements of the 1,000-piece bench table (9 ms a
@@ -3112,10 +3242,12 @@ function rotv(x, y, a) {
 // again, which fingers that move again within about 100 ms wait for (one
 // more task of 50–90 ms). D102 has the measures; B4's rested pinch, the
 // budget.
-const viewSheet = new CSSStyleSheet(), BADGE_MAX = 3, BZ_STEP = 1.25, PINCH_REST_MS = 300;
-viewSheet.replaceSync('#table .item > .count, #table .item > .fanb, #table .item > .odot, #table .item > .lockb, #table .item > .visb, #table .pile > .pname, #table .item.selected, #table .item.hint, #table .item.offer, #table .btext.coord, #table .btext.zlabel, #table .snap-ghost {} '
-  + '#table .btext {} #table .item > .count, #table .item > .fanb, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb, #table .item > .visb, #table .uptext {}');
-document.adoptedStyleSheets = [...document.adoptedStyleSheets, viewSheet];
+// (The view sheet is a <style> element's: constructable stylesheets came to
+// Safari only in 16.4, and app.js must load on iOS 15.4, as before: D307.)
+const viewSheet = document.head.appendChild(Object.assign(document.createElement('style'), {
+  textContent: '#table .item > .count, #table .item > .fanb, #table .item > .odot, #table .item > .lockb, #table .item > .visb, #table .pile > .pname, #table .item.selected, #table .item.hint, #table .item.offer, #table .btext.coord, #table .btext.zlabel, #table .snap-ghost {} '
+    + '#table .btext {} #table .item > .count, #table .item > .fanb, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb, #table .item > .visb, #table .uptext {}',
+})).sheet, BADGE_MAX = 3, BZ_STEP = 1.25, PINCH_REST_MS = 300;
 let badgeZ = '', textAngle = 0, badgeAngle = 0, feltW = 0;
 
 /** The badges' growth for the table's scale `s`: a 12-unit badge text shows ≥ 8 px while it can. */
@@ -3190,16 +3322,32 @@ function anchorView(t, cx, cy, r = wrapEl.getBoundingClientRect()) {
 // scrolls by it, the others as the browser scrolls them).
 const WHEEL_REST_MS = 200;
 let wheelT = 0; // the timer that ends a wheel's zoom (0: none goes on)
-wrapEl.addEventListener('wheel', (e) => {
-  if (e.target !== wrapEl && !tableEl.contains(e.target)) return;
-  e.preventDefault();
+/** A wheel's turn, or a trackpad pinch's step: zooms the view to `z` about
+ *  the event's point (that point stays put). */
+function wheelZoom(e, z) {
   clearTimeout(wheelT);
   wheelT = setTimeout(() => { wheelT = 0; placeSeats(); }, WHEEL_REST_MS); // (the sizes it held back)
   const before = toTable(e);
-  zoomZ = clamp(zoomZ * Math.exp(-e.deltaY * 0.0015), 0.5, zoomMax());
+  zoomZ = clamp(z, 0.5, zoomMax());
   fit();
   anchorView(before, e.clientX, e.clientY);
+}
+/** Whether event e lies over the felt (not over a popover on it). */
+const overFelt = (e) => e.target === wrapEl || tableEl.contains(e.target);
+wrapEl.addEventListener('wheel', (e) => {
+  if (!overFelt(e)) return;
+  e.preventDefault();
+  wheelZoom(e, zoomZ * Math.exp(-e.deltaY * 0.0015));
 }, { passive: false });
+// Desktop Safari sends a trackpad pinch as GestureEvents, not a ctrl+wheel:
+// it zooms the table, not the page (D307). (iOS sends them for a pinch of
+// two fingers too, which the pointers already move: `pinch` set.)
+let gestureZ = 1;
+wrapEl.addEventListener('gesturestart', (e) => { e.preventDefault(); gestureZ = zoomZ; });
+wrapEl.addEventListener('gesturechange', (e) => {
+  e.preventDefault();
+  if (!pinch && overFelt(e)) wheelZoom(e, gestureZ * e.scale);
+});
 /** Whether a gesture moves the view now — fingers (a pinch or twist, a felt
  *  pan) or a wheel's turns. Its frames move what follows the view by
  *  `translate` alone, and neither read nor write what lays the page out:
@@ -3966,8 +4114,18 @@ let holdZoom = false; // a long-press zoom is showing: it closes when the finger
 const tPtrs = new Map(); // pointers currently down on the table
 let dragEndAt = -1e9; // when the last drag, pan or pinch ended (event time): the click that follows it is no tap
 
-/** Puts down drag `d`'s element: a copy taken out of a stack or a supply goes; a moved item loses its drag look. */
-const dropEl = (d) => (d.ghost ? d.el.remove() : d.el.classList.remove('dragging'));
+/** Puts down drag `d`'s element: a copy taken out of a stack or a supply
+ *  goes; a moved item loses its drag look, and the translation it was
+ *  dragged by becomes its left/top — at once, unanimated (D309). */
+function dropEl(d) {
+  if (d.ghost) { d.el.remove(); return; }
+  if (d.x0 !== undefined) {
+    Object.assign(d.el.style, { transition: 'none', left: `${d.x}px`, top: `${d.y}px`, translate: '' });
+    void getComputedStyle(d.el).opacity; // (a style flush, no layout: the move is not a transition)
+    d.el.style.transition = '';
+  }
+  d.el.classList.remove('dragging');
+}
 /** Ends an in-flight item drag cleanly (used when a pinch takes over): a
  *  moved item stays where it is; a piece being taken out goes back. */
 function cancelItemDrag() {
@@ -4062,11 +4220,26 @@ function previewSnap() {
   Object.assign(ghostEl.style, { width: `${P.w}px`, height: `${P.h}px`, translate: `${drag.spot.slot.x}px ${drag.spot.slot.y}px`, rotate: `${P.rot}deg` });
   ghostEl.classList.toggle('round', P.shape === 'round' || P.shape === 'disc');
   const [px, py] = tableToScreen(drag.x + drag.dx, drag.y + drag.dy); // (the finger: no layout read)
-  if (chipEl.textContent !== drag.spot.to) chipEl.textContent = drag.spot.to; // (a DOM write only when the address changes)
+  if (!addrT) chipText();
   // (its width estimated, not measured — a measure would lay the table out
   // mid-drag: 15 px bold, at most 9.5 px a character, and its padding)
   const cw = 20 + 9.5 * drag.spot.to.length;
   chipEl.style.translate = `${Math.round(clamp(px + 18, 4, wrapW - cw - 4))}px ${Math.round(Math.max(4, py - 46))}px`;
+}
+const CHIP_MS = 150;
+let addrAt = -Infinity, addrT = 0; // when the snap chip's text was last written; the timer of the next write
+/** Writes the address of the drag's spot into the chip: when it changes,
+ *  and at most once every CHIP_MS — at once after a pause, else once the
+ *  pause is up, the latest address. Each write lays the page out, and the
+ *  browser then hit-tests the whole table for hover (D309). */
+function chipText() {
+  addrT = 0;
+  const to = drag?.spot?.to;
+  if (!to || chipEl.textContent === to) return;
+  const wait = addrAt + CHIP_MS - performance.now();
+  if (wait > 0) { addrT = setTimeout(chipText, wait); return; }
+  addrAt = performance.now();
+  chipEl.textContent = to;
 }
 /** Takes the snap preview away. */
 function hideSnap() {
@@ -4322,8 +4495,12 @@ window.addEventListener('pointermove', (e) => {
   }
   const { w, h } = sizeOf(view.items[drag.id], boxes);
   ({ x: drag.x, y: drag.y } = clampToTable(TABLE, p.x - drag.dx, p.y - drag.dy, w, h));
-  drag.el.style.left = `${drag.x}px`;
-  drag.el.style.top = `${drag.y}px`;
+  // By a translation from where it lay, as a group's members move: a
+  // left/top a frame laid the 1,000-piece table out twice (with the chip's
+  // text), then hit-tested it for hover — 33 ms frames on the B4 phone (D309).
+  drag.x0 ??= parseFloat(drag.el.style.left) || 0;
+  drag.y0 ??= parseFloat(drag.el.style.top) || 0;
+  drag.el.style.translate = `${drag.x - drag.x0}px ${drag.y - drag.y0}px`;
   // The live position for the other players (a `drag`: no state); the drop is the one move.
   if (drag.mode === 'move' && e.timeStamp - drag.last > LIVE_MS) {
     drag.last = e.timeStamp;
@@ -4452,7 +4629,11 @@ let ghost = null, handDragged = false; // handDragged: the last press became a d
 handEl.addEventListener('pointerdown', (e) => {
   const el = e.target.closest('.hcard');
   if (!el || e.button !== 0) return;
-  e.preventDefault();
+  // A mouse would start a selection or a native drag. Not a touch: in WebKit
+  // (every iOS browser) a cancelled pointerdown loses its tap's click — no
+  // zoom, no pick for a hand ask; .hcard's touch-action and user-select
+  // already keep scrolling and selection out of a touch.
+  if (e.pointerType === 'mouse') e.preventDefault();
   const idx = +el.dataset.idx;
   if (!view.hand[idx]) return;
   handDragged = false;
@@ -4483,8 +4664,7 @@ function moveGhost(e) {
     ghost.innerHTML = playFacedown() && !('t' in handDrag.card) ? backHTML(handDrag.card.d) : handFace(handDrag.card);
     document.body.appendChild(ghost);
   }
-  ghost.style.left = `${e.clientX - handH * 5 / 14}px`; // center: half of hch*5/7 width
-  ghost.style.top = `${e.clientY - handH / 2}px`;
+  ghost.style.translate = `${e.clientX - handH * 5 / 14}px ${e.clientY - handH / 2}px`; // (centred on the finger: half of hch*5/7 wide; a translation: no layout a frame)
   $('hand-bar').classList.toggle('droppable', !!e.target.closest?.('#hand-bar'));
 }
 
@@ -4946,7 +5126,9 @@ $('box-up').addEventListener('click', () => $('box-files').click());
 $('box-files').addEventListener('change', () => {
   const files = [...$('box-files').files];
   $('box-files').value = ''; // (the same files picked again are a new upload)
-  if (files.length) uploadBox(files);
+  if (!files.length) return;
+  askPersist();
+  uploadBox(files);
 });
 /** Writes `msg` into the dialog's element `el`, scrolled into view (a phone shows a few lines of the dialog). */
 function show(el, msg) {
@@ -5047,19 +5229,22 @@ $('box-x-go').addEventListener('click', async () => {
 // dropped even if the player has reopened the dialog since.
 let deckBuild = 0; // bumped on every close: a build that started before is stale
 let persistAsked = false; // host: navigator.storage.persist() was asked, from its first upload
+/** Host, in an upload's gesture (a deck's, a game box's): the table now
+ *  holds images worth keeping, so the browser is asked, once, not to evict
+ *  its storage — here, as Firefox prompts, and a prompt right after an
+ *  upload explains itself (one at boot would not). */
+function askPersist() {
+  if (role !== 'host' || persistAsked || !navigator.storage?.persist) return;
+  persistAsked = true;
+  navigator.storage.persist().then((ok) => console.info(`persistent storage ${ok ? 'granted' : 'not granted'}`), (err) => console.error('asking for persistent storage failed', err));
+}
 const deckBtn = (busy) => { $('deck-add').disabled = busy; $('deck-add').textContent = busy ? 'Building…' : 'Add deck'; };
 $('deck-dialog').addEventListener('close', () => { deckBuild++; deckBtn(false); });
 $('deck-form').addEventListener('submit', async (e) => {
   if (e.submitter?.value !== 'add') return;
   e.preventDefault();
   if ($('deck-add').disabled) return;
-  // The host's table now holds images worth keeping: ask the browser not to
-  // evict its storage — here, in the gesture (Firefox prompts, and a prompt
-  // right after an upload explains itself; one at boot would not).
-  if (role === 'host' && !persistAsked && navigator.storage?.persist) {
-    persistAsked = true;
-    navigator.storage.persist().then((ok) => console.info(`persistent storage ${ok ? 'granted' : 'not granted'}`), (err) => console.error('asking for persistent storage failed', err));
-  }
+  askPersist();
   const run = deckBuild;
   deckBtn(true);
   const kind = document.querySelector('input[name="deck-kind"]:checked').value;
@@ -5116,7 +5301,7 @@ function becomeHost(saved, unsaved) {
     console.error(`this table was saved by a newer Card Table (state v${saved.newer}): not resuming it, and never writing over it`);
     toast('This table was saved by a newer Card Table — reload this page', false, true);
     saved = null;
-  } else if (!noSave) checkPending(saved);
+  } else if (!noSave) saved = checkPending(saved);
   if (saved?.lost) {
     console.error('this table could not be resumed:', saved.lost);
     toast(`Couldn't resume this table (${saved.lost}) — started a fresh one`);
@@ -5124,6 +5309,9 @@ function becomeHost(saved, unsaved) {
   } else if (saved?.behind) { // its last save is lost, an older copy isn't (a pre-Phase 1 save its migration couldn't replace)
     console.error("this table's last save could not be resumed:", saved.behind);
     toast(`Couldn't resume this table's last save (${saved.behind}) — resumed an older one`);
+  } else if (saved?.fromOld) { // a tab of the previous Card Table played on after the move to IndexedDB (D303)
+    console.warn('resumed the newer save a tab of the previous Card Table made');
+    toast("Resumed this table's newer save, made by a tab of the previous Card Table");
   }
   const t = createTable(saved ? { ...saved.state, decks: saved.decks, boxes: saved.boxes, boxSrc: saved.boxSrc } : {}, { pid, hooks: pageHooks });
   if (saved) t.resume(myName); // re-sanitizes the decks and boxes, everyone else waits offline
@@ -5467,7 +5655,8 @@ function cliConnect() {
         const r = await call('/poll');
         if (!r.ok) throw new Error(`bridge poll failed (${r.status})`);
         if (status !== 'ok') { status = 'ok'; toast('🖥 Terminal bridge connected', true); console.log('terminal bridge connected', base); }
-        for (const c of await r.json()) { cliExec(c); }
+        const cmds = await r.json().catch((e) => { throw new Error(`the bridge's reply is not JSON (${e.message})`); }); // (Safari's own words don't say JSON)
+        for (const c of cmds) cliExec(c);
       } catch (err) {
         console.error('terminal bridge error', err);
         // Only a bridge that didn't answer is "lost"/"not reachable"; anything

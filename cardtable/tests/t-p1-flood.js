@@ -51,6 +51,7 @@ const LONG_MS = 50, BUDGET = 64e6;
   await h.sleep(1000);
 
   section('1,000 image requests');
+  const tWindow = Date.now(); // (her image budget's minute starts after this)
   await bob.evaluate(A.paceMonitor, mover);
   const t0 = await host.evaluate(() => performance.now());
   await A.startMoves(host, mover);
@@ -85,6 +86,24 @@ const LONG_MS = 50, BUDGET = 64e6;
   ok(moves.length >= 10 && moves.every((m) => m.ms <= 1000), `the host's ${moves.length} moves meanwhile reach Bob in ≤ 1 s each (max ${Math.max(...moves.map((m) => m.ms))} ms)`);
   ok((await L.act(host, { t: 'flip', id: mover })).ok, 'and the host still acts');
 
+  section("the budget is the player's (D302): a second connection under Mallory's id, then a reconnect, get nothing more this minute");
+  /** Raw page P asks for every image of the table and waits: the bytes it received in all. */
+  const pull = async (P) => {
+    await P.act({ t: 'hello' });
+    await P.act({ t: 'need', a: big.ids });
+    await h.sleep(5000);
+    return P.evaluate(() => (window.M.got.asset || []).reduce((n, x) => n + (x.m?.byteLength ?? 0), 0));
+  };
+  const M2 = await mallory(env, invite, 3);
+  const second = await pull(M2);
+  await M2.close();
+  const M3 = await mallory(env, invite, 3);
+  const third = await pull(M3);
+  const took = (Date.now() - tWindow) / 1000;
+  ok(second === 0 && third === 0, `a second tab of hers gets ${second} bytes, and a new connection after it left ${third} (she had ${(bytes / 1e6).toFixed(1)} MB this minute)`);
+  ok(took < 58, `(both asked within the minute her budget counts: ${took.toFixed(0)} s after it began)`);
+  await M3.close();
+
   section("a guest's deck of 4,999 images");
   const many = A.distinctPngs(4999, 9);
   const tMany = await host.evaluate(() => performance.now());
@@ -102,7 +121,7 @@ const LONG_MS = 50, BUDGET = 64e6;
   const t2 = Date.now();
   ok(await L.until(async () => Object.values(await A.stored(carol, all)).every((r) => r?.ok), 120000, 1000), `Carol gets all ${all.length} images (${(total / 1e6).toFixed(1)} MB), in ${((Date.now() - t2) / 1000).toFixed(0)} s`);
   const said = await A.toastsSince(carol, t2);
-  ok(said.includes('Card images are coming slowly — the host sends at most 64 MB of them a minute'), 'told once she is over the 64 MB a minute that the images come slowly');
+  ok(said.includes('Card images are coming slowly — the host sends at most 64 MB of them a minute to a player, 256 MB to all'), 'told once she is over the 64 MB a minute that the images come slowly');
   ok(!said.some((t) => /missing/.test(t)), `and never told an image is missing (${JSON.stringify(said)})`);
   await env.done();
 })().catch(h.crash);

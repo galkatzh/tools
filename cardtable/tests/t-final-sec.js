@@ -2,7 +2,9 @@
 // control characters never survive a deck (SEC-F5), guests share one deck
 // budget so they can't fill the host's storage (SEC-F1), the record of a peek
 // survives an action flood (SEC-F3), a burst of actions can't freeze the host
-// (SEC-F2), and a refused rules button never reaches the script (QUAL-4).
+// (SEC-F2), a refused rules button never reaches the script (QUAL-4), and
+// the network gate (D302) refuses an action nested too deep, a seat key too
+// long, and a new player id from a page that rejoins.
 const h = require('./h');
 const { ok, section, logHas } = h;
 const { mallory } = require('./final-lib');
@@ -74,6 +76,46 @@ const logText = (page) => page.textContent('#log');
   await guest.dblclick('.item.pile', { force: true }); // (the guests' decks lie on top of the Standard one)
   await h.waitHand(guest, 1);
   ok(true, 'the table still answers Bob');
+
+  section('D302: the gate — an action nested too deep, a seat key too long, a new player per reconnect');
+  await h.sleep(5000); // (one refusal notice per 10 s per peer: SEC-F2's may still hold Mallory's back)
+  await M.evaluate(() => window.M.deep({ t: 'chat', msg: 'deep-off' }, 100000)); // (a junk field 100,000 arrays deep: JSON.parse takes it, a structured clone can't)
+  ok(await M.waitForFunction(() => window.M.notes().some((n) => n.msg === '🚫 Malformed action'), null, { timeout: 10000 }).then(() => true, () => false), 'a chat with a field 100,000 arrays deep: Mallory is told "🚫 Malformed action"');
+  await M.act({ t: 'chat', msg: 'after-deep' });
+  await logHas(host, 'after-deep');
+  ok(!(await logText(host)).includes('deep-off') && !/Error/.test(await host.textContent('#toast')), 'nothing of it reached the log, and the host shows no error (with the rules off, its copy for the hooks overflowed the stack)');
+  // A page that leaves and joins again: one player for good, and its seat key bounded.
+  const S = await h.rawPage(env, 'Sock');
+  await S.evaluate(async ({ invite, relay, v }) => {
+    const { joinRoom } = await import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm');
+    const [, roomId, password] = invite.match(/#room~([0-9a-f]+)~([0-9a-f]+)/);
+    const S = (window.S = { notes: [] });
+    S.join = async () => {
+      if (S.room) { await S.room.leave(); await new Promise((r) => setTimeout(r, 1000)); }
+      S.room = joinRoom({ appId: 'gk-cardtable', password, rtcPolyfill: window.RawRTC, relayConfig: { urls: [relay] } }, roomId);
+      const act = S.room.makeAction('act'), note = S.room.makeAction('note');
+      note.onMessage = (m) => S.notes.push((typeof m.b === 'string' ? JSON.parse(m.b) : m).msg);
+      S.send = (pid, key, a) => act.send({ _v: v, _pid: pid, _name: 'Sock', _key: key, ...a });
+      await new Promise((res) => { const t = setInterval(() => { if (Object.keys(S.room.getPeers()).length >= 3) { clearInterval(t); res(); } }, 100); });
+    };
+    await S.join();
+  }, { invite: await host.evaluate(() => location.href), relay: env.relayUrl, v: h.PROTO });
+  const players = () => host.evaluate(() => Object.keys(window.__ct.view().players));
+  const told = (msg) => S.waitForFunction((m) => window.S.notes.includes(m), msg, { timeout: 10000 }).then(() => true, () => false);
+  const D = 'd'.repeat(16), E = 'e'.repeat(16);
+  await S.evaluate((D) => window.S.send(D, 'q'.repeat(1e6), { t: 'chat', msg: 'big key' }), D);
+  ok(await told('🚫 Invalid seat key') && !(await players()).includes(D), 'a seat key of a million characters: "🚫 Invalid seat key", no player registered');
+  await S.evaluate((D) => window.S.send(D, 'k'.repeat(32), { t: 'chat', msg: 'sock in' }), D);
+  await logHas(host, 'sock in');
+  const rec = await savedTable(host);
+  ok((await players()).includes(D) && JSON.stringify(rec).length < 1e6, `with a key of 32 it registers, and the save stays small (${JSON.stringify(rec).length} chars)`);
+  await h.sleep(10500); // (the next refusal's notice)
+  await S.evaluate(() => window.S.join());
+  await S.evaluate((E) => window.S.send(E, 'k'.repeat(32), { t: 'chat', msg: 'sock as e' }), E);
+  ok(await told('🚫 One seat per connection') && !(await players()).includes(E), 'it leaves and joins again under a new player id: "🚫 One seat per connection", no new player');
+  await S.evaluate((D) => window.S.send(D, 'k'.repeat(32), { t: 'chat', msg: 'sock back' }), D);
+  await logHas(host, 'sock back');
+  ok(!(await logText(host)).includes('sock as e'), 'under its own id it is back at the table');
 
   section('QUAL-4: a refused rules button never reaches the script');
   await h.enableRules(host, { code: `({ name: 'Spy',

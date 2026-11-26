@@ -51,7 +51,11 @@ select {
 #main { flex: 1; display: flex; min-height: 0; position: relative; }
 /* isolation: the z-indexes inside (seats, bulbs, rules row, action bar) stay
    inside the table, so the phone's overlaid log panel (#side) paints above them. */
-#table-wrap { flex: 1; position: relative; overflow: hidden; background: #0b1120; isolation: isolate; }
+/* touch-action: a pinch beside a round felt zooms nothing (iOS ignores
+   user-scalable=no: it would zoom the page), as does one on the toolbar or
+   the hand (html); the panels that scroll still do (D307). */
+html { touch-action: pan-x pan-y; }
+#table-wrap { flex: 1; position: relative; overflow: hidden; background: #0b1120; isolation: isolate; touch-action: none; }
 
 #side {
   width: 280px; flex-shrink: 0; display: flex; flex-direction: column;
@@ -271,7 +275,7 @@ body.nohand #hand-bar { display: none; }
   transition: left 0.18s ease-out, top 0.18s ease-out, translate 0.18s ease-out;
   contain: layout style; /* a redrawn card never re-lays out the table (not paint: it would clip the outline and shadows) */
 }
-.item.dragging { pointer-events: none; cursor: grabbing; transition: none; }
+.item.dragging { pointer-events: none; cursor: grabbing; transition: none; will-change: translate; } /* (it moves by translate: D309) */
 @media (hover: hover) { /* touch screens keep :hover after a tap: no stuck lift */
   .item:hover .cardbox { box-shadow: 0 3px 6px #0006, 0 10px 22px #0005; }
   /* no z-index: in a fanned hand a raised card would hide its neighbour's slice */
@@ -486,12 +490,12 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
    players' name bulbs, .fx-bulb, which an act nearby brings over it). Both
    move by translate; neither takes the pointer. */
 .snap-ghost {
-  position: absolute; left: 0; top: 0; pointer-events: none; z-index: 99999; border-radius: 10%;
+  position: absolute; left: 0; top: 0; pointer-events: none; z-index: 99999; border-radius: 10%; will-change: translate;
   outline: calc(3px * var(--bz, 1)) dashed #fbbf24; outline-offset: calc(2px * var(--bz, 1)); background: #fbbf2433;
 }
 .snap-ghost.round { border-radius: 50%; }
 .snap-chip {
-  position: absolute; left: 0; top: 0; pointer-events: none; z-index: 96000;
+  position: absolute; left: 0; top: 0; pointer-events: none; z-index: 96000; will-change: translate;
   font: 700 15px/1 system-ui, sans-serif; color: #1c1917; background: #fbbf24; border-radius: 999px;
   padding: 5px 10px; box-shadow: 0 2px 8px #000a; white-space: nowrap;
 }
@@ -546,9 +550,16 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
    table area it docks in is tested clear of pieces that deep (DOCK_H), so a
    bar that wrapped would lie on the row below. */
 #action-bar.row {
-  max-height: 54px; flex-wrap: nowrap; justify-content: safe center; align-items: center;
+  max-height: 54px; flex-wrap: nowrap; justify-content: flex-start; align-items: center;
   overflow-x: auto; scrollbar-width: none;
 }
+/* Centred while it fits, from its left edge once it overflows (✕ and the
+   chip stay in reach): two empty ends whose auto margins take the free space,
+   cancelling the gap. Not `safe center`: Safari before 17.6 and Chrome before
+   115 drop it, and their `center` puts ✕ out of reach on a phone (D307). */
+#action-bar.row::before, #action-bar.row::after { content: ''; }
+#action-bar.row::before { order: -3; margin: 0 -4px 0 auto; }
+#action-bar.row::after { order: 99; margin: 0 auto 0 -4px; }
 #action-bar.row::-webkit-scrollbar { display: none; }
 #action-bar.row button { flex: none; }
 #action-bar.row:is(.more, .less) {
@@ -646,6 +657,7 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
   /* pan-x: a sideways swipe scrolls the hand (the browser cancels our
      pointer); only a vertical drag pulls a card out to play it */
   cursor: grab; touch-action: pan-x; user-select: none; -webkit-user-select: none;
+  -webkit-touch-callout: none; /* iOS: a long press drags the card out, no image callout */
   transition: transform 0.12s ease-out, box-shadow 0.12s;
 }
 /* a crowded hand fans out (fitHand sets --hov): later cards overlap earlier ones */
@@ -697,7 +709,8 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 
 /* ghost card that follows the pointer while dragging out of the hand */
 #ghost {
-  position: fixed; pointer-events: none; z-index: 999999; opacity: 0.92;
+  position: fixed; left: 0; top: 0; will-change: translate; /* it follows the finger by translate (moveGhost) */
+  pointer-events: none; z-index: 999999; opacity: 0.92; -webkit-touch-callout: none;
   box-shadow: 0 6px 16px #000a;
 }
 

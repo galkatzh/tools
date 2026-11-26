@@ -188,7 +188,7 @@ async function gesture(p, { turn = 0, from, to, legs = 1, pause = 0 } = {}) {
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2, R = Math.min(r.width, r.height) / 5, d0 = from ?? R, d1 = to ?? R;
       const tf = (k) => +new RegExp(`${k}\\(([-\\d.e]+)`).exec(table.style.transform)[1];
       // (--bz read from its rule, not a badge's computed style: that would restyle them here)
-      const bzRule = [...document.adoptedStyleSheets].flatMap((s) => [...s.cssRules]).find((x) => x.style?.getPropertyValue('--bz'));
+      const bzRule = [...document.styleSheets].flatMap((s) => [...s.cssRules]).find((x) => x.style?.getPropertyValue('--bz'));
       const pauses = [], span = ms / legs, cycle = span + pause;
       await new Promise((res) => setTimeout(res, 0)); // (the observer starts in a task of its own: see pan)
       const tasks = [];
@@ -224,6 +224,44 @@ async function gesture(p, { turn = 0, from, to, legs = 1, pause = 0 } = {}) {
       const dur = (es) => es.map((e) => Math.round(e.duration)); // (a task that holds the lift began before it, in the same frame)
       return { gaps: frames.slice(1).map((t, k) => t - frames[k]), long: dur(tasks.filter((e) => e.startTime + e.duration < up)), settle: dur(tasks.filter((e) => e.startTime + e.duration >= up)), turned, zoomed, pauses };
     }, [GESTURE_MS, turn, from, to, legs, pause]);
+    return { ...r, layouts: await laid() };
+  } finally { await unthrottle(); }
+}
+
+/** A 3 s drag of piece `id` on page p under CDP CPU throttling × 2: a touch
+ *  pointer on the piece's face, moved once per animation frame (as pan's),
+ *  then lifted. Returns {gaps, long, layouts} as pan's, and `moved`: the
+ *  piece was drawn away from where it lay. */
+async function dragPiece(p, id) {
+  const unthrottle = await throttle(p), laid = await layouts(p);
+  try {
+    const r = await p.evaluate(async ([id, ms]) => {
+      const el = document.querySelector(`.item[data-id="${id}"]`), b = el.getBoundingClientRect(), x0 = b.left + b.width / 2, y0 = b.top + b.height / 2;
+      await new Promise((res) => setTimeout(res, 0)); // (the observer starts in a task of its own: see pan)
+      const long = [];
+      const po = new PerformanceObserver((l) => { for (const e of l.getEntries()) long.push(Math.round(e.duration)); });
+      po.observe({ type: 'longtask' });
+      const ev = (type, x, y) => new PointerEvent(type, { pointerId: 9, pointerType: 'touch', isPrimary: true, button: 0, buttons: type === 'pointerup' ? 0 : 1, clientX: x, clientY: y, bubbles: true, cancelable: true });
+      el.dispatchEvent(ev('pointerdown', x0, y0));
+      const frames = [];
+      let moved = false;
+      await new Promise((done) => {
+        const t0 = performance.now();
+        const step = (ts) => {
+          frames.push(ts);
+          const t = ts - t0;
+          if (t >= ms) { done(); return; }
+          window.dispatchEvent(ev('pointermove', x0 + 120 * Math.sin(t / 300), y0 + 90 * Math.sin(t / 410)));
+          moved ||= !!window.__ct.drawn(id)?.tx;
+          requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+      });
+      window.dispatchEvent(ev('pointerup', x0, y0));
+      await new Promise((res) => setTimeout(res, 300)); // the observer delivers late entries
+      po.disconnect();
+      return { gaps: frames.slice(1).map((t, k) => t - frames[k]), long, moved };
+    }, [id, GESTURE_MS]);
     return { ...r, layouts: await laid() };
   } finally { await unthrottle(); }
 }
@@ -464,6 +502,65 @@ function placeholderWatch() {
   let after = await barNow();
   ok(after.open, `the bar is still open beside it after the pan ("${after.text}")`);
   await unselect();
+
+  section('§2k B4 (a piece drag): the phone drags a token for 3 s over the 1,000 pieces — by translate, its address chip written at most every 150 ms (D309)');
+  {
+    // (a token on top of its spot, near the middle of the phone's screen)
+    const mine = await phone.evaluate((ids) => {
+      const w = document.getElementById('table-wrap').getBoundingClientRect(), cx = w.left + w.width / 2, cy = w.top + w.height / 2;
+      let best = null;
+      for (const id of ids) {
+        const r = document.querySelector(`.item[data-id="${id}"]`)?.getBoundingClientRect();
+        if (!r) continue;
+        const x = r.left + r.width / 2, y = r.top + r.height / 2, d = Math.hypot(x - cx, y - cy);
+        if (document.elementFromPoint(x, y)?.closest('.item')?.dataset.id === id && !document.elementFromPoint(x, y).closest('.count') && (!best || d < best.d)) best = { id, d };
+      }
+      return best?.id;
+    }, tokens);
+    for (const k of [1, 2]) { // (the first drag of the run, then the measured one: the first lays the snap preview out once)
+      const r = await dragPiece(phone, mine), p95 = L.pct(r.gaps, 95), limit = Math.max(B4_FLOOR, 1.25 * pbase.p95);
+      console.log(`  drag ${k}: ${r.gaps.length} frames, rAF p95 ${p95.toFixed(1)} ms, long tasks [${r.long}], ${r.layouts} layouts`);
+      await h.sleep(1500);
+      if (k === 1) continue;
+      ok(r.moved && r.gaps.length > 30, `the scripted drag moves the token (${r.gaps.length} frames)`);
+      ok(!r.long.some((d) => d > B4_LONG), `B4: no long task over ${B4_LONG} ms while dragging (${r.long.length ? r.long.join(', ') + ' ms' : 'none'})`);
+      ok(p95 <= limit, `B4: rAF interval p95 ${p95.toFixed(1)} ms ≤ max(${B4_FLOOR}, 1.25 × ${pbase.p95.toFixed(1)}) = ${limit.toFixed(1)} ms`);
+      ok(r.layouts <= r.gaps.length / 2, `B4: the drag lays the page out ${r.layouts} times in ${r.gaps.length} frames (at most one in two: by left/top it was every frame, twice with the chip)`);
+    }
+  }
+
+  section('§2k B4 (a group drop watched): the host drags 200 tokens live for 2 s, then drops them; the phone ends the 200 glides in one pass (D309)');
+  {
+    const grp = tokens.slice(0, 200);
+    await host.evaluate(async (ids) => { // (a live group drag: `drag {ids, dx, dy}` every LIVE_MS, as a pointer would send it)
+      for (const t0 = performance.now(); performance.now() - t0 < 2000;) {
+        const t = performance.now() - t0;
+        window.__ct.act({ t: 'drag', ids, dx: Math.round(200 * Math.sin(t / 300)), dy: Math.round(150 * Math.sin(t / 410)) });
+        await new Promise((r) => setTimeout(r, 60));
+      }
+    }, grp);
+    ok(await phone.waitForFunction((n) => Object.keys(window.__ct.lives()).length >= n, 150, { timeout: 5000 }).then(() => true, () => false), "the phone shows the group's live glide");
+    const unthrottle = await throttle(phone), laid = await layouts(phone);
+    let r;
+    try {
+      const watching = phone.evaluate(async () => {
+        await new Promise((res) => setTimeout(res, 0));
+        const long = [];
+        const po = new PerformanceObserver((l) => { for (const e of l.getEntries()) long.push(Math.round(e.duration)); });
+        po.observe({ type: 'longtask' });
+        await new Promise((res) => setTimeout(res, 2000));
+        po.disconnect();
+        return { long, lives: Object.keys(window.__ct.lives()).length };
+      });
+      await h.sleep(300);
+      ok((await L.act(host, { t: 'group', op: 'move', ids: grp, dx: 100, dy: 0 })).ok, 'the host drops the 200 tokens (a group move)');
+      r = { ...(await watching), layouts: await laid() };
+    } finally { await unthrottle(); }
+    console.log(`  the drop on the phone: long tasks [${r.long}], ${r.layouts} layouts, ${r.lives} glides left`);
+    ok(!r.lives && !r.long.some((d) => d > B4_SETTLE), `B4: the phone's longest task as the 200 glides end ≤ ${B4_SETTLE} ms (${r.long.length ? r.long.join(', ') + ' ms' : 'none over 50'}; each glide read after another's writes laid the table out again: 652–924 ms)`);
+    ok(r.layouts <= B4_LAYOUTS, `B4: the drop lays the phone's page out ${r.layouts} times (≤ ${B4_LAYOUTS}; one a glide, 282, before)`);
+    await h.sleep(1500);
+  }
 
   section('§2k B6: the host saves the 1,000-piece table');
   await savesB6(tokens, 2500, 2900);
@@ -733,8 +830,9 @@ function placeholderWatch() {
   // rastered at — after a pinch deep into Dominoes, 52–91 ms at the start of
   // 11 of 13 Veiled Ranks pinches. Each pinch here is measured, but the
   // first, the page's first zoom over these boxes. The row runs last: it
-  // leaves the players in Veiled Ranks' named seats, Bob watching, which
-  // nothing in the suite can undo — the card rows ran on them once, D300.)
+  // leaves the players in Veiled Ranks' named seats, Bob watching — the card
+  // rows ran on them once (D300). Undoing that would take a seatless box,
+  // everyone to the watchers, then `sit` in join order (D310).)
   {
     const { BOXES } = require(path.join(h.APP_ROOT, 'cardtable/templates.js'));
     const [alice, bob, pat] = pids;

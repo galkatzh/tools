@@ -496,7 +496,7 @@ const harborAs = (name, more = {}) => [file('game.json', J({ ...HARBOR_JSON, nam
     const mSeen = await M.evaluate(() => JSON.stringify(window.M.got)), bSeen = await bob.evaluate(() => JSON.stringify([window.__ct.view(), window.__ct.boxes(), window.__ct.log()]));
     const mBoxes = await M.evaluate(() => window.M.got.boxes.map(({ m }) => (typeof m.b === 'string' ? JSON.parse(m.b) : m)));
     ok(!mSeen.includes(MARK) && !bSeen.includes(MARK), "case 7: the planted state reaches neither Mallory's raw messages nor Bob's view, catalog or log");
-    ok(mBoxes.length > 0 && mBoxes.every((d) => Object.values(d).every((b) => !('setup' in b) && !('rules' in b) && !('rulesState' in b))), `the boxes Mallory received (${mBoxes.length} messages) carry no setup, rules or rulesState`);
+    ok(mBoxes.length > 0 && mBoxes.every((d) => Object.entries(d).every(([id, b]) => id === '*' /* (the whole-catalog mark) */ || (!('setup' in b) && !('rules' in b) && !('rulesState' in b)))), `the boxes Mallory received (${mBoxes.length} messages) carry no setup, rules or rulesState`);
     await alice.evaluate(() => window.__ct.act({ t: 'setRules', enabled: false }));
     await settle();
     await closeBoxes(alice);
@@ -548,9 +548,14 @@ const harborAs = (name, more = {}) => [file('game.json', J({ ...HARBOR_JSON, nam
         `${p.who}'s screen draws the board from it`);
     }
     await alice.evaluate(() => {
-      const td = HTMLCanvasElement.prototype.toDataURL;
-      window.__unstub = () => { HTMLCanvasElement.prototype.toDataURL = td; };
+      const td = HTMLCanvasElement.prototype.toDataURL, gid = CanvasRenderingContext2D.prototype.getImageData;
+      window.__unstub = () => { HTMLCanvasElement.prototype.toDataURL = td; CanvasRenderingContext2D.prototype.getImageData = gid; };
       HTMLCanvasElement.prototype.toDataURL = function (t, q) { return td.call(this, t === 'image/webp' ? 'image/png' : t, q); }; // (what Safari may do)
+      CanvasRenderingContext2D.prototype.getImageData = function (...a) { // (WebKit's smooth downscale leaves alpha 254 on a few pixels of an opaque image: D307)
+        const d = gid.apply(this, a);
+        for (let k = 3; k < d.data.length; k += 4004) if (d.data[k] === 255) d.data[k] = 254;
+        return d;
+      };
     });
     t0 = Date.now();
     r = await upload(alice, [file('game.json', J({ name: 'Safari pictures', pieces: [{ id: 'map', kind: 'board', w: 1200, h: 900, img: 'photo.png' }, { id: 'boat', kind: 'token', w: 70, img: 'boat.png' }] })),
@@ -559,7 +564,7 @@ const harborAs = (name, more = {}) => [file('game.json', J({ ...HARBOR_JSON, nam
     st = await S();
     const [saf] = await named('Safari pictures', st), sImgs = saf ? await stored(st.boxes[saf].imgs) : [];
     ok(sImgs[0]?.mime === 'image/jpeg' && sImgs[0].real === 'image/jpeg' && sImgs[0].w === 2048 && sImgs[0].bytes <= 2e6 && sImgs[1]?.mime === 'image/png' && sImgs[1].real === 'image/png',
-      `a canvas without WebP: the opaque photo stored as JPEG, the boat (transparent) as PNG, by their real types (${J(sImgs.map((x) => x.mime))}, ${Date.now() - t0} ms)`);
+      `a canvas without WebP: the opaque photo (a few of its pixels at alpha 254, as WebKit draws it) stored as JPEG, the boat (transparent) as PNG, by their real types (${J(sImgs.map((x) => x.mime))}, ${Date.now() - t0} ms)`);
   }
 
   section('12 the same built-in box twice from 📦: one catalog entry');

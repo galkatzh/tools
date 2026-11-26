@@ -345,10 +345,12 @@ function keysOf(index) {
  *  records of `catalog` (the decks and boxes not saved yet: {id, kind:
  *  'deck', deck} or {id, kind: 'box', box, src, by?}) and the images they
  *  show that IndexedDB doesn't hold yet (hold()): a catalog record never
- *  names an image the store lacks. */
-export function writeSave(room, state, catalog = []) {
+ *  names an image the store lacks. `fresh`: the room's catalog goes first
+ *  (a save that replaces the room's whole table). */
+export function writeSave(room, state, catalog = [], fresh = false) {
   const imgs = unstored(catalog);
   return tx(imgs.length ? ['saves', 'catalog', 'assets'] : ['saves', 'catalog'], 'readwrite', (saves, cat, assets) => {
+    if (fresh) cat.delete(IDBKeyRange.bound([room], [room, []]));
     saves.put({ room, ts: Date.now(), v: state.v, state });
     for (const c of catalog) cat.put({ room, ...c });
     for (const [h, m] of imgs) assets.put(record(h, m));
@@ -450,7 +452,7 @@ export async function prune(exceptRoom, need) {
   return 1;
 }
 
-/** This room's save: {state, decks, boxes, boxSrc, stored, behind?} — `stored`: IndexedDB
+/** This room's save: {state, decks, boxes, boxSrc, stored, behind?, fromOld?} — `stored`: IndexedDB
  *  holds exactly this (false: a migrated save that couldn't be written),
  *  `behind`: why the room's latest save can't be resumed, when this is an
  *  older copy of it (below) — {lost: why} when it can't be resumed at all,
@@ -461,7 +463,9 @@ export async function prune(exceptRoom, need) {
  *  and ct-decks-<room>) is migrated: its state lifted (core.js migrate), its
  *  decks ingested (a deck that fails is dropped, and said so), and the result
  *  — images included — written in one transaction; only once that commits do
- *  the old keys go, or once IndexedDB holds a later table of the room. A lost
+ *  the old keys go, or once IndexedDB holds a later table of the room. One
+ *  saved after the room's IndexedDB save (a tab of the previous Card Table
+ *  played on) replaces it the same way, and is resumed (`fromOld`). A lost
  *  marker never stands for one: when the migration couldn't be written and
  *  the saves since failed too, the old keys hold the table's last good copy,
  *  and it is resumed, `behind`. A record that holds no table becomes a lost
@@ -479,7 +483,7 @@ export async function loadSave(room) {
     const v = Math.max(num(s.v, 1), num(s.state?.v, 1));
     if (v > STATE_V) return { newer: v };
     if (s.state?.items && s.state.players) {
-      dropLegacy(room, s.ts);
+      if (legacyNewer(room, s.ts)) return migrateLegacy(room, undefined, true);
       const decks = {}, boxes = {}, boxSrc = {};
       for (const c of cat.result) {
         try {
@@ -497,21 +501,27 @@ export async function loadSave(room) {
   }
   return (await migrateLegacy(room, lost)) ?? { lost };
 }
-/** Removes room's pre-Phase 1 save, left behind when its migration couldn't
- *  be written, once a table saved at least as late (at `ts`) supersedes it. */
-function dropLegacy(room, ts) {
+/** Whether room's pre-Phase 1 save (localStorage) was made after its
+ *  IndexedDB save (at `ts`): a tab of the previous Card Table, still open
+ *  when this one moved the save over, went on playing and saving there
+ *  (D303). One that isn't — left behind when its migration couldn't be
+ *  written, or unreadable — is superseded, and removed here. */
+function legacyNewer(room, ts) {
   const raw = localStorage.getItem(`ct-save-${room}`);
-  if (raw === null) return;
+  if (raw === null) return false;
   let at = 0;
   try { at = num(JSON.parse(raw)?.ts); } catch (err) { console.error('an unreadable pre-Phase 1 save, superseded', err); }
-  if (at > num(ts)) { console.warn(`the pre-Phase 1 save of ${room} is newer than its IndexedDB save: kept`); return; }
+  if (at > num(ts)) return true;
   localStorage.removeItem(`ct-save-${room}`);
   localStorage.removeItem(`ct-decks-${room}`);
+  return false;
 }
 /** The pre-Phase 1 save of `room` (localStorage), migrated: see loadSave.
  *  `behind`: why the room's later save can't be resumed (the migrated table
- *  says so), when IndexedDB holds a lost marker for it. */
-async function migrateLegacy(room, behind) {
+ *  says so), when IndexedDB holds a lost marker for it. `newer`: it replaces
+ *  an older IndexedDB save of the room, catalog and all (legacyNewer), and
+ *  the result says so (`fromOld`). */
+async function migrateLegacy(room, behind, newer = false) {
   const key = `ct-save-${room}`, raw = localStorage.getItem(key);
   if (raw === null) return null;
   let out;
@@ -543,14 +553,14 @@ async function migrateLegacy(room, behind) {
   }
   try {
     if (out.lost) await markLost(room, out.lost, out.ts);
-    else await writeSave(room, out.state, Object.entries(out.decks).map(([id, deck]) => ({ id, kind: 'deck', deck })));
+    else await writeSave(room, out.state, Object.entries(out.decks).map(([id, deck]) => ({ id, kind: 'deck', deck })), newer);
     localStorage.removeItem(key);
     localStorage.removeItem(`ct-decks-${room}`);
   } catch (err) {
     opts.notify(`Couldn't move this table's save to the new storage: ${err.message}`);
-    return out.lost ? { lost: out.lost } : { ...out, stored: false };
+    return out.lost ? { lost: out.lost } : { ...out, stored: false, ...(newer && { fromOld: true }) };
   }
-  return out.lost ? { lost: out.lost } : { ...out, stored: true };
+  return out.lost ? { lost: out.lost } : { ...out, stored: true, ...(newer && { fromOld: true }) };
 }
 
 // --- assets ---------------------------------------------------------------------

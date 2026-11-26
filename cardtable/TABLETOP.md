@@ -451,7 +451,8 @@ sync and rendering, and the Worker together with `handle`.
      the patches; seat keys moved to `state.keys` (state v2); refusals
      re-send what they named; host saves and the deck catalog in IndexedDB
      (one transaction per save, a `ct-pending-<room>` marker for a write the
-     closing tab couldn't finish, a newer version's save never touched, the
+     closing tab couldn't finish — holding the state itself when it can,
+     which the next boot resumes — a newer version's save never touched, the
      host key as the fallback proof of ownership); images by SHA-256,
      pulled by guests from the host only, paced and budgeted, and checked
      (magic bytes, size, header pixel size, hash) before any peer stores
@@ -1149,8 +1150,10 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
   and nobody sees a hidden piece of yours dragged, only where it lands
   (§3, §5).
 - **Hidden things look alike everywhere they could differ:** a hidden die
-  and a hidden token under one back land alike (neither snaps), and a draw
-  is never refused for what it would draw (§1, §2).
+  and a hidden token under one back land alike (neither snaps), a draw is
+  never refused for what it would draw, and a script that sets the face of
+  hidden pieces, or who sees them, touches each alike, whatever it already
+  showed or whoever already saw it (§1, §2, §5).
 - **What a script says names nothing hidden:** a script's lines and
   banners may only say what the table shows — Dominoes draws its leader
   by lot rather than name who holds the highest double (§5).

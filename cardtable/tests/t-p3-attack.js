@@ -759,6 +759,22 @@ const scanRaw = (page, o) => page.evaluate((o) => {
     }
   }
 
+  section('An action nested deeper than any needs (D302): refused at the gate, before the rules Worker — the rules stay on, nothing applied');
+  {
+    await mirrorEqual('before the deep actions');
+    await h.sleep(10500); // (one refusal notice per 10 s per peer: the earlier cases' may still hold it back)
+    const ts0 = await hostNow(), jobs0 = await host.evaluate(() => window.__ct.perf.workerJobs), rot0 = (await P.viewOf(host, 'v.items[a]', ids.S1)).rot, n0 = (await M.notes()).length;
+    // (a junk field 100,000 arrays deep, final-lib's M.deep: JSON.parse takes it, a structured clone can't)
+    await M.evaluate((id) => { window.M.deep({ t: 'chat', msg: 'deep-on' }, 100000); window.M.deep({ t: 'rot', id, rot: 90 }, 100000); }, ids.S1);
+    await X.barrier(ids.MKR);
+    const notes = (await M.notes()).slice(n0), lines = await logSince(ts0);
+    ok(notes.includes('🚫 Malformed action'), `Mallory is told "🚫 Malformed action" (${J(notes)})`);
+    ok(await rulesOn() && !(await lastErr()) && !lines.some((e) => /deep-on|^rules disabled/.test(e.txt)), `the rules stay on, no chat line, no "rules disabled" (${J(lines.map((e) => e.txt))})`);
+    ok((await P.viewOf(host, 'v.items[a]', ids.S1)).rot === rot0 && (await host.evaluate(() => window.__ct.perf.workerJobs)) - jobs0 === 1, `the stone unturned, and the Worker ran her barrier alone (${(await host.evaluate(() => window.__ct.perf.workerJobs)) - jobs0} job)`);
+    ok(!wlog.some((x) => /Maximum call stack|could not post a job/.test(x)), '(no stack overflow, no failed post on the host)');
+    await mirrorEqual('after the deep actions');
+  }
+
   section('5: nobody receives another player\'s ask, hint or secret — every body Mallory, Eve and Bob received, scanned');
   {
     await knock();

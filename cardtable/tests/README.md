@@ -43,7 +43,7 @@ node t-smoke.js         # one suite, output on the terminal
   within 1 s; go's stone #300 within 10 ms of Worker time), run alone, one
   at a time after the parallel batch, under the same lock: `SERIAL`, a
   comma-separated list of suite names, default
-  `t-p1-bench,core-p1-bench,core-p2-bench,core-p4-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench,t-p4-resume-bench,t-p4-hexfront,t-p4-hex-bench,t-p4-select,t-p4-gflood`.
+  `t-p1-bench,core-p1-bench,core-p2-bench,core-p4-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench,t-p4-resume-bench,t-p4-hexfront,t-p4-hex-bench,t-p4-select,t-p4-gflood,core-p5.test`.
   A listed suite that doesn't exist fails the run.
 - Runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
   `/tmp/cardtable-tests.lock`): concurrent runs on a small machine starve each
@@ -54,7 +54,9 @@ node t-smoke.js         # one suite, output on the terminal
   starts by URL, never imports) and every local module they import as real
   ES modules (a stray `await` or a duplicate export fails there, not in a
   browser). Local imports carry the code version (`./core.js?v=1`, see
-  `MODULE_V` in `core.js`); the check, like the test server, ignores it.
+  `MODULE_V` in `core.js`); the check fails one that doesn't, and an
+  `index.html` that loads `app.js` or `style.css` without it (D306), then
+  reads the file by its path, as the test server does.
 
 ## Add a suite
 
@@ -3194,9 +3196,12 @@ SPEC §9 D277–D292, the second fix-up's D293–D296 and the third's D297–D29
   B4_LONG while the fingers are down, the rAF p95, nothing over B4_SETTLE
   at the lift, B4_LAYOUTS); before D297 the Veiled Ranks pinches started
   with a 52–91 ms task. It runs last in the suite (D300): Veiled Ranks'
-  named seats put Bob among the watchers and Pat North, and nothing
-  restores the seats the players took as they joined — in the third
-  fix-up it ran before the card part, whose rows all ran on those seats. Mechanism changes, no check weakened:
+  named seats put Bob among the watchers and Pat North — in the third
+  fix-up it ran before the card part, whose rows all ran on those seats.
+  Restoring the seats taken on joining would take a seatless box (a type
+  of its own: `cleanBox` refuses `types: {}`), everyone to the watchers,
+  then `sit` in join order (`assignSeat` gives a round table's first 90°,
+  then 270°, then 180°: D310); the row runs last instead. Mechanism changes, no check weakened:
   `boardTexts` reads the HTML text (each span's screen map from three
   probes, where `getScreenCTM` read an SVG text's); the label selectors of
   t-p2-pieces, t-p2-demos, t-p2-tables, t-p5-demos, t-p5-private,
@@ -3225,6 +3230,88 @@ SPEC §9 D277–D292, the second fix-up's D293–D296 and the third's D297–D29
   (`seating()`, read after the three join). Mechanism change: the
   half-turned row moved after B11, the last in the suite (it leaves the
   players in Veiled Ranks' named seats); no check changed.
+
+## The final review's fix-up (D301–D310)
+
+SPEC §9 D301–D310. The harness drives Chromium only: what WebKit does
+differently (a cancelled touch loses its click, no constructable
+stylesheets before 16.4, a pagehide's IndexedDB write that never commits,
+alpha 254 in a downscaled photo) is checked by making Chromium do the same.
+
+- **`core-p5.test.mjs` section (F9)** (D301): `t.setFace` over four cupped
+  dice, two already at that face, and `t.setVis` over four hidden pieces,
+  two of which North already saw: all four marked, re-sent and logged
+  alike ("turned 4 pieces: a hidden piece, …"); then §5j case 9's piece,
+  hidden for North and nobody's: Mallory's move and group move of it onto
+  North's rack refused uniformly ("🚫 That piece is hidden"), North's own
+  drag elsewhere keeps it hidden, and North, who sees it, racks it.
+- **`t-p3-attack.js`, deep actions** (D302): with the rules on, Mallory
+  sends a chat and a turn, each with a junk field 100,000 arrays deep
+  (final-lib's `M.deep`): "🚫 Malformed action", the rules stay on (no
+  "rules disabled", no chat line), the stone unturned, the Worker ran her
+  barrier alone, no stack overflow on the host, the mirror equal.
+- **`t-final-sec.js`, the gate** (D302): the same chat with the rules off
+  (nothing logged, no error toast); a raw page (`S`) whose seat key is a
+  million characters ("🚫 Invalid seat key", no player), then 32 (it
+  registers and the save stays under 1 M characters); it leaves and joins
+  again under a new player id ("🚫 One seat per connection", no player),
+  and is back under its own.
+- **`t-p1-flood.js`, the budget is the player's** (D302): after Mallory's
+  minute of images, a second connection under her id, then a new one after
+  it left, each get 0 bytes within that minute.
+- **`t-p1-review-store.js` (9)** (D303): a legacy save written a minute
+  after the room's IndexedDB save (the old shape: keys on the players, no
+  zMax, a card moved, a deck the newer save added left out) is resumed —
+  the host told, the card where the old tab left it, the newer deck and the
+  legacy keys gone, the room's catalog the legacy one's — and a reload
+  resumes it again from IndexedDB.
+- **`t-p4-boxes.js`** (D307): the no-WebP canvas also sets every 1,001st
+  pixel's alpha to 254 (`getImageData`), as WebKit's downscale draws an
+  opaque photo: still stored as JPEG.
+- **`t-final-compat.js`** (new): (1) the version gate both ways
+  (D304) — a page whose core.js says another PROTO (`versioned()`, a route
+  rewrites it): a newer guest is told to ask the host, and the host is
+  told; an older guest is told to reload; a hosting tab of another version
+  hears the other host and says so; (2) Bob's box, lost by the host's
+  reload, leaves his 📦 when the whole catalog arrives, and he is told
+  (D305); (3) the previous `index.html` (no `#box-btn`, `app.js` with no
+  `?v=`) with this app.js: the reload banner, no TypeError, no table
+  (D306); (4) WebKit's pagehide (D308), simulated by a stand-in
+  transaction that never completes from the pagehide on: a move just
+  before a reload is kept with no warning and saved once the page is back;
+  a deck added just before one (the mark a seq alone) is lost, and the host
+  told, as is a move when localStorage is too full for the state (its seq
+  is still left pending); (5) browsers (D307): an iPhone tap on a hand card zooms it, its
+  pointerdown not cancelled (a mouse's is); the app loads with
+  `CSSStyleSheet` throwing "Illegal constructor" and no
+  `adoptedStyleSheets`; a `gesturechange` of scale 1.5 zooms the table
+  ×1.5; Backgammon's checkers picked (at least two, each clicked where it
+  lies on top): on an 800 px screen the one-row bar fits, centred (its two
+  gaps within 2 px), and on one 60 px narrower than the bar it overflows
+  and starts at ✕; a game box upload calls `navigator.storage.persist()`.
+- **`t-p1-bench.js`, two B4 rows before B6** (D309): `dragPiece` — the
+  phone drags a token near the screen's middle for 3 s under ×2 CPU
+  throttling, a touch pointer moved every frame (the first drag unmeasured):
+  it moves (`__ct.drawn(id).tx`), no long task over B4_LONG, the rAF p95
+  under B4's limit, at most one layout in two frames (by left/top it laid
+  out every frame, twice with the chip); then the host drags 200 tokens
+  live for 2 s and drops them, the phone watching: its glides all end
+  (`__ct.lives()` empty), no task over B4_SETTLE (652–924 ms before), at
+  most B4_LAYOUTS layouts (282 before).
+- **Mechanism changes, no check weakened:** final-lib's Mallory installs a
+  raw-JSON send (`{__raw: text}` goes out as that text) before Trystero
+  loads, which takes `JSON.stringify` as it loads; p3-lib's `preview`
+  waits up to 500 ms for the chip to show the spot's address (written at
+  most every 150 ms now); t-p1-bench and t-p2-tables find the `--bz` rule
+  in `document.styleSheets` (the view sheet is a `<style>` element's now);
+  t-fun-motion reads where the card is drawn as its left/top plus its
+  translate, compared as numbers (a drag moves it by translate); t-p1-flood
+  expects the guest's new wording ("… to a player, 256 MB to all");
+  t-p4-boxes skips the whole-catalog mark (`'*'`) among a boxes message's
+  ids.
+- **`parse.js`** also fails a local import, or `index.html`'s `app.js` or
+  `style.css`, without `?v=MODULE_V` (D306: a version left behind on one
+  file pairs a cached copy of the previous Card Table with this one).
 
 ## Storage and images (Phase 1B)
 

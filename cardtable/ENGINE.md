@@ -274,8 +274,8 @@ they are off, no Worker exists.
   a piece, the others see it glide, and nothing changes until the drop:
   the `move` the rules see.
 
-**Migrating a script written for the page.** Before Phase 3 a script ran on
-the host's page, so it could touch it; in the Worker, any use of
+**Migrating a script written for the page.** In the earlier Card Table a
+script ran on the host's page, so it could touch it; in the Worker, any use of
 `document`, `alert`, `localStorage` or `sessionStorage` throws "document
 is not available: rules now run in a Worker, away from the page (see
 ENGINE.md, 'Running in a Worker')", `setTimeout` throws as above, and the
@@ -653,6 +653,12 @@ every message, so nothing private ever reaches anyone it isn't for.
   was face up already).
 - `t.setVis(id, refs | null)` changes who sees it, face down or not
   ("changed who sees a hidden piece").
+- A piece lying hidden is always changed by `t.setVis` and `t.setFace`,
+  even when its viewers or its face are already the ones asked: it gets
+  the log line, the name bulb and the re-send all the same. Skipping it
+  would tell every player which hidden pieces already showed that face, or
+  were already seen by those refs (D301). A face-up piece already right is
+  skipped, as before.
 - `t.canSee(pid, id)` → whether `pid` sees what the item is: a piece by the
   rule above, a card or a pile's top by its side, a bag never.
 - `t.spawn(type, {up: false, vis: refs, …})` places a piece hidden for
@@ -666,9 +672,9 @@ A player's own `hide` makes an unowned piece theirs until it is revealed —
 a cup belongs to a person. A private piece (one with a `vis`) hidden from a
 player is refused to them for whatever would show it to them or strip who
 sees it — `flip`, `roll`, `face`, `toHand`, a claim, `stack` and `toPile`
-(either side), `toBag`, a split onto a bag, and a move onto their own rack
-— with one uniform "🚫 That piece is hidden", unless they own it; anyone
-may `peek` at it, on the record ("peeked at a hidden piece"), and a
+(either side), `toBag`, a split onto a bag, and a move onto any rack or
+screen that would take it in, its owner's own included — with one uniform
+"🚫 That piece is hidden", unless they own it; anyone may `peek` at it, on the record ("peeked at a hidden piece"), and a
 script's `validate` may veto that. Rolls of hidden dice log the shown
 values alone ("rolled 4 dice (2 hidden): 3 · 5"; `t.roll` of one: "📜 Rules
 rolled a hidden die"). A hidden piece under a back that a die of its box

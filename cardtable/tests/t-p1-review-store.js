@@ -23,6 +23,10 @@
 //                 with room resumes the legacy table, loudly, and migrates it
 //   (8) no table  a save record that holds no table: the fresh table that
 //                 replaces it never inherits the old table's catalog
+//   (9) old tab   a legacy save made AFTER the room's IndexedDB save (a tab of
+//                 the previous Card Table played on after the move, D303): it
+//                 is resumed, loudly, and replaces the IndexedDB save (its
+//                 catalog too) — never kept aside, then deleted
 'use strict';
 const h = require('./h');
 const L = require('./p1-lib');
@@ -296,6 +300,36 @@ const OLDER = /^Couldn't resume this table's last save \(browser storage is full
     ok(L.same(piles, ['Standard']) && (await catalogOf(w, room)).length === 1, `with none of the old decks (${piles.join(', ')})`);
     await w.context().close();
   })().catch((e) => ok(false, `(8) crashed: ${e.stack}`));
+
+  section('(9) a legacy save newer than the IndexedDB save is resumed, never dropped (D303)');
+  await (async () => {
+    const { p: o, room, invite } = await picsTable(env, 'Olga', [A.toastLog]);
+    await L.act(o, { t: 'addDeck', deck: { ...PICS, name: 'Later' }, x: 900, y: 820 }); // (a deck the newer save never had)
+    await waitPile(o, 'Later');
+    ok(await settled(o), 'the IndexedDB save holds the table, with a deck added after the move');
+    await o.goto(h.plain(env));
+    // What the previous Card Table's tab, still open, saves after more play: its state in the old shape, newer.
+    const rec = await h.idb(o, 'saves', room), cat = await catalogOf(o, room);
+    const legacy = structuredClone(rec.state), card = Object.keys(legacy.items).find((id) => legacy.items[id].k === 'c'); // (a Pics card, dealt face up)
+    for (const id of Object.keys(legacy.items)) if (legacy.items[id].name === 'Later') delete legacy.items[id];
+    legacy.items[card].x = 333;
+    legacy.seq += 5;
+    for (const [pid, k] of Object.entries(legacy.keys)) legacy.players[pid].key = k;
+    delete legacy.keys; delete legacy.zMax; delete legacy.v;
+    const decks = Object.fromEntries(cat.filter((r) => r.deck.name !== 'Later').map((r) => [r.id, r.deck.name === 'Pics' ? PICS : r.deck]));
+    await o.evaluate(([room, s, d]) => { localStorage.setItem(`ct-save-${room}`, s); localStorage.setItem(`ct-decks-${room}`, d); },
+      [room, JSON.stringify({ ts: rec.ts + 60000, state: legacy }), JSON.stringify(decks)]);
+    await back(o, invite);
+    await okWait(toasted(o, /^Resumed this table's newer save, made by a tab of the previous Card Table$/), "the host is told it resumed the previous Card Table's newer save");
+    await okWait(L.until(async () => (await L.view(o)).items[card]?.x === 333 && (await faces(o)) === 2), 'the newer play is on the table, its images drawn');
+    ok(!(await pileNamed(o, 'Later')) && !(await legacyKeys(o)).length, 'the older IndexedDB table is gone (its deck too), and so are the legacy keys');
+    const cat2 = await catalogOf(o, room);
+    ok(cat2.length === 2 && !cat2.some((r) => r.deck.name === 'Later') && !(await unbacked(o, room)).length, `the room's catalog is the newer save's: ${cat2.map((r) => r.deck.name).join(', ')}`);
+    await o.reload();
+    await o.waitForSelector('.item.pile .count', { timeout: 30000 });
+    await okWait(L.until(async () => (await L.view(o)).items[card]?.x === 333), 'a reload resumes it again: IndexedDB holds it now');
+    await o.context().close();
+  })().catch((e) => ok(false, `(9) crashed: ${e.stack}`));
 
   await env.done();
 })().catch(h.crash);

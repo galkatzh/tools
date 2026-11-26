@@ -44,10 +44,12 @@ let canvas = null; // one canvas, reused (iOS caps the memory all canvases hold)
 const urlType = (url) => imageType(Uint8Array.from(atob(url.slice(url.indexOf(',') + 1, url.indexOf(',') + 25)), (c) => c.charCodeAt(0)));
 /** The bytes a base64 data URL holds. */
 const urlBytes = (url) => { const b = url.length - url.indexOf(',') - 1; return (b * 3) / 4 - (url.endsWith('==') ? 2 : url.endsWith('=') ? 1 : 0); };
-/** Whether nothing drawn on `ctx` (w × h) is see-through. */
+/** Whether nothing drawn on `ctx` (w × h) is see-through: alpha 250 and up
+ *  counts as opaque (WebKit's smooth downscale leaves 254 on a few pixels of
+ *  an opaque photo; JPEG lays them on black, 2% off at most: D307). */
 function opaque(ctx, w, h) {
   const d = ctx.getImageData(0, 0, w, h).data;
-  for (let k = 3; k < d.length; k += 4) if (d[k] !== 255) return false;
+  for (let k = 3; k < d.length; k += 4) if (d[k] < 250) return false;
   return true;
 }
 /** Bytes as a data URL of type `mime`. */

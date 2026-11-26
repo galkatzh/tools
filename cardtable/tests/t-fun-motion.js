@@ -66,13 +66,15 @@ const { devices } = h.playwright;
   await guest.mouse.move(gb.x + gb.width / 2, gb.y + gb.height / 2);
   await guest.mouse.down();
   for (let k = 1; k <= 8; k++) { await guest.mouse.move(gb.x + gb.width / 2 - 14 * k, gb.y + gb.height / 2 + 6 * k); await h.sleep(30); }
-  const drop = await guest.$eval(CARD, (el) => [el.style.left, el.style.top].join());
-  await guest.evaluate((s) => { window.POS = []; const el = document.querySelector(s); new MutationObserver(() => window.POS.push([el.style.left, el.style.top].join())).observe(el, { attributes: true, attributeFilter: ['style'] }); }, CARD);
+  // (where the card is drawn: its left/top, plus the translation a drag moves it by: D309)
+  const drawnAt = (el) => { const [tx = 0, ty = 0] = (el.style.translate || '').split(' ').map(parseFloat); return [parseFloat(el.style.left) + (tx || 0), parseFloat(el.style.top) + (ty || 0)]; };
+  const drop = await guest.$eval(CARD, (el, f) => (0, eval)(f)(el), drawnAt.toString()); // eslint-disable-line no-eval
+  await guest.evaluate(([s, f]) => { window.POS = []; const el = document.querySelector(s), g = (0, eval)(f); new MutationObserver(() => window.POS.push(g(el))).observe(el, { attributes: true, attributeFilter: ['style'] }); }, [CARD, drawnAt.toString()]); // eslint-disable-line no-eval
   await guest.mouse.up();
   await logHas(host, 'Bob moved');
   await h.sleep(400); // let any stale in-flight state land
   const pos = await guest.evaluate(() => window.POS);
-  ok(pos.every((p) => p === drop), `the card stays where it was dropped (${[...new Set(pos)].join(' | ') || drop})`);
+  ok(pos.every((p) => Math.abs(p[0] - drop[0]) < 0.01 && Math.abs(p[1] - drop[1]) < 0.01), `the card stays where it was dropped (${JSON.stringify(pos.length ? pos : [drop])})`);
 
   // ------------------------------------------------------------------ UX-I5
   section('touch long-press zooms a face-up card');

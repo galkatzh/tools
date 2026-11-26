@@ -773,6 +773,40 @@ function testFixup() {
     const labels = Object.values(BOXES.ranks.types).filter((ty) => ty.meta?.side === 'south').map((ty) => ty.faces[0].label);
     ok(new Set(labels).size === labels.length && Object.values(BOXES.ranks.types).every((ty) => !ty.meta || ty.faces[0].name === ty.name), `each unit its own label (${labels.join(' ')}), its face named as its type`);
   }
+  section('(F9) the final review (D301): t.setFace and t.setVis never skip a piece lying hidden; a rack takes a private piece only from one who sees it, whoever its vis names');
+  {
+    const R = room(), it = R.it, dice = [ID.d1, ID.d2, ID.d3, ID.d4];
+    R.api((t) => dice.forEach((d, k) => t.setFace(d, [0, 3, 1, 0][k])));
+    R.job(HOST, { t: 'hide', ids: dice }); // Alice cups four dice: two already show face 0
+    R.api((t) => { t.hide(ID.t1, ['seat:north']); t.hide(ID.t2, []); t.hide(ID.u1, ['seat:north']); t.hide(ID.u2, []); });
+    R.tick();
+    const four = [ID.t1, ID.t2, ID.u1, ID.u2];
+    R.job(HOST, { t: 'setRules', enabled: true, code: `({ name: 'Even', buttons: () => [{ id: 'f', label: 'Faces' }, { id: 'v', label: 'North looks' }],
+      onButton(t, id) { if (id === 'f') t.setFace(${J(dice)}, 0); else for (const x of ${J(four)}) t.setVis(x, ['seat:north']); } })` });
+    R.tick();
+    let r = R.job(BOB, { t: 'rulesBtn', id: 'f' }), body = R.tick()[MAL][0];
+    const marks = (r) => r.fx.filter((e) => e.t === 'fx').map((e) => e.f.id).sort();
+    ok(J(marks(r)) === J(dice) && J(Object.keys(body.items || {}).sort()) === J(dice) && J(body.log?.map((e) => e.txt)) === J(['turned 4 pieces: a hidden piece, a hidden piece, a hidden piece, a hidden piece']) && dice.every((d) => it(d).f === 0),
+      `t.setFace over four cupped dice, two of them showing it already: all four marked, re-sent and logged alike (${J(marks(r))}, ${J(Object.keys(body.items || {}))}, ${J(body.log?.map((e) => e.txt))})`);
+    r = R.job(BOB, { t: 'rulesBtn', id: 'v' });
+    body = R.tick()[MAL][0];
+    ok(J(marks(r)) === J([...four].sort()) && J(Object.keys(body.items || {}).sort()) === J([...four].sort()) && J(body.log?.map((e) => e.txt)) === J(['changed who sees 4 pieces: a hidden piece, a hidden piece, a hidden piece, a hidden piece']) && four.every((x) => J(it(x).vis) === J(['seat:north'])),
+      `t.setVis over four hidden pieces, two North saw already: all four marked, re-sent and logged alike (${J(marks(r))}, ${J(body.log?.map((e) => e.txt))})`);
+    R.job(HOST, { t: 'setRules', enabled: false });
+    // §5j case 9's piece: hidden for North, nobody's — Mallory may not arm his rack's reveal with it
+    const U = room(), u = U.it, onRack = { x: u(ID.rackN).x + 30, y: u(ID.rackN).y + 10 };
+    U.api((t) => t.hide(ID.u1, ['seat:north']));
+    U.tick();
+    const u0 = J(priv(u(ID.u1)));
+    r = U.job(MAL, { t: 'move', id: ID.u1, ...onRack });
+    ok(r.notes.join() === '🚫 That piece is hidden' && J(priv(u(ID.u1))) === u0 && !r.lines.length, `Mallory moves North's unowned private unit onto North's rack: the uniform refusal, nothing changed (${J(r.notes)}, ${J(priv(u(ID.u1)))})`);
+    r = U.job(MAL, { t: 'group', op: 'move', ids: [ID.u1], dx: onRack.x - u(ID.u1).x, dy: onRack.y - u(ID.u1).y });
+    ok(r.notes.join() === '🚫 That piece is hidden' && J(priv(u(ID.u1))) === u0, `…as a group's move too (${J(r.notes)})`);
+    r = U.job(BOB, { t: 'move', id: ID.u1, x: 900, y: 500 });
+    ok(J(priv(u(ID.u1))) === u0 && u(ID.u1).up === false, `North's own drag of it elsewhere keeps it hidden, as before (${J(priv(u(ID.u1)))})`);
+    r = U.job(BOB, { t: 'move', id: ID.u1, ...onRack });
+    ok(!r.notes.length && J(priv(u(ID.u1))) === J({ up: false, vis: ['seat:north'], pv: 1, po: 1, owner: 'seat:north' }), `North, who sees it, racks it himself: his rack takes it (${J(priv(u(ID.u1)))})`);
+  }
 }
 
 // --- (9) the facade on the Worker path, the grammar, checkPatch ---------------------------------------

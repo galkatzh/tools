@@ -375,10 +375,15 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   bytes per move, and every screen — the host's own included, through the
   same path — redraws only the items that changed.
 - **Versions**: actions carry the wire version and host messages declare
-  it; a peer on another version of Card Table is refused with a "reload this
-  page" notice instead of misreading the table. Every module import carries
-  the code version (`core.js?v=1`), and the page stops with a "reload" banner
-  if a cached module of another version slipped in; a rules Worker of
+  it; a peer on another version of Card Table is refused instead of
+  misreading the table, and told which page must reload: an older guest
+  "reload this page"; a newer one that the host's page is older ("ask the
+  host to reload it"), while the host is told a player has a newer Card
+  Table; a second hosting tab of another version, to close or reload it.
+  Every module import carries the code version (`core.js?v=1`, and
+  `style.css?v=1`), and the page stops with a "reload" banner if a cached
+  module of another version slipped in, or a cached page of the previous
+  Card Table runs this script; a rules Worker of
   another version refuses to start ("reload this page to run rules") —
   on a host's reload, the saved rules stay on in the save, so that reload
   runs them again.
@@ -388,7 +393,11 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   sender on *any* action — so a lost join handshake can't permanently mute a
   guest. Until a state addressed to it arrives, a guest repeats its hello
   every 3s, and the host answers each with a snapshot (at most one per 3s),
-  so a lost answer heals even on a quiet table.
+  so a lost answer heals even on a quiet table. A connection registers one
+  player for good (a page that leaves and joins again under a new id is
+  refused), a seat key is 16 to 64 characters, and the table takes new
+  players 20 at once, then one every 3 s (the rest keep knocking): the
+  host's save keeps every player's key, so nobody can grow it at will.
 - **Signaling health**: public Nostr relays are best-effort, so the status
   dot shows the truth — green with a player count when peers are connected,
   `● …` while searching, red `● ✕` when zero relays are reachable. A watchdog
@@ -437,7 +446,10 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   with a large state more again, past the burst too (the sender then waits
   it out) — and the decks guests add share one 1.5M-char budget per
   table (saved with it), so nobody can fill the host's browser storage.
-  Card and deck names lose their control characters on the way in.
+  Card and deck names lose their control characters on the way in. An
+  action nested deeper than 64 arrays or objects is refused at the door
+  ("Malformed action"): copying it to the rules Worker would overflow the
+  stack, and a peer could switch the host's rules off with it.
 - **Persistence**: the host saves the table in IndexedDB (`store.js`,
   database `cardtable`): the state at most once a second (and a quarter
   second after the move that asked, never in its own burst of work; a
@@ -464,11 +476,16 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   the save. A tab that closes,
   or is hidden (a phone switching apps may never wake it again), saves at
   once (a hidden tab lives on, so its save still waits for one in flight;
-  only a closing tab starts its own beside it). A write started as the tab goes away may never land, so the tab
-  also leaves a
-  `ct-pending-<room>` note in localStorage, and if the save behind it never
-  committed the next start says "the last moment of play before the reload
-  wasn't saved". A browser that blocks IndexedDB runs the table unsaved, and
+  only a closing tab starts its own beside it). A write started as the tab
+  goes away may never land — in Safari and every iOS browser it never does
+  — so the tab also leaves what it meant to save in localStorage
+  (`ct-pending-<room>`: the whole table, when it names no deck or box the
+  saved catalog lacks and fits in 2 million characters, else its move
+  number), and the next
+  start resumes from it, or, with the number alone, says "the last moment
+  of play before the reload wasn't saved". A save the previous Card Table
+  wrote after this one moved the table to IndexedDB (a tab of it left open
+  across the deploy) is newer: it is resumed, and said so, never dropped. A browser that blocks IndexedDB runs the table unsaved, and
   says so (no fallback); it still hosts its room after a reload, by the host
   key. A save written by a newer Card Table (a tab left open across a
   deploy) is never resumed or overwritten: the older tab says "reload this
@@ -485,8 +502,9 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   uploads a deck never downloads it back. The host sends only images of the
   table at hand (never another room's), a few at a time per guest and after
   that guest's pending moves, so play stays live during a big download,
-  and at most 64 MB a minute per guest: a bigger table's images come over
-  more than one minute (the guest is told they come slowly). A deck is
+  and at most 64 MB a minute per player — all their tabs and reconnects
+  share it — and 256 MB a minute to everyone: a bigger table's images come
+  over more than one minute (the guest is told they come slowly). A deck is
   checked and hashed in slices, between which everyone's moves go on, and
   its images are kept only once it is on the table: a deck the rules or the
   budget refuse leaves nothing in the host's browser (a guest's decks are
@@ -767,7 +785,8 @@ rules, their state, and pending timers survive host reloads — and
 re-enabling the same game after a fix or a Disable keeps its state (chips,
 scores) unless the host ticks *Reset game state*. Switching to another game
 discards the old one's state (the 🎲 picker asks first, and the log says so).
-A script saved before Phase 3 that touches the page — `document`, `alert`,
+A script written for the earlier Card Table, where rules ran on the host's
+page, that touches the page — `document`, `alert`,
 `localStorage`, `setTimeout` — now disables the rules with a message saying
 so: use `t.say` / `t.tell` for messages, `t.data` for storage and
 `t.schedule` for timers (ENGINE.md, "Running in a Worker").
@@ -987,6 +1006,13 @@ refuse the `https → http://127.0.0.1` fetch.
   like the dealer at a home game.
 - The table always starts fitted to the smaller screen dimension; zoom and
   pan are per-player remedies, not persisted between reloads.
+- Browsers: current Chrome, Edge, Firefox and Safari, and Safari on iOS
+  15.4 or later (every iOS browser is Safari inside). Safari deletes a
+  site's storage after 7 days without a visit to it (its tracking
+  prevention): a table its host hasn't opened for a week is gone, host key
+  and all — **📦 Export this table** keeps one. The host is asked to keep
+  storage for good (`navigator.storage.persist()`) from its first upload of
+  a deck or a game box; browsers may say no.
 - The image cache can be probed: a guest asks the host only for the images
   it doesn't hold, so a host can tell whether a guest has seen a deck before.
 - Rules scripts are trusted code on the host's machine, and a dishonest

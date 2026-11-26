@@ -1361,6 +1361,23 @@ export const STRICT_ACTIONS = Object.freeze(RULED_ACTIONS.filter((t) => t !== 's
 export const PUBLIC_ACTIONS = Object.freeze([...RULED_ACTIONS, 'hello', 'snap', 'need', 'name', 'chat', 'rulesBtn', 'drag', 'answer', 'select', 'group']);
 /** The most items one action names at once: a group's live drag, and a `group`. */
 export const MAX_GROUP = 200;
+/** How deep a peer's action may nest, in arrays and objects (a box, the
+ *  deepest a guest sends, nests about 10). JSON.parse takes any depth, but a
+ *  structured clone (the rules Worker's job), JSON.stringify and every
+ *  recursive walk overflow the stack long before: the host refuses deeper
+ *  actions at the network gate (tooDeep, D302). */
+export const MAX_DEPTH = 64;
+/** Whether JSON value `v` nests deeper than `max` arrays or objects. A walk
+ *  with its own stack: no depth can overflow it. */
+export function tooDeep(v, max = MAX_DEPTH) {
+  for (const todo = [[v, 1]]; todo.length;) {
+    const [o, d] = todo.pop();
+    if (!o || typeof o !== 'object') continue;
+    if (d > max) return true;
+    for (const x of Object.values(o)) if (x && typeof x === 'object') todo.push([x, d + 1]);
+  }
+  return false;
+}
 /** While the rules run, a `group` costs floodCost once more for each this many characters of t.data (mayAct, D234). */
 export const GROUP_DATA_CHARS = 100e3;
 /** What a `group` does to each member (spec §4c): the single action of that
@@ -2537,13 +2554,14 @@ export function createTable(host, env = {}) {
   /** Whether p may set piece `it` down at top-left (x, y) (`o` as for
    *  place), before anything is changed: a piece with no hidden side can't
    *  be hidden by the active private zone it would land in (spec §5a); and a
-   *  rack shows its owner a private piece set on it — so only someone who
-   *  sees it, or owns it, may (the private-piece rule, seen: D277). A
-   *  script's goes on to place(), which throws for the first. */
+   *  zone that acts on a private piece hands it on — a rack shows its owner
+   *  a tile set on it, and arms the reveal of a drag off it — so only someone
+   *  who sees it, or owns it, may (privy: D277, D301), whoever its vis names.
+   *  A script's goes on to place(), which throws for the first. */
   function mayPlace(p, it, x, y, o) {
     const Z = p !== RULES && zoneAt(it, landing(it, x, y, o));
     if (!zoneActs(it, Z, o)) return true;
-    return (!!typeOf(it.t)?.back || no(p, '🚫 That piece has no hidden side')) && (!foreign(it, Z) || seen(p, it));
+    return (!!typeOf(it.t)?.back || no(p, '🚫 That piece has no hidden side')) && privy(p, it);
   }
   /** Piece `it` face up, for everyone: its vis and pv go, and the owner its
    *  hiding gave it (po); a token a die's back hid (no address while hidden,
@@ -5581,13 +5599,16 @@ export function createTable(host, env = {}) {
       return true;
     },
     /** Who sees piece `id` while it lies hidden: `refs` (as t.hide's), or
-     *  null for nobody; whether it lies face up or down is unchanged. */
+     *  null for nobody; whether it lies face up or down is unchanged. A
+     *  piece lying hidden is always touched, logged and marked, even when
+     *  its viewers stay the same: skipping it would tell everyone who
+     *  already saw it (D301). */
     setVis(id, refs) {
       const it = scriptItem('t.setVis', id);
       if (!it) return false;
       const vis = refs === null ? [] : scriptVis('t.setVis', refs);
       hideable('t.setVis', id, it);
-      if (String(vis) === String(it.vis ?? [])) return true;
+      if (it.up !== false && String(vis) === String(it.vis ?? [])) return true;
       touch(id);
       reindexed(id, it, () => {
         visTo(it, vis);
@@ -5607,7 +5628,9 @@ export function createTable(host, env = {}) {
       return it.k === 'c' ? !!it.up : it.k === 'p' ? it.cards.at(-1)?.up !== false : it.k !== 'b' && !hidden(p, it);
     },
     /** Turns piece or supply `id` — or each of a list of ids, as one log
-     *  line (a reversi move's flips: D167) — to face `f` (a die too: no roll). */
+     *  line (a reversi move's flips: D167) — to face `f` (a die too: no roll).
+     *  A piece lying hidden is turned (touched, logged, marked) even when it
+     *  shows f already: skipping it would tell everyone which ones did (D301). */
     setFace(ids, f) {
       return eachOf('t.setFace', ids, (id) => {
         const it = scriptItem('t.setFace', id);
@@ -5616,7 +5639,7 @@ export function createTable(host, env = {}) {
         const ty = typeOf(it.t);
         if (!ty) return no(RULES, "🚫 That piece's game box is missing");
         scriptFace('t.setFace', ty, f);
-        if (it.f === f) return true;
+        if (it.f === f && it.up !== false) return true;
         const from = label(it), to = it.up === false ? undefined : faceLabel(ty.faces[f], f);
         touch(id);
         it.f = f;
