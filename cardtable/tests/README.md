@@ -370,21 +370,25 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
   reduced motion, which `h.start()` sets by default: the class still comes).
 - **`pieces.js` in Node** (B11): `import('../pieces.js')` works without a
   DOM; `boardSVG(type)` takes a cleanBox'd board type (`cleanBox(box).types.x`)
-  and returns the SVG string, cached per type object (the same string, at
-  once, the second time). Its coordinates are the `<text>`s of
-  `g.blabels` (files in the margin strip right under the grid: `y` =
-  grid bottom + min(margins) / 2), its spaces' and zones' labels
-  `text.slabel`. On the table each coordinate turns about its own centre
-  (`transform-box: fill-box`) by −(`--view` + `--rot`): the view's angle,
-  set by the view sheet's rule 1 (its second), and the board item's `rot`, inline on
+  and returns its markup, cached per type object (the same string, at
+  once, the second time): the `svg.psvg` (grid, zones, spaces, links) and,
+  over it, its printed text as HTML (D297) — a `div.btexts` of
+  `span.btext`s, each centred on its anchor (`left`/`top` in board units,
+  `translate: -50% -50%`): the coordinates `.btext.coord` (files in the
+  margin strip right under the grid: `top` = grid bottom + min(margins) /
+  2), the spaces' and zones' labels `.btext.slabel` (a private zone's also
+  `.zlabel`). On the table each coordinate turns about its own centre
+  (CSS `rotate`) by −(`--view` + `--rot`): the view's angle, set by the
+  view sheet's rule 1 (its second), and the board item's `rot`, inline on
   its element; each `.slabel` by that angle rounded to the nearest half turn
   (CSS `round()`), so it is never upside down (D91). The coordinates also
-  grow: `scale: min(var(--bz), var(--lmax))`, where `g.blabels` carries
+  grow: `scale: min(var(--bz), var(--lmax))`, where `.btexts` carries
   `--lmax` (its margin over the widest label's box, an em tall and 0.6 em a
   character wide; 1 to 1.6: D97). A board's `.pface` and `svg.psvg` don't
   clip (`overflow: visible`).
-  p2t-lib's `boardTexts(p, id)` reads each text off the screen (its angle
-  from `getScreenCTM`, which composes every transform; its box's distance to
+  p2t-lib's `boardTexts(p, id)` reads each text off the screen (its map to
+  the screen from three zero-size probes put in it, which composes every
+  transform on the way, as `badgeAngles` reads a badge's; its box's distance to
   its own anchor and to the nearest other one; its font size in px, its own
   scale included; how far its ink — its glyphs' bounds, measured on a canvas
   in its font and centred as it is — mapped back into board units, stands
@@ -688,7 +692,7 @@ review (D92: no ⟲ ⟳ on a plain disc), `t-p2-pieces.js` expects no
 `rl`/`rr` in the bars of the plain coins, the chit and its hidden stack,
 and the gem, and turns the 6-face wheel (a disc with a label) instead of a
 coin to check a free rotation; `upright` checks a coordinate's `bare` turn
-(the first `.blabels text`), and the labels' own rule.
+(the first `.blabels text`; since D297 the first `.btext.coord`), and the labels' own rule.
 After the close-out's second review: `t-p2-link.js` is new (D95, above); the
 raw peers open with `h.rawPage` and join with `window.RawRTC`; t-p1-bench
 (B8, B10's joins), t-p1-delta (its raw peers and reloads) and t-p2-hidden
@@ -2434,8 +2438,9 @@ answer a press of the dialog's own buttons; nothing they test goes through
   2, D240): «Rim rows», six rows of nine tokens from the table's top edge.
   Alice, whose screen has them 45 px below the table area's top,
   Shift+clicks tokens in that top row: the bar docks over the toolbar at
-  once, its buttons held off ≥ 390 ms (a MutationObserver on their
-  `disabled`), no token lies under it, and the next Shift+clicks — in the
+  once, its buttons held off ≥ 399 ms (stamped in their `disabled` setter,
+  D299: a MutationObserver's callback came late under load), no token lies
+  under it, and the next Shift+clicks (each read once it shows) — in the
   top row and the row below — each pick their token; 🗑 of six asks first
   ("🗑 Remove 6?", nothing removed), its second press logs "removed 6
   items", and the toolbar is back. Bob, seated at a side (his view turns
@@ -2603,9 +2608,9 @@ answer a press of the dialog's own buttons; nothing they test goes through
   layouts, and `perf.dockScans`.
 - **`t-p1-bench.js`, two more B4 rows** (D247): the 1,000-piece pan again
   with a token's own bar open beside it (`tapOne`: the phone taps items
-  near the table area's middle, drawn on top of their spots, until one's
-  bar opens — a tap on a ×N badge opens the inspector instead, closed by
-  Esc), and the 6000 × 4000 twist with a stack's bar open. Each under B4's
+  near the table area's middle, each at the point of its face farthest
+  from any ×N badge (D299), until one's bar opens — a tap on a ×N badge
+  opens the inspector instead, closed by Esc), and the 6000 × 4000 twist with a stack's bar open. Each under B4's
   budgets (no long task over 50 ms, the rAF p95, `B4_LAYOUTS`); the bar is
   still open after, and after the twist still beside its stack. Before:
   `placeBeside` read the bar's size and wrote its `left`/`top` in every
@@ -3093,7 +3098,7 @@ after its gesture ends. About 35 s alone; not serial (no timing budget).
 
 ## Phase 5 fix-up (the review's findings)
 
-SPEC §9 D277–D292, and the second fix-up's D293–D296.
+SPEC §9 D277–D292, the second fix-up's D293–D296 and the third's D297–D299.
 
 - **`core-p5.test.mjs` section (F)**, in the implementation's own runner
   (`testFixup`), with `demo(box, units?)` — a built-in box set up with its
@@ -3151,15 +3156,17 @@ SPEC §9 D277–D292, and the second fix-up's D293–D296.
   a handful with a locked die cups the other alone with no refusal (D286,
   D290); (4) a wheel over the 🔒 For you card scrolls it, the table's
   transform unchanged (D289). Shots: `shots/p5fix-*.png`.
-- **`t-p1-bench.js`, a board-text B4 row** (D288): 1,000 ×3 stacks with a
-  chess-labelled board and a rack (its private zone's label) on the
-  table (`loadStacks(…, extra)`): the pinch under B4's p95 and B4_LAYOUTS
-  with B4_SETTLE's task budget (150 ms, as the paused pinch's: the first
-  frame hides the text and the lift shows it, one repaint each — on a view
-  turned half round from the board's, one raster of the table layer,
-  100–130 ms, D295), then sixteen synthetic wheel turns on the phone — at
-  most B4_LAYOUTS layouts, the board's text `display: none` at every turn
-  and back at the wheel's rest.
+- **`t-p1-bench.js`, a board-text B4 row** (D288, D297): 1,000 ×3 stacks
+  with a chess-labelled board and a rack (its private zone's label) on the
+  table (`loadStacks(…, extra)`): the pinch under B4's budgets — no long
+  task over B4_LONG while the fingers are down, the rAF p95, B4_LAYOUTS,
+  no task over B4_SETTLE at the lift, as every row — then sixteen
+  synthetic wheel turns on the phone: at most B4_LAYOUTS layouts, the
+  board's text drawn at every turn and at the wheel's rest (`.btext`: no
+  `visibility: hidden`, a box). (With D288 the text was SVG, hidden while
+  the view moved — `display: none` at every turn, which this row checked —
+  and the second fix-up gave the pinch B4_SETTLE's budget, D295: a relaxed
+  budget, not a mechanism change. D297 puts it back on B4_LONG.)
 - **Mechanism changes, no check weakened:** `core-p4.test.mjs`'s D210 check
   reads, for the tokens of a shuffled group under a die's back, that each
   place keeps its spot with no address (D279: a hidden piece under a back a
@@ -3170,13 +3177,42 @@ SPEC §9 D277–D292, and the second fix-up's D293–D296.
   keeps every msg its tabs' snapshots carried (`msgs(name)`): a msg rides
   one snapshot, and the next, ≤ 500 ms later, goes without it — reading
   the latest alone missed Alice's peek under a full run's load.
-- **The second fix-up (D293–D296), mechanism changes, no check weakened:**
+- **The second fix-up (D293–D296), mechanism changes:**
   t-p5-fix §1's coverage check became the stricter aggregate one and reads
   the rack's size from its type (it hard-coded 600 × 140); t-p1-bench's
-  board-text row takes B4_SETTLE (D295); `t-p4-select.js` waits for the
+  board-text row took B4_SETTLE while the fingers were down (D295) — a
+  budget relaxed from B4_LONG, not a mechanism change, which D296 filed it
+  as (corrected by D299; the third fix-up puts it back); `t-p4-select.js` waits for the
   inspector to open before reading its box on the sideways phone (under
   run-all's load the tap was handled after Playwright's returned, and the
   box was read closed).
+- **The third fix-up (D297–D299).** New: `t-p1-bench.js`'s half-turned row
+  (D297), the reviewers' flow on the bench phone — Pat seated North (his
+  view turned 180°) over Dominoes, its rules on, Draw 7, three pinches
+  deep in (from the fit, 20 → 160 px apart; the first not measured), then
+  Veiled Ranks and four pinches, each under B4's budgets (no long task over
+  B4_LONG while the fingers are down, the rAF p95, nothing over B4_SETTLE
+  at the lift, B4_LAYOUTS); before D297 the Veiled Ranks pinches started
+  with a 52–91 ms task. Mechanism changes, no check weakened:
+  `boardTexts` reads the HTML text (each span's screen map from three
+  probes, where `getScreenCTM` read an SVG text's); the label selectors of
+  t-p2-pieces, t-p2-demos, t-p2-tables, t-p5-demos, t-p5-private,
+  t-p5-veil and t-p1-bench (`.btexts .btext`, `.btext.coord`,
+  `.btexts .slabel`; a file's `y` is its span's `top`); t-p1-bench's
+  board-text row back on B4_LONG and its wheel asking the text drawn (it
+  asked it hidden: the mechanism D297 removed). `t-p4-fix.js` §7 waits for
+  each pick to show before reading the selection (`picked(p, n)`, as
+  `t-p4-select.js` does since D296: Carol's taps were read too soon under
+  run-all's load) and stamps the bar's buttons going off and on in the
+  `disabled` setter itself rather than in a MutationObserver's callback,
+  which runs once the task that armed the bar is done — late under load,
+  so the hold-off read 390 ms once; it now reads the timer's own 400 and
+  asks ≥ 399 ms (it asked ≥ 390). `t-p1-bench.js`'s `tapOne` taps each
+  item at the point of its face farthest from any ×N badge, where it
+  tapped its centre: on the phone's fit of 1,000 ×3 stacks each badge,
+  grown 3×, covers its own stack's centre, and a tap there opens the
+  inspector — all twelve tries did in three full runs (the twist with a
+  stack's bar open).
 
 ## Storage and images (Phase 1B)
 

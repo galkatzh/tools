@@ -360,27 +360,37 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
   height: 100%; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center;
   overflow: hidden; box-shadow: 0 1px 2px #0006, 0 3px 8px #0005;
 }
-.pimg, .psvg, .plabel, .ptext, .pips, .pips2 { grid-area: 1 / 1; }
+.pimg, .psvg, .btexts, .plabel, .ptext, .pips, .pips2 { grid-area: 1 / 1; }
 .pips2 > .pips { grid-area: auto; } /* a domino's two halves: a cell of .pips2 each, not both in its first */
-.pimg, .psvg { width: 100%; height: 100%; }
-.psvg { pointer-events: none; }
-.blabels { font-family: Georgia, 'Times New Roman', serif; font-weight: 700; opacity: 0.85; }
+.pimg, .psvg, .btexts { width: 100%; height: 100%; }
+.psvg, .btexts { pointer-events: none; }
+/* A board's printed text (pieces.js boardSVG): HTML spans over its SVG, each
+   centred on its anchor (left, top: board units), turned about its own centre
+   against the view (--view: app.js layout sets it through the view sheet) and
+   the board's own turn (--rot, on the board's element), D91 — a coordinate
+   (.coord) by the whole turn, so it reads upright on every screen; a space's
+   or a zone's label (.slabel) by the nearest half turn, so it never reads
+   upside down and still runs along its space. The markup stays the same for
+   every viewer (pieces.js caches it per type). HTML, not SVG <text> (D297): an
+   SVG text was laid out again in every frame that zoomed the view, and one
+   turned against it took a compositing layer of its own; a span's turn and
+   growth are transforms, which lay nothing out and draw in the table's layer,
+   so the text stays drawn while a gesture moves the view. */
+.btexts { position: relative; }
+.btext { position: absolute; white-space: nowrap; line-height: 1; translate: -50% -50%; }
 /* a coordinate grows with the badges, but no more than its margin holds (--lmax: pieces.js gridSVG) */
-.blabels text { scale: min(var(--bz, 1), var(--lmax, 1)); }
-/* A board's printed text turns about its own centre, against the view
-   (--view: app.js layout sets it through the view sheet) and the board's own
-   turn (--rot, on the board's element), D91: its coordinates by the whole
-   turn, so they read upright on every screen; its spaces' and zones' labels
-   (.slabel) by the nearest half turn, so they never read upside down and
-   still run along their space. The SVG string stays the same for every
-   viewer (pieces.js boardSVG caches it per type); only a board's SVG holds a
-   <text>, so the selectors stay a piece's. */
-.psvg text { transform-box: fill-box; transform-origin: center; transform: rotate(calc(-1 * (var(--view, 0deg) + var(--rot, 0deg)))); }
-.psvg .slabel { transform: rotate(calc(-1 * round(nearest, var(--view, 0deg) + var(--rot, 0deg), 180deg))); }
-/* …and none is drawn while a gesture moves the view (app.js moving, D288): an SVG text on the table laid
-   the page out in every frame of a pan, pinch, twist or wheel zoom, each layout followed by a hover
-   hit-test of the whole table — 16 layouts a wheel and 33 ms pinch frames on 1,000 pieces with one rack */
-#table.moving .psvg text { display: none; }
+.btext.coord {
+  font-family: Georgia, 'Times New Roman', serif; font-weight: 700; opacity: 0.85;
+  rotate: calc(-1 * (var(--view, 0deg) + var(--rot, 0deg))); scale: min(var(--bz, 1), var(--lmax, 1));
+}
+.btext.slabel { rotate: calc(-1 * round(nearest, var(--view, 0deg) + var(--rot, 0deg), 180deg)); }
+/* a private zone's label (pieces.js privateSVG), white on a dark outline, grows with the badges on a table
+   drawn small, at most twice, and moves away from its zone (--side: -1 above it, 1 below) by half what it
+   grew (its font is 26), so that it never covers the zone */
+.btext.zlabel {
+  font-weight: 700; color: #f8fafc; -webkit-text-stroke: 5px #0f172a; paint-order: stroke fill;
+  translate: -50% calc(-50% + var(--side, -1) * 13px * (min(var(--bz, 1), 2) - 1)); scale: min(var(--bz, 1), 2);
+}
 .plabel { line-height: 1; font-weight: 700; text-shadow: 0 1px 0 #ffffff30, 0 -1px 0 #0003; }
 .ptext {
   font-size: 11px; line-height: 1.2; padding: 6%; overflow: hidden; text-align: center;
@@ -469,14 +479,6 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 .item.veiled .pface::after {
   content: ''; position: absolute; right: 0; bottom: 0; width: 50%; height: 50%; pointer-events: none;
   background: repeating-linear-gradient(-45deg, #0f172a80 0 3px, #f8fafc66 3px 6px); clip-path: polygon(100% 0, 100% 100%, 0 100%);
-}
-/* a private zone's label (pieces.js privateSVG) turns as a zone's label does and grows with the badges on a
-   table drawn small, at most twice — about its own origin, where its <g> puts it (SVG's default transform
-   box), not its fill box: WebKit turned and grew a text about the SVG's origin, and the label flew off its
-   zone — moved away from the zone (--side: -1 above it, 1 below) by half what it grew (its font is 26) */
-.psvg .zlabel {
-  transform-box: view-box; transform-origin: 0 0;
-  transform: translate(0, calc(var(--side, -1) * 13px * (min(var(--bz, 1), 2) - 1))) rotate(calc(-1 * round(nearest, var(--view, 0deg) + var(--rot, 0deg), 180deg))) scale(min(var(--bz, 1), 2));
 }
 /* The snap preview (app.js previewSnap, spec §3g): the spot a dragged piece
    would land on (an outline in table units, grown on a table drawn small),

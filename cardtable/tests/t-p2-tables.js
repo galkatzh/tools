@@ -464,7 +464,7 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
     await P.upright(p, id, turn + rot, `${who}; the board turned ${rot}°`);
     await P.badgesUpright(p, turn, who);
   }
-  const files = await host.evaluate(() => [...document.querySelectorAll('.item.board .blabels text')].filter((t) => /^[a-h]$/.test(t.textContent)).map((t) => +t.getAttribute('y')));
+  const files = await host.evaluate(() => [...document.querySelectorAll('.item.board .btext.coord')].filter((t) => /^[a-h]$/.test(t.textContent)).map((t) => parseFloat(t.style.top)));
   ok(files.length === 8 && files.every((y) => y === 590), `the files a–h lie in the 20-unit strip just under the grid (y 590: the grid ends at 580), not halfway down the 120 units below it (${files.join(', ')})`);
   await shot(bob, 'tables-turned-board-desk');
   await shot(carol, 'tables-turned-board-phone');

@@ -208,21 +208,32 @@ export function tumble(el) {
   });
 }
 
-// --- boards: the structure as one SVG drawn from numbers --------------------
+// --- boards: the structure as one SVG drawn from numbers, its text as HTML --
 // boardSVG(type) draws a board type's grid, spaces, zones and links (cleanBox
-// checked every field) as an inline <svg> laid over its face. Only numbers
-// and safeColor'd colours go into it; its only text is our own coordinate
-// labels (.blabels) and the spaces' and zones' labels (.slabel; a private
-// zone's names its owner), escaped: style.css turns each by its class (the
-// view's turn varies, the string doesn't). A grid of any size is a handful
-// of <path>s (one per colour), so a 64 × 64 board stays cheap to build and to
-// draw (B11). The string is built once per type (cached: a type is an
-// immutable object of the box map), its private zones apart (privateSVG).
+// checked every field) as an inline <svg> laid over its face, and its printed
+// text — our own coordinate labels (.coord) and the spaces' and zones' labels
+// (.slabel; a private zone's names its owner, .zlabel), escaped — as HTML
+// spans laid over that (.btexts, board units: `btext`): style.css turns each
+// by its class (the view's turn varies, the string doesn't). The text is
+// HTML, not SVG <text> (D297): an SVG text is laid out again whenever the
+// view's scale changes — every frame of a pinch or a wheel zoom, each layout
+// followed by a hover hit-test of the whole table — and one turned against
+// the view took a compositing layer of its own, which every piece drawn over
+// it followed into layers of their own, so that hiding them during a gesture
+// re-rastered the table (D288, D295); a span turned and grown by CSS lays
+// nothing out and is drawn in the table's own layer. A grid of any size is a
+// handful of <path>s (one per colour), so a 64 × 64 board stays cheap to
+// build and to draw (B11). Both are built once per type (cached: a type is
+// an immutable object of the box map), its private zones apart (privateSVG).
 const svgCache = new WeakMap();
 /** A number for an SVG attribute: finite, at most two decimals. */
 const n2 = (v) => Math.round(num(v) * 100) / 100;
 /** A closed polygon as path data. */
 const poly = (pts) => `M${pts.map(([x, y]) => `${n2(x)} ${n2(y)}`).join('L')}Z`;
+/** A board's printed text (.btexts): `text`, escaped, centred on board-local
+ *  (x, y) at font size `fs`; `cls` its kind (style.css turns each), `style`
+ *  more of its inline style. */
+const btext = (cls, x, y, fs, text, style = '') => `<span class="btext ${cls}" style="left:${n2(x)}px;top:${n2(y)}px;font-size:${n2(fs)}px${style}">${esc(text)}</span>`;
 /** A function drawing cell (c, r) of grid g as path data: the move to its
  *  first corner, then an outline every cell shares (a hex's six sides, or a
  *  square's four), built once as a relative path. */
@@ -233,10 +244,11 @@ function cellPather(g) {
   return (c, r) => { const p = cellCenter(g, c, r); return `M${n2(p.x + ox)} ${n2(p.y + oy)}${rel}`; };
 }
 const LABEL_MAX = 1.6; // the most a board's coordinates grow on a table drawn small (app.js view sheet)
-/** Grid g, on a board boardH units tall, drawn: its cells (draw 'checker',
- *  'cells'), its lines ('lines'), its fills, marks and edge labels (chess
- *  and go: in the margin, when the grid leaves one; .blabels). */
-function gridSVG(g, boardH) {
+/** Grid g, on a board boardH units tall, drawn into `o` ({svg, texts, lmax}):
+ *  its cells (draw 'checker', 'cells'), its lines ('lines'), its fills and
+ *  marks (o.svg), and its edge labels (chess and go: in the margin, when the
+ *  grid leaves one; .coord spans in o.texts, how much they may grow in o.lmax). */
+function gridSVG(g, boardH, o) {
   const [c0, c1] = (g.colors || ['#f0d9b5', '#b58863']).map((c) => safeColor(c)), line = g.colors ? c1 : '#1f2937';
   const cell = cellPather(g), each = (f) => { for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) f(c, r); };
   let s = '';
@@ -274,33 +286,31 @@ function gridSVG(g, boardH) {
   // marks: dots (go's star points)
   const marks = (g.marks || []).map((a) => parseAddr(g, a)).filter(Boolean);
   if (marks.length) s += `<g fill="${line}">${marks.map(({ c, r }) => { const p = cellCenter(g, c, r); return `<circle cx="${n2(p.x)}" cy="${n2(p.y)}" r="${n2(g.cell * 0.09)}"/>`; }).join('')}</g>`;
+  o.svg += s;
   // edge labels: files along the bottom, ranks up the left (in the margin, when there is one)
   const L = labelsOf(g);
   if (g.type === 'square' && (L === 'chess' || L === 'go')) {
     const ext = gridExtent(g), mx = g.x, my = boardH - ext.h, m = Math.min(mx, my);
     const fs = n2(m >= 12 ? Math.min(m * 0.8, g.cell * 0.32) : g.cell * 0.2);
     const outside = m >= 12, files = Array.from({ length: g.cols }, (_, c) => formatAddr(g, c, g.rows - 1).replace(/\d+$/, ''));
-    let t = '';
     for (let c = 0; c < g.cols; c++) {
       const p = cellCenter(g, c, g.rows - 1), y = outside ? ext.h + m / 2 : p.y + (g.snap === 'point' ? 0 : g.cell / 2) - fs * 0.35; // (in the strip the font is sized for, as the ranks are)
-      t += `<text x="${n2(p.x)}" y="${n2(y)}">${esc(files[c])}</text>`;
+      o.texts += btext('coord', p.x, y, fs, files[c]);
     }
     for (let r = 0; r < g.rows; r++) {
       const p = cellCenter(g, 0, r), x = outside ? mx / 2 : p.x - (g.snap === 'point' ? 0 : g.cell / 2) + fs * 0.45;
-      t += `<text x="${n2(x)}" y="${n2(p.y)}">${esc(String(g.rows - r))}</text>`;
+      o.texts += btext('coord', x, p.y, fs, String(g.rows - r));
     }
-    // How much the labels may grow on a table drawn small (style.css .blabels
-    // text): in a margin, as long as the widest one (an em tall, 0.6 em a
-    // character wide, whichever way the view turns it) still fits its strip
-    // (two-digit ranks hardly grow); inside the cells, up to LABEL_MAX.
+    // How much the labels may grow on a table drawn small (style.css .coord):
+    // in a margin, as long as the widest one (an em tall, 0.6 em a character
+    // wide, whichever way the view turns it) still fits its strip (two-digit
+    // ranks hardly grow); inside the cells, up to LABEL_MAX.
     const n = Math.max(String(g.rows).length, ...files.map((f) => f.length));
-    const lmax = outside ? Math.min(LABEL_MAX, Math.max(1, m / (fs * Math.max(1, 0.6 * n)))) : LABEL_MAX;
-    s += `<g class="blabels" style="--lmax:${n2(lmax)}" font-size="${fs}" fill="currentColor" text-anchor="middle" dominant-baseline="central">${t}</g>`;
+    o.lmax = n2(outside ? Math.min(LABEL_MAX, Math.max(1, m / (fs * Math.max(1, 0.6 * n)))) : LABEL_MAX);
   }
-  return s;
 }
-/** Space sp drawn by its mark (dot, ring, tri pointing along `dir`, rect, none) and its label. */
-function spaceSVG(sp) {
+/** Space sp drawn into `o` ({svg, texts}): its mark (dot, ring, tri pointing along `dir`, rect, none) and its label. */
+function spaceSVG(sp, o) {
   const x = num(sp.x), y = num(sp.y), r = num(sp.r), w = sp.w ?? 2 * r, h = sp.h ?? 2 * r, fill = safeColor(sp.color, '#e2e8f0');
   let s = '';
   switch (sp.mark || 'dot') {
@@ -316,57 +326,58 @@ function spaceSVG(sp) {
     default: break;
   }
   // (a label sits on the space's own colour in a rect or a triangle, else on the board's)
-  const ink = (sp.mark === 'rect' || sp.mark === 'tri') && sp.color ? contrastFor(fill) : 'currentColor';
-  if (sp.label) s += `<text class="slabel" x="${n2(x)}" y="${n2(y)}" font-size="${n2(Math.max(10, Math.min(r * 0.5, 40)))}" fill="${ink}" text-anchor="middle" dominant-baseline="central">${esc(sp.label)}</text>`;
-  return s;
+  const ink = (sp.mark === 'rect' || sp.mark === 'tri') && sp.color && contrastFor(fill);
+  o.svg += s;
+  if (sp.label) o.texts += btext('slabel', x, y, Math.max(10, Math.min(r * 0.5, 40)), sp.label, ink ? `;color:${ink}` : '');
 }
 /** A plain zone `z` (a translucent fill in its colour) as SVG. */
 const zoneSVG = (z) => { const c = safeColor(z.color, '#94a3b8'); return `<path d="${poly(z.poly)}" fill="${c}" fill-opacity=".22" stroke="${c}" stroke-width="3"/>`; };
-/** Zone `z`'s label `text` at its centroid, as SVG. */
+/** Zone `z`'s label `text` at its centroid (a .slabel span). */
 function zoneText(z, text) {
   const cx = z.poly.reduce((a, p) => a + num(p[0]), 0) / z.poly.length, cy = z.poly.reduce((a, p) => a + num(p[1]), 0) / z.poly.length;
-  return `<text class="slabel" x="${n2(cx)}" y="${n2(cy)}" font-size="28" fill="currentColor" fill-opacity=".8" text-anchor="middle" dominant-baseline="central">${esc(text)}</text>`;
+  return btext('slabel', cx, cy, 28, text, ';opacity:.8');
 }
-/** Board type `type` (a cleanBox'd type with a `board`) as an inline SVG
- *  string over its whole face, viewBox 0 0 w h in board-local units: its
+/** Board type `type` (a cleanBox'd type with a `board`) as markup over its
+ *  whole face: an inline SVG, viewBox 0 0 w h in board-local units — its
  *  zones, links, grid and spaces, bottom to top, then its private zones
- *  (privateSVG). Cached per type but for the private zones, which look as
- *  each board item's owner and seats make them (`zoneLook`). */
+ *  (privateSVG) — and its printed text over it (.btexts). Cached per type
+ *  but for the private zones, which look as each board item's owner and
+ *  seats make them (`zoneLook`). */
 export function boardSVG(type, zoneLook) {
   const B = type.board || {}, priv = (B.zones || []).filter((z) => z.private);
-  let s = svgCache.get(type);
-  if (s === undefined) {
-    const w = num(type.w), h = num(type.h), plain = (B.zones || []).filter((z) => !z.private);
-    s = `<svg class="psvg" viewBox="0 0 ${n2(w)} ${n2(h)}" aria-hidden="true">${plain.map(zoneSVG).join('')}`;
-    const at = new Map((B.spaces || []).map((sp) => [sp.id, sp]));
-    if (B.links?.length) s += `<path fill="none" stroke="#0f172a" stroke-opacity=".45" stroke-width="3" d="${B.links.map(([a, b]) => `M${n2(at.get(a).x)} ${n2(at.get(a).y)}L${n2(at.get(b).x)} ${n2(at.get(b).y)}`).join('')}"/>`;
-    if (B.grid) s += gridSVG(B.grid, h);
-    for (const sp of B.spaces || []) s += spaceSVG(sp);
-    for (const z of plain) if (z.label) s += zoneText(z, z.label);
-    svgCache.set(type, s);
+  let c = svgCache.get(type);
+  if (c === undefined) {
+    const w = num(type.w), h = num(type.h), plain = (B.zones || []).filter((z) => !z.private), at = new Map((B.spaces || []).map((sp) => [sp.id, sp]));
+    c = { svg: `<svg class="psvg" viewBox="0 0 ${n2(w)} ${n2(h)}" aria-hidden="true">${plain.map(zoneSVG).join('')}`, texts: '', lmax: 0 };
+    if (B.links?.length) c.svg += `<path fill="none" stroke="#0f172a" stroke-opacity=".45" stroke-width="3" d="${B.links.map(([a, b]) => `M${n2(at.get(a).x)} ${n2(at.get(a).y)}L${n2(at.get(b).x)} ${n2(at.get(b).y)}`).join('')}"/>`;
+    if (B.grid) gridSVG(B.grid, h, c);
+    for (const sp of B.spaces || []) spaceSVG(sp, c);
+    for (const z of plain) if (z.label) c.texts += zoneText(z, z.label);
+    svgCache.set(type, c);
   }
-  return `${s}${priv.length ? privateSVG(type, priv, zoneLook) : ''}</svg>`;
+  const o = { svg: c.svg, texts: c.texts };
+  if (priv.length) privateSVG(priv, zoneLook, num(type.h), o);
+  return `${o.svg}</svg>${o.texts && `<div class="btexts"${c.lmax ? ` style="--lmax:${c.lmax}"` : ''}>${o.texts}</div>`}`;
 }
 let hatchN = 0; // (each hatch pattern's id: unique in the page, which holds every board's SVG)
-/** The private zones `priv` of board type `type` (spec §5g), over its grid
- *  and spaces: each as `look(z)` says — {text, color, cy} for an active zone
- *  (its owner resolves): hatched in its owner's colour, a dashed edge, and
- *  its label (`text`: "🔒 Alice's rack") just outside it — the pieces set in
- *  it would cover a label inside — on the side of `cy` (a local y: the
- *  table's middle; else the board's), white on a dark outline so it reads
- *  on a board's face and on the felt alike; {text} alone for an inactive
- *  one: a plain zone, labelled at its centre. */
-function privateSVG(type, priv, look = () => ({ text: '' })) {
-  let s = '';
+/** The private zones `priv` of a board `boardH` units tall (spec §5g), over
+ *  its grid and spaces, drawn into `o` ({svg, texts}): each as `look(z)`
+ *  says — {text, color, cy} for an active zone (its owner resolves): hatched
+ *  in its owner's colour, a dashed edge, and its label (`text`: "🔒 Alice's
+ *  rack", a .zlabel) just outside it — the pieces set in it would cover a
+ *  label inside — on the side of `cy` (a local y: the table's middle; else
+ *  the board's), white on a dark outline so it reads on a board's face and
+ *  on the felt alike; {text} alone for an inactive one: a plain zone,
+ *  labelled at its centre. */
+function privateSVG(priv, look = () => ({ text: '' }), boardH, o) {
   for (const z of priv) {
     const L = look(z), xs = z.poly.map((p) => num(p[0])), ys = z.poly.map((p) => num(p[1]));
-    if (!L.color) { s += zoneSVG(z) + (L.text ? zoneText(z, L.text) : ''); continue; }
+    if (!L.color) { o.svg += zoneSVG(z); if (L.text) o.texts += zoneText(z, L.text); continue; }
     const c = safeColor(L.color, '#94a3b8'), id = `hz${++hatchN}`, y0 = Math.min(...ys), y1 = Math.max(...ys), fs = 26;
-    s += `<pattern id="${id}" width="16" height="16" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="16" height="16" fill="${c}" fill-opacity=".14"/>`
+    o.svg += `<pattern id="${id}" width="16" height="16" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="16" height="16" fill="${c}" fill-opacity=".14"/>`
       + `<rect width="6" height="16" fill="${c}" fill-opacity=".5"/></pattern><path d="${poly(z.poly)}" fill="url(#${id})" stroke="${c}" stroke-width="4" stroke-dasharray="16 10"/>`;
-    const side = num(L.cy ?? type.h / 2) < (y0 + y1) / 2 ? -1 : 1, y = side < 0 ? y0 - fs * 0.85 : y1 + fs * 0.85;
-    // (the label at its own origin, which it turns and grows about, moved away from the zone as it grows: style.css .zlabel)
-    s += `<g transform="translate(${n2((Math.min(...xs) + Math.max(...xs)) / 2)} ${n2(y)})"><text class="slabel zlabel" style="--side:${side}" font-size="${fs}" font-weight="700" fill="#f8fafc" stroke="#0f172a" stroke-width="5" paint-order="stroke" stroke-linejoin="round" text-anchor="middle" dominant-baseline="central">${esc(L.text)}</text></g>`;
+    const side = num(L.cy ?? boardH / 2) < (y0 + y1) / 2 ? -1 : 1, y = side < 0 ? y0 - fs * 0.85 : y1 + fs * 0.85;
+    // (moved away from the zone as it grows: style.css .zlabel)
+    o.texts += btext('slabel zlabel', (Math.min(...xs) + Math.max(...xs)) / 2, y, fs, L.text, `;--side:${side}`);
   }
-  return s;
 }

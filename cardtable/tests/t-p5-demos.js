@@ -221,7 +221,7 @@ async function lookUntil(p, ids, pred) {
 /** The private zone labels page p draws on board `id`, and its hatch's colour (a <pattern>'s fill). */
 const zoneOf = (p, id) => p.evaluate((i) => {
   const el = document.querySelector(`#table .item[data-id="${i}"]`);
-  return el && { texts: [...el.querySelectorAll('.psvg text.slabel')].map((t) => t.textContent).sort(), hatch: [...el.querySelectorAll('.psvg pattern rect')].map((r) => r.getAttribute('fill')).sort() };
+  return el && { texts: [...el.querySelectorAll('.btexts .slabel')].map((t) => t.textContent).sort(), hatch: [...el.querySelectorAll('.psvg pattern rect')].map((r) => r.getAttribute('fill')).sort() };
 }, id);
 /** The first notice reading 🚫… that page p shows since `t0` (Date.now()); null after 8 s. */
 async function refusal(p, t0) {

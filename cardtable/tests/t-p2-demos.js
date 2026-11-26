@@ -87,8 +87,8 @@ const CONFIRM = (title) => `Clear the table and set up ${title}? The current gam
   ok(placed.every((m) => (m.c + m.r) % 2 === 1 && m.c >= 0 && m.c < 8) && new Set(placed.map((m) => `${m.c},${m.r}`)).size === 24,
     'each man is centred on its own dark square');
   ok(light.every((m) => m.r >= 5) && dark.every((m) => m.r <= 2), 'Light\'s men fill the three rows nearest the bottom, Dark\'s the three nearest the top');
-  const svg = await host.evaluate((id) => { const s = document.querySelector(`.item[data-id="${id}"] svg.psvg`); return s && { box: s.getAttribute('viewBox'), labels: [...s.querySelectorAll('text')].map((t) => t.textContent).join('') }; }, boardId);
-  ok(svg?.box === '0 0 840 840' && [...svg.labels].sort().join('') === '12345678abcdefgh', `the board draws its grid as an SVG, with a–h and 1–8 (${JSON.stringify(svg)})`);
+  const svg = await host.evaluate((id) => { const s = document.querySelector(`.item[data-id="${id}"] svg.psvg`); return s && { box: s.getAttribute('viewBox'), labels: [...s.parentNode.querySelectorAll('.btexts .btext')].map((t) => t.textContent).join('') }; }, boardId);
+  ok(svg?.box === '0 0 840 840' && [...svg.labels].sort().join('') === '12345678abcdefgh', `the board draws its grid as an SVG, with a–h and 1–8 over it (${JSON.stringify(svg)})`);
 
   section('Draughts: the coordinates read upright from both seats (D91)');
   ok(await L.until(async () => P.angDiff((await P.tf(bob)).rot, 180) < 0.01, 10000, 100), 'Bob sits Dark, at the top: his phone\'s view is turned 180°');
@@ -96,7 +96,7 @@ const CONFIRM = (title) => `Clear the table and set up ${title}? The current gam
   await P.upright(bob, boardId, 180, 'Bob (Dark, iPhone)');
   {
     const fs = async (p) => Math.min(...(await P.boardTexts(p, boardId)).texts.map((x) => x.fs));
-    const grow = await bob.evaluate((id) => getComputedStyle(document.querySelector(`.item[data-id="${id}"] .blabels text`)).scale, boardId);
+    const grow = await bob.evaluate((id) => getComputedStyle(document.querySelector(`.item[data-id="${id}"] .btext.coord`)).scale, boardId);
     const [fa, fb] = [await fs(host), await fs(bob)];
     ok(fb >= 5.5 && +grow >= 1.25, `on Bob's phone the coordinates grow with the badges, as far as their 20-unit margin holds (scale ${grow}, D97): ${fb.toFixed(1)} px, against ${fa.toFixed(1)} px on Alice's desktop`);
   }

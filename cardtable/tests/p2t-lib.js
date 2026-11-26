@@ -146,38 +146,45 @@ async function clickItem(p, id, touch) {
 /** Board item `id`'s printed texts on page p, as the screen shows them (D91):
  *  `texts`, one {t (the text), label (a space's or zone's label, .slabel:
  *  turned by the nearest half turn; else a coordinate), a (its on-screen
- *  angle in degrees, 0 when it reads upright: getScreenCTM composes every
- *  transform on the way, the view's, the board's and its own included), off
- *  (px from its box's centre to its anchor — its own x, y placed by the
- *  board's SVG), near (px to the nearest other text's anchor), fs (its font
- *  size on screen, px, its own scale included), out (board units its ink
- *  stands past the board's edge, 0 inside: the glyphs' own bounds, measured
- *  on a canvas in its font, centred on its anchor as the text is)} each; and
- *  `bare`, the angle the first coordinate shows while its own turn is taken
- *  off for a moment: the view's turn plus the board's, which D91 undoes. */
+ *  angle in degrees, 0 when it reads upright: its map to the screen, which
+ *  composes every transform on the way — the view's, the board's and its
+ *  own — read from three probes put in it), off (px from its box's centre to
+ *  its anchor — its left, top in the board's text layer, .btexts, D297), near
+ *  (px to the nearest other text's anchor), fs (its font size on screen, px,
+ *  its own scale included), out (board units its ink stands past the board's
+ *  edge, 0 inside: the glyphs' own bounds, measured on a canvas in its font,
+ *  centred on its box's centre as the text is)} each; and `bare`, the angle
+ *  the first coordinate shows while its own turn is taken off for a moment:
+ *  the view's turn plus the board's, which D91 undoes. */
 const boardTexts = (p, id) => p.evaluate((id) => {
-  const svg = document.querySelector(`.item[data-id="${id}"] svg.psvg`), M = svg.getScreenCTM(), Mi = M.inverse(), els = [...svg.querySelectorAll('text')];
-  const [, , W, H] = svg.getAttribute('viewBox').split(' ').map(Number), ctx = document.createElement('canvas').getContext('2d');
-  const angle = (el) => { const m = el.getScreenCTM(); return Math.round((Math.atan2(m.b, m.a) * 1800) / Math.PI) / 10; };
-  const anchors = els.map((el) => new DOMPoint(+el.getAttribute('x'), +el.getAttribute('y')).matrixTransform(M));
-  /** Text el's ink: its corners in its own user units (text-anchor middle, dominant-baseline central: the canvas's centre, middle). */
+  const layer = document.querySelector(`.item[data-id="${id}"] .btexts`), els = [...layer.querySelectorAll('.btext')], ctx = document.createElement('canvas').getContext('2d');
+  /** Element e's map from its own px (its box's top-left origin) to the client's: three zero-size probes put in it. */
+  const screenM = (e) => {
+    const at = (x, y) => { const i = document.createElement('i'); i.style.cssText = `position:absolute;left:${x}px;top:${y}px;width:0;height:0`; e.appendChild(i); const r = i.getBoundingClientRect(); i.remove(); return [r.left, r.top]; };
+    const [o, X, Y] = [at(0, 0), at(100, 0), at(0, 100)];
+    return new DOMMatrix([(X[0] - o[0]) / 100, (X[1] - o[1]) / 100, (Y[0] - o[0]) / 100, (Y[1] - o[1]) / 100, o[0], o[1]]);
+  };
+  const M = screenM(layer), Mi = M.inverse(), W = layer.offsetWidth, H = layer.offsetHeight;
+  const angle = (m) => Math.round((Math.atan2(m.b, m.a) * 1800) / Math.PI) / 10;
+  const anchors = els.map((el) => new DOMPoint(parseFloat(el.style.left), parseFloat(el.style.top)).matrixTransform(M));
+  /** Text el's ink: its corners in its own px (centred on its box as the text is: the canvas's centre, middle). */
   const ink = (el) => {
-    const cs = getComputedStyle(el), x = +el.getAttribute('x'), y = +el.getAttribute('y');
+    const cs = getComputedStyle(el), x = el.offsetWidth / 2, y = el.offsetHeight / 2;
     Object.assign(ctx, { font: `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`, textAlign: 'center', textBaseline: 'middle' });
     const k = ctx.measureText(el.textContent), [l, r, t, b] = [x - k.actualBoundingBoxLeft, x + k.actualBoundingBoxRight, y - k.actualBoundingBoxAscent, y + k.actualBoundingBoxDescent];
     return [[l, t], [r, t], [l, b], [r, b]];
   };
   const texts = els.map((el, k) => {
-    const r = el.getBoundingClientRect(), d = (q) => Math.hypot(r.left + r.width / 2 - q.x, r.top + r.height / 2 - q.y), m = el.getScreenCTM();
+    const r = el.getBoundingClientRect(), d = (q) => Math.hypot(r.left + r.width / 2 - q.x, r.top + r.height / 2 - q.y), m = screenM(el);
     // its ink's corners, through its own turn and scale to the screen and back into board units
     const corners = ink(el).map(([x, y]) => new DOMPoint(x, y).matrixTransform(m).matrixTransform(Mi));
     const out = Math.max(0, ...corners.flatMap((q) => [-q.x, q.x - W, -q.y, q.y - H]));
-    return { t: el.textContent, label: el.classList.contains('slabel'), a: angle(el), off: d(anchors[k]), near: Math.min(...anchors.filter((_, j) => j !== k).map(d)), fs: parseFloat(getComputedStyle(el).fontSize) * Math.hypot(m.a, m.b), out: Math.round(out * 10) / 10 };
+    return { t: el.textContent, label: el.classList.contains('slabel'), a: angle(m), off: d(anchors[k]), near: Math.min(...anchors.filter((_, j) => j !== k).map(d)), fs: parseFloat(getComputedStyle(el).fontSize) * Math.hypot(m.a, m.b), out: Math.round(out * 10) / 10 };
   });
-  const el = svg.querySelector('.blabels text'), turn = el.style.transform;
-  el.style.transform = 'none';
-  const bare = angle(el);
-  el.style.transform = turn;
+  const el = layer.querySelector('.btext.coord');
+  el.style.rotate = '0deg';
+  const bare = angle(screenM(el));
+  el.style.rotate = '';
   return { texts, bare };
 }, id);
 /** Checks (h.ok) that the printed texts of board `id` on page p (`who`, for

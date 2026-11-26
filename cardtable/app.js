@@ -1978,12 +1978,13 @@ function myZones() {
  *  slots whose centre lies in the zone (where the host's place() reads it) —
  *  that no item overlaps; the zones full, a spot half a step on from a slot
  *  (wholly inside the zone's box), the one that leaves the most covered
- *  item there least covered, counting what already lies over it (D294: a
- *  draw game's tiles past the slots go between every other pair, none more
- *  than half hidden); a zone smaller than a piece, its middle: a top-left
- *  {x, y}, or null (no zone). The piece's size is the largest back among
- *  the bag's box's pieces (it lands hidden: its back's size), else a
- *  placeholder's. */
+ *  item there least covered, counting what already lies over it (D294: on
+ *  Dominoes' two-row rack a draw game's tiles past the slots go between
+ *  every other pair, none more than half hidden; a rack too small for what
+ *  it holds has no such spot left, and the piece covers what it must, D298);
+ *  a zone smaller than a piece, its middle: a top-left {x, y}, or null (no
+ *  zone). The piece's size is the largest back among the bag's box's
+ *  pieces (it lands hidden: its back's size), else a placeholder's. */
 function rackSlot(bag) {
   const box = boxes[bag.box], backs = Object.values(box?.types || {}).filter((ty) => ty.kind !== 'board' && ty.back).map((ty) => box.backs[ty.back]);
   const w = Math.max(...backs.map((k) => num(k?.w)), 0) || PLACEHOLDER, h = Math.max(...backs.map((k) => num(k?.h)), 0) || PLACEHOLDER, gap = 6, TB = boardsNow();
@@ -1991,9 +1992,9 @@ function rackSlot(bag) {
     const pts = z.poly.map(([x, y]) => fromLocal(b, x, y)), xs = pts.map((p) => p.x), ys = pts.map((p) => p.y), x0 = Math.min(...xs), y0 = Math.min(...ys), x1 = Math.max(...xs), y1 = Math.max(...ys);
     const inZone = ({ x, y }) => zonesUnder(TB, x + w / 2, y + h / 2).includes(`${b.id}:${z.id}`), slots = [];
     for (let y = y0 + gap; y + h <= y1 + 0.5; y += h + gap) for (let x = x0 + gap; x + w <= x1 + 0.5; x += w + gap) slots.push({ x, y });
-    const mine = slots.filter(inZone), box = { l: x0, t: y0, r: x1, b: y1 };
-    return mine.length ? { box, slots: mine, half: mine.map(({ x, y }) => ({ x: x + (w + gap) / 2, y })).filter((p) => p.x + w <= x1 + 0.5 && inZone(p)) }
-      : { box, slots: [{ x: (x0 + x1 - w) / 2, y: (y0 + y1 - h) / 2 }], half: [] };
+    const mine = slots.filter(inZone), rect = { l: x0, t: y0, r: x1, b: y1 };
+    return mine.length ? { rect, slots: mine, half: mine.map(({ x, y }) => ({ x: x + (w + gap) / 2, y })).filter((p) => p.x + w <= x1 + 0.5 && inZone(p)) }
+      : { rect, slots: [{ x: (x0 + x1 - w) / 2, y: (y0 + y1 - h) / 2 }], half: [] };
   });
   const all = [...zones.flatMap((Z) => Z.slots), ...zones.flatMap((Z) => Z.half)];
   if (!all.length) return null;
@@ -2003,7 +2004,7 @@ function rackSlot(bag) {
   const near = Object.values(view.items).filter((o) => !isBoard(o)).map((o) => {
     const s = sizeOf(o, boxes), [ow, oh] = Math.round(num(o.rot) / 90) % 2 ? [s.h, s.w] : [s.w, s.h], cx = o.x + s.w / 2, cy = o.y + s.h / 2;
     return { l: cx - ow / 2, t: cy - oh / 2, r: cx + ow / 2, b: cy + oh / 2, z: num(o.z), area: ow * oh || 1 };
-  }).filter((o) => zones.some((Z) => over(o, Z.box)));
+  }).filter((o) => zones.some((Z) => over(o, Z.rect)));
   for (const o of near) o.cov = near.reduce((a, q) => a + (q.z > o.z ? over(o, q) : 0), 0);
   /** How much of the most covered item a piece at top-left (x, y) lies on would be covered (0: a free spot). */
   const worst = ({ x, y }) => near.reduce((m, o) => { const c = over(o, { l: x, t: y, r: x + w, b: y + h }); return c ? Math.max(m, (o.cov + c) / o.area) : m; }, 0);
@@ -3112,8 +3113,8 @@ function rotv(x, y, a) {
 // more task of 50–90 ms). D102 has the measures; B4's rested pinch, the
 // budget.
 const viewSheet = new CSSStyleSheet(), BADGE_MAX = 3, BZ_STEP = 1.25, PINCH_REST_MS = 300;
-viewSheet.replaceSync('#table .item > .count, #table .item > .fanb, #table .item > .odot, #table .item > .lockb, #table .item > .visb, #table .pile > .pname, #table .item.selected, #table .item.hint, #table .item.offer, #table .blabels text, #table .psvg .zlabel, #table .snap-ghost {} '
-  + '#table .psvg text {} #table .item > .count, #table .item > .fanb, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb, #table .item > .visb, #table .uptext {}');
+viewSheet.replaceSync('#table .item > .count, #table .item > .fanb, #table .item > .odot, #table .item > .lockb, #table .item > .visb, #table .pile > .pname, #table .item.selected, #table .item.hint, #table .item.offer, #table .btext.coord, #table .btext.zlabel, #table .snap-ghost {} '
+  + '#table .btext {} #table .item > .count, #table .item > .fanb, #table .pile > .pname, #table .bag > .bagbox, #table .item > .lockb, #table .item > .visb, #table .uptext {}');
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, viewSheet];
 let badgeZ = '', textAngle = 0, badgeAngle = 0, feltW = 0;
 
@@ -3193,8 +3194,7 @@ wrapEl.addEventListener('wheel', (e) => {
   if (e.target !== wrapEl && !tableEl.contains(e.target)) return;
   e.preventDefault();
   clearTimeout(wheelT);
-  wheelT = setTimeout(() => { wheelT = 0; moving(); placeSeats(); }, WHEEL_REST_MS); // (the sizes it held back)
-  moving();
+  wheelT = setTimeout(() => { wheelT = 0; placeSeats(); }, WHEEL_REST_MS); // (the sizes it held back)
   const before = toTable(e);
   zoomZ = clamp(zoomZ * Math.exp(-e.deltaY * 0.0015), 0.5, zoomMax());
   fit();
@@ -3206,11 +3206,6 @@ wrapEl.addEventListener('wheel', (e) => {
  *  after each layout the browser hit-tests the whole table for hover, which
  *  with 1,000 pieces made a phone's frames 33 ms (B4, D246, D247). */
 function viewMoves() { return !!(pinch || feltDrag?.moved || wheelT); }
-/** #table is `.moving` while a gesture moves the view (viewMoves; set as one
- *  starts and ends): no board's SVG text is drawn then (style.css) — a
- *  printed coordinate or a private zone's label laid the page out in every
- *  frame of it, and so hit-tested the whole table (D288). */
-const moving = () => tableEl.classList.toggle('moving', viewMoves());
 
 /** Item rotation that appears upright on THIS player's rotated screen. */
 const uprightRot = () => ((-viewAngle % 360) + 360) % 360;
@@ -4143,7 +4138,6 @@ const pressFace = (it) => (it.k === 'c' ? it.up && it : it.k === 'p' && 'd' in (
 function dropFelt() {
   const f = feltDrag;
   feltDrag = null;
-  moving();
   bandEl.classList.add('hidden');
   if (f?.moved && !f.band) placeSeats(); // (a pan's end: the sizes it held back)
 }
@@ -4162,7 +4156,6 @@ function startPinch() {
     fit: scale / zoomZ, // the fit as the fingers land: whether a rest resizes the badges goes by it too (pinchRest)
     rest: 0, // the timer that sees the fingers rest (pinchRest)
   };
-  moving();
 }
 
 /** The fingers rest mid-pinch: the badges take the view's exact size if it
@@ -4178,7 +4171,6 @@ function pinchRest() {
 function endPinch() {
   clearTimeout(pinch.rest);
   pinch = null;
-  moving();
   layout();
 }
 
@@ -4298,7 +4290,7 @@ window.addEventListener('pointermove', (e) => {
   if (handDrag) { moveGhost(e); return; }
   if (feltDrag) {
     if (!feltDrag.moved && Math.hypot(e.clientX - feltDrag.sx, e.clientY - feltDrag.sy) < 5) return;
-    if (!feltDrag.moved) { feltDrag.moved = true; moving(); }
+    feltDrag.moved = true;
     if (feltDrag.band) { drawBand(feltDrag, e); return; }
     panX = feltDrag.px + (e.clientX - feltDrag.sx);
     panY = feltDrag.py + (e.clientY - feltDrag.sy);

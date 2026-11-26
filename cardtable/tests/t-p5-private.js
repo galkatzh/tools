@@ -102,7 +102,7 @@ const drawn = async (p, id) => (await p.waitForSelector(`#table .item[data-id="$
 /** The private zone labels page p draws on board `id`, and the colour of its hatch (a <pattern>'s first fill), or null. */
 const zoneOf = (p, id) => p.evaluate((i) => {
   const el = document.querySelector(`#table .item[data-id="${i}"]`);
-  return el && { texts: [...el.querySelectorAll('.psvg text.slabel')].map((t) => t.textContent), hatch: el.querySelector('.psvg pattern rect')?.getAttribute('fill') || null };
+  return el && { texts: [...el.querySelectorAll('.btexts .slabel')].map((t) => t.textContent), hatch: el.querySelector('.psvg pattern rect')?.getAttribute('fill') || null };
 }, id);
 /** Clears page p's selection (Esc; a phone has no key: the same keydown, dispatched). */
 const deselect = (p) => (p.touch ? p.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))) : p.keyboard.press('Escape'));

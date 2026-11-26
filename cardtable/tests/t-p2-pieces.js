@@ -361,7 +361,7 @@ async function pass(env, mode) {
         const svg = el(board).querySelector('svg.psvg');
         return {
           board: el(board).classList.contains('board') && !!svg && svg.getAttribute('viewBox') === '0 0 300 300' && getComputedStyle(svg).pointerEvents === 'none' && +el(board).style.zIndex < 0,
-          labels: svg ? [...svg.querySelectorAll('text')].map((t) => t.textContent).join('') : '',
+          labels: [...el(board).querySelectorAll('.btexts .btext')].map((t) => t.textContent).join(''),
           hex: cs(hex).clipPath !== 'none', rect: cs(t1).borderRadius === '8%', disc: cs(A).borderRadius === '50%',
           hidden: !!el(hdie).querySelector('.pback') && !el(hdie).classList.contains('die'), die: el(d1).classList.contains('die') && !!el(d1).querySelector('.pips'),
         };

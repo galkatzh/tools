@@ -254,9 +254,11 @@ included ("Alice hid 3 pieces", "rolled 2 hidden dice": never what they are).
   a rack is played face up; a unit moved out from behind a screen stays
   hidden until it is revealed. A bag's **🔒 Draw to my rack** draws a
   piece straight into the first free slot of your rack, so it is never seen
-  face up on the way (the slots full, it lands half a slot on, where no
-  tile ends up more than half covered; a piece with no hidden side lands
-  there face up). In a box, a rack is a board's zone with
+  face up on the way (the slots full, it lands half a slot on, where it
+  hides least of what lies there: Dominoes' rack holds a whole draw game,
+  21 tiles, none more than half covered, but a rack too small for what it
+  holds has to cover some; a piece with no hidden side lands there face
+  up). In a box, a rack is a board's zone with
   `"private": "reveal"` (a screen: `"keep"`) and `"owner": "board"` (the
   board item's owner: `"owner": "seat"` in `forEachSeat` gives each seat
   its own) or `"seat:<id>"`; its label stands beside it on the side of the

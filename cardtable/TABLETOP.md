@@ -947,15 +947,19 @@ sync and rendering, and the Worker together with `handle`.
        off its rack on its seat's turn, and shows the racks at a round's
        end; its tiles draw each half's pips in its own half, and its rack
        holds two rows of nine, then sets each further draw half a slot on
-       where no tile ends up more than half covered (a whole boneyard
-       drawn: 21 tiles, all in sight). Veiled Ranks moves units as
+       where it hides least of what lies there (a whole boneyard drawn: 21
+       tiles, none more than half covered). Veiled Ranks moves units as
        they are, announces every fight, calls a draw when neither side can
        move, and gives every kind its own label; a legal move of one's own
        hidden unit is never drawn back where it stood while the move is on
        its way. The built-in dice wear a cup; a cup leaves a locked die out;
-       a wheel over the 🔒 card scrolls it; and no board text is drawn while
-       the view moves, so a labelled board or a rack costs a gesture one
-       repaint as it starts and one as it ends, never one a frame.
+       a wheel over the 🔒 card scrolls it; and a board's printed text —
+       coordinates, a space's or a rack's label — is the page's own text,
+       turned to each screen by transforms, so it stays drawn while the
+       view moves and costs a gesture nothing: drawn as SVG it laid the
+       page out every frame, and hidden for the gesture instead, it made
+       the table redraw its whole layer as a gesture began for a player
+       turned half round from a board.
 
 The terminal bridge follows each phase:
 - pieces and boxes appear in its snapshot;
@@ -1080,6 +1084,11 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
   sizes read before, and whatever would lay the page out waits for the
   lift or the wheel's rest — a layout makes the browser hit-test the whole
   table for hover (§2, §4).
+- **A board's text is the page's text:** its coordinates and its spaces'
+  and racks' labels are drawn as HTML over the board's drawing, turned to
+  each screen by transforms — they stay in sight while the view moves, at
+  no cost to a gesture's frames, its start or its end, whichever way a
+  player's view is turned (§2).
 - **A selection mode means selecting:** with ⬚ on, a drag draws a box
   wherever it starts (but on a picked piece, which carries the lot) and a
   click only picks — a double one never flips or rolls (§3).
@@ -1119,9 +1128,10 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
   down straight in a free slot of your rack, hidden as it lands, rather
   than face down beside the bag to be dragged over (§2).
 - **A rack keeps every tile in sight:** Dominoes' rack holds two rows of
-  nine, and a draw past its slots lands half a slot on where no tile ends
-  up more than half covered — the whole boneyard drawn into one rack still
-  shows all 21 (§2).
+  nine, and a draw past its slots lands half a slot on, where it hides
+  least of what lies there — the whole boneyard drawn into one rack still
+  shows all 21, none more than half covered; a rack smaller than what it
+  holds has to cover some (§2).
 - **A zone never shows anyone a piece hidden from them:** a screen keeps
   who sees a piece hidden for someone else, a rack takes one over only from
   a hand that sees it, and whatever would show a private piece or strip

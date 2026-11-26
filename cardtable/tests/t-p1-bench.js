@@ -35,11 +35,12 @@
 //        and wrote its left and top each frame: 178–181 layouts a pan,
 //        302–355 a twist, D247); the pinch again, and sixteen turns of a
 //        wheel, with a chess-labelled board and a rack's private zone on the
-//        table, whose SVG text is not drawn while the view moves (each frame
-//        laid the page out: 49–101 layouts a pinch, 16 a wheel, D288) — its
-//        task budget B4_SETTLE's, as the paused pinch's: hiding the text at
-//        the first frame and showing it at the lift repaint the boards once
-//        (D295)
+//        table, whose text stays drawn while the view moves (as SVG text
+//        each frame laid it out: 49–101 layouts a pinch, 16 a wheel, D288;
+//        it is HTML now, D297); and the reviewers' flow at a view turned half
+//        round: the phone seated North over Dominoes, three pinches deep in,
+//        then four over Veiled Ranks (52–91 ms at their start while a board's
+//        text was SVG hidden for the gesture: D297)
 //   B6   the host saves the 1,000-item table: every save's main-thread part ≤ 8 ms
 //        (__ct.perf.lastSaveSyncMs, around doSave's synchronous IndexedDB put): ten
 //        throttled saves (rapid play) and five unthrottled ones (a move 1.1 s
@@ -68,6 +69,7 @@
 //        its event's timeStamp to the panel's change — in < 100 ms
 //   B15  a Worker starting over the table and the CAH decks (__ct.perf.lastRulesInitMs:
 //        spawn to `ready`): ≤ 300 ms, at each of three Enables
+const path = require('path');
 const h = require('./h');
 const L = require('./p1-lib');
 const A = require('./assets-lib');
@@ -282,18 +284,27 @@ function placeholderWatch() {
     const b = document.getElementById('action-bar'), r = b.getBoundingClientRect();
     return { open: !b.classList.contains('hidden') && !b.classList.contains('row'), x: r.left + r.width / 2, y: r.top + r.height / 2, text: b.textContent };
   });
-  /** The phone taps items of `ids` drawn on top of their spots near the
-   *  table area's middle, one after another, until one's own bar opens
-   *  beside it (a tap on a stack's ×N badge opens the inspector instead:
-   *  Esc closes it). Returns its id and the bar (barNow), or null. */
+  /** The phone taps items of `ids` near the table area's middle, one after
+   *  another, until one's own bar opens beside it: each at a point of its
+   *  face that nothing covers, those farthest from any ×N badge first — a
+   *  tap on or right by a stack's badge opens the inspector instead (Esc
+   *  closes it), and on the fit of 1,000 ×3 stacks each badge (grown 3×)
+   *  covers its own stack's centre, which the taps took first before (D299).
+   *  Returns its id and the bar (barNow), or null. */
   async function tapOne(ids) {
     const qs = await phone.evaluate((ids) => {
-      const w = document.getElementById('table-wrap').getBoundingClientRect(), out = [];
+      const w = document.getElementById('table-wrap').getBoundingClientRect(), mid = (q) => Math.abs(q.x - w.left - w.width / 2) < w.width / 5 && Math.abs(q.y - w.top - w.height / 2) < w.height / 5;
+      const badges = [...document.querySelectorAll('#table .item > .count')].map((b) => b.getBoundingClientRect());
+      const clear = (q) => Math.min(Infinity, ...badges.map((r) => Math.hypot(Math.max(r.left - q.x, 0, q.x - r.right), Math.max(r.top - q.y, 0, q.y - r.bottom))));
+      const out = [];
       for (const id of ids) {
-        const r = document.querySelector(`.item[data-id="${id}"]`)?.getBoundingClientRect(), x = r && r.left + r.width / 2, y = r && r.top + r.height / 2;
-        if (r && Math.abs(x - w.left - w.width / 2) < w.width / 5 && Math.abs(y - w.top - w.height / 2) < w.height / 5 && document.elementFromPoint(x, y)?.closest('.item')?.dataset.id === id) out.push({ id, x, y });
+        const el = document.querySelector(`.item[data-id="${id}"]`), r = el?.getBoundingClientRect();
+        if (!r) continue;
+        const pts = [0.5, 0.2, 0.8].flatMap((fy) => [0.5, 0.2, 0.8].map((fx) => ({ x: r.left + r.width * fx, y: r.top + r.height * fy })));
+        const on = pts.filter((q) => { const e = mid(q) ? document.elementFromPoint(q.x, q.y) : null; return e?.closest('.item') === el && !e.closest('.count'); });
+        if (on.length) out.push(on.map((q) => ({ id, ...q, d: clear(q) })).reduce((a, q) => (q.d > a.d ? q : a)));
       }
-      return out.slice(0, 12);
+      return out.sort((a, q) => q.d - a.d).slice(0, 12);
     }, ids);
     for (const q of qs) {
       await phone.touchscreen.tap(q.x, q.y);
@@ -561,9 +572,10 @@ function placeholderWatch() {
   ok(tr.gaps.length > 30 && Math.abs(tr.turned - 180) < 20, `the scripted twist turns the view (${tr.turned.toFixed(1)}°, ${tr.gaps.length} frames)`);
   await refit();
 
-  section('§2k B4 (board text): the pinch, and a wheel zoom, over 1,000 ×3 stacks beside a chess-labelled board and a rack\'s private zone — no SVG text is drawn while the view moves (D288)');
-  // (a board's printed coordinates and a zone's label are SVG text: each frame
-  // that moved the view laid the page out, and hit-tested the whole table)
+  section('§2k B4 (board text): the pinch, and a wheel zoom, over 1,000 ×3 stacks beside a chess-labelled board and a rack\'s private zone — their text stays drawn while the view moves (D297)');
+  // (While a board's printed coordinates and a zone's label were SVG text,
+  // each frame that zoomed the view laid the page out, and hit-tested the
+  // whole table, D288; they are HTML now, turned and grown by transforms)
   const LABELLED = {
     types: {
       board: { kind: 'board', name: 'Labelled', w: 500, h: 500, faces: [{ color: '#8f8a84' }], board: { grid: { type: 'square', cols: 5, rows: 5, cell: 100, x: 0, y: 0, labels: 'chess' } } },
@@ -572,30 +584,62 @@ function placeholderWatch() {
     setup: [{ piece: 'board', at: [40, 400] }, { piece: 'rack', at: [30, 1000] }],
   };
   await loadStacks(6000, 4000, [600, 400], [100, 160], LABELLED);
-  const texts = await phone.evaluate(() => [...document.querySelectorAll('#table .psvg text')].map((t) => t.textContent));
+  const texts = await phone.evaluate(() => [...document.querySelectorAll('#table .btext')].map((t) => t.textContent));
   ok(texts.length >= 10 && texts.some((t) => /rack/.test(t)), `the phone draws the board's coordinates and the zone's label (${texts.length} texts: ${texts.slice(0, 3).join(', ')}, …, ${texts.find((t) => /rack/.test(t))})`);
-  // (Its task budget is B4_SETTLE's, as the paused pinch's: the gesture's first
-  // frame, which hides the text, and the lift, which shows it, repaint the
-  // boards — one raster, never one per frame, D295. The toggle's own restyle
-  // is under 1 ms; the frame it lands in ran 56 ms once under run-all's load,
-  // and on a view turned half round from the board's, 100–130 ms: there the
-  // turned labels are layers of their own, which hiding them merges away.)
-  await gestureB4('pinch, a labelled board and a rack on the table', { from: 20, to: 240 }, { long: B4_SETTLE });
+  /** Whether every board text on the phone is drawn now (none hidden by a rule, none of zero size). */
+  const textsDrawn = () => [...document.querySelectorAll('#table .btext')].every((t) => getComputedStyle(t).visibility !== 'hidden' && t.getClientRects().length > 0);
+  await gestureB4('pinch, a labelled board and a rack on the table', { from: 20, to: 240 });
   await refit();
   {
     const r = await phone.evaluate(() => document.getElementById('table-wrap').getBoundingClientRect()), tf = () => phone.evaluate(() => document.getElementById('table').style.transform);
     const tf0 = await tf(), laid = await layouts(phone), q = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-    const hiddenMid = await phone.evaluate(async ([x, y]) => {
+    await phone.evaluate(`window.__drawn = ${textsDrawn}`);
+    const seen = await phone.evaluate(async ([x, y]) => {
       const wheel = () => document.elementFromPoint(x, y).dispatchEvent(new WheelEvent('wheel', { deltaY: -40, clientX: x, clientY: y, bubbles: true, cancelable: true }));
       const seen = [];
-      for (let k = 0; k < 16; k++) { wheel(); seen.push(getComputedStyle(document.querySelector('#table .psvg text')).display); await new Promise((res) => setTimeout(res, 30)); }
+      for (let k = 0; k < 16; k++) { wheel(); seen.push(window.__drawn()); await new Promise((res) => setTimeout(res, 30)); }
       return seen;
     }, [q.x, q.y]);
     await h.sleep(600);
-    const n = await laid(), back = await phone.evaluate(() => getComputedStyle(document.querySelector('#table .psvg text')).display);
-    console.log(`  wheel zoom: ${n} layouts in 16 turns; the board's text while it turned: ${[...new Set(hiddenMid)]}, after its rest: ${back}`);
-    ok((await tf()) !== tf0 && n <= B4_LAYOUTS, `B4: sixteen turns of a wheel zoom the view and lay the page out ${n} times (≤ ${B4_LAYOUTS})`);
-    ok(hiddenMid.every((d) => d === 'none') && back !== 'none', 'the board\'s text is not drawn while the wheel turns, and is again at its rest');
+    const n = await laid();
+    console.log(`  wheel zoom: ${n} layouts in 16 turns; the board's text drawn at every turn: ${seen.every(Boolean)}`);
+    ok((await tf()) !== tf0 && n <= B4_LAYOUTS, `B4: sixteen turns of a wheel zoom the view and lay the page out ${n} times (≤ ${B4_LAYOUTS}), the reads of the text included`);
+    ok(seen.every(Boolean) && (await phone.evaluate(textsDrawn)), 'the board\'s text stays drawn while the wheel turns, and at its rest');
+  }
+  await refit();
+
+  section('§2k B4 (a view turned half round, after a deep zoom): Pat on the phone at North — Dominoes, a pinch deep in three times, then Veiled Ranks, pinched four times (D297)');
+  // (The reviewers' flow: while a board's text was SVG, a turned text was a
+  // compositing layer of its own, and hiding it as a gesture began merged
+  // it back into the table's layer, rastered again at the scale it was last
+  // rastered at — after a pinch deep into Dominoes, 52–91 ms at the start of
+  // 11 of 13 Veiled Ranks pinches. Each pinch here is measured, but the
+  // first, the page's first zoom over these boxes.)
+  {
+    const { BOXES } = require(path.join(h.APP_ROOT, 'cardtable/templates.js'));
+    const [alice, bob, pat] = [await L.pidOf(host), await L.pidOf(mover), await L.pidOf(phone)];
+    const sit = async (box) => {
+      ok((await L.act(host, { t: 'loadBox', box: BOXES[box], setup: true, clear: true, rules: true })).ok, `the host sets up ${BOXES[box].name}, its rules on`);
+      for (const a of [{ p: bob, watch: true }, { p: pat, watch: true }, { p: alice, watch: true }, { p: alice, id: 'south' }, { p: pat, id: 'north' }]) await L.act(host, { t: 'seat', ...a });
+      ok(await L.until(async () => (await phone.evaluate(() => document.getElementById('table').style.transform)).includes('rotate(180deg)'), 10000, 100), 'Pat sits North: the phone\'s view is turned 180°');
+    };
+    const pinchN = async (what, k, measured) => {
+      await refit();
+      const r = await gesture(phone, { from: 20, to: 160 }), p95 = L.pct(r.gaps, 95), limit = Math.max(B4_FLOOR, 1.25 * pbase.p95);
+      console.log(`  ${what} pinch ${k + 1}${measured ? '' : ' (not measured)'}: ${r.gaps.length} frames, zoomed ${r.zoomed.toFixed(2)}×, rAF p95 ${p95.toFixed(1)} ms, long tasks [${r.long}], then [${r.settle}] as the fingers lift, ${r.layouts} layouts`);
+      if (!measured) return;
+      ok(!r.long.some((d) => d > B4_LONG) && p95 <= limit && !r.settle.some((d) => d > B4_SETTLE) && r.layouts <= B4_LAYOUTS,
+        `B4, ${what} pinch ${k + 1}: no long task over ${B4_LONG} ms while the fingers are down (${r.long.join(', ') || 'none'}), rAF p95 ${p95.toFixed(1)} ≤ ${limit.toFixed(1)} ms, none over ${B4_SETTLE} ms as they lift (${r.settle.join(', ') || 'none'}), ${r.layouts} layouts (≤ ${B4_LAYOUTS})`);
+    };
+    await sit('dominoes');
+    ok((await L.act(host, { t: 'rulesBtn', id: `deal-${alice}` })).ok, 'Alice draws 7');
+    await h.sleep(1500);
+    for (let k = 0; k < 3; k++) await pinchN('Dominoes', k, k > 0);
+    await sit('ranks');
+    await h.sleep(1500);
+    ok((await phone.evaluate(textsDrawn)) && (await phone.evaluate(() => document.querySelectorAll('#table .btext').length)) >= 22, 'the phone draws the board\'s 20 coordinates and the two screens\' labels');
+    for (let k = 0; k < 4; k++) await pinchN('Veiled Ranks', k, true);
+    ok((await L.act(host, { t: 'setRules', enabled: false })).ok, '(the rules off again)');
   }
   await refit();
 

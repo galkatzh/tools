@@ -312,7 +312,7 @@ const UPTO = +(process.env.UPTO || 99); // (to develop: stop after section UPTO)
   /** The 🔒/🔓 labels page p draws on board `id`, and its hatch's colour (D265). */
   const zoneOf = (p, id) => p.evaluate((i) => {
     const el = document.querySelector(`#table .item[data-id="${i}"]`);
-    return el && { texts: [...el.querySelectorAll('svg text')].map((t) => t.textContent).filter((t) => /^[🔒🔓]/u.test(t)), hatch: el.querySelector('svg pattern rect')?.getAttribute('fill') || null };
+    return el && { texts: [...el.querySelectorAll('.btexts .btext')].map((t) => t.textContent).filter((t) => /^[🔒🔓]/u.test(t)), hatch: el.querySelector('svg pattern rect')?.getAttribute('fill') || null };
   }, id);
   const zA = await zoneOf(alice, ID.rackS), zB = await zoneOf(bob, ID.rackS), zN = await zoneOf(alice, ID.rackN), zS = await zoneOf(bob, ID.scr);
   ok(J(zB.texts) === J(["🔒 Alice's rack"]) && J(zN.texts) === J(["🔒 Bob's rack"]) && J(zS.texts) === J(["🔒 Alice's screen"]), `"🔒 {name}'s rack" on the other's screen (§5g; D265's "screen" for 'keep'): ${J([zB.texts, zN.texts, zS.texts])}`);
