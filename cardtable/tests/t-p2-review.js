@@ -183,7 +183,7 @@ function noticeWatch() {
 
   section('seat menu: only a tap on a label opens it — a drop or a pan that ends there does not');
   const southLabel = await P.label(host, /^South — Alice/);
-  ok(same(await P.openMenu(host, /^South — Alice/), ['Stand up (watch)']), 'a click on Alice\'s own label opens her menu (Stand up)');
+  ok(same(await P.openMenu(host, /^South — Alice/), ['Stand up (watch)', 'End the named seats']), 'a click on Alice\'s own label opens her menu (Stand up; the host\'s End the named seats, D311)');
   await host.keyboard.press('Escape');
   ok(!(await menuOpen(host)), '(Escape closes it)');
   const c0 = await P.itemXY(host, ids.coin);
@@ -435,7 +435,7 @@ function noticeWatch() {
   await host.evaluate(() => { window.confirm = () => true; });
   await host.click('#games-btn');
   await host.click('#games-list [data-game="draughts"]');
-  ok(await P.waitView(host, "Object.keys(v.items).length === 25 && v.table.w === 1400 && v.players[me].seatId === 'light'"), 'Alice sets up Draughts from 🎲 and sits Light');
+  ok(await P.waitView(host, "Object.keys(v.items).length === 25 && v.table.w === 1000 && v.players[me].seatId === 'light'"), 'Alice sets up Draughts from 🎲 and sits Light');
   await h.sleep(500);
   const gaps = await host.evaluate(() => {
     const t = document.getElementById('table').getBoundingClientRect(), b = document.querySelector('.item.board').getBoundingClientRect();
@@ -473,7 +473,11 @@ function noticeWatch() {
   await carol.tap('#watchers');
   ok(await opened(), `a tap on the chip opens the box: who watches, and how to sit ("${full}": Light and Dark are ${full.includes('taken') ? 'both taken' : 'not both taken'})`);
   const big = await chips(), gutter = await carol.evaluate(() => document.getElementById('main').classList.contains('gutters') && parseFloat(document.getElementById('watch-box').style.getPropertyValue('--gutter')));
-  ok(big.every((c) => !c.covers && (!gutter || c.w <= gutter - 16)), `opened, it covers no piece nor the board${gutter ? `, wrapped in the right margin (${gutter} px)` : ''} (${JSON.stringify(big)})`);
+  // (beside wide margins, .gutters, it wraps in the right one, clear of every piece: D101. With the log
+  // open there is no margin, and Draughts' table, seen from a side seat, leaves 28 px of felt above the
+  // board — D314, as Chess's D162 table does —: for the 6 s it is open, the box lies over the edge row's
+  // men in its corner, two of them, and no further in. Checked with the log closed below: no piece.)
+  ok(big.every((c) => (gutter ? !c.covers && c.w <= gutter - 16 : c.covers <= 2)), `opened, it covers ${gutter ? `no piece nor the board, wrapped in the right margin (${gutter} px)` : 'at most the two men of the edge row in its corner (no margin: D101, D314)'} (${JSON.stringify(big)})`);
   await carol.tap('#watchers');
   ok(same((await chips()).map((c) => c.text), small.map((c) => c.text)), 'another tap closes it again');
   await carol.tap('#watchers');

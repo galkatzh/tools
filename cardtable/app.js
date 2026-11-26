@@ -1,4 +1,5 @@
-// Card Table — a serverless multiplayer card-game simulator.
+// Card Table — a serverless multiplayer tabletop: cards, boards and pieces,
+// played by hand or by an optional rules script.
 //
 // Architecture (see mdmath/COLLAB-DESIGN.md for the design space): the peer who
 // opens the room is the HOST and the single authority over game state. Guests
@@ -14,9 +15,13 @@
 // every peer caches them, and a guest asks the host only for those it lacks.
 //
 // The table's state and every operation on it live in core.js (no DOM, no
-// network), storage in store.js; this file is the network, rendering, input,
-// dialogs and the terminal bridge around them. The shipped rules scripts are
-// in templates.js.
+// network), board geometry in grid.js, storage in store.js, game boxes in
+// and out in boxio.js, the drawing of pieces and boards in pieces.js, and a
+// rules script runs in rules-worker.js (a Worker, on a copy of the table);
+// this file is the network, rendering, input, dialogs and the terminal
+// bridge around them. The shipped rules scripts and boxes are in
+// templates.js. The code cites the implementation contract, SPEC.md: its
+// sections (spec §3f.4) and decisions (D282).
 import { joinRoom, selfId, getRelaySockets } from 'https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm';
 import {
   CARD_W, CARD_H, RANKS, RULES, playR, clampToTable, seatAt, seatAngles, sizeOf, flagsOf, typeAt, PID_RE, ASSET_RE, rand, clamp, own, num, peerText,
@@ -57,8 +62,12 @@ const sideEl = $('side'), logEl = $('log');
 let TABLE = roundTable(), TABLE_W = 1300, TABLE_H = 1300;
 let PLAY_R = 540; // a round table: the max distance of an item's centre from the table centre
 
-/** Draws the table `tb` ({shape, w, h, felt?}, core.js cleanTable's). */
+/** Draws the table `tb` ({shape, w, h, felt?}, core.js cleanTable's). A
+ *  new shape or size is another game's table: the view starts afresh, as 🧭
+ *  resets it (a pan or zoom of the last game — a drag on a piece we may not
+ *  move pans, D66 — left the next one off-centre, our own area off-screen). */
 function setTable(tb) {
+  if (tb.shape !== TABLE.shape || tb.w !== TABLE_W || tb.h !== TABLE_H) [manualView, zoomZ, panX, panY] = [false, 1, 0, 0];
   TABLE = tb;
   TABLE_W = tb.w;
   TABLE_H = tb.h;
@@ -343,29 +352,39 @@ let reserved = 0; // host: the deck budget the guests' decks in the works will t
 function submit(p, a) {
   if (a.t === 'addBox') return submitBox(p, a);
   if (a.t !== 'addDeck') return enqueue(p, a);
-  const refuse = (why) => {
-    console.error('rejected a deck:', why);
-    tell(p, `🚫 Deck rejected: ${why}`);
-    return { ok: false, error: why };
-  };
+  const refuse = refuser(p, 'Deck');
   let deck = a.deck, cost = 0;
   if (p !== pid) {
     try { deck = cleanDeckV1(a.deck); } catch (err) { return Promise.resolve(refuse(err.message)); }
     cost = JSON.stringify(deck).length;
     const over = deckOverBudget((T.state.guestDeckChars || 0) + reserved, cost);
     if (over) return Promise.resolve(refuse(over));
-    reserved += cost;
   }
-  const ingest = () => store.ingestDeck(deck); // after the player's previous deck, however that one ended (its caller hears how)
-  const run = (ingesting.get(p) || Promise.resolve()).then(ingest, ingest).then(async ({ deck: v2, assets }) => {
-    if (role !== 'host') return { ok: false, error: 'this tab is no longer the host' };
+  return ingestFor(p, cost, () => store.ingestDeck(deck), async ({ deck: v2, assets }) => {
     const done = await enqueue(p, { ...a, deck: v2, cost });
     holdImages(assets);
     return done;
-  }, (err) => refuse(err.message)).finally(() => {
-    reserved -= cost;
-    if (ingesting.get(p) === run) ingesting.delete(p);
-  });
+  }, refuse);
+}
+/** A refusal of player p's deck or box (`what`: 'Deck' or 'Box'): logged,
+ *  told to them ("🚫 Deck rejected: …"), and act()'s outcome. */
+const refuser = (p, what) => (why) => {
+  console.error(`rejected a ${what.toLowerCase()}:`, why);
+  tell(p, `🚫 ${what} rejected: ${why}`);
+  return { ok: false, error: why };
+};
+/** Host: runs player p's ingestion `ingest` (a promise of what it made)
+ *  after their earlier ones, however those ended, with `cost` of the guests'
+ *  budget reserved meanwhile; then `then(made)` queues it — while this tab
+ *  still hosts — and a failure to ingest is `refuse`d. Resolves like enqueue(). */
+function ingestFor(p, cost, ingest, then, refuse) {
+  reserved += cost;
+  const run = (ingesting.get(p) || Promise.resolve()).then(ingest, ingest)
+    .then((made) => (role === 'host' ? then(made) : { ok: false, error: 'this tab is no longer the host' }), (err) => refuse(err.message))
+    .finally(() => {
+      reserved -= cost;
+      if (ingesting.get(p) === run) ingesting.delete(p);
+    });
   ingesting.set(p, run);
   return run;
 }
@@ -379,25 +398,19 @@ function submit(p, a) {
  *  asset ids, its decks catalog decks), cost}. All or nothing (spec §4h):
  *  the host's own box's images are stored first (store.stash), and a box
  *  whose images can't be stored is not added; a guest's are kept only once
- *  their box committed (holdImages), saved with it. Resolves like enqueue(),
- *  with `id`: the box the catalog now holds for it (new, or the same one
- *  already there). */
+ *  their box committed (holdImages), saved with it — and the host is told,
+ *  and 📦 marked until it opens: the log, where the line goes, is closed on
+ *  a phone (D313). Resolves like enqueue(), with `id`: the box the catalog
+ *  now holds for it (new, or the same one already there). */
 function submitBox(p, a) {
-  const refuse = (why) => {
-    console.error('rejected a box:', why);
-    tell(p, `🚫 Box rejected: ${why}`);
-    return { ok: false, error: why };
-  };
+  const refuse = refuser(p, 'Box');
   let cost;
   try { cost = checkTransportBox(a.box); } catch (err) { return Promise.resolve(refuse(err.message)); }
   if (p !== pid) {
     const over = boxOverBudget((T.state.guestDeckChars || 0) + reserved, cost);
     if (over) return Promise.resolve(refuse(over));
-    reserved += cost;
   } else cost = 0;
-  const ingest = () => store.ingestBox(a.box);
-  const run = (ingesting.get(p) || Promise.resolve()).then(ingest, ingest).then(async ({ box, assets }) => {
-    if (role !== 'host') return { ok: false, error: 'this tab is no longer the host' };
+  return ingestFor(p, cost, () => store.ingestBox(a.box), async ({ box, assets }) => {
     if (p === pid) {
       try { await store.stash(assets); } catch (err) {
         console.error("the box's images could not be stored", err);
@@ -408,13 +421,12 @@ function submitBox(p, a) {
     }
     const done = await enqueue(p, { t: 'addBox', box, cost });
     holdImages(assets, p === pid);
+    if (p !== pid && done.ok) {
+      toast(`${T.state.players[p]?.name || 'A guest'} added «${box.name}» — 📦 to set it up`, true);
+      $('box-btn').classList.add('new');
+    }
     return done;
-  }, (err) => refuse(err.message)).finally(() => {
-    reserved -= cost;
-    if (ingesting.get(p) === run) ingesting.delete(p);
-  });
-  ingesting.set(p, run);
-  return run;
+  }, refuse);
 }
 /** Host: a deck's ingestion is over, and its job ran: of its images
  *  (`assets`), those the table now shows are held — drawn, served, and
@@ -441,6 +453,7 @@ function commit(changed, actor) {
   }
 }
 
+const pendingActs = []; // a guest's actions taken while (re)connecting: they go out once the host is back (act)
 /** Routes a local UI action: hosts queue it, guests send it to the host, and
  *  either way the Promise says how it went ({ok, error?}; for a guest: sent).
  *  Until a (signed) state has revealed which peer is the host, the only thing
@@ -451,7 +464,6 @@ function commit(changed, actor) {
  *  wire version (`_v`). Actions taken while (re)connecting — e.g. a click
  *  during the host's reload — wait in a short queue and go out as soon as the
  *  host is back. */
-const pendingActs = [];
 function act(a) {
   if (role === 'host') {
     if (a.t === 'drag') { relay(pid, a); return Promise.resolve({ ok: true }); }
@@ -897,6 +909,16 @@ function noteTo(p, body) {
   for (const [peer, mapped] of Object.entries(peerPid)) {
     if (mapped === p) sendNote({ ...body, to: p }, peer);
   }
+}
+/** A private notice for this player (a veto, t.tell, a failed send): a toast,
+ *  and on a bridged tab the terminal/bot gets it too — nobody may be
+ *  watching that browser. `ruled`: the rules refused this player's action
+ *  (the host says so: the note's `ruled`). */
+function note(msg, ruled = false) {
+  toast(msg);
+  if (CLI) cliMsgs.push(`note: ${msg}`);
+  // (the guest waits on the box it sent — the dialog is modal: a refusal now is its answer, whatever refused it)
+  if (boxWait && /^(🚫|That box is already)/u.test(msg)) boxAnswer(ruled ? ruledOut(msg, view.rules) : msg, msg.startsWith('That'));
 }
 /** Host: a private notice for player p — this screen's own, or theirs. */
 const tell = (p, msg, ruled) => (p === pid ? note(msg, ruled) : noteTo(p, { msg: msg.slice(0, 200), ...(ruled && { ruled }) }));
@@ -1587,7 +1609,11 @@ function connect() {
       if (gone.length) giveUp(gone, `${gone.length} card images are missing on the host — ask them to re-add the deck`);
     }
   }, true);
-  rulesA.onMessage = fromHost((r) => { if (role !== 'host') guestRules = { code: String(r?.code || ''), name: String(r?.name || '') }; });
+  rulesA.onMessage = fromHost((r) => {
+    if (role === 'host') return;
+    guestRules = { code: String(r?.code || ''), name: String(r?.name || '') };
+    if ($('rules-dialog').open) $('rules-code').value = guestRules.code || NO_SCRIPT; // (read-only here: the open dialog shows what runs)
+  });
   stateA.onMessage = fromHost(handleState, true);
   // Images: unsigned, so taken only from the host, only when asked for, and
   // only once their bytes check out (receiveImage).
@@ -1710,6 +1736,8 @@ function openRelays() {
 let joinAt = 0;
 const RELAY_GRACE_MS = 10000;
 let relaysSeen = false; // a relay has been open on this page
+/** The connection dot and count in the toolbar, and the table's hint while
+ *  there is no table (connecting, waiting for the host, relays out of reach). */
 function updateNet() {
   const n = room ? Object.keys(room.getPeers()).length : 0;
   const r = openRelays();
@@ -2008,6 +2036,8 @@ const pieceLike = (it) => it.k === 'g' || it.k === 's' || it.k === 'b' || (it.k 
 // the client never sends an action it knows the host refuses.
 /** Whether public item `it` is a board, or a die (pieces.js). */
 const isBoard = (it) => pieces.isBoard(it, boxes), isDie = (it) => pieces.isDie(it, boxes);
+/** Who sits in named seat `id` (from the public view), or null. */
+const seatHolder = (id) => Object.keys(view.players).find((p) => view.players[p].seatId === id) || null;
 /** Whose public item `it` is: its owner resolved (a seat-bound owner is whoever sits there), or null. */
 const ownerOf = (it) => (!it.owner ? null : it.owner.startsWith('seat:') ? seatHolder(it.owner.slice(5)) : it.owner);
 /** Whether this player may handle public item `it`: nobody else owns it. */
@@ -2397,6 +2427,7 @@ function showLive(f) {
   }, 250);
 }
 
+// --- items: the table's elements, drawn from the view -------------------------
 /** Draws the items: those in `prev` (a Map of id → the public item it
  *  replaced, undefined for a new one; ids gone from view.items are removed),
  *  or with prev null, all of them (after a snapshot). `prevPlayers` (pid →
@@ -2503,6 +2534,7 @@ function kind(el, cls, w, h) {
   else el.style.removeProperty('--pr');
 }
 
+// --- seat labels ----------------------------------------------------------------
 // Seat labels: everyone sees the same seating, each from their own rotation.
 // A named seat nobody holds shows as a ghost label ("White — empty"). The
 // labels let every pointer event through (the cards under them stay
@@ -2553,6 +2585,8 @@ function renderPlayers(viewMoved) {
       el.textContent = `${st.name} — empty`;
       seatEls.push({ seat: st, el });
     }
+    // (a label with a menu is a button for the keys too: Tab to it, Enter or Space opens the menu)
+    for (const s of seatEls) if (seatMenu(s).length) Object.assign(s.el, { tabIndex: 0 }).setAttribute('role', 'button');
     wrapEl.append(...seatEls.map((s) => s.el));
     // All sizes are read before any position is written: one layout for all the labels.
     for (const s of seatEls) { s.hw = s.el.offsetWidth / 2 + 4; s.hh = s.el.offsetHeight / 2 + 2; }
@@ -2644,9 +2678,8 @@ function placeSeats() {
 // --- the seat menu (spec §2g) and the watchers -----------------------------------
 const seatMenuEl = $('seat-menu');
 let seatMenuActs = []; // the open menu's actions, by button
-/** The seat label under client point (x, y), or undefined: a label (17 px
- *  tall on a phone) counts as at least TAP_PX tall, a finger's size. */
-const TAP_PX = 32;
+const TAP_PX = 44; // a seat label (17 px tall on a phone) counts as at least this tall, a finger's size
+/** The seat label under client point (x, y), or undefined: TAP_PX tall at least. */
 const seatLabelAt = (x, y) => seatEls.find(({ el }) => {
   const r = el.getBoundingClientRect(), pad = Math.max(0, (TAP_PX - r.height) / 2);
   return x >= r.left && x <= r.right && y >= r.top - pad && y <= r.bottom + pad;
@@ -2654,12 +2687,14 @@ const seatLabelAt = (x, y) => seatEls.find(({ el }) => {
 /** What the seat menu offers on label `s`, as [text, action] pairs: your own
  *  named seat → stand up; a free named seat → sit there (the host: or seat
  *  anyone there); another player's label → the host moves them to the
- *  watchers. Nothing that the host would refuse. */
+ *  watchers; and the host's way back from named seats to automatic seating,
+ *  on any label (D311). Nothing that the host would refuse. */
 function seatMenu(s) {
   const host = role === 'host', players = Object.entries(view.players);
-  if (s.seat) return [['Sit here', { t: 'seat', id: s.seat.id }], ...(host ? players.filter(([p]) => p !== pid).map(([p, pl]) => [`Seat ▸ ${pl.name || 'Player'}`, { t: 'seat', id: s.seat.id, p }]) : [])];
-  if (s.p === pid) return view.players[pid]?.seatId ? [['Stand up (watch)', { t: 'seat', watch: true }]] : [];
-  return host ? [['Move to watchers', { t: 'seat', watch: true, p: s.p }]] : [];
+  const end = host && view.seats ? [['End the named seats', { t: 'endSeats' }]] : [];
+  if (s.seat) return [['Sit here', { t: 'seat', id: s.seat.id }], ...(host ? players.filter(([p]) => p !== pid).map(([p, pl]) => [`Seat ▸ ${pl.name || 'Player'}`, { t: 'seat', id: s.seat.id, p }]) : []), ...end];
+  if (s.p === pid) return [...(view.players[pid]?.seatId ? [['Stand up (watch)', { t: 'seat', watch: true }]] : []), ...end];
+  return host ? [['Move to watchers', { t: 'seat', watch: true, p: s.p }], ...end] : [];
 }
 /** The seat label a tap (event e) opens the menu of, or null: the label
  *  under it, if its menu offers anything — unless the tap is on an item,
@@ -2680,6 +2715,13 @@ function openSeatMenu(s) {
   seatMenuEl.style.top = `${below + mh <= w.height - 4 ? below : Math.max(4, above)}px`;
 }
 const closeSeatMenu = () => seatMenuEl.classList.add('hidden');
+wrapEl.addEventListener('keydown', (e) => { // (a seat label focused: Enter or Space opens its menu, its first entry focused)
+  const s = (e.key === 'Enter' || e.key === ' ') && seatEls.find((x) => x.el === e.target);
+  if (!s || !seatMenu(s).length) return;
+  e.preventDefault();
+  openSeatMenu(s);
+  seatMenuEl.querySelector('button')?.focus();
+});
 seatMenuEl.addEventListener('click', (e) => {
   const k = e.target.closest('[data-k]')?.dataset.k;
   if (k != null) act(seatMenuActs[k]);
@@ -2698,20 +2740,21 @@ wrapEl.addEventListener('click', (e) => {
   else closeSeatMenu();
 });
 
+const shortScreen = matchMedia('(max-height: 500px)'), WATCH_OPEN_MS = 6000;
+let watchSig = '', watchW = 0, watchH = 0, watchOpen = false, watchT = 0; // what the watchers' box shows; its size; opened by a tap; its closing timer
 /** The watchers chip ("👀 Carol, Dan": the online players without a seat),
  *  and for a watcher how to sit down again: tap a free named seat (while one
  *  is free), or with automatic seating the Sit down button. On a short
  *  screen (a phone in landscape: the table fills its height, and a board
  *  reaches the corner) both are compact ("👀 2", "👀 Watching") until a tap
  *  opens them, in the right margin, for WATCH_OPEN_MS or until the next
- *  touch on the table. */
-const shortScreen = matchMedia('(max-height: 500px)'), WATCH_OPEN_MS = 6000;
-let watchSig = '', watchW = 0, watchH = 0, watchOpen = false, watchT = 0; // what the watchers' box shows; its size; opened by a tap; its closing timer
+ *  touch on the table. Whether the box's size changed: placeSeats keeps
+ *  the labels clear of it, so a new size places them again (renderAll). */
 function renderWatchers() {
   const watching = Object.entries(view.players).filter(([, pl]) => pl.seat == null && pl.online), me = view.players[pid];
   const compact = shortScreen.matches && !watchOpen, free = !!view.seats?.some((st) => !seatHolder(st.id));
   const sig = `${watching.map(([, pl]) => pl.name).join()}|${me?.seat == null}|${!!me}|${!!view.seats}|${free}|${compact}`;
-  if (sig === watchSig) return;
+  if (sig === watchSig) return false;
   watchSig = sig;
   $('watchers').textContent = `👀 ${compact ? watching.length : watching.map(([, pl]) => pl.name || 'Player').join(', ')}`;
   $('watchers').classList.toggle('hidden', !watching.length);
@@ -2720,8 +2763,12 @@ function renderWatchers() {
   $('watch-me-text').textContent = compact ? '👀 Watching' : !view.seats ? '👀 You are watching'
     : free ? '👀 You are watching — tap a free seat to sit' : '👀 You are watching — every seat is taken';
   $('sit-btn').classList.toggle('hidden', !!view.seats);
-  const box = $('watch-box');
-  [watchW, watchH] = [box.offsetWidth, box.offsetHeight]; // (placeSeats keeps the labels clear of it)
+  // (a game start that made us a watcher drew the labels with the box's
+  // size still 0, and nothing placed them again: the box covered one, D313)
+  const box = $('watch-box'), w = box.offsetWidth, h = box.offsetHeight;
+  if (w === watchW && h === watchH) return false;
+  [watchW, watchH] = [w, h];
+  return true;
 }
 $('sit-btn').addEventListener('click', () => act({ t: 'seat', sit: true }));
 /** Opens (for WATCH_OPEN_MS) or closes a short screen's watchers' box: its
@@ -2801,6 +2848,14 @@ function actorInfo(p) {
 
 let logNames = '', logOf = null; // the names the rows were drawn with; the view.log they show
 const logRows = new Map(); // log entry → its row
+// The log follows its newest line while it is scrolled to the bottom
+// (`logPinned`, read off its own scrolls): a measure taken as a line came
+// was wrong after the log shrank under it — the hand bar back shortened it
+// by 140 px, its last lines below the fold — and the log never followed
+// again (D313). A resize keeps a pinned log at the bottom.
+let logPinned = true;
+logEl.addEventListener('scroll', () => { logPinned = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 60; }, { passive: true });
+new ResizeObserver(() => { if (logPinned) logEl.scrollTop = logEl.scrollHeight; }).observe(logEl);
 /** One log entry as a row's markup. */
 function logRow(e) {
   const who = actorInfo(e.p);
@@ -2818,8 +2873,6 @@ function renderLog() {
   // Names are resolved live from view.players, which may change (renames): key on them too.
   const names = Object.entries(view.players).map(([p, pl]) => p + pl.name + pl.color).join();
   if (log === logOf && names === logNames) return;
-  // (a hidden log reads no layout: the 💬 button scrolls it down when it opens)
-  const atBottom = !sideEl.classList.contains('hidden') && logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 60;
   const keep = new Set(log);
   const gone = names === logNames ? [...logRows.keys()].filter((e) => !keep.has(e)) : null;
   if (!gone || gone.length === logRows.size) { logEl.textContent = ''; logRows.clear(); } else for (const e of gone) { logRows.get(e).remove(); logRows.delete(e); }
@@ -2829,7 +2882,8 @@ function renderLog() {
   while (k > 0 && !logRows.has(log[k - 1])) k--;
   logEl.insertAdjacentHTML('beforeend', log.slice(k).map(logRow).join(''));
   for (let j = log.length - 1, el = logEl.lastElementChild; j >= k; j--, el = el.previousElementSibling) logRows.set(log[j], el);
-  if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+  // (a hidden log reads no layout: the 💬 button scrolls it down when it opens)
+  if (logPinned && !sideEl.classList.contains('hidden')) logEl.scrollTop = logEl.scrollHeight;
 }
 
 let rbSig = '';
@@ -2844,6 +2898,7 @@ function renderRulesBtns() {
   const sig = JSON.stringify(btns) + (rules?.enabled ? rules.name : '') + strictRules();
   if (sig === rbSig) return;
   rbSig = sig;
+  if ($('rules-dialog').open) updateRulesDialog(); // (started, stopped or renamed while someone reads it)
   const row = $('rules-btns');
   row.classList.toggle('hidden', !btns.length);
   row.innerHTML = btns.map((b) => `<button data-rbtn="${esc(b.id)}">${esc(b.label)}</button>`).join('');
@@ -3065,10 +3120,10 @@ function askHandTap(idx) {
   return true;
 }
 
+let secText = ''; // the secret the card shows
 /** Draws this player's t.secret (view.sec, spec §3g) on the 🔒 For you card
  *  by the rules' buttons: its `text`, at most 1,000 characters, as text —
  *  or no card. A new text opens a folded card again. */
-let secText = '';
 function renderSecret() {
   const t = typeof view.sec?.text === 'string' ? view.sec.text.slice(0, 1000) : '';
   if (t === secText) return;
@@ -3111,6 +3166,7 @@ let myTurn = false, winSeen = null, cueT = 0;
  *  without userActivation just try. */
 const buzz = (pattern) => navigator.userActivation?.hasBeenActive !== false && navigator.vibrate?.(pattern);
 
+/** The table's cues: "⏳ Your turn" (the title, the hand bar, a buzz) when the rules wait on this player, and the win celebration. */
 function renderCues() {
   const pub = (view.rules?.enabled && view.rules.public) || {};
   const mine = turnOf().includes(pid);
@@ -3164,8 +3220,7 @@ function renderAll(prev = new Map(), prevPlayers) {
   renderItems(prev, prevPlayers);
   renderGames(); // before the seats: the strip's place moves the notices
   renderBoxes();
-  renderWatchers(); // (its size, too: placeSeats moves it off the labels)
-  renderPlayers();
+  renderPlayers(renderWatchers()); // (the labels drawn after the box, and placed again when its size changed: placeSeats moves them clear of it)
   // The hand bar hides on a table with nothing to hold and an empty hand
   // (draughts); the patch that brings a hand item back shows it. Either way
   // the table refits (layout's ResizeObserver on #table-wrap).
@@ -3272,6 +3327,9 @@ function fit() {
   panX = clamp(panX, -(bw * scale) / 2, (bw * scale) / 2);
   panY = clamp(panY, -(bh * scale) / 2, (bh * scale) / 2);
 }
+/** Fits the table to its area and applies this player's view (turn, zoom,
+ *  pan) by transform, then places what sits in screen space over it: the
+ *  bar, the inspector, the bulbs and the seat labels. */
 function layout() {
   fit();
   if (viewAngle !== textAngle) viewSheet.cssRules[1].style.setProperty('--view', `${(textAngle = viewAngle)}deg`);
@@ -3378,7 +3436,7 @@ function applySeatView() {
 const ARM_MS = 5000; // how long ✥ Move stays armed
 let moveAll = null; // {id, at}: ✥ Move armed at `at` — the next drag of that ×N stack or supply moves all of it (until ARM_MS has passed)
 let giveOpen = false; // a list is open in the bar: the host's Give ▸, or the group bar's 👜 Into bag ▸
-let delAsk = null; // the group bar's 🗑 asks "Remove N?" (a token: its ARM_MS timer's; GROUP_CMDS.del)
+let delAsk = null; // the bar's 🗑 asks "Remove N?" (a token: its ARM_MS timer's; armDel)
 let barHTML = ''; // what the bar shows (barFor's or groupBar's markup)
 /** Selects item `id` alone (null: nothing), with its bar; the multi-selection stays as it is.
  *  `picked`: it is a selection being built by picks (Shift, ⬚), whose bar docks (placeBar). */
@@ -3386,6 +3444,7 @@ function select(id, picked = false) {
   sel = id;
   picking = picked;
   giveOpen = false;
+  delAsk = null;
   markSelected();
   renderBar();
 }
@@ -3464,10 +3523,15 @@ const pileTurns = (it) => { const top = it.top || {}; return 'd' in top || 'b' i
 /** The buttons of public item `it`'s bar (spec §2g), built from the public
  *  view alone (a hidden piece's flags are its back's: flagsOf), and only
  *  with what this player may do. */
+/** The bar's buttons: `cmd`'s, saying `text` (an icon alone is named: BAR_NAMES). */
+const barBtn = (cmd, text, cls = '') => `<button data-cmd="${cmd}"${cls ? ` class="${cls}"` : ''}${
+  BAR_NAMES[cmd] && !/\p{L}/u.test(text) ? ` aria-label="${BAR_NAMES[cmd]}" title="${BAR_NAMES[cmd]}"` : ''}>${text}</button>`;
+/** What an icon-only bar button is called, for assistive tech and as its tooltip. */
+const BAR_NAMES = { rl: 'Rotate left', rr: 'Rotate right', del: 'Remove', zoom: 'Zoom', takeHand: 'Take into your hand', none: 'Clear the selection' };
 function barFor(id, it) {
-  const b = (cmd, text, cls = '') => `<button data-cmd="${cmd}"${cls ? ` class="${cls}"` : ''}>${text}</button>`;
+  const b = barBtn;
   const may = mayTouch(it), free = may && !it.lock, F = flagsOf(it, boxes), room = handRoom();
-  const lock = mayLock(it) ? b('lock', it.lock ? '🔓 Unlock' : '🔒 Lock') : '', del = free ? b('del', '🗑') : '';
+  const lock = mayLock(it) ? b('lock', it.lock ? '🔓 Unlock' : '🔒 Lock') : '', del = free ? delBtn(b, it.k === 's' ? 'the supply' : `all ${it.n}`) : '';
   const unlock = it.lock ? lock : ''; // cards and piles: only the host locks them, rarely (a script does): unlocking is offered, locking isn't
   const all = (text) => b('all', text, moveAll?.id === id ? 'on' : ''); // ✥: Shift+drag for touch
   if (it.k === 'c') {
@@ -3744,7 +3808,7 @@ function endBand(f, e) {
  *  dice), 🔒 / 🔓, 👜 Into bag ▸ (the bags on the table), 🗑 — and ✕. */
 function groupBar() {
   const ids = [...multi], its = ids.map((id) => view.items[id]), mine = ids.filter(mayMove).map((id) => view.items[id]);
-  const b = (cmd, text, cls = '') => `<button data-cmd="${cmd}"${cls ? ` class="${cls}"` : ''}>${text}</button>`;
+  const b = barBtn;
   const bags = mine.some((it) => it.k === 'g') ? Object.entries(view.items).filter(([id, it]) => it.k === 'b' && !multi.has(id) && mayTouch(it)) : [];
   const locks = its.filter(mayLock);
   return `<span class="gn">${ids.length} selected</span>`
@@ -3755,7 +3819,7 @@ function groupBar() {
     + (locks.length ? b('lock', locks.some((it) => !it.lock) ? '🔒 Lock' : '🔓 Unlock') : '')
     + (bags.length ? b('bag', '👜 Into bag ▸', giveOpen ? 'on' : '') + (giveOpen ? `<span class="give">${
       bags.map(([id, bg]) => `<button data-cmd="bagTo" data-to="${esc(id)}">👜 ${esc(bg.name || 'Bag')}</button>`).join('')}</span>` : '') : '')
-    + (mine.length ? (delAsk ? b('del', `🗑 Remove ${mine.length}?`, 'on') : b('del', '🗑')) : '')
+    + (mine.length ? delBtn(b, mine.length) : '')
     + b('none', '✕');
 }
 /** Whether a turn of public item `it` shows (the bar's ⟲ ⟳): cards and piles; a piece that isn't a die and doesn't look the same at any angle. */
@@ -3764,8 +3828,19 @@ const turnsAround = (it) => it.k === 'c' || it.k === 'p' || (it.k === 'g' && !is
 const turnsOver = (it) => it.k === 'c' || (it.k === 'p' ? pileTurns(it) : it.k === 'g' && (pieces.veiled(it) || flips(it)));
 /** The step the group bar's ⟲ ⟳ turn by: the largest rotStep among members `ids`, else 90 (each member snaps it to its own). */
 const groupStep = (ids) => Math.max(0, ...ids.map((id) => flagsOf(view.items[id], boxes).rotStep || 0)) || 90;
-/** 🗑 of more than this many members asks first, in the bar (GROUP_CMDS.del). */
+/** 🗑 of more than this many pieces — a group's members, or what one stack,
+ *  pile or bag holds — asks first, in the bar (armDel); so does a supply's. */
 const GROUP_DEL_ASK = 5;
+/** Whether the bar's 🗑 of public item `it` asks first: a supply, or a stack, pile or bag of more than GROUP_DEL_ASK (D312). */
+const delAsks = (it) => it.k === 's' || (it.n || 0) > GROUP_DEL_ASK;
+/** The bar's 🗑 (`b`: the bar's button maker), or while it asks (delAsk) "🗑 Remove {what}?". */
+const delBtn = (b, what) => (delAsk ? b('del', `🗑 Remove ${what}?`, 'on') : b('del', '🗑'));
+/** Arms the bar's 🗑 for ARM_MS: it asks "🗑 Remove 12?", and a second press removes. */
+function armDel() {
+  const ask = (delAsk = {});
+  setTimeout(() => { if (delAsk === ask) { delAsk = null; renderBar(); } }, ARM_MS);
+  renderBar();
+}
 /** Sends one `group` `op` of the members among `ids` this player may move, that `fit` takes (`o`: its other fields). */
 const groupAct = (op, ids, o = {}, fit = () => true) => act({ t: 'group', op, ids: ids.filter((id) => mayMove(id) && fit(view.items[id])), ...o });
 /** The group bar's commands on members `ids` (`key`: a key ran it, not a button — see keydown). */
@@ -3783,11 +3858,7 @@ const GROUP_CMDS = {
   bag: () => { giveOpen = !giveOpen; renderBar(); },
   bagTo: (ids, bag) => groupAct('toBag', ids, { bag }, (it) => it.k === 'g' && bagTakes(view.items[bag], it, it.n || 1)), // (pieces only: what core's toBag takes)
   del: (ids, to, key) => { // (from the bar, more than GROUP_DEL_ASK ask first: "🗑 Remove 12?" removes them, for ARM_MS; Delete removes at once)
-    if (!key && !delAsk && ids.filter(mayMove).length > GROUP_DEL_ASK) {
-      const ask = (delAsk = {});
-      setTimeout(() => { if (delAsk === ask) { delAsk = null; renderBar(); } }, ARM_MS);
-      return renderBar();
-    }
+    if (!key && !delAsk && ids.filter(mayMove).length > GROUP_DEL_ASK) return armDel();
     delAsk = null;
     groupAct('del', ids);
   },
@@ -3863,8 +3934,9 @@ function renderInspector() {
     html = `<div class="ins-head"><div class="ins-what"><b>${esc(insp.at)}</b><small>${ids.length} pieces here, the top one first</small></div>${x}</div><ul class="ins-list">${
       ids.map((id) => {
         const m = view.items[id];
-        return `<li data-id="${esc(id)}">${thumb(m, 36)}<span>${esc(pieceTitle(m))}${m.n >= 2 ? ` ×${num(m.n)}` : ''}</span>${
-          m.owner ? `<i class="odot" style="background:${safeColor(ownerColor(m.owner))}"></i>` : ''}</li>`;
+        const owner = m.owner && esc(cliOwner(m.owner)); // (the dot's colour, said: its owner)
+        return `<li data-id="${esc(id)}" tabindex="0" role="button">${thumb(m, 36)}<span>${esc(pieceTitle(m))}${m.n >= 2 ? ` ×${num(m.n)}` : ''}</span>${
+          owner ? `<i class="odot" style="background:${safeColor(ownerColor(m.owner))}" title="${owner}'s" aria-label="${owner}'s"></i>` : ''}</li>`;
       }).join('')}</ul>`;
   }
   if (html !== insp.html) { inspEl.innerHTML = insp.html = html; popSize.delete(inspEl); }
@@ -3887,6 +3959,9 @@ inspEl.addEventListener('click', (e) => {
     case 'take': if (it) act({ t: 'split', id: insp.id, n: insp.k, ...dealSpot(it) }); break;
     case 'all': { const id = insp.id; closeInspector(); setMulti([]); select(id); CMDS.all(id); break; } // (the bar's ✥ Move all, armed: the next drag moves the whole stack)
   }
+});
+inspEl.addEventListener('keydown', (e) => { // (a member of the list, focused: Enter or Space selects it, as a tap does)
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('li[data-id]')) { e.preventDefault(); e.target.click(); }
 });
 inspEl.addEventListener('pointerdown', (e) => {
   const li = e.button === 0 && e.target.closest('li[data-id]');
@@ -3920,16 +3995,16 @@ function showAnnounce(msg) {
 
 // --- transient "who did that" bulbs ----------------------------------------
 const bulbs = new Map(); // "pid|itemId" -> {el, timer, f}
-/** Puts a bulb over its item (or the spot the item left), in screen space —
- *  re-run by layout() so bulbs follow pan, zoom, rotation and resizes. */
-/** Puts name bulb `b` over its item, by a translation: a pan frame that
- *  moves it lays nothing out (no layout, and so no hover hit test of the
- *  table under a resting mouse: on 1,000 cards that cost a frame, B4). */
+/** Puts name bulb `b` over its item, in screen space, by a translation —
+ *  re-run by layout(), so bulbs follow pan, zoom, rotation and resizes: a
+ *  pan frame that moves it lays nothing out (no layout, and so no hover hit
+ *  test of the table under a resting mouse: on 1,000 cards that cost a frame, B4). */
 function placeFx(b) {
   const it = b.f.id && view.items[b.f.id], { w, h } = it ? sizeOf(it, boxes) : { w: CARD_W, h: CARD_H }, at = lives.get(b.f.id) || fanPos.get(b.f.id) || it || b.f;
   const [sx, sy] = tableToScreen(at.x + w / 2, at.y + h / 2);
   b.el.style.translate = `${clamp(sx, 30, wrapW - 30)}px ${Math.max(20, sy - h * 0.55 * scale)}px`;
 }
+/** Shows action marker `f` ({p, id, …}): the name bulb of who did it over the item, for a moment. */
 function showFx(f) {
   // Script ops are credited "📜 Rules" in the log; a bulb per op would just
   // pile up (a single deal or judge does several).
@@ -3956,6 +4031,7 @@ function showFx(f) {
   }, 1500);
 }
 
+// --- the bar's commands ------------------------------------------------------------
 /** A spot next to an item for dealt cards (or pieces), jittered so repeated deals stay visible. */
 function dealSpot(it) {
   const j = () => Math.round(Math.random() * 24 - 12), { w } = sizeOf(it, boxes);
@@ -3965,11 +4041,18 @@ function dealSpot(it) {
 
 /** The bar's commands on the selected item `it` (the keys run them too: see keydown). */
 const CMDS = {
-  flip: (id) => act({ t: 'flip', id }),
+  flip: (id, it) => { // (Reveal on a cupped die lifts the cup: the veiled dice of its handful, as 🙈 Hide and 🎲 Roll take them)
+    const cup = isDie(it) && pieces.veiled(it) ? handful(id).filter((d) => pieces.veiled(view.items[d]) && mayMove(d)) : [];
+    act(cup.length > 1 ? { t: 'group', op: 'flip', ids: cup } : { t: 'flip', id });
+  },
   rl: (id, it) => act({ t: 'rot', id, rot: it.rot - rotStep(it) }),
   rr: (id, it) => act({ t: 'rot', id, rot: it.rot + rotStep(it) }),
   hand: (id) => act({ t: 'toHand', id }),
-  del: (id) => act({ t: 'del', id }),
+  del: (id, it, to, key) => { // (a supply, or a stack, pile or bag of more than GROUP_DEL_ASK, asks first from the bar, as a group does)
+    if (!key && !delAsk && delAsks(it)) return armDel();
+    delAsk = null;
+    act({ t: 'del', id });
+  },
   draw: (id) => act({ t: 'draw', id }),
   dealup: (id, it) => act({ t: 'deal', id, up: true, rot: uprightRot(), ...dealSpot(it) }),
   dealdn: (id, it) => act({ t: 'deal', id, up: false, rot: uprightRot(), ...dealSpot(it) }),
@@ -3994,7 +4077,7 @@ const CMDS = {
   release: (id) => act({ t: 'owner', id, to: null }),
   give: () => { giveOpen = !giveOpen; renderBar(); },
   giveTo: (id, it, to) => act({ t: 'owner', id, to }),
-  inspect: (id) => openInspector(inspectOf(id)),
+  inspect: (id) => { if (openInspector(inspectOf(id))) inspEl.querySelector('li, button:not(:disabled)')?.focus(); }, // (from the bar: the keys go on in the list)
   none: () => setMulti([]), // (the ✕ of a docked bar: one piece picked by Shift or ⬚)
 };
 /** The step ⟲ and ⟳ turn item `it` by: a card's 90°; a piece's rotStep (45 when it turns freely). */
@@ -4003,7 +4086,7 @@ const rotStep = (it) => (pieceLike(it) ? flagsOf(it, boxes).rotStep || 45 : 90);
 function runCmd(cmd, to, key = false) {
   const it = sel && view.items[sel];
   if (multi.size) GROUP_CMDS[cmd]?.([...multi], to, key);
-  else if (it) CMDS[cmd]?.(sel, it, to);
+  else if (it) CMDS[cmd]?.(sel, it, to, key);
 }
 barEl.addEventListener('mousedown', (e) => { if (e.shiftKey) e.preventDefault(); }); // (a Shift+click on a button, picking along, would select the page's text up to it)
 barEl.addEventListener('click', (e) => {
@@ -4093,7 +4176,7 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   // (a held key fires once: an auto-repeat would roll, flip or delete again and again, for everyone)
-  if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.target.closest?.('input, textarea, select, button')) return;
+  if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.target.closest?.('input, textarea, select, button, [role="button"]')) return;
   const k = e.key.toLowerCase(), cmd = k === 'r' ? (e.shiftKey ? 'rl' : 'rr') : { f: 'flip', h: 'hide', ' ': 'roll', delete: 'del', backspace: 'del' }[k];
   if (!cmd || barEl.classList.contains('hidden') || !barEl.querySelector(`[data-cmd="${cmd}"]`)) return;
   e.preventDefault();
@@ -4305,6 +4388,19 @@ function dropAction(d, it, tgtId, tgt, onHand) {
  *  or card pile top; a piece's face with an image, a text or a label; else null. */
 const pressFace = (it) => (it.k === 'c' ? it.up && it : it.k === 'p' && 'd' in (it.top || {}) ? it.top.up && it.top : pieces.zoomable(it, boxes));
 
+const toldOwners = new Set(); // the owners tellOwned has named
+/** A drag that starts on item `id`, which another player owns, pans the view
+ *  (D66): the first time for each owner, it says why the piece stayed — a
+ *  draughts man jumped, a checker hit, is taken off by its owner, and
+ *  nothing else told the capturing player so (D313). */
+function tellOwned(id) {
+  const it = id && view.items[id];
+  if (!it?.owner || mayTouch(it) || isBoard(it) || toldOwners.has(it.owner)) return;
+  toldOwners.add(it.owner);
+  const p = ownerOf(it), seat = it.owner.startsWith('seat:') && view.seats?.find((st) => `seat:${st.id}` === it.owner);
+  const who = p ? view.players[p]?.name || 'Its owner' : `${seat?.name || 'Its seat'}'s player`;
+  toast(`That piece is ${seat ? `${seat.name}'s` : `${who}'s`} — only ${who} moves or removes it`);
+}
 /** A felt drag ends (let go, or a pinch, a long press, a cancel): its band,
  *  if it drew one, goes (a band let go picks first: endBand), and a pan
  *  writes the sizes placeSeats held back while it moved. */
@@ -4314,6 +4410,7 @@ function dropFelt() {
   bandEl.classList.add('hidden');
   if (f?.moved && !f.band) placeSeats(); // (a pan's end: the sizes it held back)
 }
+/** Two fingers are down: a pinch starts (zoom, twist and pan in one), from the view as it is. */
 function startPinch() {
   cancelItemDrag();
   dropFelt();
@@ -4347,6 +4444,7 @@ function endPinch() {
   layout();
 }
 
+/** The fingers moved: the view follows them (the table point under them stays put). */
 function updatePinch() {
   const [p1, p2] = [...tPtrs.values()];
   const m = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
@@ -4384,7 +4482,7 @@ function nearTouch(p, e) {
 }
 
 tableEl.addEventListener('pointerdown', (e) => {
-  if (e.button !== 0 || e.target.closest('#action-bar')) return;
+  if (e.button !== 0) return;
   closeSeatMenu();
   // (the preventDefault below also keeps the focus where it was: let it go, as a
   // click elsewhere would, so the keys reach the table and not, say, 🧭)
@@ -4463,6 +4561,7 @@ window.addEventListener('pointermove', (e) => {
   if (handDrag) { moveGhost(e); return; }
   if (feltDrag) {
     if (!feltDrag.moved && Math.hypot(e.clientX - feltDrag.sx, e.clientY - feltDrag.sy) < 5) return;
+    if (!feltDrag.moved && !feltDrag.band) tellOwned(feltDrag.tap);
     feltDrag.moved = true;
     if (feltDrag.band) { drawBand(feltDrag, e); return; }
     panX = feltDrag.px + (e.clientX - feltDrag.sx);
@@ -4654,6 +4753,7 @@ handEl.addEventListener('wheel', (e) => {
   e.preventDefault();
 }, { passive: false });
 
+/** A hand card dragged out (pointer event e): once it moved far enough — upward, on touch — its ghost follows the pointer. */
 function moveGhost(e) {
   if (!handDrag.moved) {
     const dx = e.clientX - handDrag.sx, dy = e.clientY - handDrag.sy;
@@ -4668,6 +4768,7 @@ function moveGhost(e) {
   $('hand-bar').classList.toggle('droppable', !!e.target.closest?.('#hand-bar'));
 }
 
+/** The hand card's drag ends (pointer event e): onto a pile, onto the table (played, upright for this player), or back into the hand. */
 function dropGhost(e) {
   const { idx, card, moved } = handDrag;
   handDrag = null;
@@ -4786,15 +4887,21 @@ function renderGames() {
 /** Starts game `k` through the same setRules action as the 📜 dialog
  *  (whose act() re-renders, hiding the strip; 'custom' renders itself).
  *  Switching away from a running game asks first: its state would be lost.
- *  (The free table only disables the rules: re-enabling keeps the state.) */
+ *  (The free table only disables the rules: re-enabling keeps the state.)
+ *  A card game (`cards`) over a board game — a box set up, or named seats —
+ *  takes the table, as a box game does: the board, its pieces and the named
+ *  seats go (`clear`, `endSeats`), so every player is seated and dealt in;
+ *  kept, the seats left the third player watching, dealt nothing (D311). */
 function pickGame(k) {
   const game = GAMES.find((g) => g.k === k);
   if (game?.box || game?.clear) { pickCleared(game); return; }
   // Another game's state (chips, scores, a hand) is discarded by setRules —
   // even while the rules are off ("Free table" keeps it for re-enabling).
   // setRules keeps the state of a script with the same name: compare names too.
-  const tplName = scriptName(RULES_TEMPLATES[k]), rules = T?.state.rules;
-  if (RULES_TEMPLATES[k] && rules && rules.name !== tplName && !confirm(rules.enabled
+  const tplName = scriptName(RULES_TEMPLATES[k]), rules = T?.state.rules, seats = T?.state.seats;
+  const lost = rules && rules.name !== tplName ? rules.name : '', board = game?.cards && (T?.state.lastSetup || seats);
+  if (board && !confirm(`Clear the table and start ${game.title}? The board, its pieces${seats ? ` and the named seats (${seats.map((s) => s.name).join(', ')})` : ''} go${lost ? `, with ${lost}'s game state` : ''}.`)) return;
+  if (!board && RULES_TEMPLATES[k] && lost && !confirm(rules.enabled
     ? `Stop ${rules.name}? Its game state (chips, scores, the hand in progress) will be lost.`
     : `Discard the kept ${rules.name} game state (chips, scores)?`)) return;
   askGame = false;
@@ -4802,6 +4909,8 @@ function pickGame(k) {
   if (k === 'custom') { renderAll(); $('rules-btn').click(); }
   else if (k === 'free') act({ t: 'setRules', enabled: false });
   else {
+    if (board) act({ t: 'clear' });
+    if (board && seats) act({ t: 'endSeats' });
     $('rules-code').value = RULES_TEMPLATES[k]; // the 📜 dialog shows what runs
     act({ t: 'setRules', code: RULES_TEMPLATES[k], enabled: true });
   }
@@ -4849,6 +4958,10 @@ for (const el of [$('games-list'), $('game-strip')]) {
 $('game-strip-x').addEventListener('click', () => { askGame = false; renderAll(); });
 $('game-strip-ask').addEventListener('click', () => $('games-btn').click());
 
+/** What a guest's 📜 dialog shows before the host has a script. */
+const NO_SCRIPT = '// The host has not written a rules script yet.';
+/** The 📜 dialog's status, buttons and error, as the rules are now (on
+ *  opening, and while it is open whenever they change: renderRulesBtns). */
 function updateRulesDialog() {
   const isHost = role === 'host';
   const meta = isHost ? T?.state.rules : view.rules;
@@ -4867,7 +4980,7 @@ $('rules-btn').addEventListener('click', () => {
     if (!ta.value.trim()) ta.value = T?.state.rules?.code || RULES_TEMPLATES.blank;
     $('rules-reset').checked = false;
   } else {
-    ta.value = guestRules.code || '// The host has not written a rules script yet.';
+    ta.value = guestRules.code || NO_SCRIPT;
   }
   updateRulesDialog();
   $('rules-dialog').showModal();
@@ -4967,14 +5080,21 @@ const boxSize = (e) => [e.types && plural(e.types, 'piece type'), e.decks && plu
 /** Who a box comes from, as the dialog says it. */
 const boxBy = (e) => (e.builtin ? 'built in' : e.src === 'script' ? 'made by 📜 Rules' : `by ${e.by ? actorInfo(e.by).name : 'the host'}`);
 
-/** Redraws the 📦 dialog's lists while it is open (renderAll, takeBoxes): a guest's is read-only. */
-function renderBoxes() {
-  if (!$('box-dialog').open) return;
+let boxListHTML = ''; // what renderBoxes last wrote in #box-list
+/** Redraws the 📦 dialog's lists while it is open (renderAll, takeBoxes; or
+ *  `opening` it): a guest's is read-only. */
+function renderBoxes(opening = false) {
+  if (!opening && !$('box-dialog').open) return;
   const host = role === 'host', last = host && T.state.lastSetup, again = host && !noReset();
   const row = (e) => `<div class="box-row" data-box="${esc(e.id)}"><div class="box-info"><b>${esc(e.name)}</b>${e.rules ? ' <span title="comes with rules">📜</span>' : ''}${e.id === last ? ' <i>set up</i>' : ''}
     <small>${esc(boxSize(e))} · ${esc(boxBy(e))}</small></div>${host ? `<span class="box-btns">${e.id === last && again ? '<button data-act="reset">↺ Reset</button>' : ''}${e.setup ? '<button data-act="setup">Set up</button>' : ''}</span>` : ''}</div>`;
   const html = boxEntries().map(row).join('') || '<p class="box-note">No game box on this table yet.</p>';
-  if ($('box-list').innerHTML !== html) $('box-list').innerHTML = html; // (unchanged: the focus stays)
+  // Unchanged, the list stays — and the focus on its button, and a click
+  // under way on it. (The markup written, not innerHTML, which the browser
+  // writes back its own way — ' for &#39; — so a box named "Bob's Game"
+  // was redrawn by every patch, a Set up click lost to the patch between
+  // its press and its release.)
+  if (html !== boxListHTML) $('box-list').innerHTML = boxListHTML = html;
   for (const id of ['box-builtin', 'box-export', 'box-now-lbl']) $(id).classList.toggle('hidden', !host);
   if (!host) return;
   if (!$('box-builtins').children.length) {
@@ -4985,10 +5105,12 @@ function renderBoxes() {
   $('box-x-rules').disabled = $('box-x-state').disabled = !code;
 }
 $('box-btn').addEventListener('click', () => {
+  $('box-btn').classList.remove('new');
   for (const id of ['box-progress', 'box-err', 'box-msg', 'box-x-msg']) $(id).textContent = '';
   if (role === 'host') $('box-x-rules').checked = $('box-x-state').checked = !!T.state.rules?.enabled; // (rules the table runs go with it, by default)
+  boxListHTML = '';
+  renderBoxes(true); // (before it shows: its rows are in the focus order from the start)
   $('box-dialog').showModal();
-  renderBoxes();
 });
 $('deck-to-box').addEventListener('click', () => { $('deck-dialog').close(); $('box-btn').click(); });
 let setupUnderWay = false; // a Set up or Reset is under way (asking, or sent): a press meanwhile — a double click's second — starts nothing
@@ -5065,6 +5187,8 @@ async function setUpBox(id, o) {
   const box = T.state.boxes[id], src = T.state.boxSrc[id] || { src: 'host' }, layout = !!box.setup?.length;
   const by = src.src === 'upload' ? T.state.players[src.by]?.name || 'A guest' : '';
   let { clear = true, rules = !!box.rules, shuffle } = o || {};
+  const refused = setupRefusal({ t: 'setup', box: id, clear, rules });
+  if (refused) return { ok: false, error: refused };
   const stops = clear && T.state.rules?.enabled ? T.state.rules.name : '';
   if (!o && (tableBusy() || (box.rules && layout) || by || stops)) {
     const r = await boxAsk('setup', `Set up «${box.name}»?`, [
@@ -5088,6 +5212,14 @@ async function setUpBox(id, o) {
   }
   if (stops) act({ t: 'setRules', enabled: false });
   return act({ t: 'setup', box: id, clear, rules, ...(shuffle !== undefined && { shuffle }) });
+}
+/** Host: the notice core would refuse setup action `a` with — its own
+ *  checks (the seats the layout needs, its decks, the room) run first on a
+ *  copy of the table, without its rules — or ''. So nothing is asked (Set
+ *  up? Trust its rules?) of a setup that would then be refused (D313). */
+function setupRefusal(a) {
+  const { keys, rules, ...state } = T.state, copy = createTable(structuredClone(state), { pid, hooks: pageHooks });
+  return copy.apply(pid, a) ? '' : copy.drain().find((e) => e.t === 'note' && e.p === pid)?.msg || '';
 }
 /** Why the box last set up can't be reset now, or '': without a layout it is
  *  laid out by its own rules alone, and they aren't running — a Reset would
@@ -5348,24 +5480,13 @@ function becomeHost(saved, unsaved) {
 // the server side. The token (minted by the CLI) keeps random websites the
 // user visits from driving the table through the same local port.
 const cliMsgs = []; // bridge-only feedback: command errors, peek results, notices
+const CLI_MSGS_MAX = 200; // the most cliMsgs kept undelivered (cliConnect's push)
 
-/** A private notice for this player (a veto, t.tell, a failed send): a toast,
- *  and on a bridged tab the terminal/bot gets it too — nobody may be
- *  watching that browser. `ruled`: the rules refused this player's action
- *  (the host says so: the note's `ruled`). */
-function note(msg, ruled = false) {
-  toast(msg);
-  if (CLI) cliMsgs.push(`note: ${msg}`);
-  // (the guest waits on the box it sent — the dialog is modal: a refusal now is its answer, whatever refused it)
-  if (boxWait && /^(🚫|That box is already)/u.test(msg)) boxAnswer(ruled ? ruledOut(msg, view.rules) : msg, msg.startsWith('That'));
-}
 
 function cliCardInfo(d, i) {
   const c = decks[d]?.cards[i];
   return { name: cardName(decks, d, i), ...(c?.txt ? { text: c.txt } : {}), ...(c?.meta !== undefined ? { meta: c.meta } : {}) };
 }
-/** Who sits in named seat `id` (from the public view), or null. */
-const seatHolder = (id) => Object.keys(view.players).find((p) => view.players[p].seatId === id) || null;
 /** How the terminal names owner `o`: a seat's name ("White"), else the player's. */
 const cliOwner = (o) => (o.startsWith('seat:') ? view.seats?.find((s) => s.id === o.slice(5))?.name || o.slice(5) : view.players[o]?.name || 'a player');
 /** What the terminal says of a shown piece face {t, f}: its type's name and
@@ -5395,6 +5516,9 @@ function cliItemInfo(id, it) {
   return face.kind ? { id, ...face, ...(it.n > 1 && { n: it.n }), ...at, ...mine, ...veiled } : { id, kind: 'unknown', typeRef: it.t, ...at, ...mine, ...veiled };
 }
 
+/** What the terminal bridge sees of the table now (cli.js / cli.py read it):
+ *  this player's view in words — items, hand, players, seats, rules, asks,
+ *  boxes — and the messages not delivered yet (cliMsgs). */
 function cliSnapshot() {
   const rules = role === 'host' ? T?.state.rules : view.rules;
   const pub = (rules?.enabled && rules.public) || {};
@@ -5499,6 +5623,9 @@ function cliParts() {
   cliSeen = { asks, hint, sec };
 }
 
+/** Runs one command `c` from the terminal bridge ({t, …}: chat, play, move,
+ *  draw, place, answer, setup, …) as this tab's own actions; a bad one is
+ *  said back to the terminal (cliMsgs), never thrown. */
 function cliExec(c) {
   try {
     switch (c.t) {
@@ -5623,11 +5750,17 @@ function cliExec(c) {
   }
 }
 
+/** A tab opened with ~cli~PORT-TOKEN: pushes its snapshot to the local
+ *  bridge and runs the commands it polls for, saying each change of the
+ *  bridge's state once (connected, lost, not reachable, a bad token). */
 function cliConnect() {
   if (!CLI) return;
   const base = `http://127.0.0.1:${CLI.port}`;
   const q = `?token=${encodeURIComponent(CLI.token)}`;
   let last = '', inflight = false;
+  // '' until the loop's first outcome, then 'ok' or the failure last shown —
+  // each change is toasted once, so a bridge that never answers is visible too.
+  let status = '';
   /** fetch() to the bridge. Only fetch itself failing means nobody answered
    *  (it rejects with a TypeError); such errors are tagged `unreachable`. */
   const call = (path, init) => fetch(`${base}${path}${q}`, init)
@@ -5636,6 +5769,11 @@ function cliConnect() {
     if (inflight) return;
     inflight = true;
     try {
+      if (cliMsgs.length > CLI_MSGS_MAX) { // (a bridge away: the oldest undelivered go, said)
+        const n = cliMsgs.length - CLI_MSGS_MAX + 1;
+        console.warn(`terminal bridge: ${n} undelivered messages dropped`);
+        cliMsgs.splice(0, n, `(${n} older messages dropped while the bridge was away)`);
+      }
       const snap = cliSnapshot();
       const s = JSON.stringify(snap);
       if (s === last && !snap.msgs.length) return; // (a message again in the same words is news all the same)
@@ -5646,9 +5784,6 @@ function cliConnect() {
     } finally { inflight = false; }
   };
   (async () => {
-    // status: '' until the first outcome, then 'ok' or the failure last shown —
-    // each change is toasted once, so a bridge that never answers is visible too.
-    let status = '';
     for (;;) {
       try {
         await push();
@@ -5671,7 +5806,8 @@ function cliConnect() {
       }
     }
   })();
-  setInterval(() => push().catch((err) => console.error('bridge push failed', err)), 500);
+  // (between polls, pushes keep the bridge's snapshot fresh — while it answers: the loop tries, and says, the rest)
+  setInterval(() => { if (status === 'ok') push().catch((err) => console.error('bridge push failed', err)); }, 500);
 }
 
 /** First-visit nickname prompt; resolves once the player picked a name. */
@@ -5687,9 +5823,13 @@ function askName() {
       resolve();
     }, { once: true });
     dlg.showModal();
+    $('name-first').select(); // (the name offered is replaced by typing, not added to)
   });
 }
 
+/** Starts the page: the modules' versions checked, storage opened and this
+ *  room's save read, the role decided (host or guest), the name asked, then
+ *  the table drawn and the room joined. */
 async function boot() {
   // Module skew: a page cached across a deploy could pair this app.js with
   // other versions of its modules. Stop here, plainly, not with odd errors later.
@@ -5714,13 +5854,13 @@ async function boot() {
       savedCatalog.clear();
       persist();
     },
-  }).catch((err) => { idbFailed = `IndexedDB: ${err.message}`; });
+  }).catch((err) => { console.error('opening IndexedDB failed', err); idbFailed = `IndexedDB: ${err.message}`; });
   const m = location.hash.match(/^#room~([0-9a-f]+)~([0-9a-f]+)(?:~|$)/);
   let saved = null;
   if (m) {
     [, roomId, password] = m;
     // (a bot tab never hosts, so it never reads, or migrates, the host's save)
-    if (!AS && !idbFailed) saved = await store.loadSave(roomId).catch((err) => { readFailed = err.message; return null; });
+    if (!AS && !idbFailed) saved = await store.loadSave(roomId).catch((err) => { console.error("reading this room's save failed", err); readFailed = err.message; return null; });
   } else {
     roomId = await newHostKey(); // the room id IS the host key's fingerprint
     password = rand(8);

@@ -44,7 +44,8 @@ node t-smoke.js         # one suite, output on the terminal
   at a time after the parallel batch, under the same lock: `SERIAL`, a
   comma-separated list of suite names, default
   `t-p1-bench,core-p1-bench,core-p2-bench,core-p4-bench,t-p1-flood,t-p1-assets,t-p3-go,t-p4-bench,t-p4-box-bench,t-p4-resume-bench,t-p4-hexfront,t-p4-hex-bench,t-p4-select,t-p4-gflood,core-p5.test`.
-  A listed suite that doesn't exist fails the run.
+  A listed suite that doesn't exist fails the run; a Node-only
+  `*.test.mjs` suite may be listed too (by its name without `.mjs`).
 - Runs take a machine-wide lock (`CARDTABLE_TEST_LOCK`, default
   `/tmp/cardtable-tests.lock`): concurrent runs on a small machine starve each
   other into flaky timeouts, so a second run waits for the first.
@@ -266,7 +267,7 @@ top of `core.js` and README "How it works".
 - **The core suites.** `core-p2.test.mjs` (Node, spec §2l 1–7): grid.js's
   formulas and address round trips; cleanBox (defaults, shorthand, every
   cap at n and n + 1, backs, addresses, a 2,000-mutation fuzz checked by
-  its own field-by-field oracle `boxProblems`), canon, boxKey, isBuiltin;
+  its own field-by-field oracle `boxProblems`), canon, isBuiltin;
   every action of §2c with the mayHandle / notLocked table row by row,
   cap(), the hidden-item rule, the bag flag; setup order (Spearman over 20
   seeds); the public reduction against §2d's table (`specPub`, `specHandy`)
@@ -802,8 +803,7 @@ raw peers import `PROTO` from `core.js` (`h.PROTO`), saves use `STATE_V`.
   d)` (a tick's fx less the live drags its commit overtook), `gateTimers`,
   `MAX_TIMERS`, `TIMER_TAG_MAX`, `AGG_MIN` (4), `AGG_NAMES` (8),
   `MAX_GROUP` (200). On a table: `T.byAt` and `T.byZone` (getters that
-  bring them up to date), `T.boards` (its `tableBoards`), `T.snapPiece(it,
-  x, y, o)` → `{x, y, at}`, `T.display(q)`, `T.drag(p, a)` → whether an fx
+  bring them up to date), `T.drag(p, a)` → whether an fx
   `{p, id, x, y, live: 1}` (or `{p, ids, dx, dy, live: 1}`) was queued.
   Host items keep `at` QUALIFIED (`'<board id>:<local>'`); the public
   piece, the log and every script-facing value show the display form.
@@ -909,8 +909,7 @@ onward). On a page, rules run in the rules Worker (`../rules-worker.js`,
 next section); core is the same there, in the page and in Node.
 
 - **The journal** (on a table): `T.begin()`, `T.savepoint()` → a token,
-  `T.rollbackTo(token)`, `T.rollback()` (to the begin), `T.checkpoint()`
-  (a savepoint), `T.commit()` → the StatePatch of §3f.2 (`items` — whole,
+  `T.rollbackTo(token)`, `T.rollback()` (to the begin), `T.commit()` → the StatePatch of §3f.2 (`items` — whole,
   null when removed, sorted ids — `players`, `decks`, `boxes` (`{box, src,
   by?}`), `rules` (the fields that changed), `table`, `seats`, `log` (the
   lines appended), `zMax`, `boardSeq`, `guestDeckChars`, `lastSetup`,
@@ -3312,6 +3311,70 @@ alpha 254 in a downscaled photo) is checked by making Chromium do the same.
 - **`parse.js`** also fails a local import, or `index.html`'s `app.js` or
   `style.css`, without `?v=MODULE_V` (D306: a version left behind on one
   file pairs a cached copy of the previous Card Table with this one).
+
+## The final review's second fix-up (D311–D316)
+
+SPEC §9 D311–D316: play on phones and desktops, the docs, the code.
+
+- **`final.test.mjs`** (new, Node, in node-lib's runner): (1) `endSeats`
+  (D311) — Draughts set up for three, one watching; Bo's is refused ("🚫
+  Only the host can do that"), the host's leaves no named seats and every
+  player seated, logs "removed the named seats: everyone sits where they
+  like" and the release of Light's men, which belong to nobody after; a
+  second one changes nothing. (2) Dominoes with its rules on (D312): the
+  host's and a seated guest's `del` of the boneyard are refused ("🚫 The
+  tiles and the boneyard stay on the table"), all 28 kept, and a tile's
+  too. (3) The facade (D315): `t.newDeck()`, an empty deck and
+  `t.schedule('soon')` throw TypeErrors naming the call, and the failed
+  calls mint no deck.
+- **`t-final-play.js`** (new, E2E, ~70 s; Ann hosts on a desktop, Bo and Cy
+  on Galaxy S5s, 360 × 640): (1) Chess for three then Draughts: Cy watches,
+  and the watchers' box covers no seat label (before: "⏳ White — Ann"
+  under it); the host's seat menu offers "End the named seats" and it
+  works (Cy sits), the guest's menu does not; Draughts with a pan, then
+  Backgammon: the view starts at zoom 1 with no pan; the log follows its
+  newest line after the hand bar comes back. Hold'em picked over Chess's
+  board: the confirm reads "Clear the table and start Texas Hold'em? The
+  board, its pieces and the named seats (Light, Dark) go, with Chess's game
+  state.", then all three are seated and dealt two. (3) Bo's 📜 dialog,
+  open, follows the rules to Turn order. (2) Dominoes: 🗑 of the boneyard
+  reads "🗑 Remove all 28?" and the second press is refused by the rules,
+  28 kept; a cupped die's Reveal lifts the cup. (3) Bo's box: a toast on
+  Ann's screen, 📦 marked until opened, the dialog focused at its heading;
+  "Bob's Game"'s Set up button is the same element through 5 patches;
+  Four Corners for three says "needs 4 seated players (3 are seated)" with
+  no confirm and no trust dialog. (4) Help opens at its top, its Close on
+  screen on the phone; Enter on a seat label opens its menu; icon buttons
+  have names; the name dialog's name is selected; a `?cli=` tab with no
+  bridge logs at most 6 errors in 8 s (it logged 20).
+- **Changed by behaviour:** the pans on another player's piece in
+  `t-p2-demos.js` (draughts), `t-p2-pieces.js` (section 11 and the end
+  state's notices) and `t-p2-tables.js` (the seat-bound pawn) expect the
+  one notice D313 adds, its exact text ("That piece is Black's — only Bob
+  moves or removes it"), where they asserted none; `t-p2-tables.js`
+  answers 🗑's ask before a deck goes (D312) and reads "Move to
+  watchers | End the named seats" in the host's menu, as `t-p2-review.js`
+  reads "Stand up (watch) | End the named seats" on the host's own label
+  (D311); in `t-p5-private.js` (1‴) and `t-p5-veil.js` (3) a Reveal lifts
+  the whole cup (D313: a new check that the neighbours show too), and the
+  dice are cupped again for the steps after; `t-p2-demos.js`,
+  `t-p2-review.js`, `t-p3-space.js` and `core-p2.test.mjs` read D314's
+  table sizes (Draughts 1000 × 1360, Backgammon 1480 × 1520; t-p3-space's
+  bare-felt drop is above the board now, whose sides are 80 units).
+- **Mechanism changes:** `core-p2.test.mjs`'s boxKey checks went with the
+  dead export (canon's equality, which the catalog key is, is still
+  checked; core-p3 and core-p4 name the catalog key); `core-p3.test.mjs`
+  takes its third savepoint with `T.savepoint()` (`T.checkpoint()`, the
+  same call, is gone); `t-final-layout.js` and `t-p3-space.js` import
+  final-lib's `overlapPast1px`; assets-lib and p4-lib take `sha256`,
+  `dataURL` and `prng` from img-lib and p1-lib; assets-lib's `needLog`
+  logs anything but the SyntaxError of a partial chunk.
+- **One check narrowed** (D314's cost): `t-p2-review.js`'s landscape
+  watcher with the log open — no margin beside the felt — allows the
+  opened watchers' box over the two men of the board's edge row in its
+  corner, where it allowed none: seen from a side seat, Draughts' taller
+  table leaves 28 px of felt above the board, as Chess's has since D162.
+  With the log closed (the margins) it still allows none.
 
 ## Storage and images (Phase 1B)
 

@@ -16,11 +16,13 @@
 //    (Date.now), randInt(n) (a uniform integer in [0, n), crypto: every
 //    shuffle, roll and pull), random() (a float in [0, 1)), uid() (8 hex
 //    digits, crypto: the ids of new items, decks and boxes), hooks (the rules
-//    runner, see scriptHooks)}. Seed now, random (or randInt) and uid, and
-//    two tables replay alike.
+//    runner, see scriptHooks), mirror (true in a rules Worker: its table is a
+//    copy of the host's, hints and all, gateRules)}. Seed now, random (or
+//    randInt) and uid, and two tables replay alike.
 //  • Side effects become data: every call queues effects, in order, and the
 //    app takes them with T.drain() after each call:
-//      {t:'fx', f}         an action marker {p, id, x, y, roll?: [die ids]} (the name bulbs, the dice tumble)
+//      {t:'fx', f}         an action marker {p, id, x, y, roll?: [die ids]} (the name bulbs, the dice tumble),
+//                          or a live drag's place, never saved: {p, id, x, y, live: 1} or a group's {p, ids, dx, dy, live: 1} (T.drag)
 //      {t:'ann', msg}      a banner for every screen (t.announce)
 //      {t:'note', p, msg, ruled?}  a private notice for player p (ruled: the rules refused p's action)
 //      {t:'peek', p, c}    a peeked card {d, i} or piece {t, f}, for player p's eyes only
@@ -29,6 +31,9 @@
 //      {t:'deck', id}      a new deck, to send to everyone
 //      {t:'box', id}       a new game box, to send to everyone (and to save)
 //      {t:'rules'}         the script or its on/off state changed: resend the code
+//      {t:'added', id}     the box an addBox registered, or found already there (act()'s outcome names it)
+//      {t:'enable', box, remap}  a setup or a loadBox laid box `box` out with its rules: start them right after
+//                          this job, on its exported state with the ids that had to change (remap)
 //  • apply() runs one job — an action, or one of the host's internal jobs
 //    (_join, _leave, _tick, _rulesOff, _name) — through the ruled-action
 //    pipeline (spec §3f.4: handle, strict, validate, the default effect, the
@@ -45,7 +50,8 @@
 //    changed in the dirty sets, and the app's broadcast tick takes them once
 //    (T.takeDirty()) to build one patch for everyone (T.patchContent()) or a
 //    full snapshot for a newcomer (T.snapContent()), plus each recipient's
-//    own part (T.mine(): their hand, asks, hint and t.secret entry). T.pub
+//    own part (T.mine(): their hand, asks, hint and t.secret entry, and in
+//    `vis` the pieces hidden from the others that they see, in full). T.pub
 //    caches each item's public view, so neither rebuilds the whole table.
 //    Guests fold the bodies into their view with viewFromSnap() and applyViewPatch().
 import {
@@ -103,7 +109,7 @@ const angleOf = (dx, dy) => (((Math.atan2(dy, dx) / RAD) % 360) + 360) % 360;
  *  centre; on a rectangle where the ray from the centre meets the table
  *  inset by 50. Also {ux, uy}: the unit vector from the seat toward the table
  *  (radial on a round table, the inward normal of the edge on a rectangle). */
-export function seatPoint(tb, a) {
+function seatPoint(tb, a) {
   const c = Math.cos(a * RAD), s = Math.sin(a * RAD), cx = tb.w / 2, cy = tb.h / 2;
   if (tb.shape !== 'rect') return { x: cx + seatR(tb.w) * c, y: cy + seatR(tb.w) * s, ux: -c, uy: -s };
   const tx = Math.abs(c) > 1e-12 ? (cx - 50) / Math.abs(c) : Infinity, ty = Math.abs(s) > 1e-12 ? (cy - 50) / Math.abs(s) : Infinity;
@@ -179,7 +185,7 @@ export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 export const own = (obj, key) => ((typeof key === 'string' || typeof key === 'number') && obj && Object.hasOwn(obj, key) ? obj[key] : null);
 /** A finite number from untrusted input, else the fallback. */
 export const num = (v, fallback = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
-export const normRot = (v) => ((num(v) % 360) + 360) % 360;
+const normRot = (v) => ((num(v) % 360) + 360) % 360;
 /** Player ids: 16 hex digits (app.js mints them; the host refuses others). */
 export const PID_RE = /^[0-9a-f]{16}$/;
 /** The crypto RNG, from a refilled pool of 32-bit words: one getRandomValues
@@ -238,6 +244,7 @@ export const boxOverBudget = (used, cost) => (used + cost > GUEST_DECK_CHARS
 // a peer's ESC sequences could clear or spoof a bridge user's terminal.
 // CTRL_NL spares the newline, for multi-line card texts.
 export const CTRL = /[\u0000-\u001f\u007f-\u009f]/g, CTRL_NL = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g;
+/** Text `v` (non-empty), its control characters (`strip`) taken out, cut to `n` characters; else undefined. */
 export const str = (v, n, strip = CTRL) => (typeof v === 'string' && v ? v.replace(strip, '').slice(0, n) : undefined);
 /** A chat message `msg` (a peer's) as its log line reads ('' for none). */
 const chatLine = (msg) => peerText(msg).replace(CTRL, ' ').trim().slice(0, 300);
@@ -316,6 +323,8 @@ export const cleanName = (s) => peerText(s).replace(CTRL, '').replace(/^[\s📜]
  *  Worker's _join to: one expression, so the two can't drift apart (D152). */
 const joinName = (s) => (s ? cleanName(s) : '');
 
+/** The standard 52-card deck (♠ ♥ ♦ ♣, A to K), with `jokers` two jokers
+ *  more, as a cleaned deck: image-less cards with a suit and a rank. */
 export function standardDeck(jokers) {
   const cards = [];
   for (const [s, c] of [['♠', 'b'], ['♥', 'r'], ['♦', 'r'], ['♣', 'b']]) {
@@ -360,7 +369,7 @@ export const typeAt = (boxes, ref) => { const s = split(boxes, ref); return s &&
 /** The back a "<boxId>/<backId>" ref names, or null. */
 export const backAt = (boxes, ref) => { const s = split(boxes, ref); return s && own(s[0].backs, s[1]); };
 /** The ref of type ref's back ("<boxId>/<backId>"), or null: no such type, or no back. */
-export function backRef(boxes, ref) {
+function backRef(boxes, ref) {
   const ty = typeAt(boxes, ref);
   return ty?.back ? `${ref.slice(0, ref.indexOf('/'))}/${ty.back}` : null;
 }
@@ -636,6 +645,8 @@ function addr(g, s, R, k) {
   if (!c) R.fail(k, `has ${JSON.stringify(String(s).slice(0, 20))}, which is no address of this grid`);
   return formatAddr(g, c.c, c.r);
 }
+/** A board's grid (`at`: where it is, for errors): square or hex, its
+ *  cells, origin, snap, labels and drawing, checked and filled in. */
 function cleanGrid(g, at) {
   const R = reader(g, at), o = { type: R.one('type', ['square', 'hex']) };
   const square = o.type === 'square';
@@ -664,8 +675,8 @@ function cleanGrid(g, at) {
   if (R.has('marks')) o.marks = R.list('marks', MAX_MARKS).map((s) => addr(o, s, R, 'marks'));
   return o;
 }
-/** A board's structure: the grid, spaces, zones and links (drawn from Phase
- *  2; their meaning comes in Phase 3). */
+/** A board's structure: the grid, spaces, zones and links (drawn on the
+ *  board; snapping, addresses and private zones read them). */
 function cleanBoard(s, at) {
   const R = reader(s, at), o = {};
   if (R.has('primary')) { if (R.get('primary') !== true) R.fail('primary', 'must be true'); o.primary = true; }
@@ -731,7 +742,7 @@ export function cleanTable(t, at = 'table') {
   return { shape, w, h, ...(R.has('felt') && { felt: R.color('felt') }) };
 }
 /** Named seats (SeatDef[]): ≤ 12, unique ids, each with at most one placement (default edge 'bottom'). */
-export function cleanSeats(list, at = 'seats') {
+function cleanSeats(list, at = 'seats') {
   const ids = new Set();
   return reader({ seats: list }, '').list('seats', MAX_SEATS).map((s, k) => {
     const R = reader(s, `${at}[${k}]`), id = R.get('id');
@@ -849,6 +860,10 @@ function cleanSetup(list, types, seats, deckNames = []) {
       if (k >= 0) throw new Error(`${path}: ${['rot', 'lock', 'n', 'owner', 'being a die'][k]} differs from ${path0}, which shares its back — the shuffle would show which is which`);
     }
   }
+  /** One setup entry `e` (`at`: its path, for errors; `inSeat`: inside a
+   *  forEachSeat, where "seat" and "#k" may be said), cleaned by its kind —
+   *  piece, supply, deck, pile, bag, hands, group, forEachSeat — with its
+   *  count, spread, rotation, lock, owner and viewers; throws on anything else. */
   function entry(e, at, inSeat) {
     if (++entries > MAX_SETUP_ENTRIES) throw new Error(`setup has too many entries (max ${MAX_SETUP_ENTRIES})`);
     const R = reader(e, at), kinds = SETUP_KINDS.filter((k) => R.has(k));
@@ -960,8 +975,8 @@ const setupIds = (list) => list.flatMap((e) => (e.group ? setupIds(e.group) : e.
 export const countSetup = (list, perSeat) => list.reduce((n, e) => n + (e.forEachSeat ? perSeat * countSetup(e.forEachSeat, perSeat)
   : e.group ? countSetup(e.group, perSeat) : e.hands ? 0 : e.count ?? 1), 0);
 
-/** The gate every game box passes (built in, saved, from the wire, and in
- *  later phases from scripts and uploads): the Box of spec §2a, cleaned —
+/** The gate every game box passes (built in, saved, from the wire, from
+ *  scripts and from uploads): the Box of spec §2a, cleaned —
  *  every field whitelisted and checked, the defaults and the faces
  *  shorthand filled in, each back given its users' flags (every type that
  *  names a back must match its w, h, shape, rotStep, hand and stack). Throws
@@ -1008,7 +1023,7 @@ export function cleanBox(b) {
     o.players = p;
   }
   if (R.has('lockable')) o.lockable = R.one('lockable', ['anyone']);
-  if (R.has('decks')) { // its decks, registered as ordinary decks (t.newBox; uploads in Phase 4): name → deck id
+  if (R.has('decks')) { // its decks, registered as ordinary decks (t.newBox, uploads): name → deck id
     const d = R.get('decks');
     if (!isObj(d) || Object.keys(d).length > MAX_BOX_DECKS) R.fail('decks', `must map at most ${MAX_BOX_DECKS} deck names to deck ids`);
     o.decks = {};
@@ -1056,10 +1071,6 @@ function cyrb53(s) {
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
   return 4294967296 * (2097151 & h2) + (h1 >>> 0);
 }
-/** A cleaned box's catalog key: cyrb53 of canon(box). Equal content, equal
- *  key; two keys that match are confirmed by comparing canon strings (a
- *  collision never merges two different boxes). */
-export const boxKey = (box) => cyrb53(canon(box));
 let builtins = null; // canon strings of the cleaned BOXES, and their names (made on first use)
 const builtinOf = new WeakMap(); // box object → isBuiltin(box): a stored box is never changed, and canon() of a big one costs
 /** Whether box `b` is one of the built-in BOXES, by content alone (never a
@@ -1394,7 +1405,7 @@ export const groupIds = (a) => (Array.isArray(a?.ids) ? [...new Set(a.ids.slice(
  *  single ones does — anything else 1 (a group drag too, whatever its size). */
 export const floodCost = (a) => (a?.t === 'group' ? 1 + Math.floor(groupIds(a).length / 20) : 1);
 /** Actions only the host may take: a guest's is refused with "🚫 Only the host can do that". */
-export const HOST_ACTIONS = Object.freeze(['size', 'setRules', 'table', 'loadBox', 'clear', 'setup', 'reset']);
+export const HOST_ACTIONS = Object.freeze(['size', 'setRules', 'table', 'loadBox', 'clear', 'setup', 'reset', 'endSeats']);
 /** Actions that take from or give to the actor's hand: a refusal re-sends it. */
 const HAND_ACTIONS = new Set(['play', 'handPile', 'toHand', 'draw']);
 /** How many of an action's `ids` a refusal re-sends. A small cap keeps a
@@ -1583,6 +1594,19 @@ function asksProblem(asks) {
   try { cleanAsks(asks); } catch (err) { return err.message; }
   return '';
 }
+/** Player list `list`'s asks as the engine's gate keeps them: each through
+ *  cleanAsk, at most ASK_MAX, one id once — a bad one goes to `drop(err)`. */
+function keptAsks(list, drop) {
+  const kept = [];
+  for (const x of list) {
+    try {
+      const a = cleanAsk(x);
+      if (kept.length >= ASK_MAX || kept.some((y) => y.id === a.id)) throw new TypeError(kept.length >= ASK_MAX ? `more than ${ASK_MAX} asks` : `id ${a.id} twice`);
+      kept.push(a);
+    } catch (err) { drop(err); }
+  }
+  return kept;
+}
 /** An object with no prototype holding o's own entries: t.secret is one, so
  *  `t.secret['__proto__'] = …` makes a key the gate refuses instead of
  *  quietly changing what the object inherits. */
@@ -1608,14 +1632,7 @@ export function gateRules(r, live = false) {
   const asks = {};
   for (const [p, list] of Object.entries(isObj(r.asks) ? r.asks : {})) {
     if (!PID_RE.test(p) || !Array.isArray(list)) { console.error(`saved rules: the asks of ${JSON.stringify(p.slice(0, 30))} are not a player's list — dropped`); continue; }
-    const kept = [];
-    for (const x of list) {
-      try {
-        const a = cleanAsk(x);
-        if (kept.length >= ASK_MAX || kept.some((y) => y.id === a.id)) throw new TypeError(kept.length >= ASK_MAX ? `more than ${ASK_MAX} asks` : `id ${a.id} twice`);
-        kept.push(a);
-      } catch (err) { console.error(`saved rules: an ask for ${p} dropped`, err); }
-    }
+    const kept = keptAsks(list, (err) => console.error(`saved rules: an ask for ${p} dropped`, err));
     if (kept.length) asks[p] = kept;
   }
   r.asks = asks;
@@ -2226,6 +2243,10 @@ export function createTable(host, env = {}) {
    *  no back. A piece whose box is missing keeps the side it had — a failure
    *  never turns a hidden piece face up (spec §2d). */
   const mustShow = (t) => { const ty = typeOf(t); return !!ty && !ty.back; };
+  /** A new piece of member, entry or supply `m` ({t, f}), face down when
+   *  `down` and its type may lie so (mustShow): what take, pull, deal and play
+   *  put on the table — and what prepare() snaps for their a.to. */
+  const pieceOf = (m, down) => ({ k: 'g', t: m.t, f: m.f, rot: 0, ...(down && !mustShow(m.t) && { up: false }) });
   /** A hand entry for pile member, piece or supply `m`: {d, i}, or {t, f, up?: false}. */
   const entryOf = (m) => (isCard(m) ? { d: m.d, i: m.i } : { t: m.t, f: m.f, ...(m.up === false && { up: false }) });
   /** Whether two pile members (or items, or hand entries) may share a pile:
@@ -2472,6 +2493,8 @@ export function createTable(host, env = {}) {
     while (maps.some((m) => own(m, id))) id = newId();
     return id;
   };
+  /** List `l` shuffled in place (Fisher–Yates over the table's RNG); returns it. */
+  const shuffle = (l) => { for (let i = l.length - 1; i > 0; i--) { const j = rint(i + 1); [l[i], l[j]] = [l[j], l[i]]; } return l; };
   /** The next z on top of everything: a running max, never a scan of the table. */
   const zTop = () => ++host.zMax;
   /** Puts item `it` at top-left (x, y), clamped onto the table for its size
@@ -2540,9 +2563,9 @@ export function createTable(host, env = {}) {
    *  first that is private and whose owner resolves: 'board', to its board's
    *  owner; 'seat:<id>', to a named seat of the table. */
   function privateAt(it) {
-    const { w, h } = size(it), T = tb();
-    for (const q of zonesUnder(T, it.x + w / 2, it.y + h / 2, it.at?.slice(0, it.at.indexOf(':')))) {
-      const k = q.indexOf(':'), b = T.byId.get(q.slice(0, k)), z = b.B.zones.find((x) => x.id === q.slice(k + 1));
+    const { w, h } = size(it), boards = tb();
+    for (const q of zonesUnder(boards, it.x + w / 2, it.y + h / 2, it.at?.slice(0, it.at.indexOf(':')))) {
+      const k = q.indexOf(':'), b = boards.byId.get(q.slice(0, k)), z = b.B.zones.find((x) => x.id === q.slice(k + 1));
       const ref = z.private && (z.owner === 'board' ? host.items[b.id].owner : z.owner && seatDef(z.owner.slice(5)) ? z.owner : null);
       if (ref) return { ref, mode: z.private };
     }
@@ -2650,25 +2673,25 @@ export function createTable(host, env = {}) {
    *  reads an address or an index (addrNow, act, the reads of the facade,
    *  refresh). */
   function syncSpots() {
-    const T = tb();
+    const boards = tb();
     if (tbSig === spotSig && !respot) return;
     const was = spotTB, all = respot, same = (a, b) => a && b && a.x === b.x && a.y === b.y && a.rot === b.rot && a.z === b.z && a.B === b.B;
-    const moved = [...was.list.filter((b) => !same(b, T.byId.get(b.id))), ...T.list.filter((b) => !same(b, was.byId.get(b.id)))];
+    const moved = [...was.list.filter((b) => !same(b, boards.byId.get(b.id))), ...boards.list.filter((b) => !same(b, was.byId.get(b.id)))];
     const movedIds = new Set(moved.map((b) => b.id));
-    [spotTB, spotSig, respot] = [T, tbSig, false];
+    [spotTB, spotSig, respot] = [boards, tbSig, false];
     for (const id of [...byKind.get('g')]) {
       const it = host.items[id];
       if (!isPiece(it) && !it.at) continue; // (a board, a die — a piece hidden under a back a die wears, D279: one that had an address loses it here)
       const before = it.at ? displayAddr(was, it.at) : null, { w, h } = size(it), cx = it.x + w / 2, cy = it.y + h / 2;
       if (all || (it.at && movedIds.has(it.at.slice(0, it.at.indexOf(':')))) || moved.some((b) => onBoard(b, cx, cy))) {
-        const s = isPiece(it) && snapAt(T, cx, cy);
+        const s = isPiece(it) && snapAt(boards, cx, cy);
         jot(`i:${id}`, it); // (its address and zones change: a rollback puts them back)
         index(id, it, false);
         if (s) it.at = s.at;
         else delete it.at;
         index(id, it, true);
       }
-      if (before !== (it.at ? displayAddr(T, it.at) : null)) touch(id);
+      if (before !== (it.at ? displayAddr(boards, it.at) : null)) touch(id);
     }
   }
   /** The display form of a qualified address or zone (displayAddr). */
@@ -2727,11 +2750,11 @@ export function createTable(host, env = {}) {
     }
     return back(best);
   }
-  /** Seats player p, who is joining (new, or back online): in their named
+  /** Seats player record `pl`, who is joining (new, or back online): in their named
    *  seat if it still exists, else the first free one (in the seats' order),
    *  else they watch; with automatic seating a new player gets assignSeat(),
    *  and a returning one keeps their seat (or keeps watching). */
-  function seatOnJoin(p, pl) {
+  function seatOnJoin(pl) {
     if (!host.seats) {
       if (pl.seat === undefined) pl.seat = assignSeat();
       return;
@@ -2803,16 +2826,16 @@ export function createTable(host, env = {}) {
    *  relative to the centre, then are pulled back onto it (pullOn) — a new
    *  felt alone moves nothing; seat angles stay, and named seats are placed
    *  anew. False when nothing changed. */
-  function setTable(actor, tb) {
+  function setTable(actor, def) {
     const old = host.table;
-    if (canon(old) === canon(tb)) return false;
-    host.table = tb;
+    if (canon(old) === canon(def)) return false;
+    host.table = def;
     dirty.table = true;
-    if (tb.shape !== old.shape || tb.w !== old.w || tb.h !== old.h) pullOn((tb.w - old.w) / 2, (tb.h - old.h) / 2);
+    if (def.shape !== old.shape || def.w !== old.w || def.h !== old.h) pullOn((def.w - old.w) / 2, (def.h - old.h) / 2);
     if (host.seats) {
       for (const [q, pl] of Object.entries(host.players)) if (pl.seatId) { touchPlayer(q); pl.seat = namedAngle(pl.seatId); }
     }
-    logEvent(actor, tb.shape === 'round' ? `set the table to round (${TABLE_SIZES[tb.w]})` : `set the table to a ${tb.w} × ${tb.h} rectangle`);
+    logEvent(actor, def.shape === 'round' ? `set the table to round (${TABLE_SIZES[def.w]})` : `set the table to a ${def.w} × ${def.h} rectangle`);
     return true;
   }
 
@@ -2823,7 +2846,7 @@ export function createTable(host, env = {}) {
     jot(`p:${p}`, own(host.players, p)); // (it may change below: touchPlayer when it did)
     const known = own(host.players, p), pl = known || (host.players[p] = { name: '', color: freeColor(), online: true, hand: [] });
     const was = known && `${pl.seat}|${pl.seatId}|${pl.online}|${pl.name}`;
-    if (!known?.online) seatOnJoin(p, pl);
+    if (!known?.online) seatOnJoin(pl);
     pl.online = true;
     // Only fill an empty name here — explicit renames go through the 'name'
     // action so they land in the log.
@@ -2920,6 +2943,7 @@ export function createTable(host, env = {}) {
     if (mine.length >= 2 && mine.every((r) => r.op === mine[0].op)) runs.splice(k, mine.length, { op: mine[0].op, whole: true, txt: aggLine(mine[0].op, mine) });
     return done;
   }
+  /** Removes pile `pileId` once its last card or piece has gone. */
   function dropIfEmpty(pileId) {
     if (host.items[pileId]?.cards.length === 0) remove(pileId);
   }
@@ -3029,7 +3053,7 @@ export function createTable(host, env = {}) {
     } else {
       if (!cap(actor)) return false;
       const at = nextTo(pile), up = !!o.up || (piece && mustShow(c.t)), x = num(o.x, at.x), y = num(o.y, at.y);
-      const it = piece ? { k: 'g', t: c.t, f: c.f, rot: 0, ...(!up && { up: false }) } : { k: 'c', rot: 0, d: c.d, i: c.i, up };
+      const it = piece ? pieceOf(c, !up) : { k: 'c', rot: 0, d: c.d, i: c.i, up };
       it.rot = turned(it, o.rot);
       if (!mayPlace(actor, it, x, y)) return false;
       touch(pileId);
@@ -3047,14 +3071,12 @@ export function createTable(host, env = {}) {
     return o.to ? who : { id: nid, ...who };
   }
 
+  /** `shuffle`: pile `pileId` in a random order (env's RNG), by `actor`. */
   function opShuffle(actor, pileId) {
     const pile = own(host.items, pileId);
     if (pile?.k !== 'p' || !mayHandle(actor, pile)) return false;
     touch(pileId);
-    for (let i = pile.cards.length - 1; i > 0; i--) {
-      const j = rint(i + 1);
-      [pile.cards[i], pile.cards[j]] = [pile.cards[j], pile.cards[i]];
-    }
+    shuffle(pile.cards);
     logEvent(actor, `shuffled ${label(pile)} (${pile.cards.length} ${unit(pile)})`);
     mark(actor, pileId);
     return true;
@@ -3192,6 +3214,7 @@ export function createTable(host, env = {}) {
     return true;
   }
 
+  /** `del`: item `id` off the table, with whatever it holds, by `actor`. */
   function opRemove(actor, id) {
     const it = own(host.items, id);
     if (!it) return gone('remove', id);
@@ -3228,7 +3251,7 @@ export function createTable(host, env = {}) {
     if (!cap(actor)) return false;
     const piece = !isCard(c);
     if (piece && mustShow(c.t)) up = true;
-    const it = piece ? { k: 'g', t: c.t, f: c.f, rot: 0, ...(!up && { up: false }) } : { k: 'c', rot: 0, d: c.d, i: c.i, up };
+    const it = piece ? pieceOf(c, !up) : { k: 'c', rot: 0, d: c.d, i: c.i, up };
     const { w, h } = size(it), x = num(o.x, host.table.w / 2 - w / 2), y = num(o.y, host.table.h / 2 - h / 2);
     it.rot = turned(it, o.rot);
     if (!mayPlace(actor, it, x, y)) return false;
@@ -3410,7 +3433,7 @@ export function createTable(host, env = {}) {
     if (!s) return gone('take', id);
     if (s.k !== 's') return no(actor, '🚫 That is not a supply');
     if (!mayHandle(actor, s)) return false;
-    const nu = { k: 'g', t: s.t, f: s.f, rot: 0, ...(s.up === false && { up: false }), ...(s.owner && { owner: s.owner }) };
+    const nu = { ...pieceOf(s, s.up === false), ...(s.owner && { owner: s.owner }) };
     if (hand) {
       if (!pl) return false;
       if (!flags(s).hand) return no(actor, "🚫 That can't be held in a hand");
@@ -3445,7 +3468,7 @@ export function createTable(host, env = {}) {
     if (hand && (!pl || !bag.hand)) return no(actor, "🚫 That bag's pieces can't be held in a hand");
     if (hand ? !handRoom(actor, to) : !cap(actor)) return false;
     const at = nextTo(bag), k = drawFrom(id, bag), m = bag.of[k], X = num(x, at.x), Y = num(y, at.y);
-    const nu = { k: 'g', t: m.t, f: m.f, rot: 0, ...(m.up === false && { up: false }) };
+    const nu = pieceOf(m, m.up === false);
     // (a draw is never refused for what it drew — its draw stays pending, D114, so the refusal would say what the
     //  next one is: a piece with no hidden side lands shown, and no private zone acts on it, D278)
     if (!typeOf(m.t)?.back) po = { ...po, unzoned: true };
@@ -3685,7 +3708,6 @@ export function createTable(host, env = {}) {
     const table = host.table, angles = host.seats && seatAngles(table, host.seats), ranked = seated();
     const seats = host.seats ? host.seats.map((s) => ({ at: seatAt(table, angles.get(s.id), s), owner: `seat:${s.id}` }))
       : ranked.map((q) => ({ at: seatPoint(table, host.players[q].seat), owner: q }));
-    const shuffle = (l) => { for (let i = l.length - 1; i > 0; i--) { const j = rint(i + 1); [l[i], l[j]] = [l[j], l[i]]; } return l; };
     const ref = (tid) => `${boxId}/${tid}`, deckId = (name) => box.decks[name];
     const asked = new Set(setupIds(list)), remap = {}, boards = new Map(); // boards: board type id → the first one placed
     let n = 0, shuffled = false;
@@ -3718,6 +3740,8 @@ export function createTable(host, env = {}) {
     }
     /** A pile's (or a hand's) member: a card {d, i, up} or a piece {t, f, up}. */
     const member = (m) => (m.deck !== undefined ? { d: deckId(m.deck), i: m.i, up: !!m.up } : { t: ref(m.piece), f: m.f ?? 0, up: m.up ?? !box.types[m.piece].back });
+    /** Lays setup entry `e` out (`seat`: the seat a forEachSeat runs for)
+     *  — an item, or `count` of them `spread` apart — and returns the ids it made. */
     function spawn(e, seat) {
       if (e.forEachSeat) return seats.flatMap((s) => run(e.forEachSeat, s));
       if (e.group) {
@@ -3847,8 +3871,8 @@ export function createTable(host, env = {}) {
     }
     if (o.rules && !box.rules) return no(actor, `🚫 «${box.name}» has no rules`);
     if (o.setup && box.setup) {
-      const seated = Object.values(host.players).filter((pl) => pl.seat != null).length;
-      const n = countSetup(box.setup, box.seats ? box.seats.length : host.seats ? Object.keys(host.players).length : seated);
+      const nSeated = Object.values(host.players).filter((pl) => pl.seat != null).length;
+      const n = countSetup(box.setup, box.seats ? box.seats.length : host.seats ? Object.keys(host.players).length : nSeated);
       if (n > MAX_SETUP_ITEMS) {
         console.error(`loadBox: the setup of «${box.name}» places ${n} items (max ${MAX_SETUP_ITEMS})`);
         return no(actor, `🚫 Box rejected: setup places too many items (${n.toLocaleString('en-US')}, max ${MAX_SETUP_ITEMS.toLocaleString('en-US')})`);
@@ -4167,17 +4191,17 @@ export function createTable(host, env = {}) {
     const o = { ...a }, it = own(host.items, a.id), pl = own(host.players, p), top = it?.k === 'p' && it.cards.at(-1);
     let piece = null, at = it && nextTo(it);
     if (a.t === 'move' && it && isPiece(it)) [piece, at] = [it, it];
-    else if (a.t === 'take' && it?.k === 's' && a.hand !== true) piece = { k: 'g', t: it.t, f: it.f, ...(it.up === false && { up: false }) };
+    else if (a.t === 'take' && it?.k === 's' && a.hand !== true) piece = pieceOf(it, it.up === false);
     else if (a.t === 'pull' && it?.k === 'b' && it.of.length) {
       o.pick = drawFrom(a.id, it);
       const m = it.of[o.pick];
-      if (a.hand !== true) piece = { k: 'g', t: m.t, f: m.f, ...(m.up === false && { up: false }) };
+      if (a.hand !== true) piece = pieceOf(m, m.up === false);
     } else if (a.t === 'split' && it?.k === 'g' && it.n >= 2 && a.onto === undefined) piece = it;
-    else if (a.t === 'deal' && top && !isCard(top)) piece = { k: 'g', t: top.t, f: top.f, ...(!a.up && !mustShow(top.t) && { up: false }) }; // (as opDealTop deals it)
+    else if (a.t === 'deal' && top && !isCard(top)) piece = pieceOf(top, !a.up);
     else if (a.t === 'play') {
       const c = pl && pl.hand[handIdx(pl, a)];
       if (c && !isCard(c)) {
-        piece = { k: 'g', t: c.t, f: c.f, ...(a.up === false && !mustShow(c.t) && { up: false }) };
+        piece = pieceOf(c, a.up === false);
         at = { x: host.table.w / 2 - size(piece).w / 2, y: host.table.h / 2 - size(piece).h / 2 };
       }
     }
@@ -4622,19 +4646,20 @@ export function createTable(host, env = {}) {
       }
       case 'table': {
         if (!hostOnly(p, a)) break;
-        let tb;
-        try { tb = cleanTable({ shape: a.shape, w: a.w, h: a.h, ...(a.felt !== undefined && { felt: a.felt }) }); } catch (err) {
+        let def;
+        try { def = cleanTable({ shape: a.shape, w: a.w, h: a.h, ...(a.felt !== undefined && { felt: a.felt }) }); } catch (err) {
           console.warn('refused a table', err);
           notify(p, `🚫 ${err.message}`);
           break;
         }
-        setTable(p, tb);
+        setTable(p, def);
         break;
       }
       case 'loadBox': if (hostOnly(p, a)) loadBox(p, a.box, { setup: a.setup === true, clear: a.clear === true, rules: a.rules === true }); break;
       case 'setup': case 'reset': if (!hostOnly(p, a) || !setupBox(p, a)) return null; break;
       case 'addBox': if (!addBox(p, a)) return null; break; // (refused, or the same box found: nothing changed — act() resolves {ok: false, id})
       case 'clear': if (hostOnly(p, a)) clearTable(p); break;
+      case 'endSeats': if (!hostOnly(p, a) || !host.seats) return null; setSeats(p, null); break; // (back to automatic seating: every watcher sits, D311)
       case 'chat': {
         const msg = chatLine(a.msg);
         if (pl && msg) logEvent(p, msg, { chat: true });
@@ -5021,7 +5046,7 @@ export function createTable(host, env = {}) {
     const ranked = seated(), here = (q) => !!own(host.players, q), SEAT_REF = /^@#[1-9]\d*$/;
     const s = mapIds(st, (x) => { const r = isObj(remap) && own(remap, x); return typeof r === 'string' ? r : SEAT_REF.test(x) ? ranked[+x.slice(2) - 1] ?? x : x; });
     /** Whether key q is a player who isn't here (a pid, or an "@#k" no seated player answers): any other key is invalid. */
-    const gone = (q) => (PID_RE.test(q) || SEAT_REF.test(q)) && !here(q);
+    const absent = (q) => (PID_RE.test(q) || SEAT_REF.test(q)) && !here(q);
     let bad = 0, away = 0;
     const drop = (why, err) => console.error(`saved game state: ${why} — dropped`, ...(err ? [err] : []));
     const out = { asks: {}, secret: nullProto(null) };
@@ -5034,23 +5059,16 @@ export function createTable(host, env = {}) {
     gateTimers(out);
     if (timers !== undefined && JSON.stringify(timers) !== JSON.stringify(out.data._timers)) bad++;
     for (const [q, v] of Object.entries(isObj(s.secret) ? s.secret : {})) {
-      const why = gone(q) ? `a secret for ${JSON.stringify(q.slice(0, 30))}, who isn't at this table` : secretProblem(q, v);
-      if (why) { if (gone(q)) away++; else bad++; drop(why); } else out.secret[q] = v;
+      const why = absent(q) ? `a secret for ${JSON.stringify(q.slice(0, 30))}, who isn't at this table` : secretProblem(q, v);
+      if (why) { if (absent(q)) away++; else bad++; drop(why); } else out.secret[q] = v;
     }
     for (const [q, list] of Object.entries(isObj(s.asks) ? s.asks : {})) {
       if (!here(q) || !Array.isArray(list)) {
-        if (gone(q)) away++; else bad++;
-        drop(`the asks of ${JSON.stringify(q.slice(0, 30))}${gone(q) ? ", who isn't at this table" : here(q) ? ' are not a list' : ' (not a player id)'}`);
+        if (absent(q)) away++; else bad++;
+        drop(`the asks of ${JSON.stringify(q.slice(0, 30))}${absent(q) ? ", who isn't at this table" : here(q) ? ' are not a list' : ' (not a player id)'}`);
         continue;
       }
-      const kept = [];
-      for (const x of list) {
-        try {
-          const ask = cleanAsk(x);
-          if (kept.length >= ASK_MAX || kept.some((y) => y.id === ask.id)) throw new TypeError(kept.length >= ASK_MAX ? `more than ${ASK_MAX} asks` : `id ${ask.id} twice`);
-          kept.push(ask);
-        } catch (err) { bad++; drop(`an ask for ${q}`, err); }
-      }
+      const kept = keptAsks(list, (err) => { bad++; drop(`an ask for ${q}`, err); });
       if (kept.length) out.asks[q] = kept;
     }
     if (bad) emit({ t: 'toast', msg: 'Some saved game state was invalid and was dropped' });
@@ -5136,8 +5154,8 @@ export function createTable(host, env = {}) {
    *  TypeError when no board has it. */
   function zonesNamed(z) {
     if (typeof z !== 'string' || !z) throw new TypeError(`t.find: zone must be a zone id, got ${JSON.stringify(z)}`);
-    const k = z.indexOf(':'), T = tb(), id = k < 0 ? z : z.slice(k + 1);
-    const out = (k < 0 ? T.list : boardsNamed(T, z.slice(0, k))).filter((b) => b.B.zones?.some((x) => x.id === id)).map((b) => `${b.id}:${id}`);
+    const k = z.indexOf(':'), boards = tb(), id = k < 0 ? z : z.slice(k + 1);
+    const out = (k < 0 ? boards.list : boardsNamed(boards, z.slice(0, k))).filter((b) => b.B.zones?.some((x) => x.id === id)).map((b) => `${b.id}:${id}`);
     if (!out.length) throw new TypeError(`t.find: no zone '${z}' on the table's boards`);
     return out;
   }
@@ -5328,7 +5346,7 @@ export function createTable(host, env = {}) {
       const t = typeof ref === 'string' ? ref : ref?.t, ty = typeAt(host.boxes, t);
       if (!ty) return null;
       const { board, ...rest } = ty;
-      return structuredClone({ ...rest, meta: ty.meta, box: host.boxes[t.slice(0, t.indexOf('/'))].name });
+      return structuredClone({ ...rest, box: host.boxes[t.slice(0, t.indexOf('/'))].name });
     },
     /** Registers a script-defined deck of image-less cards ({name, text, color,
      *  bg, meta} each) and returns its deckId — it creates NO pile, so scripts
@@ -5336,12 +5354,14 @@ export function createTable(host, env = {}) {
      *  keep the broadcast state light). `back` may be a solid color ("#111"),
      *  and nothing else: a script deck has no images (a TypeError says so). */
     newDeck(def) {
+      if (!isObj(def)) throw new TypeError('t.newDeck: give it {name, cards, back?}');
       if (def.back != null && !COLOR_RE.test(def.back)) throw new TypeError('t.newDeck: back must be a color like "#111"');
+      let deck;
+      try {
+        deck = cleanDeck({ name: def.name, back: def.back, cards: (Array.isArray(def.cards) ? def.cards : []).map((c) => ({ n: c?.name, txt: c?.text, col: c?.color, b: c?.bg, meta: c?.meta })) });
+      } catch (err) { throw new TypeError(`t.newDeck: ${err.message}`); }
       const deckId = mint(host.decks);
-      addDeckTo(deckId, cleanDeck({
-        name: def.name, back: def.back,
-        cards: (def.cards || []).map((c) => ({ n: c.name, txt: c.text, col: c.color, b: c.bg, meta: c.meta })),
-      }));
+      addDeckTo(deckId, deck);
       emit({ t: 'deck', id: deckId });
       logEvent(RULES, `defined deck "${host.decks[deckId].name}" (${host.decks[deckId].cards.length} cards)`);
       return deckId;
@@ -5381,7 +5401,7 @@ export function createTable(host, env = {}) {
       notify(p, String(msg));
     },
     schedule(sec, tag) {
-      if (!Number.isFinite(sec) || sec < 0) throw new Error(`t.schedule: seconds must be a number ≥ 0, got ${sec}`);
+      if (!Number.isFinite(sec) || sec < 0) throw new TypeError(`t.schedule: seconds must be a number ≥ 0, got ${sec}`);
       const t = String(tag), list = (host.rules.data._timers ||= []);
       if (t.length > TIMER_TAG_MAX) throw new TypeError(`t.schedule: a tag is at most ${TIMER_TAG_MAX} chars`);
       if (list.length >= MAX_TIMERS) throw new TypeError(`t.schedule: at most ${MAX_TIMERS} timers wait at once`);
@@ -5682,9 +5702,9 @@ export function createTable(host, env = {}) {
     },
     /** Sets the table: {shape, w, h, felt?} (spec §2a). */
     setTable(def) {
-      let tb;
-      try { tb = cleanTable(def); } catch (err) { throw new TypeError(`t.setTable: ${err.message}`); }
-      setTable(RULES, tb);
+      let clean;
+      try { clean = cleanTable(def); } catch (err) { throw new TypeError(`t.setTable: ${err.message}`); }
+      setTable(RULES, clean);
     },
 
     // --- spatial reads (spec §3e): addresses in any form in, display forms out ---
@@ -5741,7 +5761,7 @@ export function createTable(host, env = {}) {
     if (o.to !== undefined) return kind === 's' ? opTake(RULES, id, 0, 0, true, o.to) : opPull(RULES, id, 0, 0, true, o.to);
     // (a pull draws its piece first — drawFrom, which opPull then takes: an address centres it by its own size)
     const m = kind === 's' ? it : it.of.length ? it.of[drawFrom(id, it)] : null;
-    const at = nextTo(it), [x, y, po] = o.at === undefined || !m ? [at.x, at.y, {}] : scriptSpot(call, { k: 'g', t: m.t, f: m.f, ...(m.up === false && { up: false }) }, o.at);
+    const at = nextTo(it), [x, y, po] = o.at === undefined || !m ? [at.x, at.y, {}] : scriptSpot(call, pieceOf(m, m.up === false), o.at);
     return kind === 's' ? opTake(RULES, id, x, y, false, RULES, po) : opPull(RULES, id, x, y, false, RULES, po);
   }
 
@@ -6096,99 +6116,99 @@ export function createTable(host, env = {}) {
    *  Returns what the apply step takes, cleaned — or throws, saying why,
    *  with nothing changed. */
   function checkPatch(s, out, job) {
-    const no = (why) => { throw new Error(why); };
-    if (!isObj(s) || (out != null && !isObj(out))) no('the patch is not one');
+    const refuse = (why) => { throw new Error(why); };
+    if (!isObj(s) || (out != null && !isObj(out))) refuse('the patch is not one');
     const stray = Object.keys(s).find((k) => !PATCH_KEYS.includes(k));
-    if (stray !== undefined) no(`the patch has an unknown field '${stray.slice(0, 20)}'`);
+    if (stray !== undefined) refuse(`the patch has an unknown field '${stray.slice(0, 20)}'`);
     const { p, a = {} } = job || {};
-    const entries = (k) => (s[k] === undefined ? [] : isObj(s[k]) ? Object.entries(s[k]) : no(`the patch's ${k} are not a map`));
+    const entries = (k) => (s[k] === undefined ? [] : isObj(s[k]) ? Object.entries(s[k]) : refuse(`the patch's ${k} are not a map`));
     const who = (q) => (own(host.players, q)?.name || 'a player');
-    const named = a.t === '_join' ? joinName(a.name) : cleanName(a.name); // (the very name the engine gives: ensurePlayer's, effect 'name''s)
+    const newName = a.t === '_join' ? joinName(a.name) : cleanName(a.name); // (the very name the engine gives: ensurePlayer's, effect 'name''s)
     // the catalog only grows: a deck or a box under an id it doesn't hold yet, gated again
     const fresh = (id) => isId(id) && !own(host.decks, id) && !own(host.boxes, id);
     const decks = entries('decks').map(([id, d]) => {
-      if (!fresh(id)) no(`the patch rewrites the catalog's ${id.slice(0, 24)}`);
-      try { return [id, cleanDeck(d)]; } catch (err) { return no(`a patched deck: ${err.message}`); }
+      if (!fresh(id)) refuse(`the patch rewrites the catalog's ${id.slice(0, 24)}`);
+      try { return [id, cleanDeck(d)]; } catch (err) { return refuse(`a patched deck: ${err.message}`); }
     });
     const boxes = entries('boxes').map(([id, r]) => {
-      if (!fresh(id)) no(`the patch rewrites the catalog's ${id.slice(0, 24)}`);
-      if (!isObj(r) || !['host', 'upload', 'script'].includes(r.src) || !(r.by === undefined || PID_RE.test(r.by))) no("a patched box doesn't say where it came from");
-      try { return [id, { box: cleanBox(r.box), src: { src: r.src, ...(r.by && { by: r.by }) } }]; } catch (err) { return no(`a patched box: ${err.message}`); }
+      if (!fresh(id)) refuse(`the patch rewrites the catalog's ${id.slice(0, 24)}`);
+      if (!isObj(r) || !['host', 'upload', 'script'].includes(r.src) || !(r.by === undefined || PID_RE.test(r.by))) refuse("a patched box doesn't say where it came from");
+      try { return [id, { box: cleanBox(r.box), src: { src: r.src, ...(r.by && { by: r.by }) } }]; } catch (err) { return refuse(`a patched box: ${err.message}`); }
     });
     const items = entries('items'), had = itemCount();
     let count = had;
     for (const [id, it] of items) {
       if (it === null) { count -= own(host.items, id) ? 1 : 0; continue; }
-      if (!own(host.items, id)) { if (!isId(id)) no(`a patched item has the id ${JSON.stringify(id.slice(0, 30))}`); count++; }
+      if (!own(host.items, id)) { if (!isId(id)) refuse(`a patched item has the id ${JSON.stringify(id.slice(0, 30))}`); count++; }
       // (an address as the Worker read it, D128 — but text: every read of one on this table takes it as such)
       const why = itemProblem(it) || visProblem(it) || (Math.abs(it.z) > Z_MAX && `its z is past ${Z_MAX}`) || (it.at !== undefined && !(typeof it.at === 'string' && it.at.length <= 100) && 'its address is not one');
-      if (why) no(`a patched item (${id.slice(0, 24)}) is malformed: ${why}`);
+      if (why) refuse(`a patched item (${id.slice(0, 24)}) is malformed: ${why}`);
     }
-    if (count > Math.max(had, MAX_ITEMS)) no(`the patch leaves more than ${MAX_ITEMS} items on the table`);
+    if (count > Math.max(had, MAX_ITEMS)) refuse(`the patch leaves more than ${MAX_ITEMS} items on the table`);
     for (const [q, pl] of entries('players')) {
       const why = playerProblem(pl), old = own(host.players, q), mine = q === p;
-      if (why) no(`a patched player (${who(q)}) is malformed: ${why}`);
+      if (why) refuse(`a patched player (${who(q)}) is malformed: ${why}`);
       if (!old) {
-        if (!PID_RE.test(q) || (job && !(mine && a.t === '_join' && pl.online && pl.name === named && COLORS.includes(pl.color)))) no('the script added a player');
+        if (!PID_RE.test(q) || (job && !(mine && a.t === '_join' && pl.online && pl.name === newName && COLORS.includes(pl.color)))) refuse('the script added a player');
         continue;
       }
       if (!job) continue;
-      if (pl.name !== old.name && !(mine && pl.name === named && (a.t === 'name' || a.t === '_name' || (a.t === '_join' && !old.name)))) no(`the script renamed ${who(q)}`);
-      if (pl.color !== old.color) no(`the script changed ${who(q)}'s colour`);
-      if (pl.online !== old.online && !(mine && (a.t === '_join' ? pl.online : a.t === '_leave' && !pl.online))) no(`the script ${pl.online ? 'brought' : 'took'} ${who(q)} ${pl.online ? 'online' : 'offline'}`);
+      if (pl.name !== old.name && !(mine && pl.name === newName && (a.t === 'name' || a.t === '_name' || (a.t === '_join' && !old.name)))) refuse(`the script renamed ${who(q)}`);
+      if (pl.color !== old.color) refuse(`the script changed ${who(q)}'s colour`);
+      if (pl.online !== old.online && !(mine && (a.t === '_join' ? pl.online : a.t === '_leave' && !pl.online))) refuse(`the script ${pl.online ? 'brought' : 'took'} ${who(q)} ${pl.online ? 'online' : 'offline'}`);
     }
     let asks;
     const r = s.rules;
     if (r !== undefined) {
-      if (!isObj(r)) no('the patched rules are not an object');
+      if (!isObj(r)) refuse('the patched rules are not an object');
       const extra = Object.keys(r).find((k) => !RULES_STATE.includes(k) && !RULES_META.includes(k));
-      if (extra !== undefined) no(`the patched rules have an unknown field '${extra.slice(0, 20)}'`);
+      if (extra !== undefined) refuse(`the patched rules have an unknown field '${extra.slice(0, 20)}'`);
       const why = patchRulesProblem(r);
-      if (why) no(`the script's state fails the engine's gates: ${why}`);
+      if (why) refuse(`the script's state fails the engine's gates: ${why}`);
       // (the asks as t.ask leaves them, normalized: what the host keeps and sends)
-      try { if ('asks' in r) asks = cleanAsks(r.asks); } catch (err) { no(`the script's state fails the engine's gates: t.ask: ${err.message}`); }
-      if (('code' in r && typeof r.code !== 'string') || ('name' in r && !(typeof r.name === 'string' && r.name.length <= 40)) || ('enabled' in r && typeof r.enabled !== 'boolean')) no('the patched rules are malformed');
+      try { if ('asks' in r) asks = cleanAsks(r.asks); } catch (err) { refuse(`the script's state fails the engine's gates: t.ask: ${err.message}`); }
+      if (('code' in r && typeof r.code !== 'string') || ('name' in r && !(typeof r.name === 'string' && r.name.length <= 40)) || ('enabled' in r && typeof r.enabled !== 'boolean')) refuse('the patched rules are malformed');
       const enable = a.t === 'setRules' && p === pid && !!a.enabled;
-      if (job && ('code' in r || 'name' in r) && !(enable && (!('code' in r) || r.code === a.code))) no("the script rewrote the rules' code or name");
-      if (job && r.enabled === true && !enable) no('the script turned the rules on');
-      if (job && r.enabled === false && !out?.error && !(a.t === 'setRules' && p === pid && !a.enabled) && a.t !== '_rulesOff') no('the script turned the rules off without a word');
-      if ('box' in r && !(r.box === null || typeof r.box === 'string')) no('the patched rules are malformed');
-      if (job && 'box' in r && !(enable && (r.box === null || (r.box === a.box && own(host.boxes, a.box)?.rules === a.code)))) no("the script set the rules' box");
+      if (job && ('code' in r || 'name' in r) && !(enable && (!('code' in r) || r.code === a.code))) refuse("the script rewrote the rules' code or name");
+      if (job && r.enabled === true && !enable) refuse('the script turned the rules on');
+      if (job && r.enabled === false && !out?.error && !(a.t === 'setRules' && p === pid && !a.enabled) && a.t !== '_rulesOff') refuse('the script turned the rules off without a word');
+      if ('box' in r && !(r.box === null || typeof r.box === 'string')) refuse('the patched rules are malformed');
+      if (job && 'box' in r && !(enable && (r.box === null || (r.box === a.box && own(host.boxes, a.box)?.rules === a.code)))) refuse("the script set the rules' box");
     }
     let table, seats;
     try {
       if (s.table !== undefined) table = cleanTable(s.table);
       if ('seats' in s) seats = s.seats && cleanSeats(s.seats);
-    } catch (err) { no(`the patched table: ${err.message}`); }
+    } catch (err) { refuse(`the patched table: ${err.message}`); }
     const log = s.log ?? [];
     if (!Array.isArray(log) || !log.every((e) => isObj(e) && typeof e.p === 'string' && texty(e.txt) && Number.isFinite(e.ts) && Object.keys(e).every((k) => ['p', 'txt', 'ts', 'c', 'n', 'k'].includes(k))
-      && (!('c' in e) || e.c === 1) && (!('k' in e) || e.k === 1) && (!('n' in e) || typeof e.n === 'string'))) no("the script's log lines are malformed");
-    if (trimLog(log) !== log) no('the patch brings more log lines than the log keeps');
-    const grows = (k, max) => s[k] === undefined || (Number.isFinite(s[k]) && s[k] >= num(host[k]) && s[k] <= max) || no(`the patch's ${k} is out of bounds`);
+      && (!('c' in e) || e.c === 1) && (!('k' in e) || e.k === 1) && (!('n' in e) || typeof e.n === 'string'))) refuse("the script's log lines are malformed");
+    if (trimLog(log) !== log) refuse('the patch brings more log lines than the log keeps');
+    const grows = (k, max) => s[k] === undefined || (Number.isFinite(s[k]) && s[k] >= num(host[k]) && s[k] <= max) || refuse(`the patch's ${k} is out of bounds`);
     grows('zMax', Z_MAX);
     grows('boardSeq', -BOARD_Z0);
     grows('guestDeckChars', GUEST_DECK_CHARS);
-    if (job && s.guestDeckChars !== undefined && !((a.t === 'addDeck' || a.t === 'addBox') && p !== pid && s.guestDeckChars >= num(host.guestDeckChars) + num(a.cost))) no("the script spent the guests' deck budget");
-    if (s.lastSetup != null && !(typeof s.lastSetup === 'string' && (own(host.boxes, s.lastSetup) || boxes.some(([id]) => id === s.lastSetup)))) no("the patch's last setup is no box");
+    if (job && s.guestDeckChars !== undefined && !((a.t === 'addDeck' || a.t === 'addBox') && p !== pid && s.guestDeckChars >= num(host.guestDeckChars) + num(a.cost))) refuse("the script spent the guests' deck budget");
+    if (s.lastSetup != null && !(typeof s.lastSetup === 'string' && (own(host.boxes, s.lastSetup) || boxes.some(([id]) => id === s.lastSetup)))) refuse("the patch's last setup is no box");
     // lastSetup moves only as the host's setup, reset or loadBox (with its setup) moves it — to that very box — and goes (null) only in a clear
     if (job && s.lastSetup !== undefined && !(p === pid && (s.lastSetup === null ? a.t === 'clear' || (a.t === 'loadBox' && a.clear === true)
-      : (a.t === 'setup' && s.lastSetup === a.box) || (a.t === 'reset' && s.lastSetup === host.lastSetup) || (a.t === 'loadBox' && s.lastSetup === laidOut(a, boxes))))) no('the script set the last setup outside a setup');
-    for (const k of ['refresh', 'refreshHands']) if (s[k] !== undefined && !(Array.isArray(s[k]) && s[k].length <= MAX_ITEMS && s[k].every((x) => typeof x === 'string'))) no(`the patch's ${k} is malformed`);
+      : (a.t === 'setup' && s.lastSetup === a.box) || (a.t === 'reset' && s.lastSetup === host.lastSetup) || (a.t === 'loadBox' && s.lastSetup === laidOut(a, boxes))))) refuse('the script set the last setup outside a setup');
+    for (const k of ['refresh', 'refreshHands']) if (s[k] !== undefined && !(Array.isArray(s[k]) && s[k].length <= MAX_ITEMS && s[k].every((x) => typeof x === 'string'))) refuse(`the patch's ${k} is malformed`);
     const raw = out?.effects ?? [];
-    const effects = Array.isArray(raw) ? raw.map((e) => (isObj(e) && own(EFFECTS, e.t)?.(e)) || no("the script's effects are malformed")) : no("the script's effects are malformed");
-    if (out?.error !== undefined && !(isObj(out.error) && typeof out.error.hook === 'string' && typeof out.error.message === 'string')) no("the script's error is malformed");
+    const effects = Array.isArray(raw) ? raw.map((e) => (isObj(e) && own(EFFECTS, e.t)?.(e)) || refuse("the script's effects are malformed")) : refuse("the script's effects are malformed");
+    if (out?.error !== undefined && !(isObj(out.error) && typeof out.error.hook === 'string' && typeof out.error.message === 'string')) refuse("the script's error is malformed");
     const said = job ? speakerProblem(log, effects, p, a) : '';
-    if (said) no(said);
+    if (said) refuse(said);
     // A player's deck, as the host's realm cleans what they sent (D148, D168): an
     // addDeck job that adds a deck, or says anything in their name, adds that
     // very deck and says so once — whatever the patch's lines claim.
     if (job && a.t === 'addDeck' && (decks.length || log.some((e) => e.p === p))) {
       let want;
-      try { want = cleanDeck(a.deck); } catch (err) { no(`the script added ${who(p)}'s deck, which the engine refuses (${err.message})`); }
+      try { want = cleanDeck(a.deck); } catch (err) { refuse(`the script added ${who(p)}'s deck, which the engine refuses (${err.message})`); }
       const line = `added deck "${want.name}" (${want.cards.length} cards)`, theirs = log.filter((e) => e.p === p);
-      if (theirs.length !== 1 || theirs[0].txt !== line || !decks.some(([, d]) => canon(d) === canon(want))) no(`the script rewrote ${who(p)}'s deck`);
+      if (theirs.length !== 1 || theirs[0].txt !== line || !decks.some(([, d]) => canon(d) === canon(want))) refuse(`the script rewrote ${who(p)}'s deck`);
     }
-    if (job) boxJobProblem(s, decks, boxes, log, effects, p, a, no);
+    if (job) boxJobProblem(s, decks, boxes, log, effects, p, a, refuse);
     return { decks, boxes, items, asks, table, seats, effects };
   }
   /** The box the host's loadBox `a` registers or finds, as the engine does
@@ -6214,36 +6234,36 @@ export function createTable(host, env = {}) {
    *  setup with rules, or a reset of the box whose rules run, naming that
    *  box, with the ids that had to change: those its setup asks for that the
    *  table holds (none when it clears), each now a new item of the patch.
-   *  Throws through `no`, saying why. */
-  function boxJobProblem(s, decks, boxes, log, effects, p, a, no) {
+   *  Throws through `refuse`, saying why. */
+  function boxJobProblem(s, decks, boxes, log, effects, p, a, refuse) {
     const who = own(host.players, p)?.name || 'a player', fresh = (id) => !own(host.decks, id) && !own(host.boxes, id);
     const added = boxes.filter(([, { src }]) => src.src !== 'script'), fx = effects.filter((e) => e.t === 'added'), en = effects.filter((e) => e.t === 'enable');
     const from = p === pid ? 'host' : 'upload', mayAdd = p === pid ? ['loadBox', 'addBox'] : ['addBox'];
-    if (added.length > 1 || (added.length && (!mayAdd.includes(a.t) || added[0][1].src.src !== from || added[0][1].src.by !== p))) no(`the script added a game box in ${who}'s name`);
+    if (added.length > 1 || (added.length && (!mayAdd.includes(a.t) || added[0][1].src.src !== from || added[0][1].src.by !== p))) refuse(`the script added a game box in ${who}'s name`);
     if (a.t === 'loadBox' && added.length) {
       let want;
-      try { want = cleanBox(a.box); } catch (err) { no(`the script added the host's box, which the engine refuses (${err.message})`); }
-      if (canon(added[0][1].box) !== canon(want)) no("the script rewrote the host's box");
+      try { want = cleanBox(a.box); } catch (err) { refuse(`the script added the host's box, which the engine refuses (${err.message})`); }
+      if (canon(added[0][1].box) !== canon(want)) refuse("the script rewrote the host's box");
     }
-    if (fx.length > (a.t === 'addBox' ? 1 : 0)) no(`the script named a box ${who} never added`);
+    if (fx.length > (a.t === 'addBox' ? 1 : 0)) refuse(`the script named a box ${who} never added`);
     if (a.t === 'addBox' && (added.length || fx.length || log.some((e) => e.p === p))) {
       let E;
-      try { E = boxOfDef(a.box); } catch (err) { no(`the script added ${who}'s box, which the engine refuses (${err.message})`); }
+      try { E = boxOfDef(a.box); } catch (err) { refuse(`the script added ${who}'s box, which the engine refuses (${err.message})`); }
       if (!added.length) { // (on the table already: no line in their name, and `added` names that box)
         const same = boxWith(boxText(E.box, Object.fromEntries(E.decks.map(([n, d]) => [n, d]))));
-        if (!same || log.some((e) => e.p === p) || (fx.length && fx[0].id !== same)) no(`the script rewrote ${who}'s box`);
+        if (!same || log.some((e) => e.p === p) || (fx.length && fx[0].id !== same)) refuse(`the script rewrote ${who}'s box`);
       } else {
         const [bid, { box }] = added[0], theirs = log.filter((e) => e.p === p), remap = {}, taken = new Set();
-        if (theirs.length !== 1 || theirs[0].txt !== addedLine(E.box) || fx[0]?.id !== bid) no(`the script rewrote ${who}'s box`);
+        if (theirs.length !== 1 || theirs[0].txt !== addedLine(E.box) || fx[0]?.id !== bid) refuse(`the script rewrote ${who}'s box`);
         /** Catalog id `id` given for the wanted `w`: w itself when it was free. */
         const got = (w, id) => {
-          if (w && id !== w && fresh(w) && !taken.has(w)) no(`the script gave ${who}'s box other ids than it asked for`);
+          if (w && id !== w && fresh(w) && !taken.has(w)) refuse(`the script gave ${who}'s box other ids than it asked for`);
           if (w && id !== w) remap[w] = id;
           taken.add(id);
         };
         for (const [n, d, w] of E.decks) {
           const id = own(box.decks || {}, n), deck = decks.find(([x]) => x === id);
-          if (!deck || canon(deck[1]) !== canon(d)) no(`the script rewrote ${who}'s box`);
+          if (!deck || canon(deck[1]) !== canon(d)) refuse(`the script rewrote ${who}'s box`);
           got(w, id);
         }
         got(E.id, bid);
@@ -6251,7 +6271,7 @@ export function createTable(host, env = {}) {
           ...E.box, ...(E.decks.length && { decks: Object.fromEntries(E.decks.map(([n]) => [n, box.decks[n]])) }),
           ...(E.box.rulesState && { rulesState: mapIds(E.box.rulesState, (x) => own(remap, x) ?? x) }),
         });
-        if (canon(want) !== canon(box)) no(`the script rewrote ${who}'s box`);
+        if (canon(want) !== canon(box)) refuse(`the script rewrote ${who}'s box`);
       }
     }
     if (en.length) { // (a loadBox's box may be the one its own patch adds)
@@ -6260,7 +6280,7 @@ export function createTable(host, env = {}) {
       const asked = box && !clear && laid ? setupIds(box.setup || []).filter((x) => own(host.items, x)).sort() : [], vals = Object.values(remap);
       if (en.length > 1 || p !== pid || !box?.rules || !(a.t === 'setup' ? a.rules === true && id === a.box : a.t === 'reset' ? id === host.lastSetup && host.rules?.enabled && host.rules.box === id
         : a.t === 'loadBox' && a.rules === true && id === laidOut(a, boxes, false))
-        || Object.keys(remap).sort().join() !== asked.join() || new Set(vals).size !== vals.length || !vals.every((v) => isObj(own(s.items || {}, v)) && !own(host.items, v))) no('the script asked for rules the host never chose');
+        || Object.keys(remap).sort().join() !== asked.join() || new Set(vals).size !== vals.length || !vals.every((v) => isObj(own(s.items || {}, v)) && !own(host.items, v))) refuse('the script asked for rules the host never chose');
     }
   }
   /** Applies a rules Worker's StatePatch (spec §3f.6) to this table — the
@@ -6399,9 +6419,6 @@ export function createTable(host, env = {}) {
      *  id>:<zone id>' → the pieces in it), brought up to date (syncSpots). */
     get byAt() { syncSpots(); return byAt; },
     get byZone() { syncSpots(); return byZone; },
-    /** The table's structured boards: tableBoards() of its items, kept. */
-    get boards() { return tb(); },
-    snapPiece, display,
     /** The game boxes of the catalog: {boxId: Box} (where each came from: state.boxSrc). */
     get boxes() { return host.boxes; },
     /** id → public item for every item on the table: publicItems(), kept incrementally. */
@@ -6424,7 +6441,7 @@ export function createTable(host, env = {}) {
      *  the host does before a rules Worker copies its state. */
     syncSpots,
     // the journal (spec §3f.4), and a rules Worker's side (§3f.2, §3f.3, §3f.7)
-    begin, savepoint, rollbackTo, rollback: () => rollbackTo(0), checkpoint: () => savepoint(), commit, job, guard, digest,
+    begin, savepoint, rollbackTo, rollback: () => rollbackTo(0), commit, job, guard, digest,
     /** The state as saved: all of it but the catalog (decks, boxes and where
      *  each box came from), which store.js keeps apart, each written once,
      *  and the rules' hints, which are never saved (spec §3h). */

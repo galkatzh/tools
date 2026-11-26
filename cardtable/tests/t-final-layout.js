@@ -6,7 +6,7 @@
 // blocked-vibrate console error after a reload on your turn (PT-12).
 const h = require('./h');
 const { ok, section, logHas } = h;
-const { rects, overlap } = require('./final-lib');
+const { rects, overlapPast1px: overlap } = require('./final-lib'); // (contact within 1 px is no overlap here)
 const { devices } = h.playwright;
 
 const CLIP = ['clipboard-read', 'clipboard-write'];

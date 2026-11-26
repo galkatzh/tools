@@ -288,6 +288,11 @@ const UPTO = +(process.env.UPTO || 99); // (to develop: stop after section UPTO)
   await M.barPress(alice, 'Reveal');
   st = await S();
   ok(await until(bob, ID.s1, `'t' in it && it.f === ${st.items[ID.s1].f}`), "Reveal from the phone's bar: Bob's screen shows its face");
+  ok(await until(bob, ID.s2, `'t' in it && it.f === ${st.items[ID.s2].f}`), '…and the whole cup lifts: the die beside it shows too (D313)');
+  // (cupped again, both: the sections below keep ID.s2 as one of Alice's private dice)
+  await barOn(alice, ID.s2);
+  await M.barPress(alice, '🙈 Hide');
+  ok(await until(bob, ID.s2, "'b' in it") && await until(bob, ID.s1, "'b' in it"), '🙈 Hide on the other die cups them both again');
   await deselect(alice);
   await M.shot(alice, 'p5v-3-sideways');
   await alice.setViewportSize({ width: P.PHONE.viewport.width, height: P.PHONE.viewport.height });

@@ -59,7 +59,7 @@ const L = require('./p1-lib');
 const P = require('./p2t-lib');
 const S = require('./p3-lib');
 const { shot } = require('./fun-lib');
-const { mallory, overlap } = require('./final-lib');
+const { mallory, overlapPast1px: overlap } = require('./final-lib'); // (contact within 1 px is no overlap here)
 const { record, mark, waitSeen } = require('./stones-lib');
 const { BOXES } = require(path.join(h.APP_ROOT, 'cardtable/templates.js'));
 const { ok, section } = h;
@@ -272,7 +272,7 @@ const PLAY = `({ name: 'Play test', strict: true, allow: ['move'],
   section('Draughts: off the squares — the margin and the felt show no preview; "from e3", "moved Light man", "to f4"');
   {
     const id = await manAt('e3');
-    const margin = { x: db.x + 10, y: sqOf('a4').y }, felt = { x: db.x - 140, y: sqOf('a4').y + 30 };
+    const margin = { x: db.x + 10, y: sqOf('a4').y }, felt = { x: db.x + 140, y: db.y - 120 }; // (bare felt: the band above the board — its sides are 80 units wide, D314)
     let pv = null;
     await S.dragTo(host, id, margin, { mid: async () => { pv = await S.preview(host); } });
     ok(pv && !pv.ghost && !pv.chip && pv.spot === null, `over the board's margin (no square there) no ghost, no chip (${JSON.stringify(pv && { g: !!pv.ghost, c: pv.chip?.text, s: pv.spot })})`);
@@ -404,7 +404,7 @@ const PLAY = `({ name: 'Play test', strict: true, allow: ['move'],
 
   section('Backgammon: picked from 🎲 — the standard start, every checker centred on its point');
   ok(await pickGame('backgammon') === 'Clear the table and set up Backgammon? The current game is discarded.', 'Alice confirms "Clear the table and set up Backgammon?"');
-  const bgOn = "v.table.w === 1800 && v.table.h === 1300 && Object.values(v.items).filter((it) => it.k === 'g').length === 34";
+  const bgOn = "v.table.w === 1480 && v.table.h === 1520 && Object.values(v.items).filter((it) => it.k === 'g').length === 34";
   for (const [p, who] of [[host, 'Alice'], [bob, 'Bob']]) ok(await P.waitView(p, bgOn, null, 30000), `${who}'s screen: the board, 30 checkers, two dice and the cube`);
   await P.waitView(host, `v.players[me].seatId === 'light' && v.players[a].seatId === 'dark'`, bob.pid);
   const bg = await boardOf(host), bgt = await typeOf(host, bg.t), SP = Object.fromEntries(bgt.B.spaces.map((s) => [s.id, s]));

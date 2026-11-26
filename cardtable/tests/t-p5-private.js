@@ -215,12 +215,21 @@ async function barOn(p, id) {
   ok(await until(bob, ID.a1, "'t' in it && it.up !== false"), "Reveal: Bob's screen shows the die's face");
   S = await state(alice);
   ok((await M.items(bob))[ID.a1].f === S.items[ID.a1].f && !S.items[ID.a1].owner && !S.items[ID.a1].vis && !(await drawn(alice, ID.a1)).badge, 'the value the host holds, public; its owner from the cup gone; no 🙈 on Alice\'s screen');
+  ok(await until(bob, ID.a2, "'t' in it && it.up !== false") && await until(bob, ID.a3, "'t' in it && it.up !== false"), 'the whole cup lifts: the two dice beside it show too (D313)');
+  // (cupped again for the group Reveal: H on a die covers its handful, D290)
+  await barOn(alice, ID.a2);
+  await alice.keyboard.press('h');
+  ok(await until(bob, ID.a1, "'b' in it") && await until(bob, ID.a2, "'b' in it") && await until(bob, ID.a3, "'b' in it"), '(H on a2: the three cupped again)');
   await alice.keyboard.press('Escape');
   for (const d of [ID.a2, ID.a3]) await touch(alice, d, true);
   const gr = (await M.bar(alice)).btns;
   ok(gr.includes('Reveal') && !gr.includes('Flip'), `two cupped dice picked: the group bar says Reveal (${J(gr)})`);
   await M.barPress(alice, 'Reveal');
   ok(await until(bob, ID.a3, "'t' in it") && await until(bob, ID.a2, "'t' in it"), 'the group Reveal: both faces on Bob\'s screen');
+  await alice.keyboard.press('Escape');
+  await barOn(alice, ID.a1); // (and a1, left in the cup: Reveal lifts it alone now, its neighbours shown)
+  await M.barPress(alice, 'Reveal');
+  ok(await until(bob, ID.a1, "'t' in it && it.up !== false"), '(a1 revealed: the three dice shown, as before the cup)');
   await alice.keyboard.press('Escape');
   await barOn(alice, ID.s1);
   await alice.keyboard.press('h');

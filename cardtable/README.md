@@ -1,9 +1,12 @@
 # Card Table
 
-A serverless multiplayer card-game **simulator** — no rules engine, just a
-shared table: load decks, shuffle, draw, deal, move/rotate/flip cards, keep a
-private hand, play face up or face down. Enough freedom to simulate most card
-games the way a physical table does.
+A serverless multiplayer **tabletop**: cards, boards, dice and pieces on a
+shared table — load decks, shuffle, draw, deal, move, rotate and flip, keep a
+private hand or rack, play face up or face down — played by hand the way a
+physical table is, or by an optional rules script that enforces a game and
+automates its chores (chess, go, Hold'em, … are built in). Whole games come
+in **game boxes**, from a classic board game to a wargame with hundreds of
+counters.
 
 Open the page → pick a nickname → you're hosting a room → **Copy invite**
 (or show the invite as a **QR** code for phones to scan) → friends open the
@@ -202,16 +205,23 @@ Playing on the free table:
   read them (rules scripts read `t.type(…).meta`): never put a secret there.
 
 **Tables and seats.** A game can bring a **rectangular** table (draughts
-1400 × 1200): it fits the screen whichever way it turns, and each view turns
+1000 × 1360: taller than wide, so a phone held upright draws the board
+large): it fits the screen whichever way it turns, and each view turns
 in quarter turns so the player's own edge is at the bottom. The host's size
-menu shows it (▭ 1400 × 1200); picking a round size switches back, after a
-confirm. A game can also name its **seats** (Light and Dark): players take
+menu shows it (▭ 1000 × 1360); picking a round size switches back, after a
+confirm. A new table's shape or size starts everyone's view afresh, as 🧭
+does. A game can also name its **seats** (Light and Dark): players take
 them in order, the rest **watch** (👀 top right, with how to sit — or that
 every seat is taken; on a phone held sideways two small chips, "👀 2" and
 "👀 Watching", that a tap opens for a few seconds). Tap a seat label for its
 menu — *Sit here* on a free seat, *Stand up (watch)* on your own; the host
-also seats players and moves them to the watchers. An offline player's seat
-waits for them. With ordinary seating, a watcher taps **Sit down**. A guest
+also seats players and moves them to the watchers, and *End the named
+seats* goes back to ordinary seating, where every watcher sits (a label is
+a button for the keyboard too: Tab, then Enter). A card game from 🎲 —
+Hold'em, Cards Against Humanity, Bridge, the simple dealer — started over a
+board game clears the table and ends its named seats, after a confirm, so
+everyone is dealt in. An offline player's seat waits for them. With
+ordinary seating, a watcher taps **Sit down**. A guest
 that loses the host for a minute reloads itself, as one that never found
 the host does.
 
@@ -242,7 +252,8 @@ included ("Alice hid 3 pieces", "rolled 2 hidden dice": never what they are).
   built-in dice — Backgammon's, Hexfront's — wear a cup. Roll them under the cup: everyone sees
   the cup shake, you alone see the faces, and the log says "rolled 3 hidden
   dice" — or, rolled with dice in the open, their values alone ("rolled 4
-  dice (2 hidden): 3 · 5"). **Reveal** (or **F**) shows them to everyone.
+  dice (2 hidden): 3 · 5"). **Reveal** (or **F**) on one lifts the whole cup:
+  its dice show to everyone.
 - **Racks and screens.** A board can carry a private zone: a **rack** or a
   **screen**, hatched in its owner's colour and labelled "🔒 Alice's rack"
   ("🔒 Your rack" on your own screen; "🔓 Nobody's rack" while its board
@@ -258,10 +269,14 @@ included ("Alice hid 3 pieces", "rolled 2 hidden dice": never what they are).
   hides least of what lies there: Dominoes' rack holds a whole draw game,
   21 tiles, none more than half covered, but a rack too small for what it
   holds has to cover some; a piece with no hidden side lands there face
-  up). In a box, a rack is a board's zone with
-  `"private": "reveal"` (a screen: `"keep"`) and `"owner": "board"` (the
-  board item's owner: `"owner": "seat"` in `forEachSeat` gives each seat
-  its own) or `"seat:<id>"`; its label stands beside it on the side of the
+  up). In a box, a rack is a board's zone — a polygon in the board's own
+  units — with `"private": "reveal"` (a screen: `"keep"`) and `"owner":
+  "board"` (the board item's owner: `"owner": "seat"` in `forEachSeat`
+  gives each seat its own) or `"seat:<id>"`, as in
+  `{ "id": "rack", "kind": "board", "w": 700, "h": 120, "zones": [ { "id":
+  "slots", "poly": [[0, 0], [700, 0], [700, 120], [0, 120]], "private":
+  "reveal", "owner": "board", "label": "rack" } ] }` (the whole field list
+  is under *Game boxes*); its label stands beside it on the side of the
   table's middle, so leave it room there, clear of the seat labels at the
   table's edge.
 - **Peeking.** **Peek** at any piece hidden from you — someone's rack tile,
@@ -335,10 +350,13 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   `store.js` is storage (IndexedDB) and image checking; `grid.js` is board
   geometry (cells, hexes, addresses like `e4`); `pieces.js` draws pieces,
   bags and boards (a board's structure is one SVG built from numbers only);
-  `app.js` is the network, rendering and input around them,
-  `templates.js` holds the shipped rules scripts and game boxes, and
-  `rules-worker.js` is the Web Worker a rules script runs in (on a copy of
-  the table built by the same `core.js`).
+  `boxio.js` reads game boxes in (`game.json`, zips, their images) and
+  writes the table out as one; `app.js` is the network, rendering and input
+  around them, `templates.js` holds the shipped rules scripts and game
+  boxes, and `rules-worker.js` is the Web Worker a rules script runs in (on
+  a copy of the table built by the same `core.js`). The implementation
+  contract the code and the tests cite — its sections (`spec §3f.4`) and
+  its numbered decisions (`D282`) — is [SPEC.md](SPEC.md).
 
 - **Transport**: Trystero WebRTC, signaling over public Nostr relays — no
   server, no accounts. The room id + password live in the invite link's hash
@@ -618,7 +636,7 @@ together, or as one **`.zip`** of them:
   board), size, `faces` (each a colour, a label, text, pips or an `img`, a
   file of the upload; `img` alone is the one-face shorthand) and its `back`
   (the face a hidden piece shows). A board carries its `grid`, `spaces`,
-  `zones` and `links` (see *Pieces, dice and boards*). **Decks** are
+  `zones` and `links` (every field is in the reference below). **Decks** are
   `deck.json` manifests (above), each named; a card's `count` makes copies,
   so the deck above holds three cards: Calm (0 and 1) and Storm (2). Every
   file a box names is relative to `game.json`; a game whose files lie in
@@ -653,6 +671,76 @@ together, or as one **`.zip`** of them:
 - **`meta`** (at most 8 KB) is for scripts (`t.box(id).meta`), and **public**:
   every player can read it. So are a box's name, pieces and decks' names;
   its setup, rules and saved rules state never leave the host.
+
+**Every field.** Sizes and places are table units (a card is 100 × 140); an
+item's `[x, y]` is its top-left corner, an address centres it. A field not
+listed is refused, naming itself ("pieces[2] («crate»): stack must be one
+of pile, count, none"). The quickest way to a box of your own is to set up
+a built-in one (Draughts, Backgammon, Dominoes) and *Export this table*:
+its `game.json` is a worked example of most of these.
+
+| `game.json` | |
+|---|---|
+| `name` | up to 40 characters |
+| `players` | `[min, max]`, 1–99 |
+| `table` | `{shape: "round", w: 1300 \| 1800 \| 2400}` or `{shape: "rect", w: 800–6000, h: 600–4000}`; `felt`: a colour |
+| `seats` | up to 12 named seats: `id`, `name` (24), `color`, and one place — `edge` (`bottom`, `top`, `left`, `right`; the default `bottom`), `angle` (degrees, 90 the bottom) or `at` (`[x, y]`) |
+| `lockable` | `"anyone"`: every player may 🔒 the box's pieces (else only the host) |
+| `pieces` | up to 500 types (below) |
+| `backs` | up to 50: `id`, a face (`color`, `label`, `text`, `img`), and the flags it shares with its types |
+| `decks` | up to 50 `deck.json` manifests, each with its `name` |
+| `setup` | up to 2,000 entries (below), placing at most 3,000 items (and the table holds 5,000) |
+| `rules` | `"rules.js"` (or the script's text): at most 200,000 characters |
+| `meta` | any JSON, at most 8 KB: public |
+
+| A piece type | |
+|---|---|
+| `id` | 1–32 of `A–Z a–z 0–9 _ -` |
+| `kind` | `token` (a disc 60 wide, stacks by count), `tile` (a 100 square that piles and goes in a hand, turns by 90°), `die` (56, faces 1–6) or `board` (`w` required; locked, below everything) |
+| `name` | what the log calls it (40; the id by default) |
+| `w`, `h` | 8–6000 (`h` is `w` by default) |
+| `shape` | `rect`, `round`, `disc`, `hex`, `meeple`, `pawn` |
+| `faces` | up to 64 (a die 2–100), each a face; `img` alone is the one-face shorthand |
+| `back` | a back's `id`: the piece can lie face down, hidden |
+| `stack` | `count` (identical pieces stack ×N), `pile` (a pile of tiles), `none` |
+| `hand` | `true`: it can be held in a hand |
+| `rotStep` | 0 (turns freely), 15, 30, 45, 60 or 90 |
+| `upright` | `true`: its label reads upright on every screen (a chess glyph) |
+| `meta` | any JSON, at most 2,000 characters: public |
+| a board's | `primary`, `grid`, `spaces`, `zones`, `links` (below) |
+
+| A face | |
+|---|---|
+| `color` | a colour (`#rgb`, `#rrggbb`, a name) |
+| `label` | up to 8 characters, drawn large |
+| `text` | up to 300, drawn small (lines kept) |
+| `img` | a file of the upload |
+| `pips` | 0–9, or `[a, b]` for a domino's two halves |
+| `name` | what the log calls this face (40), when it has no label |
+
+A face may be just a number or a text: `3` is `{label: "3"}`, and on a die
+`1`–`6` are pips.
+
+| A board's structure | |
+|---|---|
+| `grid` | `type`: `square` or `hex`; `cols`, `rows` (1–64), `cell` (8–400 units), `x`, `y` (its origin on the board); square: `snap` (`cell`, or `point` for go's intersections); hex: `hex` (`pointy`, `flat`); `labels` (`chess`, `go`, `xy`; hex `axial`); `draw` (`checker`, `lines`, `cells`, `none`); `colors` (two, for `checker`); `fills` (address → colour); `marks` (up to 64 addresses: go's star points) |
+| `spaces` | up to 1,000 named spots: `id` (not an address of the grid), `x`, `y` (the centre, board units), `r` (how near a drop snaps, 4–400), `mark` (`dot`, `ring`, `tri`, `rect`, `none`), `w`, `h`, `dir` (`up`, `down`, `left`, `right`: where pieces sharing it fan), `color`, `label` (12) |
+| `zones` | up to 100 areas: `id`, `poly` (3–64 corners `[x, y]`, board units), `label` (24), `color`, `private` (`reveal`: a rack; `keep`: a screen), `owner` (`board` or `seat:<id>`) |
+| `links` | up to 4,000 `[spaceA, spaceB]` pairs: the routes of a map (`t.neighbors`) |
+| `primary` | `true`: its addresses are the bare ones (`e4`); another board's say its type (`map:e4`) |
+
+| A setup entry | |
+|---|---|
+| `piece` | a type's id; `f` (its face), `up: false` (face down; it needs a back), `n` (a ×N stack, 2–999, of a type that stacks by count), `count` (1–200 copies) `spread` `[dx, dy]` apart |
+| `supply` | a type's id, `f`: an endless source of that piece |
+| `bag` | a list of members — a type's id, or `{t, f?, up?, n?}` — at most 1,000 pieces; `name`, `hand: true` (it may hold pieces for hands only) |
+| `deck` | a deck's name: a face-down pile of all of it; `shuffle`, `up`, `name` |
+| `pile` | a list of cards `{deck, i, up?}` or pieces `{piece, f?, up?}` (of one size, stacking as a pile); `name` |
+| `card` | `{deck, i}`; `up` |
+| `hands` | `{"#1": [...], "<seat id>": [...]}`: cards and pieces dealt into hands |
+| `group` | a list of entries; `shuffle: true` deals its face-down pieces' identities among their places |
+| `forEachSeat` | a list of entries made once for each seat (`"at": "seat"`, `"owner": "seat"`, `"vis": "seat"`) |
+| with any | `at` (see above), `rot` (degrees), `lock`, `owner` (`"seat:<id>"`, `"#k"`), `id` (8 hex digits: kept when free); a face-down piece's `vis`, `po`; `free`, `off`, `unzoned` |
 
 **Zips and their limits.** A zip is read in the browser (JSZip, fetched from
 the CDN the first time one is picked), within limits that hold whatever the
@@ -743,7 +831,7 @@ and a run of its own placements or removals is logged as one line
 ("📜 Rules removed 12 pieces: D4, E4, …"). Live drags never reach a script:
 only the drop does.
 
-A script can own the rules outright (Phase 3): `handle(t, a)` sees every
+A script can own the rules outright: `handle(t, a)` sees every
 gameplay action first and may veto it, let it through, or carry it out
 itself (`return true`: a castling king also moves its rook); with `strict:
 true` nothing happens that `handle` didn't take over, except the action

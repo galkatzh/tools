@@ -7,8 +7,6 @@
 // the 📦 dialog (picking files, answering #box-ask, reading what it says).
 'use strict';
 const zlib = require('zlib');
-const crypto = require('crypto');
-const h = require('./h');
 
 // --- zip ---------------------------------------------------------------------------
 /** A zip file (Buffer) of `entries`: {name, data (Buffer or string), store?
@@ -78,11 +76,7 @@ function png(w, ht, fill, { alpha = false, level = 6 } = {}) {
 }
 /** A pixel function px(x, y) → [r, g, b(, a)] as png()'s fill. */
 const pixels = (w, ht, px) => (raw, line, ch) => { for (let y = 0; y < ht; y++) for (let x = 0; x < w; x++) raw.set(px(x, y), y * line + 1 + ch * x); };
-/** A seeded PRNG in [0, 1) (mulberry32). */
-function prng(seed) {
-  let a = seed >>> 0;
-  return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-}
+const { prng } = require('./p1-lib'); // (a seeded PRNG in [0, 1): one copy, there)
 /** A "photograph": opaque, smooth colour fields with a grain in 4 × 4 blocks
  *  (seeded), so a PNG of it is large (4,000 × 3,000: about 5 MB) and a lossy codec shrinks it a lot. */
 function photo(w, ht, seed = 1) {
@@ -119,7 +113,7 @@ function magic(b) {
   if (u.toString('latin1', 0, 4) === 'GIF8') return 'image/gif';
   return null;
 }
-const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
+const { sha256 } = require('./img-lib'); // (one copy, there)
 /** A file to pick in a file input: {name, mimeType, buffer}. */
 const file = (name, data, mimeType = 'application/octet-stream') => ({ name, mimeType, buffer: Buffer.isBuffer(data) ? data : Buffer.from(data) });
 

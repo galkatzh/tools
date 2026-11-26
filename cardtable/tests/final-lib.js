@@ -131,6 +131,6 @@ function table(tpl, names, o = {}) {
 
 /** Bounding rect of every element matching sel: [{l, t, r, b, txt}]. */
 const rects = (p, sel) => p.$$eval(sel, (els) => els.map((el) => { const r = el.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom, txt: el.textContent.trim().slice(0, 30) }; }));
-const overlap = (a, b) => a.l < b.r - 1 && b.l < a.r - 1 && a.t < b.b - 1 && b.t < a.b - 1;
+const overlapPast1px = (a, b) => a.l < b.r - 1 && b.l < a.r - 1 && a.t < b.b - 1 && b.t < a.b - 1;
 
-module.exports = { mallory, table, rects, overlap };
+module.exports = { mallory, table, rects, overlapPast1px };

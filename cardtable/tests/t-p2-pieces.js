@@ -888,9 +888,11 @@ async function pass(env, mode) {
   ok(await lies(X, moved(it0, by)), say('(and dragged back)'));
 
   // ------------------------------------------------------------------------------------------
-  section(say('11. a drag on a locked board, or on Alice\'s piece, pans Bob\'s view: nothing sent, no notice; a tap selects'));
+  section(say('11. a drag on a locked board, or on Alice\'s piece, pans Bob\'s view: nothing sent, no notice but whose a piece is (D313); a tap selects'));
   const panOf = (p) => p.evaluate(() => /translate\(([-\d.]+)px, ([-\d.]+)px\)/.exec(document.getElementById('table').style.transform).slice(1).map(Number));
-  async function pans(p, id, what) {
+  /** A drag by p on item `id` pans p's view and sends nothing; the only notice is `told` (a drag on
+   *  another player's piece says whose it is, the first time for each owner: D313). */
+  async function pans(p, id, what, told) {
     await deselect(p);
     await quiet();
     const w0 = await wire(), v0 = await V(p), pan0 = await panOf(p), from = await spot(p, id);
@@ -900,7 +902,8 @@ async function pass(env, mode) {
     await h.sleep(1200); // (anything sent would have arrived by now)
     const got = await sentSince(w0), v1 = await V(p);
     ok(!got.some((x) => !x.includes('notice')), say(`…and nothing is sent: no act bytes from Bob, none at the host, no log line by either (${JSON.stringify(got)})`));
-    ok(!got.some((x) => x.includes('notice')), say('…and no notice appears on either screen'));
+    const notes = got.filter((x) => x.includes('notice'));
+    ok(told ? same(notes, [`${NAME.get(p)}'s notice: ${told}`]) : !notes.length, say(told ? `…and the one notice says whose it is: "${told}" (${JSON.stringify(notes)})` : '…and no notice appears on either screen'));
     ok(v1.items[id].x === v0.items[id].x && v1.items[id].y === v0.items[id].y, say('…it did not move'));
     await btn(p, '#view-btn'); // 🧭: back to the seat view (on the phone, the pan can take an item by the edge off the screen)
     await tap(p, await spot(p, id));
@@ -910,7 +913,7 @@ async function pass(env, mode) {
     await deselect(p);
   }
   await pans(bob, I.board, 'the locked board');
-  await pans(bob, I.D, "Alice's ×2 stack");
+  await pans(bob, I.D, "Alice's ×2 stack", "That piece is Alice's — only Alice moves or removes it");
   await press(alice, I.L, 'lock');
   ok(await both((v, a) => v.items[a]?.lock === true, I.L), say('(Alice locks the lone die)'));
   await deselect(alice);
@@ -923,7 +926,7 @@ async function pass(env, mode) {
   await press(bob, X, 'claim');
   ok(await both((v, a) => v.items[a.X]?.owner === a.p, { X, p: pidB }), say('(Bob claims a coin)'));
   await deselect(bob);
-  await pans(alice, X, "Bob's coin (from Alice's screen)");
+  await pans(alice, X, "Bob's coin (from Alice's screen)", "That piece is Bob's — only Bob moves or removes it");
   await pans(alice, I.board, 'the locked board (the host too: locks bind her)');
   if (!phone) {
     await quiet();
@@ -1023,7 +1026,7 @@ async function pass(env, mode) {
   section(say('the end state agrees on both screens; no notice but the refusals asked for'));
   const [va, vb] = await Promise.all(P.map(V));
   ok(same(va.items, vb.items), say('both views hold the same items'));
-  const asked = { Alice: ['🚫 That belongs to Bob'], Bob: ['🔒 That is locked in place', '🚫 That belongs to Alice'] };
+  const asked = { Alice: ['🚫 That belongs to Bob', "That piece is Bob's — only Bob moves or removes it"], Bob: ['🔒 That is locked in place', '🚫 That belongs to Alice', "That piece is Alice's — only Alice moves or removes it"] }; // (and the one notice per owner of D313's pans, in section 11)
   for (const p of P) {
     const seen = await toastsSince(p, 0);
     ok(same(seen, asked[NAME.get(p)]), say(`${NAME.get(p)}'s notices: ${JSON.stringify(seen)}`));

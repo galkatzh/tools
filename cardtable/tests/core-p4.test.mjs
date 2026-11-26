@@ -1634,7 +1634,7 @@ function indepRoundTrip() {
 // (5′) Deduplication
 // -----------------------------------------------------------------------------
 function indepDedup() {
-  section('(5′) addBox of an identical box returns the existing one; a one-field change registers a new box (§4c, §2j boxKey)');
+  section('(5′) addBox of an identical box returns the existing one; a one-field change registers a new box (§4c, §2j: the catalog key)');
   const T = hostTable({ seed: 41, players: [[BOB, 'Bob']] });
   const first = act(T, HOST, { t: 'addBox', box: tide() }), id = first.id, nBoxes = () => Object.keys(T.state.boxes).length, nDecks = () => Object.keys(T.state.decks).length;
   const [b0, d0, g0] = [nBoxes(), nDecks(), T.state.guestDeckChars || 0];

@@ -99,7 +99,7 @@ const pipField = (n) => `<div class="pips">${Array.from({ length: 9 }, (_, k) =>
  *  fields split along the long side); `extra`: markup laid over them (a
  *  board's SVG). A back without a colour is slate. `upright`: its label and
  *  text read upright on every screen (an `upright` type's: .uptext, D160). */
-export function faceHTML(face, w, h, box, img, back, extra = '', upright = false) {
+function pieceFace(face, w, h, box, img, back, extra = '', upright = false) {
   const bg = safeColor(face.color, back ? '#475569' : '#f8fafc'), up = upright ? ' uptext' : '';
   let s = `<div class="pface${back ? ' pback' : ''}" style="background-color:${bg};color:${contrastFor(bg)}">`;
   if (face.img !== undefined && box?.imgs[face.img]) s += `<div class="pimg">${img(box.imgs[face.img])}</div>`;
@@ -146,7 +146,7 @@ export function itemView(it, boxes, img, ownerColor, zoneLook) {
   }
   const m = shownPart(it), L = lookOf(m, boxes), F = flagsOf(m || {}, boxes), board = isBoard(it, boxes);
   const ty = L && !L.back && typeAt(boxes, m.t);
-  let html = L ? faceHTML(L.face, w, h, L.box, img, L.back, board && ty?.board ? boardSVG(ty, zoneLook) : '', !!ty?.upright) : PLACEHOLDER_HTML;
+  let html = L ? pieceFace(L.face, w, h, L.box, img, L.back, board && ty?.board ? boardSVG(ty, zoneLook) : '', !!ty?.upright) : PLACEHOLDER_HTML;
   if (it.k === 'p') html += `<span class="count">${num(it.n)}</span>${it.name ? `<span class="pname">${esc(it.name)}</span>` : ''}`;
   else if (it.k === 's') html += '<span class="count">∞</span>';
   else if (it.n >= 2) html += `<span class="count">×${num(it.n)}</span>`;
@@ -157,7 +157,7 @@ export function itemView(it, boxes, img, ownerColor, zoneLook) {
 /** A piece in the hand ({t, f, up?}: its owner sees its face) as markup filling a hand card. */
 export function handHTML(c, boxes, img) {
   const L = lookOf({ t: c.t, f: c.f }, boxes);
-  return L ? faceHTML(L.face, CARD_W * 0.6, CARD_H * 0.6, L.box, img, false) : PLACEHOLDER_HTML;
+  return L ? pieceFace(L.face, CARD_W * 0.6, CARD_H * 0.6, L.box, img, false) : PLACEHOLDER_HTML;
 }
 /** A piece {t, f} enlarged (the zoom overlay, a peek): {html, w, h}. */
 export function zoomView(c, boxes, img) {

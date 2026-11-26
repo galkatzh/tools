@@ -944,7 +944,7 @@ function testComponents() {
   r = script(T, (t) => t.newBox(json(CODE_BOX)));
   ok(r.ret === id && Object.keys(T.state.boxes).length === nBoxes && !r.log.length && !r.fx.some((e) => e.t === 'box'), `the same box again (a reset re-running setup): the same id, nothing registered, sent or logged (${r.ret})`);
   r = script(T, (t) => t.newBox({ ...json(CODE_BOX), pieces: [...CODE_BOX.pieces.slice(1), CODE_BOX.pieces[0]] }));
-  ok(r.ret === id && !r.log.length, 'the same content in another order is the same box (boxKey)');
+  ok(r.ret === id && !r.log.length, 'the same content in another order is the same box (its catalog key)');
   const DECKS = { name: 'With decks', pieces: [{ id: 'pawn', kind: 'token', faces: ['P'] }], decks: [{ name: 'Events', back: '#112233', cards: [{ name: 'Storm', text: 'Lose a turn' }, { name: 'Calm', count: 2 }] }] };
   const nDecks = Object.keys(T.state.decks).length;
   r = script(T, (t) => t.newBox(DECKS));
@@ -2089,7 +2089,7 @@ function testJournal() {
   t.move('m', 'd4');
   T3.rollbackTo(tok1);
   ok(stateOf(T3) === one && !indexProblems(T3).length, `rollbackTo(the first token): only the first segment is left, its data, asks and secret as they were (${stateOf(T3) === one ? 'yes' : stateDiff(one, stateOf(T3))})`);
-  const cp = T3.checkpoint();
+  const cp = T3.savepoint();
   t.move('m', 'h8');
   t.data.s4 = 4;
   T3.rollbackTo(cp);

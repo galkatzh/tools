@@ -17,7 +17,7 @@
 export const MODULE_V = 1;
 
 /** A hex's radius (centre to corner) for a grid of this cell size (its width across the flats). */
-export const hexR = (g) => g.cell / Math.sqrt(3);
+const hexR = (g) => g.cell / Math.sqrt(3);
 
 /** The centre of cell (or point) (c, r), board-local. */
 export function cellCenter(g, c, r) {
@@ -58,7 +58,7 @@ export const toAxial = (g, c, r) => (g.hex === 'flat' ? { q: c, r: r - (c - (c &
 export const fromAxial = (g, q, r) => (g.hex === 'flat' ? { c: q, r: r + (q - (q & 1)) / 2 } : { c: q + (r - (r & 1)) / 2, r });
 
 /** Go's column letters: A…T without I (and on, for boards up to 25 wide). */
-export const GO_FILES = 'ABCDEFGHJKLMNOPQRSTUVWXYZ';
+const GO_FILES = 'ABCDEFGHJKLMNOPQRSTUVWXYZ';
 const CHESS_FILES = 'abcdefghijklmnopqrstuvwxyz';
 /** The grid's label scheme, its default filled in. */
 export const labelsOf = (g) => g.labels || (g.type === 'hex' ? 'axial' : 'xy');
@@ -133,7 +133,7 @@ export function onBoard(b, px, py) {
 }
 
 /** Cube rounding: fractional axial (q, r) → the axial hex holding it. */
-export function hexRound(q, r) {
+function hexRound(q, r) {
   const s = -q - r;
   let rq = Math.round(q), rr = Math.round(r);
   const rs = Math.round(s), dq = Math.abs(rq - q), dr = Math.abs(rr - r), ds = Math.abs(rs - s);
@@ -200,7 +200,7 @@ export function spotAt(B, x, y) {
 }
 /** What local address `s` names on structure B: {space} (a space), {c, r}
  *  (a grid spot, any case), or null. */
-export function parseLocal(B, s) {
+function parseLocal(B, s) {
   const sp = typeof s === 'string' && (B.spaces || []).find((x) => x.id === s);
   if (sp) return { space: sp };
   return B.grid ? parseAddr(B.grid, s) : null;

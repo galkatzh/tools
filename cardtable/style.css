@@ -107,6 +107,7 @@ html { touch-action: pan-x pan-y; }
   background: #0f172af0; border-radius: 10px; box-shadow: 0 4px 14px #000c; max-height: 60%; overflow-y: auto;
 }
 #seat-menu button { padding: 8px 12px; text-align: left; white-space: nowrap; }
+@media (pointer: coarse) { #seat-menu button { min-height: 44px; } } /* a fingertip's target */
 /* watchers (top right): who watches, and a watcher's way back to a seat */
 #watch-box {
   position: absolute; top: 8px; right: 8px; z-index: 9600; display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
@@ -520,7 +521,7 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
 
 /* --- action bar --- */
 /* max-content + wrap: on a narrow screen the bar wraps into rows instead of
-   running off the edge (placeBar() clamps it by its real size). It is moved
+   running off the edge (placeBeside() clamps it by its real size). It is moved
    from the top-left corner by `translate` (app.js placeBeside: a pan frame
    that moves it lays nothing out). */
 #action-bar {
@@ -530,7 +531,7 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
   z-index: 100000; transform: translateX(-50%);
 }
 #action-bar button { font-size: 14px; padding: 8px 10px; white-space: nowrap; }
-@media (pointer: coarse) { #action-bar button { min-height: 44px; } } /* a fingertip's target */
+@media (pointer: coarse) { #action-bar button { min-height: 44px; min-width: 44px; } } /* a fingertip's target */
 /* a toggle that is on (✥ Move armed, the Give ▸ list open); an armed ✥
    shows its time running out (app.js renderBar sets how much has gone) */
 #action-bar button.on { background-color: #0f766e; box-shadow: inset 0 0 0 2px #2dd4bf; }
@@ -721,6 +722,10 @@ dialog {
 }
 dialog::backdrop { background: #000a; }
 dialog h3 { margin: 0 0 12px; }
+dialog h3[tabindex="-1"]:focus { outline: none; } /* (where a long dialog opens: its top, not its first control) */
+/* a long dialog's Close stays in reach of a thumb, at the bottom of the screen */
+#help-dialog, #games-dialog { padding-bottom: 0; }
+:is(#help-dialog, #games-dialog) > form:last-child { position: sticky; bottom: 0; background: #1e293b; padding: 4px 0 14px; box-shadow: 0 -8px 8px -6px #0008; }
 dialog form { display: flex; flex-direction: column; gap: 10px; }
 dialog label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
 dialog label.radio { flex-direction: row; align-items: center; gap: 6px; }
@@ -779,6 +784,7 @@ dialog ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 14px; }
 #box-dialog section { border-top: 1px solid #334155; padding: 10px 0 12px; }
 #box-dialog h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8; }
 #box-dialog > form { position: sticky; bottom: 0; background: #1e293b; padding: 4px 0 14px; box-shadow: 0 -8px 8px -6px #0008; } /* Close stays in reach of a thumb */
+#box-btn.new { box-shadow: inset 0 0 0 2px #f59e0b; } /* a guest's box came: until 📦 opens (D313) */
 .box-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .box-head form { display: none; }
 .box-head button { background: none; font-size: 18px; padding: 4px 10px; }

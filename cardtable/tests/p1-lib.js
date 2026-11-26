@@ -122,7 +122,7 @@ function truthOf(rec, hostPid) {
 }
 
 /** JSON with sorted keys at every level: equal values ⇔ equal strings. */
-const canon = (x) => JSON.stringify(x, (k, v) => (v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, v[key]])) : v));
+const canon = (x) => JSON.stringify(x, (_k, v) => (v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, v[key]])) : v));
 const same = (a, b) => canon(a) === canon(b);
 /** Where two values first differ, for a failure message ('' when equal). */
 function diff(a, b, at = '') {

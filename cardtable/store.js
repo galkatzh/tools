@@ -347,7 +347,7 @@ function keysOf(index) {
  *  show that IndexedDB doesn't hold yet (hold()): a catalog record never
  *  names an image the store lacks. `fresh`: the room's catalog goes first
  *  (a save that replaces the room's whole table). */
-export function writeSave(room, state, catalog = [], fresh = false) {
+function writeSave(room, state, catalog = [], fresh = false) {
   const imgs = unstored(catalog);
   return tx(imgs.length ? ['saves', 'catalog', 'assets'] : ['saves', 'catalog'], 'readwrite', (saves, cat, assets) => {
     if (fresh) cat.delete(IDBKeyRange.bound([room], [room, []]));

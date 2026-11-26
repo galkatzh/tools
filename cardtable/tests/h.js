@@ -314,7 +314,7 @@ const withStore = (page, fn, arg) => page.evaluate(async ([src, arg, v]) => {
  *  state.v, state} — and a catalog record per deck of `decks` ({id: deck in
  *  the v2 shape}). On a page where the app isn't running (plain()): it would
  *  save over it. */
-const plantSave = (page, room, state, decks = {}, ts = Date.now()) => withStore(page, async (S, [room, state, decks, ts]) => {
+const plantSave = (page, room, state, decks = {}, ts = Date.now()) => withStore(page, async (_S, [room, state, decks, ts]) => {
   const db = await new Promise((res, rej) => { const r = indexedDB.open('cardtable'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
   const t = db.transaction(['saves', 'catalog'], 'readwrite');
   t.objectStore('saves').put({ room, ts, v: state.v, state });

@@ -26,7 +26,10 @@ pieces need.
 ## Guiding principles
 
 1. **One piece model.**
-   - A card is just a piece with two faces, one of them hidden.
+   - A card is just a piece with two faces, one of them hidden. (As built,
+     cards stayed decks: `card` is not a piece kind, and a box that says it
+     is refused. Everything else below holds for cards too: owners, locks,
+     hiding, logging and scripts.)
    - Tokens, tiles, dice, boards and counters are the same thing with
      different faces, shapes and behaviours.
    - Hidden information, logging, flood control and scripts then work for
@@ -47,9 +50,9 @@ pieces need.
 5. **No physics, no 3D.**
    - A flat table seen from above, with snapping, keeps the app light enough
      to run in a browser tab with no build step.
-6. **Bundled games are public domain.**
+6. **Bundled games are public domain or original.**
    - The shipped demos are classics (draughts, chess, go, backgammon,
-     reversi, mancala, dominoes, nine men's morris).
+     reversi, dominoes) and two originals (Hexfront, Veiled Ranks).
    - Commercial games are played from the players' own uploaded game boxes,
      exactly like custom decks today.
 
@@ -60,6 +63,8 @@ pieces need.
 A **game box** (§4) generalizes today's deck. It holds a catalog of
 **piece types**, and items on the table refer to a type instead of
 repeating its data:
+(This is the design sketch; as built, `kind` is token, tile, die or board —
+cards stayed decks — and README's *Game boxes* lists every field a box takes.)
 
 ```js
 PieceType = {
@@ -429,7 +434,10 @@ None of this needs a game-specific engine feature.
 ## 7. Phases
 
 Each phase ships on its own, keeps every existing suite green, and comes with
-public-domain demos that prove the new primitives. The build order puts the
+demos — public domain or original — that prove the new primitives. The
+decisions taken on the way are below in prose; [SPEC.md](SPEC.md), the
+implementation contract, numbers them (§9, D1 onward), and the code and the
+tests cite those numbers. The build order puts the
 foundations first: scale before pieces, so pieces are built on incremental
 sync and rendering, and the Worker together with `handle`.
 
@@ -473,8 +481,8 @@ sync and rendering, and the Worker together with `handle`.
      decisions taken on the way:
      - A board's structure (grid, spaces, zones, links) is declared and
        drawn now, as an SVG our code builds from numbers only — no images,
-       no markup from a box; what it *means* (snapping, addresses) comes in
-       phase 3.
+       no markup from a box; what it *means* (snapping, addresses) came
+       with phase 3.
      - Dice and dominoes get their dots from a `pips` face field, not from
        Unicode glyphs, which iOS draws unevenly.
      - A piece can belong to a seat ("seat:white"): it follows whoever sits
@@ -484,8 +492,8 @@ sync and rendering, and the Worker together with `handle`.
        instead.
      - On touch, a drag takes one piece from a ×N stack; "Move all" in its
        bar arms a whole-stack drag for 5 s (there is no Shift key).
-     - `t.roll` and `t.random` come with the human roll; the other
-       components from code wait for phase 3.
+     - `t.roll` and `t.random` came with the human roll; the other
+       components from code came with phase 3.
      - A piece whose box is gone stays on the table as a "?", never deleted.
      - Guests get a box without its setup, which may hold hidden
        information.
@@ -626,7 +634,7 @@ sync and rendering, and the Worker together with `handle`.
      - Hooks are atomic: a veto or an error leaves none of the script's
        moves behind; a hook that fails after the move keeps the move and
        drops only its own changes. Every action is journaled for this,
-       and what it changed is exactly what a Worker will send the host.
+       and what it changed is exactly what a Worker sends the host.
      - A question and a hint show only while the rules run; a player's
        secret shows even while they are off, like their hand.
      - A script that touches the table from outside its hooks (an
@@ -1003,7 +1011,7 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
 - **No 3D, no physics, no tabletop "throwing".** Dice are rolled by the host,
   not simulated.
 - **No hosted asset library.** Players bring their own boxes, and the app ships
-  only public-domain demos.
+  only demos that are public domain or original.
 - **No hidden movement or fog of war in the engine.** `vis` and `t.secret` give
   scripts the tools, and the policy is theirs.
 - **No server.** The host's browser still holds the game. A big box lives in the

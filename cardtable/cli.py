@@ -333,13 +333,13 @@ def fmt_box(b, last):
             + (' · 📜 rules' if b.get('rules') else '') + f' · {src}' + (' · set up' if b['id'] == last else ''))
 
 
+NUMBER = re.compile(r'[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?')  # a finite number, as text
+
+
 def spot(args):
     """Splits args into (the rest joined, x, y): x and y when the last two are numbers."""
-    try:
-        if len(args) >= 2 and all(math.isfinite(float(a)) for a in args[-2:]):
-            return ' '.join(args[:-2]), float(args[-2]), float(args[-1])
-    except ValueError:
-        pass
+    if len(args) >= 2 and all(NUMBER.fullmatch(a) for a in args[-2:]):
+        return ' '.join(args[:-2]), float(args[-2]), float(args[-1])
     return ' '.join(args), None, None
 
 

@@ -21,10 +21,10 @@
     <button id="qr-btn" title="Show the invite link as a QR code">QR</button>
     <button id="games-btn" class="hidden" title="Pick a game to play">🎲 <span class="lbl">Games</span></button>
     <button id="box-btn" title="Game boxes: set one up, upload one, export the table">📦 <span class="lbl">Boxes</span></button>
-    <button id="rules-btn" title="Game rules script">📜</button>
-    <button id="view-btn" title="Reset your view to your seat">🧭</button>
-    <button id="log-btn" title="Table log & chat">💬</button>
-    <button id="help-btn" title="Help">?</button>
+    <button id="rules-btn" title="Game rules script" aria-label="Rules">📜</button>
+    <button id="view-btn" title="Reset your view to your seat" aria-label="Reset view">🧭</button>
+    <button id="log-btn" title="Table log & chat" aria-label="Log and chat">💬</button>
+    <button id="help-btn" title="Help" aria-label="Help">?</button>
     <span id="net-status" title="Peers connected">●</span>
   </header>
 
@@ -36,20 +36,20 @@
       <!-- multi-select (app.js, spec §4g): the rubber band, the ⬚ select mode, its chip; the stack inspector -->
       <div id="band" class="hidden"></div>
       <div id="inspector" class="hidden" role="dialog" aria-label="Stack inspector"></div>
-      <button id="sel-mode" aria-pressed="false" title="Select several: drag on the table to draw a box around pieces, or tap them (with a mouse, Shift+drag and Shift+click do it too)">⬚</button>
+      <button id="sel-mode" aria-pressed="false" aria-label="Select several" title="Select several: drag on the table to draw a box around pieces, or tap them (with a mouse, Shift+drag and Shift+click do it too)">⬚</button>
       <div id="sel-chip" class="hidden" role="status"></div>
       <div id="rules-row"><div id="secret" class="hidden"><button id="secret-head" title="Only you see this — tap to fold it away">🔒 For you</button><div id="secret-text"></div></div><div id="rules-btns" class="hidden"></div></div>
       <div id="seat-menu" class="hidden"></div>
       <div id="watch-box"><div id="watchers" class="hidden"></div><div id="watch-me" class="hidden"><span id="watch-me-text"></span><button id="sit-btn" class="hidden">Sit down</button></div></div>
       <div id="turn-cue" class="hidden">⏳ Your turn</div>
-      <div id="game-strip" class="hidden"><button id="game-strip-ask" title="All games, with what they are">🎲<span> What are we playing?</span></button><span class="games"></span><button id="game-strip-x" title="Dismiss">✕</button></div>
+      <div id="game-strip" class="hidden"><button id="game-strip-ask" title="All games, with what they are">🎲<span> What are we playing?</span></button><span class="games"></span><button id="game-strip-x" title="Dismiss" aria-label="Dismiss">✕</button></div>
     </div>
     <aside id="side">
       <div id="side-head">Table log</div>
       <div id="log"></div>
       <form id="chat-form">
         <input id="chat-input" maxlength="300" placeholder="Say something…" autocomplete="off">
-        <button title="Send">➤</button>
+        <button title="Send" aria-label="Send">➤</button>
       </form>
     </aside>
     <!-- click-through top-centre column: the banner, then a toast below it -->
@@ -58,7 +58,7 @@
 
   <!-- the rules' question to this player (app.js renderAsk): a sheet of its own, above the hand bar -->
   <section id="ask" class="hidden" aria-live="polite">
-    <div id="ask-card"><div id="ask-head"><span id="ask-prompt"></span><span id="ask-of"></span></div><div id="ask-body"></div><button id="ask-min" title="Fold the question away (it stays until you answer)">▾</button></div>
+    <div id="ask-card"><div id="ask-head"><span id="ask-prompt"></span><span id="ask-of"></span></div><div id="ask-body"></div><button id="ask-min" title="Fold the question away (it stays until you answer)" aria-label="Fold the question away">▾</button></div>
     <button id="ask-chip">❓ Rules ask</button>
   </section>
 
@@ -104,7 +104,7 @@
 
   <!-- game boxes (app.js renderBoxes): the catalog, the built-in boxes, an upload, the export -->
   <dialog id="box-dialog">
-    <div class="box-head"><h3>📦 Game boxes</h3><form method="dialog"><button title="Close" aria-label="Close">✕</button></form></div>
+    <div class="box-head"><h3 tabindex="-1" autofocus>📦 Game boxes</h3><form method="dialog"><button title="Close" aria-label="Close">✕</button></form></div>
     <div id="box-msg" class="box-err" role="alert"></div>
     <section><h4>On this table</h4><div id="box-list" class="box-rows"></div></section>
     <section id="box-builtin"><h4>Built in</h4><div id="box-builtins" class="box-rows"></div></section>
@@ -177,7 +177,7 @@
   </dialog>
 
   <dialog id="help-dialog">
-    <h3>How to play</h3>
+    <h3 tabindex="-1" autofocus>How to play</h3>
     <ul>
       <li><b>Drag</b> cards and piles to move them around the table.</li>
       <li><b>Click</b> a card or pile for actions: flip, rotate, shuffle, deal, draw, delete.</li>
@@ -189,12 +189,12 @@
       <li><b>Pieces, dice and boards</b> (🎲 Games → Draughts, Backgammon, Dominoes, Veiled Ranks): <b>drag</b> a piece to move it. From a <b>×N stack</b> a drag takes one (drop it on a matching stack, its supply or a bag to put it there); <b>Shift+drag</b> — on a touch screen, <b>✥ Move all</b> — moves the whole stack. Drag out of a <b>supply</b> (∞) to take a new piece; Shift+drag (or <b>✥ Move</b>) moves the supply itself. Drop a piece on a <b>matching stack</b> to add it, back on its supply to return it, onto a <b>bag</b> to put it in, onto a tile of the same size (or its pile) to pile them, onto the hand bar to hold it.</li>
       <li><b>Double-click</b> a piece to turn it over, a <b>die</b> to roll it together with the dice touching it, a supply or a bag to take one out. <b>Click</b> a piece for its buttons: 🎲 Roll, ⟲ ⟳, ✂ Take 1, ✋ Hand, 🔒 Lock, 👤 Claim, 🗑.</li>
       <li>On a board, a piece <b>snaps</b> to the square, point, hex or space under it: while you drag, a dashed outline shows where it will land and a chip names the spot (<b>e4</b>, <b>p6</b>). Pieces sharing a spot fan out, the top one marked <b>×k</b>; a tap or a drag there takes the top one you may move. Dice never snap.</li>
-      <li>A <b>locked</b> piece (🔒; boards are locked) or one <b>another player owns</b> (select it: its owner's coloured dot shows) stays put: dragging it pans the view. Keys, with a piece selected: <b>R</b> / <b>Shift+R</b> rotate, <b>F</b> flips, <b>Space</b> rolls, <b>Delete</b> removes, <b>Esc</b> deselects. On a touch screen, <b>press and hold</b> a piece to read its face.</li>
+      <li>A <b>locked</b> piece (🔒; boards are locked) or one <b>another player owns</b> (select it: its owner's coloured dot shows) stays put: dragging it pans the view, and says whose it is — a jumped man or a hit checker is taken off by its owner. Keys, with a piece selected: <b>R</b> / <b>Shift+R</b> rotate, <b>F</b> flips, <b>Space</b> rolls, <b>Delete</b> removes, <b>Esc</b> deselects. On a touch screen, <b>press and hold</b> a piece to read its face.</li>
       <li><b>Several at once</b>: <b>Shift+drag</b> on the felt (or on a board) draws a box around pieces, <b>Shift+click</b> adds one or takes it out; on a touch screen tap <b>⬚</b> (bottom left), then draw the box with one finger and tap pieces in or out. Only what you may move is picked (a chip counts the rest). Drag any of them and they all go; their bar — one row at the top of the table while you pick (it gets out of the way of any piece that comes there), or in the toolbar's place when pieces lie there; a swipe or the mouse's wheel scrolls it when it is wider than the screen — acts on them all — ⟲ ⟳, Flip, 🎲 Roll, 🔒, 👜 Into bag, 🗑 (more than five ask first), and <b>R</b>, <b>F</b>, <b>Space</b>, <b>Delete</b>. <b>Esc</b>, a click on the felt, <b>✕</b> or ⬚ off clears them and brings the toolbar back.</li>
       <li><b>What's in a stack or a crowded spot</b>: tap a stack's <b>×N</b> (on a touch screen, press and hold the stack), a spot's <b>×k</b>, or <b>⋯ Inspect</b> in the bar. Take <b>k</b> off the stack, <b>Take all</b> to carry the whole of it, or pick one piece of the spot: tap it for its bar, or drag it out of the list.</li>
-      <li>Some games have <b>named seats</b> (Light, Dark): tap a seat label to sit there or to stand up and watch. Watchers are listed top right (👀); with automatic seating a watcher taps <b>Sit down</b>.</li>
+      <li>Some games have <b>named seats</b> (Light, Dark): tap a seat label to sit there or to stand up and watch. Watchers are listed top right (👀); with automatic seating a watcher taps <b>Sit down</b>. The host ends the named seats from any seat label's menu (<b>End the named seats</b>: everyone sits); a card game from 🎲 ends them too, with the board.</li>
       <li><b>Peek</b> shows you a face-down card (or the top of a pile), or any piece hidden from you, privately — but everyone sees in the log <i>that</i> you peeked.</li>
-      <li><b>Private pieces</b>: <b>🙈 Hide</b> (or <b>H</b>) turns a piece's back to everyone but you — on a die it is a <b>cup</b> over it and the unlocked dice touching it: roll them and only you see the faces. Yours show face up with <b>🙈</b> and a hatched corner; nobody else may turn, roll or take them; <b>Reveal</b> shows them to all. A <b>rack</b> or <b>screen</b> (hatched, "🔒 Alice's rack") hides whatever is set down in it for its owner — never shows anyone what they couldn't see; when the rules refuse a move of your own hidden piece, only you hear it; a bag's <b>🔒 Draw to my rack</b> draws straight into yours. A tile taken off a rack is played face up; a unit leaving a screen stays hidden. Two games are made of it (🎲 Games): <b>Dominoes</b> (Draw 7 into your rack, then play a tile on your turn or draw until you can) and <b>Veiled Ranks</b> (hidden units: deploy behind your screen, ✓ Ready, then step and attack — ranks show only in combat; take the Banner).</li>
+      <li><b>Private pieces</b>: <b>🙈 Hide</b> (or <b>H</b>) turns a piece's back to everyone but you — on a die it is a <b>cup</b> over it and the unlocked dice touching it: roll them and only you see the faces. Yours show face up with <b>🙈</b> and a hatched corner; nobody else may turn, roll or take them; <b>Reveal</b> shows them to all (on a die, the whole cup). A <b>rack</b> or <b>screen</b> (hatched, "🔒 Alice's rack") hides whatever is set down in it for its owner — never shows anyone what they couldn't see; when the rules refuse a move of your own hidden piece, only you hear it; a bag's <b>🔒 Draw to my rack</b> draws straight into yours. A tile taken off a rack is played face up; a unit leaving a screen stays hidden. Two games are made of it (🎲 Games): <b>Dominoes</b> (Draw 7 into your rack, then play a tile on your turn or draw until you can) and <b>Veiled Ranks</b> (hidden units: deploy behind your screen, ✓ Ready, then step and attack — ranks show only in combat; take the Banner).</li>
       <li>Everyone gets a <b>seat</b> around the table, and the table auto-turns so your seat is at the bottom. Cards you play land facing you.</li>
       <li><b>Scroll</b> (or pinch on a trackpad) to zoom, <b>drag empty felt</b> to pan; on touch screens, <b>pinch with two fingers</b> to zoom, rotate and pan at once. Your view is yours alone — <b>🧭</b> resets it to your seat.</li>
       <li>The <b>host</b> can enlarge the table (Table: small / medium / large) when more players join.</li>
@@ -223,7 +223,7 @@
   "setup": [
     { "piece": "sea", "at": "center" },
     { "forEachSeat": [{ "piece": "ship", "at": "seat", "owner": "seat" }] } ] }</pre>
-        Every field — decks, dice, hidden pieces, hands, rules — is in <a href="https://github.com/galkatzh/tools/blob/main/cardtable/README.md#game-boxes" target="_blank" rel="noopener">the README's Game boxes</a>.</li>
+        Every field — decks, dice, hidden pieces, hands, rules — is in the field reference of <a href="https://github.com/galkatzh/tools/blob/main/cardtable/README.md#game-boxes" target="_blank" rel="noopener">the README's Game boxes</a>; exporting a built-in box from 📦 gives a worked example.</li>
       <li><b>Copy invite</b> and send the link to friends — or tap <b>QR</b> so they can scan it with a phone. Everyone sees the table live over WebRTC (no server).</li>
       <li>The game lives in the host's browser tab — if the host closes it, reopening the same link on the host's browser resumes the game.</li>
     </ul>

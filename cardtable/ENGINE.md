@@ -41,31 +41,37 @@ A rules script is a JS object literal the host writes in a dialog:
   name: 'Turn order + auto-deal',
   setup(t) {            // runs each time the host enables the rules
     t.data.turn ??= t.players()[0].id;
-    t.dealToAll(deckPileId, 2);
+    const deck = t.find({ kind: 'pile' })[0];
+    if (deck) t.dealToAll(deck.id, 2);
   },
-  handle(t, a) {        // (Phase 3) take the action over: before validate
+  handle(t, a) {        // take the action over: before validate
     // undefined → go on (validate, then the default effect); 'reason' → veto;
     // true → handled: the script did what the action means (t.* ops), no default effect
   },
-  strict: true,         // (Phase 3) a ruled action handle() doesn't return true for is refused…
+  strict: true,         // a ruled action handle() doesn't return true for is refused…
   allow: ['rot'],       // …unless it is listed here (seat never is refused)
   validate(t, a) {      // veto: return a string to block the action
-    if (PLAY_ACTIONS.includes(a.t) && a.p !== t.data.turn)
+    if (['play', 'draw', 'deal'].includes(a.t) && a.p !== t.data.turn)
       return "It's not your turn";
   },
   onAction(t, a) {      // automation: react after an action took effect
     if (a.t === 'play') t.data.turn = t.nextSeat(t.data.turn);
   },
   buttons: (t) => [{ id: 'flop', label: 'Deal flop' }],
-  onButton(t, id, byPid) { ... },   // scripted UI buttons
-  onChat(t, text, byPid) { ... },   // chat commands: bids, raises, votes, ...
-  onJoin(t, pid) { ... },           // player joins/rejoins mid-game (see below)
-  onLeave(t, pid) { ... },          // player disconnects
-  onTimer(t, tag) { ... },          // fired by t.schedule(seconds, tag)
-  onAnswer(t, pid, id, value) { ... }, // (Phase 3) a player answered t.ask
-  onSelect(t, pid, id) { ... },     // (Phase 3) a player picked up or selected an item: t.hint
+  onButton(t, id, byPid) {},   // scripted UI buttons
+  onChat(t, text, byPid) {},   // chat commands: bids, raises, votes, ...
+  onJoin(t, pid) {},           // player joins/rejoins mid-game (see below)
+  onLeave(t, pid) {},          // player disconnects
+  onTimer(t, tag) {},          // fired by t.schedule(seconds, tag)
+  onAnswer(t, pid, id, value) {}, // a player answered t.ask
+  onSelect(t, pid, id) {},     // a player picked up or selected an item: t.hint
 })
 ```
+
+(It runs as it stands: paste it in 📜 and Enable. The **Blank** template,
+the 📜 dialog's default, is the same skeleton with every hook commented;
+**Chess** is a full-rules script that uses `handle`, `strict`, `t.ask` and
+`t.hint`.)
 
 Every hook is optional; a script implements only what its game needs. The
 hook set — action veto, action react, UI events, join/leave, timers — is
@@ -523,11 +529,11 @@ setups. `{x, y, free: true}` skips it.
   `a.handled`): whatever a client sends of them is dropped, on every
   action — but an `owner` action's own `to`, the new owner.
 
-### Components from code (Phase 3)
+### Components from code
 
 - `t.newBox({name, pieces, backs, decks})` registers a game box and
-  returns its id, in the `game.json` format (README, "Pieces, dice and
-  boards"): `pieces` a list of types with their `id` (and a board's `grid`,
+  returns its id, in the `game.json` format (README, "Game boxes", whose
+  field reference lists every field): `pieces` a list of types with their `id` (and a board's `grid`,
   `spaces`, `zones`, `links` and `primary` on the piece itself), `backs` a
   list (`{id, color, label}`), `decks` text decks (`{name, back, cards:
   [{name, text, color, bg, meta, count}]}`, registered as ordinary decks:
@@ -760,8 +766,9 @@ optimistic drag reverts. An action that changes nothing (its target vanished
 a moment earlier) re-sends them the same way, and so does an action that
 flood control refused (those re-sends are themselves rate-limited). Exempt from validation: `hello`, `name`, `chat`,
 `rulesBtn` (the engine itself refuses a button not offered to the
-player), and the host-only `size` (= `table`), `setRules`, `loadBox` and
-`clear` actions. The piece actions (`roll`, `face`, `split`, `join`, `take`,
+player), and the host-only `size` (= `table`), `setRules`, `loadBox`,
+`clear` and `endSeats` (back to ordinary seating: every watcher sits)
+actions. The piece actions (`roll`, `face`, `split`, `join`, `take`,
 `pull`, `toBag`, `lock`, `owner`, `seat`) are validated like the card ones
 (`split {id, n, onto}` names its target in `onto`: another ×N stack, the
 stack's supply — the `n` go back — or a bag — they go in —, all at once);
@@ -1088,8 +1095,10 @@ not in the 📜 dropdown.
   `t.linked` and zones; `core.js` keeps the addresses (the primary board,
   display forms) and the `byAt` / `byZone` indexes.
 - `cardtable/templates.js`: the example scripts (`RULES_TEMPLATES`: the
-  card games, chess, go — `goTemplate(n)` — and reversi) and the 🎲
-  picker's catalog (`GAMES`).
+  card games, chess, go — `goTemplate(n)` — and reversi), the 🎲
+  picker's catalog (`GAMES`) and the built-in game boxes (`BOXES`:
+  Draughts, Backgammon, Hexfront, Dominoes and Veiled Ranks, the last three
+  with their scripts).
 - `cardtable/rules-worker.js`: the Worker — the version check, the
   hardening (the allowlist of globals, the throwing timers and page APIs,
   the lockdown that freezes the built-ins and the engine's modules), the

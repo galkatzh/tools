@@ -1,6 +1,8 @@
-// Card Table — the shipped rules scripts (see ENGINE.md §5) and the 🎲 game
-// picker's catalog. Each template is the source text of a script, exactly as
-// the 📜 dialog shows it and the host's rules runner evaluates it.
+// Card Table — the shipped rules scripts (see ENGINE.md §5), the 🎲 game
+// picker's catalog (GAMES) and the built-in game boxes (BOXES: Draughts,
+// Backgammon, Hexfront, Dominoes, Veiled Ranks, with the last three's
+// scripts). Each template is the source text of a script, exactly as the 📜
+// dialog shows it and the host's rules Worker evaluates it.
 
 /** The code version (see core.js MODULE_V): the same in every cardtable module. */
 export const MODULE_V = 1;
@@ -10,15 +12,26 @@ export const RULES_TEMPLATES = {
   name: 'My game',
   // Runs once when you enable the rules.
   setup(t) { t.say('Rules are on.'); },
+  // To own the rules outright: see an action first. Return undefined to go
+  // on (validate, then its usual effect), a string to refuse it with that
+  // reason, or true when the script carried it out itself (t.move, …).
+  // handle(t, a) { },
+  // strict: true,  // refuse every action handle() doesn't return true for…
+  // allow: ['rot'], // …but these (a seat change is never refused)
   // Return a string to BLOCK a player's action. a = {t, p, ...}; a.p is the
   // acting player's id, a.t the action type ('play', 'draw', 'move', ...).
   validate(t, a) { },
   // React AFTER an action applies — automations go here.
   onAction(t, a) { },
-  // Buttons shown under the table ({pid: playerId} restricts who sees one).
+  // Buttons shown above your own seat label ({pid: playerId} restricts who sees one).
   buttons: (t) => [],
   onButton(t, id, byPid) { },
   onJoin(t, p) { }, onLeave(t, p) { },
+  // A chat line (bids, votes, commands).
+  // onChat(t, text, byPid) { },
+  // t.ask(p, {id, prompt, options}) is answered here; a tap on a piece here (t.hint shows its moves).
+  // onAnswer(t, p, id, value) { },
+  // onSelect(t, p, id) { },
   // t.schedule(seconds, tag) later fires onTimer(t, tag).
   onTimer(t, tag) { },
 })`,
@@ -1795,38 +1808,42 @@ export function goTemplate(n) {
 
 /** One entry per shipped template (k = its RULES_TEMPLATES key; `clear`: the
  *  game builds its own board, so it starts on a cleared table with a fresh
- *  state), the box games (`box`: a BOXES key — set up on a cleared table,
- *  with the box's own rules when it has some, else none), the free table
- *  (rules off) and a custom script (the 📜 dialog). */
+ *  state; `cards`: a card game that deals to every player, so over a board
+ *  game — a box set up, or named seats — it clears the table and ends the
+ *  named seats first, D311), the box games (`box`: a BOXES key — set up on a
+ *  cleared table, with the box's own rules when it has some, else none), the
+ *  free table (rules off) and a custom script (the 📜 dialog). */
 export const GAMES = [
-  { k: 'holdem', emoji: '🃏', title: "Texas Hold'em", short: "Hold'em", pitch: 'No-limit poker: chips, blinds, betting rounds, automatic showdown', players: '2–8 players' },
-  { k: 'cah', emoji: '😈', title: 'Cards Against Humanity', pitch: 'Fill in the blank; the Card Czar crowns the funniest answer', players: '3+ players' },
-  { k: 'bridge', emoji: '🤝', title: 'Bridge', pitch: 'Partners bid in the chat, then tricks, trumps, the dummy and scoring', players: '4 players' },
+  { k: 'holdem', cards: true, emoji: '🃏', title: "Texas Hold'em", short: "Hold'em", pitch: 'No-limit poker: chips, blinds, betting rounds, automatic showdown', players: '2–8 players' },
+  { k: 'cah', cards: true, emoji: '😈', title: 'Cards Against Humanity', pitch: 'Fill in the blank; the Card Czar crowns the funniest answer', players: '3+ players' },
+  { k: 'bridge', cards: true, emoji: '🤝', title: 'Bridge', pitch: 'Partners bid in the chat, then tricks, trumps, the dummy and scoring', players: '4 players' },
   { k: 'chess', emoji: '♟️', title: 'Chess', clear: true, pitch: 'Every rule enforced: pick a piece up to see its moves; castling, en passant, promotion, mate and the draws', players: '2 players' },
   { k: 'go9', emoji: '⚫', title: 'Go 9 × 9', short: 'Go 9×9', clear: true, pitch: 'Stones from your bowl onto the points; captures and ko enforced; pass twice, then Count', players: '2 players' },
   { k: 'go19', emoji: '⚪', title: 'Go 19 × 19', short: 'Go 19×19', clear: true, pitch: 'The full board: 361 points, area scoring, komi 6.5 (capture dead stones before passing)', players: '2 players' },
   { k: 'reversi', emoji: '🔘', title: 'Reversi', clear: true, pitch: 'Outflank to turn discs over; your pile shows where a disc may go; the most discs win', players: '2 players' },
-  { k: 'draughts', emoji: '⛀', title: 'Draughts', box: 'draughts', pitch: 'Checkers on an 8 × 8 board, played by hand: move, jump, crown with a double-click', players: '2 players' },
-  { k: 'backgammon', emoji: '🎲', title: 'Backgammon', box: 'backgammon', pitch: 'The race around the board, played by hand: two dice and the doubling cube', players: '2 players' },
+  { k: 'draughts', emoji: '⛀', title: 'Draughts', box: 'draughts', pitch: 'Checkers on an 8 × 8 board, played by hand: move, jump, crown with a double-click; a jumped man is taken off by its owner', players: '2 players' },
+  { k: 'backgammon', emoji: '🎲', title: 'Backgammon', box: 'backgammon', pitch: 'The race around the board, played by hand: two dice and the doubling cube; a hit checker goes to the bar by its owner’s hand', players: '2 players' },
   { k: 'dominoes', emoji: '🁫', title: 'Dominoes', box: 'dominoes', pitch: 'The draw game: seven tiles each in a rack only you can see, then match ends in turn', players: '2 players' },
   { k: 'ranks', emoji: '🎭', title: 'Veiled Ranks', box: 'ranks', pitch: 'Hidden units: deploy behind your screen, then attack — ranks show only in combat. Take the Banner', players: '2 players' },
   { k: 'turns', emoji: '🔁', title: 'Turn order', short: 'Turns', pitch: 'Any game you like, one player at a time', players: '2+ players' },
-  { k: 'dealer', emoji: '🤵', title: 'Simple dealer', short: 'Dealer', pitch: 'A "Deal 1 to all" button and nothing enforced', players: 'any number' },
+  { k: 'dealer', cards: true, emoji: '🤵', title: 'Simple dealer', short: 'Dealer', pitch: 'A "Deal 1 to all" button and nothing enforced', players: 'any number' },
   { k: 'free', emoji: '🖐', title: 'Free table', pitch: 'No rules: deal, move and flip cards however you like', players: 'any number' },
   { k: 'custom', emoji: '📜', title: 'Custom script…', short: 'Custom…', pitch: 'Write or paste your own rules', players: '' },
 ];
 
 // --- the built-in game boxes (spec §2g) -----------------------------------------
-// Art-free classics, a few KB of JSON each, in the Box shape that core.js's
+// Art-free classics and two originals (Hexfront, Veiled Ranks), a few KB of JSON each, in the Box shape that core.js's
 // cleanBox checks (faces shorthand and defaults included); their coordinates
 // are computed by the small generators below. They enter a table's catalog
 // only when the host loads one (loadBox).
 const range = (n) => Array.from({ length: n }, (_, k) => k);
 
 /** Draughts: an 8 × 8 board, 12 men a side on the dark squares (rows 0–2
- *  dark, 5–7 light, counted from the top), crowned by a flip (face 1: ♛). */
+ *  dark, 5–7 light, counted from the top), crowned by a flip (face 1: ♛).
+ *  The table is taller than wide, a 260-unit band by each seat's edge, as
+ *  chess's (D162, D314): a phone held upright draws the board as large as it can. */
 function draughts() {
-  const W = 1400, H = 1200, B = 840, bx = (W - B) / 2, by = (H - B) / 2, cell = 100, o = 20, man = 80;
+  const W = 1000, H = 1360, B = 840, bx = (W - B) / 2, by = (H - B) / 2, cell = 100, o = 20, man = 80;
   /** A man's top-left on square (c, r), in table coordinates. */
   const at = (c, r) => [bx + o + c * cell + (cell - man) / 2, by + o + r * cell + (cell - man) / 2];
   const men = (rows, side) => rows.flatMap((r) => range(8).filter((c) => (c + r) % 2 === 1).map((c) => ({ piece: side, at: at(c, r), owner: `seat:${side}` })));
@@ -1849,6 +1866,11 @@ function draughts() {
   };
 }
 
+/** A die's cup (spec §5g): the back a built-in die wears, so 🙈 Hide rolls it
+ *  out of sight — a back no other piece wears (a hidden die and a hidden
+ *  token never look alike, D279). */
+const CUP = { face: { color: '#7c2d12', label: '?' } };
+
 /** Backgammon: 24 points (light's numbering: light's home board is the
  *  bottom right, point 1 next to the trays), the bar, two trays, 15 checkers
  *  a side in the standard start, two dice side by side and the doubling cube.
@@ -1856,13 +1878,10 @@ function draughts() {
  *  point's `dir`: from its base toward its tip, spec §3g); the cube waits
  *  beside the board, off every space, so the checkers sent to the bar never
  *  fan in with it. */
-/** A die's cup (spec §5g): the back a built-in die wears, so 🙈 Hide rolls it
- *  out of sight — a back no other piece wears (a hidden die and a hidden
- *  token never look alike, D279). */
-const CUP = { face: { color: '#7c2d12', label: '?' } };
-
 function backgammon() {
-  const W = 1800, H = 1300, BW = 1400, BH = 1000, bx = (W - BW) / 2, by = (H - BH) / 2, man = 80;
+  // (the table: the board, 40 units either side of it and a 260-unit band by
+  // each seat's edge, as chess's (D162, D314) — a phone held upright fits its width)
+  const W = 1480, H = 1520, BW = 1400, BH = 1000, bx = (W - BW) / 2, by = (H - BH) / 2, man = 80;
   /** Point k's column centre, board-local (the bar is at 610–690, the trays right of 1300). */
   const colX = (k) => (k <= 6 ? 1240 - 100 * (k - 1) : k <= 12 ? 560 - 100 * (k - 7) : k <= 18 ? 60 + 100 * (k - 13) : 740 + 100 * (k - 19));
   const top = (k) => k > 12;
@@ -1902,7 +1921,7 @@ function backgammon() {
       point(24, 2, 'light'), point(13, 5, 'light'), point(8, 3, 'light'), point(6, 5, 'light'),
       point(1, 2, 'dark'), point(12, 5, 'dark'), point(17, 3, 'dark'), point(19, 5, 'dark'),
       { piece: 'die', count: 2, spread: [64, 0], at: [bx + 960, by + BH / 2 - 28] },
-      { piece: 'cube', at: [bx + BW + (W - bx - BW) / 2 - 32, H / 2 - 32] },
+      { piece: 'cube', at: [bx + BW - 64, by + BH + 40] }, // (in Light's band, by the trays: off every space)
     ],
   };
 }
@@ -2055,7 +2074,7 @@ function hexfront() {
       for (let k = 0; k < n; k++) setup.push({ piece: `${side}-${arm}`, n: 10, at: spots.shift(), owner: `seat:${side}` });
     }
   }
-  const bx = (W - BW) / 2, by = (H - BH) / 2;
+  const bx = (W - BW) / 2;
   setup.push(
     { piece: 'd6', count: 2, spread: [70, 0], at: [bx + BW + 60, H / 2 - 28] },
     { pile: EVENTS.map((_, f) => ({ piece: 'event', f })), at: [bx - 160, H / 2 - 70], name: 'Events' },
@@ -2181,11 +2200,13 @@ const DOMINOES_RULES = `(() => {
       Object.assign(t.data, { dealt: false, turn: null, lead: null, played: [], passes: 0, taking: null });
       t.say('Dominoes: sit at South and North, then press Draw 7');
     },
-    // No peeking. A rack's tiles are its seat's; one leaves it (a play) on that
+    // No peeking, and nothing removed (a deleted boneyard ended the round for
+    // both). A rack's tiles are its seat's; one leaves it (a play) on that
     // seat's turn alone, and the boneyard draws into the rack of the seat to move.
     validate(t, a) {
       if (a.t === 'peek') return 'No peeking at hidden tiles';
       if (a.t === 'hide') return 'Tiles hide in your rack';
+      if (a.t === 'del') return 'The tiles and the boneyard stay on the table';
       const d = t.data, mine = seatOf(t, a.p), it = typeof a.id === 'string' && t.item(a.id);
       const why = !d.turn ? (d.dealt ? 'The round is over — ♻ New round to play again' : 'Press Draw 7 first') : mine === d.turn ? '' : "It's " + nameOf(t, d.turn) + "'s turn";
       if (a.t === 'pull' && it?.id === boneyard(t)?.id) return why || (rackAt(t, a.x, a.y) === mine ? undefined : 'Draw into your rack (🔒 Draw to my rack)');

@@ -37,7 +37,7 @@ const loadJSZip = () => (jszip ||= import(JSZIP_URL).then((m) => m.default, (err
 
 // --- images ----------------------------------------------------------------
 /** Card name from an image filename: "cards/dragon_rider.png" → "dragon rider". */
-export const nameFromFile = (fn) => fn.replace(/^.*\//, '').replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim().slice(0, 60);
+const nameFromFile = (fn) => fn.replace(/^.*\//, '').replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim().slice(0, 60);
 
 let canvas = null; // one canvas, reused (iOS caps the memory all canvases hold), sized to each image
 /** The image type a data URL's bytes really are (store.js imageType of its first bytes). */
@@ -128,9 +128,10 @@ export async function encodeImage(src, { max = PIECE_PX, name = 'the image' } = 
  *  "r" or "b": an export writes a standard deck so); `count` copies, at
  *  most 500 a card and MAX_DECK_CARDS in all (said as soon as it is past,
  *  before a list that size is made). `img(fileName)` turns a file name into
- *  a data URL; an image several cards show is stored once. Resolves {deck,
- *  used: the file names it read}. */
-async function deckOf(m, img, has = () => false) {
+ *  a data URL; an image several cards show is stored once; `isFile(name)`
+ *  tells a back that names an uploaded file from a colour name. Resolves
+ *  {deck, used: the file names it read}. */
+async function deckOf(m, img, isFile = () => false) {
   if (!Array.isArray(m?.cards) || !m.cards.length) throw new Error('a deck needs a non-empty "cards" list');
   const imgs = [], gOf = new Map(); // file name → its index in imgs
   const idx = async (fn) => {
@@ -155,7 +156,7 @@ async function deckOf(m, img, has = () => false) {
     for (let j = copies; j > 0; j--) cards.push(card); // (copies share the object: never mutated)
   }
   const deck = { name: String(m.name || 'Deck').slice(0, 24), back: null, imgs, cards }, back = m.back == null ? null : String(m.back);
-  if (back !== null) deck.back = back.startsWith('#') || (COLOR_RE.test(back) && !has(back)) ? back.slice(0, 24) : imgs[await idx(back)];
+  if (back !== null) deck.back = back.startsWith('#') || (COLOR_RE.test(back) && !isFile(back)) ? back.slice(0, 24) : imgs[await idx(back)];
   return { deck, used: new Set(gOf.keys()) };
 }
 /** The + Deck dialog's deck from a deck.json manifest `m` and the images

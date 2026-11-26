@@ -69,8 +69,8 @@ const CONFIRM = (title) => `Clear the table and set up ${title}? The current gam
   ok(await P.viewOf(host, "Object.values(v.items).some((it) => it.k === 'p') && v.rules?.enabled === true"), 'declined: the deck and the script stay');
   asked = await pickGame('draughts', true);
   ok(asked === CONFIRM('Draughts'), 'asked again, and accepted');
-  const draughtsOn = "v.table.shape === 'rect' && v.table.w === 1400 && v.table.h === 1200 && Object.values(v.items).filter((it) => it.k === 'g').length === 25";
-  for (const [p, n] of both) ok(await P.waitView(p, draughtsOn, null, 30000), `${n}'s screen: a 1400 × 1200 table with a board and 24 men`);
+  const draughtsOn = "v.table.shape === 'rect' && v.table.w === 1000 && v.table.h === 1360 && Object.values(v.items).filter((it) => it.k === 'g').length === 25";
+  for (const [p, n] of both) ok(await P.waitView(p, draughtsOn, null, 30000), `${n}'s screen: a 1000 × 1360 table (D311) with a board and 24 men`);
   ok(await P.viewOf(host, "!Object.values(v.items).some((it) => it.k === 'p' || it.k === 'c') && v.rules?.enabled !== true"), 'the table was cleared, and the script switched off');
   ok(await P.waitView(host, `v.players[me].seatId === 'light' && v.players[a].seatId === 'dark'`, bob.pid), 'Alice sits Light, Bob Dark');
   for (const [p, n] of both) ok(!!(await P.label(p, 'Light — Alice')) && !!(await P.label(p, 'Dark — Bob')), `${n}'s screen labels the seats "Light — Alice" and "Dark — Bob"`);
@@ -115,8 +115,14 @@ const CONFIRM = (title) => `Clear the table and set up ${title}? The current gam
     await h.sleep(800);
     const t1 = await P.tf(bob), now = (await items())[victim];
     ok(Math.abs(t1.px - t0.px - 30) < 2.5 && Math.abs(t1.py - t0.py + 36) < 2.5, `Bob's finger on a light man pans his view (by ${(t1.px - t0.px).toFixed(1)}, ${(t1.py - t0.py).toFixed(1)})`);
-    ok(await P.sentActs(bob) === sent && now.x === before.x && now.y === before.y && (await P.viewOf(host, 'v.log.length')) === log0 && !(await P.shows(bob, '#toast')),
-      'and sends nothing: the man stays, no log line, no notice');
+    const said = await bob.evaluate(() => !document.getElementById('toast').classList.contains('hidden') && document.getElementById('toast').textContent);
+    ok(await P.sentActs(bob) === sent && now.x === before.x && now.y === before.y && (await P.viewOf(host, 'v.log.length')) === log0,
+      'and sends nothing: the man stays, no log line');
+    ok(said === "That piece is Light's — only Alice moves or removes it", `the first time, Bob's screen says whose it is (D311): "${said}"`);
+    await bob.evaluate(() => document.getElementById('toast').classList.add('hidden'));
+    await P.touchDrag(bob, await P.itemXY(bob, victim), { x: a.x + 60, y: a.y - 70 });
+    await h.sleep(500);
+    ok(!(await P.shows(bob, '#toast')), 'once: a second pan on a light man says nothing more');
     await P.clickItem(bob, victim, true);
     await h.sleep(300);
     const cmds = await bob.evaluate(() => [...document.querySelectorAll('#action-bar:not(.hidden) [data-cmd]')].map((b) => b.dataset.cmd));
@@ -174,8 +180,8 @@ const CONFIRM = (title) => `Clear the table and set up ${title}? The current gam
   section('Backgammon: picked from 🎲, the standard start');
   asked = await pickGame('backgammon', true);
   ok(asked === CONFIRM('Backgammon'), `the host confirms "${asked}"`);
-  const bgOn = "v.table.shape === 'rect' && v.table.w === 1800 && v.table.h === 1300 && Object.values(v.items).filter((it) => it.k === 'g').length === 34";
-  for (const [p, n] of both) ok(await P.waitView(p, bgOn, null, 30000), `${n}'s screen: a 1800 × 1300 table with a board, 30 checkers, two dice and the cube`);
+  const bgOn = "v.table.shape === 'rect' && v.table.w === 1480 && v.table.h === 1520 && Object.values(v.items).filter((it) => it.k === 'g').length === 34";
+  for (const [p, n] of both) ok(await P.waitView(p, bgOn, null, 30000), `${n}'s screen: a 1480 × 1520 table (D311) with a board, 30 checkers, two dice and the cube`);
   ok(await P.waitView(host, `v.players[me].seatId === 'light' && v.players[a].seatId === 'dark'`, bob.pid), 'Alice sits Light (the bottom), Bob Dark');
   its = await items();
   const boxes = await host.evaluate(() => JSON.parse(JSON.stringify(window.__ct.boxes())));

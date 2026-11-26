@@ -7,7 +7,6 @@
 // the dialog (a guest's own upload).
 'use strict';
 const zlib = require('zlib');
-const crypto = require('crypto');
 const h = require('./h');
 const L = require('./p1-lib');
 
@@ -56,8 +55,7 @@ function bigDecks(salt = 0) {
 /** Spec §1j case 9: a PNG of a few hundred bytes whose IHDR declares 30,000 × 30,000 px. */
 const bomb = () => png(30000, 30000, { rows: 1 });
 /** An asset id: the hex SHA-256 of an image's bytes. */
-const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
-const dataURL = (buf, mime = 'image/png') => `data:${mime};base64,${Buffer.from(buf).toString('base64')}`;
+const { sha256, dataURL } = require('./img-lib'); // (one copy of each, there)
 /** A deck in the transport shape (data URLs; spec §1a v1): card k shows image
  *  k; `mime` is every image's type, or a list of one per image. */
 const imgDeck = (name, bufs, mime = 'image/png') => ({
@@ -131,7 +129,7 @@ function needLog() {
       try {
         const a = JSON.parse(dec.decode(u.subarray(off + 36))); // a need is one chunk (64 ids ≈ 4.3 KB); other chunks don't parse
         if (a?.t === 'need' && !seen.has(key)) { seen.add(key); N.push({ at: Date.now(), a: a.a }); }
-      } catch { /* not a whole JSON action: a chunk of a bigger one (a deck) */ }
+      } catch (err) { if (!(err instanceof SyntaxError)) console.error('needLog', err); } // (a SyntaxError: not a whole JSON action, a chunk of a bigger one — a deck)
     }
     return send.call(this, d);
   };

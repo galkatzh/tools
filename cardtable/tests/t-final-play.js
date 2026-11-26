@@ -1,0 +1,244 @@
+// Final review, fix-up B (D311–D313): playing on a phone and a desktop.
+//   (1) seats across games: a card game from 🎲 after a board game clears the
+//       board and ends its named seats (the confirm says so), so the third
+//       player, who watched draughts, sits and is dealt into Hold'em; the
+//       host's seat menu ends the named seats on its own; a guest's endSeats
+//       is refused; a watcher's box never covers a seat label, a new table
+//       starts the view afresh, and the log follows its newest line when
+//       the hand bar comes back.
+//   (2) 🗑 of what holds many asks first (a bag of 28), as a group's does,
+//       and Dominoes' rules keep its boneyard; Reveal on a cupped die lifts
+//       the whole cup.
+//   (3) boxes: a guest's upload is said on the host's screen and marks 📦;
+//       the 📦 list keeps its Set up button through patches when a box's
+//       name has an apostrophe; a box that needs more seated players than
+//       sit says so at once, asking nothing; the 📜 dialog a guest reads
+//       follows the rules as they start.
+//   (4) dialogs and the keyboard: Help opens at its top, its Close in reach
+//       on a phone; the name offered is selected; a seat label opens its
+//       menu with Enter; a tab whose terminal bridge is down reports it
+//       without a stream of console errors.
+'use strict';
+const h = require('./h');
+const L = require('./p1-lib');
+const P = require('./p2t-lib');
+const { pickGame } = require('./stones-lib');
+const { ok, section } = h;
+
+/** Waits for page p to show a toast containing `txt`; its text, or ''. */
+const toastSays = (p, txt, ms = 10000) => p.waitForFunction((t) => document.getElementById('toast').textContent.includes(t), txt, { timeout: ms })
+  .then(() => p.evaluate(() => document.getElementById('toast').textContent), () => '');
+/** Client rects of page p's seat labels and its watchers' box (null when hidden). */
+const boxes = (p) => p.evaluate(() => {
+  const r = (el) => { const b = el.getBoundingClientRect(); return { l: b.left, r: b.right, t: b.top, b: b.bottom }; };
+  const wb = document.getElementById('watch-box'), me = document.getElementById('watch-me');
+  return { labels: [...document.querySelectorAll('.seat')].map((el) => ({ txt: el.textContent, ...r(el) })), watch: me.classList.contains('hidden') ? null : r(wb) };
+});
+const overlap = (a, b) => a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
+/** The ids of page p's items of kind `k` ('b' a bag, 'g' a piece, …). */
+const itemsOf = (p, k) => P.viewOf(p, 'Object.keys(v.items).filter((id) => v.items[id].k === a)', k);
+
+(async () => {
+  const env = await h.start();
+  const ann = await P.join(env, 'Ann', env.url);
+  const invite = ann.url();
+  const S5 = h.playwright.devices['Galaxy S5']; // (360 × 640: the watchers' box is as wide as the top seat label is high up)
+  const bo = await P.join(env, 'Bo', invite, { ctx: S5, rtc: true });
+  const cy = await P.join(env, 'Cy', invite, { ctx: S5 });
+  for (const p of [ann, bo, cy]) await p.evaluate(() => { window.__toasts = []; new MutationObserver(() => window.__toasts.push(document.getElementById('toast').textContent)).observe(document.getElementById('toast'), { childList: true, characterData: true, subtree: true }); });
+  const everyone = [[ann, 'Ann'], [bo, 'Bo'], [cy, 'Cy']];
+  const seated = (p) => P.waitView(p, 'Object.values(v.players).every((pl) => pl.seat != null)');
+
+  section('(1) seats across games: Chess, then Draughts, with three players: one watches');
+  ok(/Clear the table/.test(await pickGame(ann, 'chess') || ''), '🎲 Chess asks first (the table holds a deck)');
+  {
+    ok(await P.waitView(ann, "v.seats?.length === 2 && v.rules?.enabled && Object.values(v.players).filter((pl) => pl.seat == null).length === 1"), 'chess: two named seats, one watcher');
+    const name = await P.viewOf(ann, 'Object.entries(v.players).find(([, pl]) => pl.seat == null)[1].name'), w = name === 'Cy' ? cy : bo;
+    await L.until(async () => !!(await boxes(w)).watch, 10000, 100);
+    await w.waitForTimeout(1500);
+    const b = await boxes(w), hit = b.labels.filter((l) => overlap(l, b.watch));
+    ok(b.watch && b.labels.length >= 2 && !hit.length, `${name}'s "every seat is taken" box covers no seat label (${hit.map((l) => l.txt).join(', ') || 'none'}; box ${b.watch.t | 0}–${b.watch.b | 0}): D313`);
+  }
+  ok(/Clear the table/.test(await pickGame(ann, 'draughts') || ''), '🎲 Draughts');
+  ok(await P.waitView(ann, "v.seats?.length === 2 && Object.values(v.players).filter((pl) => pl.seat == null).length === 1"), 'two named seats, one watcher');
+  const watcher = await P.viewOf(ann, 'Object.entries(v.players).find(([, pl]) => pl.seat == null)[1].name');
+  const wp = watcher === 'Cy' ? cy : watcher === 'Bo' ? bo : ann;
+  ok(watcher !== 'Ann' && await P.waitView(wp, 'v.players[me].seat == null'), `${watcher} watches`);
+  await L.until(async () => !!(await boxes(wp)).watch, 10000, 100);
+  {
+    const b = await boxes(wp), hit = b.labels.filter((l) => overlap(l, b.watch));
+    ok(b.watch && b.labels.length >= 2 && !hit.length, `${watcher}'s "every seat is taken" box covers no seat label (${hit.map((l) => l.txt).join(', ') || 'none'}): D313`);
+  }
+
+  section('(1) the host\'s seat menu ends the named seats');
+  {
+    const lab = (await P.labels(ann)).find((l) => !l.me);
+    const m = await P.openMenu(ann, lab.text);
+    ok(m.includes('End the named seats'), `the host's menu on "${lab.text}" offers it (${m.join(' | ')})`);
+    const mB = await P.openMenu(bo, (await P.labels(bo)).find((l) => l.me)?.text || lab.text, true);
+    ok(!mB.includes('End the named seats'), `a guest's doesn't (${mB.join(' | ') || 'no menu'})`);
+    if (mB.length) await bo.keyboard.press('Escape');
+    const r = await L.act(bo, { t: 'endSeats' });
+    await bo.waitForTimeout(600);
+    ok(await P.viewOf(ann, 'v.seats?.length') === 2, `Bo's own endSeats changes nothing (${JSON.stringify(r)})`);
+    await P.pick(ann, 'End the named seats');
+    ok(await P.waitView(ann, '!v.seats') && await seated(ann), 'the seats are gone and every player sits (the watcher too)');
+    ok(await P.waitView(ann, "v.log.some((e) => e.txt === 'removed the named seats: everyone sits where they like')"), 'the log says so');
+  }
+
+  section('(1) the view starts afresh on a new table; the hand bar\'s return keeps the log following');
+  ok(/Clear the table/.test(await pickGame(ann, 'draughts') || ''), 'Draughts again: Light and Dark');
+  ok(await P.waitView(ann, 'v.seats?.length === 2'), '(named seats back)');
+  {
+    const f0 = await P.feltPoint(bo, { band: [0.3, 0.7] });
+    await P.touchDrag(bo, f0, { x: f0.x + 40, y: f0.y + 60 });
+    const t1 = await P.tf(bo);
+    ok(Math.hypot(t1.px, t1.py) > 20, `Bo pans his view (${t1.px.toFixed(0)}, ${t1.py.toFixed(0)})`);
+    await pickGame(ann, 'backgammon');
+    ok(await P.waitView(bo, 'v.table.w === 1480'), "(Backgammon's table on Bo's phone)");
+    const t2 = await P.tf(bo);
+    ok(t2.px === 0 && t2.py === 0, `the new table opens with Bo's view reset, as 🧭 does (${t2.px}, ${t2.py}): D313`);
+  }
+  // the log: 30 lines while the hand bar is hidden (no hand items), then the deck brings it back
+  if (await ann.evaluate(() => document.getElementById('side').classList.contains('hidden'))) await ann.click('#log-btn');
+  ok(await ann.evaluate(() => document.body.classList.contains('nohand')), "(Ann's hand bar is hidden: backgammon has nothing to hold)");
+  for (let k = 0; k < 30; k++) await L.act(ann, { t: 'chat', msg: `line ${k}` }).then(() => ann.waitForTimeout(k % 4 === 3 ? 1100 : 30));
+  const lastShown = () => ann.evaluate(() => {
+    const log = document.getElementById('log'), last = log.lastElementChild, a = log.getBoundingClientRect(), b = last.getBoundingClientRect();
+    return { txt: last.textContent, inView: b.bottom <= a.bottom + 1 && b.top >= a.top - 1 };
+  });
+
+  section('(1) a card game after a board game: the board and the named seats go');
+  let asked = await pickGame(ann, 'holdem');
+  ok(asked === "Clear the table and start Texas Hold'em? The board, its pieces and the named seats (Light, Dark) go, with Chess's game state.", `the confirm says what goes (and the chess game's kept state): "${asked}"`);
+  ok(await P.waitView(ann, "!v.seats && !Object.values(v.items).some((it) => it.k === 'g') && v.rules?.enabled && /Hold/.test(v.rules.name)"), "the board and its pieces are gone, the seats ended, Hold'em on");
+  for (const [p, n] of everyone) ok(await seated(p), `${n}'s screen: all three sit`);
+  await ann.click('#add-deck-btn');
+  await ann.waitForSelector('#deck-dialog[open]');
+  await ann.click('#deck-add');
+  ok(await P.waitView(ann, "Object.values(v.items).some((it) => it.k === 'p')"), '(+ Deck: a standard deck)');
+  ok(await P.waitView(ann, "!document.body.classList.contains('nohand') || true") && await L.until(() => ann.evaluate(() => !document.body.classList.contains('nohand')), 10000, 100), "the hand bar comes back (a deck's cards go in hands)");
+  for (let k = 0; k < 3; k++) await L.act(ann, { t: 'chat', msg: `after ${k}` });
+  ok(await L.until(async () => { const s = await lastShown(); return s.txt.endsWith('after 2') && s.inView; }, 8000, 100), `the log still follows: its newest line is in view (${JSON.stringify(await lastShown())}): D313`);
+  await L.act(ann, { t: 'rulesBtn', id: 'new' });
+  ok(await P.waitView(ann, 'Object.values(v.players).every((pl) => pl.handCount === 2)', null, 15000), `New hand deals all three in (${JSON.stringify(await P.viewOf(ann, 'Object.values(v.players).map((pl) => pl.name + ":" + pl.handCount)'))})`);
+
+  section('(3) the 📜 dialog a guest reads follows the rules');
+  await pickGame(ann, 'free');
+  ok(await P.waitView(bo, '!v.rules?.enabled'), '(the free table: rules off)');
+  await bo.tap('#rules-btn');
+  await bo.waitForSelector('#rules-dialog[open]');
+  const status = () => bo.evaluate(() => document.getElementById('rules-status').textContent);
+  ok(await status() === 'inactive', 'Bo opens 📜: inactive');
+  await pickGame(ann, 'turns');
+  ok(await L.until(async () => /^active: Turn order/.test(await status()), 10000, 100), `as the host starts Turn order, Bo's open dialog says so ("${await status()}")`);
+  ok(await L.until(() => bo.evaluate(() => /name: 'Turn order'/.test(document.getElementById('rules-code').value)), 10000, 100), '…and shows its script');
+  await bo.evaluate(() => document.getElementById('rules-dialog').close());
+
+  section('(2) 🗑 of a bag of 28 asks first; Dominoes keeps its boneyard');
+  await pickGame(ann, 'dominoes');
+  ok(await P.waitView(ann, "v.rules?.enabled && Object.values(v.items).some((it) => it.k === 'b' && it.n === 28)"), 'Dominoes: the boneyard holds 28');
+  const [bag] = await itemsOf(bo, 'b');
+  await P.clickItem(bo, bag, true);
+  await bo.waitForSelector('#action-bar:not(.hidden) [data-cmd="del"]:not(:disabled)');
+  const sent0 = await P.sentActs(bo);
+  await bo.tap('#action-bar [data-cmd="del"]');
+  const del = () => bo.evaluate(() => document.querySelector('#action-bar [data-cmd="del"]')?.textContent);
+  ok(await L.until(async () => (await del()) === '🗑 Remove all 28?', 3000, 50), `the first tap asks: "${await del()}"`);
+  ok(await P.sentActs(bo) === sent0 && await P.viewOf(ann, 'v.items[a]?.n', bag) === 28, '…and sends nothing');
+  await bo.tap('#action-bar [data-cmd="del"]');
+  ok(!!await toastSays(bo, 'The tiles and the boneyard stay on the table'), 'the second sends it, and the rules refuse it: "The tiles and the boneyard stay on the table"');
+  ok(await P.viewOf(ann, 'v.items[a]?.n', bag) === 28, 'the boneyard is still there, whole');
+
+  section('(2) Reveal on a cupped die lifts its cup');
+  await pickGame(ann, 'backgammon');
+  ok(await P.waitView(ann, "Object.values(v.items).filter((it) => it.k === 'g' && (it.t || '').endsWith('/die')).length === 2"), '(backgammon: two dice)');
+  const dice = await P.viewOf(ann, "Object.keys(v.items).filter((id) => (v.items[id].t || '').endsWith('/die'))");
+  await P.clickItem(ann, dice[0]);
+  await ann.waitForSelector('#action-bar:not(.hidden) [data-cmd="hide"]:not(:disabled)');
+  await ann.keyboard.press('h');
+  ok(await P.waitView(bo, "a.every((id) => 'b' in v.items[id])", dice), 'H cups both dice (Bo sees their backs)');
+  await ann.waitForTimeout(400);
+  if (!await ann.$('#action-bar:not(.hidden) [data-cmd="flip"]')) await P.clickItem(ann, dice[0]); // (still selected after H, or selected again)
+  await ann.waitForSelector('#action-bar:not(.hidden) [data-cmd="flip"]:not(:disabled)');
+  ok(await ann.evaluate(() => document.querySelector('#action-bar [data-cmd="flip"]').textContent) === 'Reveal', '(the bar offers Reveal)');
+  await ann.keyboard.press('f');
+  ok(await P.waitView(bo, "a.every((id) => 't' in v.items[id] && v.items[id].up !== false)", dice), 'F on one lifts the whole cup: Bo sees both faces (D313)');
+
+  section('(3) a guest\'s box: said on the host\'s screen, and 📦 marked');
+  await ann.evaluate(() => { window.__toasts = []; });
+  await L.act(bo, { t: 'addBox', box: { name: "Bob's Game", pieces: [{ id: 'boat', kind: 'token', faces: ['B'] }], setup: [{ piece: 'boat', at: 'center' }] } });
+  ok(!!await toastSays(ann, "Bo added «Bob's Game» — 📦 to set it up"), "Ann's screen: \"Bo added «Bob's Game» — 📦 to set it up\"");
+  ok(await ann.evaluate(() => document.getElementById('box-btn').classList.contains('new')), '📦 is marked');
+  await ann.click('#box-btn');
+  await ann.waitForSelector('#box-dialog[open]');
+  ok(!await ann.evaluate(() => document.getElementById('box-btn').classList.contains('new')), 'opening it clears the mark');
+  ok(await ann.evaluate(() => document.activeElement?.tagName === 'H3' && document.getElementById('box-dialog').scrollTop === 0), '📦 opens at its top, its heading focused (not a link below the fold)');
+
+  section('(3) the 📦 list keeps its buttons through patches ("Bob\'s Game")');
+  {
+    await ann.evaluate(() => { for (const b of document.querySelectorAll('#box-list button')) b.__kept = true; });
+    const pieces = await P.viewOf(ann, "Object.keys(v.items).filter((id) => v.items[id].k === 'g' && !v.items[id].owner)");
+    for (let k = 0; k < 5; k++) {
+      const it = await P.viewOf(ann, 'v.items[a]', pieces[0]);
+      await L.act(ann, { t: 'move', id: pieces[0], x: it.x + (k % 2 ? 40 : -40), y: it.y });
+      await ann.waitForTimeout(150);
+    }
+    ok(await ann.evaluate(() => [...document.querySelectorAll('#box-list button')].every((b) => b.__kept)), "five patches later every Set up button is the same element: the focus and a click under way stay (D313)");
+  }
+
+  section('(3) a box that needs more seated players than sit says so at once');
+  {
+    await L.act(ann, { t: 'addBox', box: { name: 'Four Corners', pieces: [{ id: 'm', kind: 'token', faces: ['M'] }], setup: [{ piece: 'm', at: 'center', owner: '#4' }], rules: "({ name: 'Four Corners' })" } });
+    await L.until(() => ann.evaluate(() => [...document.querySelectorAll('#box-list .box-row')].some((r) => r.textContent.includes('Four Corners'))), 8000, 100);
+    await ann.evaluate(() => [...document.querySelectorAll('#box-list .box-row')].find((r) => r.textContent.includes('Four Corners')).querySelector('[data-act="setup"]').click());
+    await ann.waitForTimeout(800);
+    const msg = await ann.evaluate(() => document.getElementById('box-msg').textContent);
+    ok(!await ann.evaluate(() => document.getElementById('box-ask').open), 'no "Set up?" and no trust dialog');
+    ok(/needs 4 seated players \(3 are seated\)/.test(msg), `the reason, at once: "${msg}"`);
+    await ann.evaluate(() => document.getElementById('box-dialog').close());
+  }
+
+  section('(4) Help: opens at its top; on a phone its Close stays in reach');
+  {
+    await bo.tap('#help-btn');
+    await bo.waitForSelector('#help-dialog[open]');
+    const at = await bo.evaluate(() => ({ top: document.getElementById('help-dialog').scrollTop, focus: document.activeElement?.textContent }));
+    ok(at.top === 0 && at.focus === 'How to play', `it opens at "How to play" (scrollTop ${at.top}, focus "${at.focus}")`);
+    const close = await bo.evaluate(() => { const b = document.querySelector('#help-dialog > form:last-child button').getBoundingClientRect(); return { top: b.top, bottom: b.bottom, vh: innerHeight }; });
+    ok(close.bottom <= close.vh && close.top >= 0, `its Close is on screen without scrolling (${close.top | 0}–${close.bottom | 0} of ${close.vh})`);
+    await bo.evaluate(() => document.getElementById('help-dialog').close());
+  }
+
+  section('(4) the keyboard: a seat label opens its menu with Enter');
+  {
+    const focused = await ann.evaluate(() => { const el = document.querySelector('.seat[role="button"][tabindex="0"]'); el?.focus(); return el?.textContent ?? null; });
+    ok(!!focused, `a seat label is a focusable button ("${focused}")`);
+    await ann.keyboard.press('Enter');
+    const m = await P.menu(ann);
+    ok(m.length > 0 && await ann.evaluate(() => document.activeElement?.closest('#seat-menu') !== null), `Enter opens its menu, the first entry focused (${m.join(' | ')})`);
+    await ann.keyboard.press('Escape');
+    const names = await ann.evaluate(() => ['rules-btn', 'view-btn', 'log-btn', 'sel-mode'].map((id) => document.getElementById(id).getAttribute('aria-label')));
+    ok(names.join() === 'Rules,Reset view,Log and chat,Select several', `the icon buttons have names (${names.join(', ')})`);
+  }
+
+  section('(4) the name offered is selected; a bridged tab with no bridge stays quiet');
+  {
+    const dee = await env.page('Dee');
+    dee.watchdogOK = true; // (it leaves without joining)
+    const errs = [];
+    dee.on('console', (m) => { if (m.type() === 'error' && /bridge/.test(m.text())) errs.push(m.text()); });
+    await dee.goto(`${invite}~cli~9-tok`);
+    await dee.waitForSelector('#name-dialog[open]');
+    const sel = await dee.evaluate(() => { const i = document.getElementById('name-first'); return { v: i.value, a: i.selectionStart, b: i.selectionEnd }; });
+    ok(sel.v.length > 0 && sel.a === 0 && sel.b === sel.v.length, `the name dialog offers "${sel.v}" selected: typing replaces it (${sel.a}–${sel.b})`);
+    await dee.keyboard.type('Dee');
+    await dee.keyboard.press('Enter');
+    await dee.waitForTimeout(8000);
+    ok(errs.length <= 6, `8 s with the bridge down: ${errs.length} bridge errors in the console (it was about 2.5 a second: 20)`);
+    ok(await dee.evaluate(() => /Terminal bridge not reachable/.test(document.getElementById('toast').textContent) || window.__ct.view().seq > 0), '(and the toast says the bridge is out of reach)');
+    await dee.context().close();
+  }
+
+  await env.done();
+})().catch((e) => { console.error('TEST CRASHED:', e); process.exit(2); });

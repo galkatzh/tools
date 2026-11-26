@@ -215,7 +215,9 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
       `${tag}: ${name(panner)}'s drag on it pans the view instead (pan moved by ${(t1.px - t0.px).toFixed(1)}, ${(t1.py - t0.py).toFixed(1)})`);
     ok(sent1 === sent && after.items[bp].x === moved.x && after.items[bp].y === moved.y && after.log.length === log0,
       `${tag}: and sends nothing (${sent1 - sent} bytes sent; the pawn ${after.items[bp].x === moved.x && after.items[bp].y === moved.y ? 'stays' : 'MOVED'}; ${after.log.length - log0} log lines)`);
-    ok(!(await P.shows(panner, '#toast')), `${tag}: no notice on ${name(panner)}'s screen`);
+    // (no refusal: the one notice, the first time for this owner, says whose the pawn is — D313)
+    const told = await panner.evaluate(() => { const t = document.getElementById('toast'); return t.classList.contains('hidden') ? '' : t.textContent; });
+    ok(told === `That piece is Black's — only ${name(mover)} moves or removes it`, `${tag}: the one notice on ${name(panner)}'s screen says whose it is ("${told}")`);
   }
   await ownerFollows(bob, carol, 'Bob sits Black');
 
@@ -253,7 +255,7 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
   m = await P.openMenu(carol, 'White — Alice', true);
   ok(!m.length, 'neither does a tap on the phone');
   m = await P.openMenu(host, 'Black — Carol');
-  ok(m.join('|') === 'Move to watchers', `the host's click on another player's label: "Move to watchers" (${m.join(' | ')})`);
+  ok(m.join('|') === 'Move to watchers|End the named seats', `the host's click on another player's label: "Move to watchers", and "End the named seats" (D311) (${m.join(' | ')})`);
   await P.pick(host, 'Move to watchers');
   ok(await P.waitView(carol, 'v.players[me].seat === null && !v.players[me].seatId'), 'Carol is moved to the watchers');
   ok(await carol.waitForFunction(() => !document.getElementById('watch-me').classList.contains('hidden'), null, { timeout: 15000 }).then(() => true, () => false), 'her phone tells her she watches');
@@ -435,7 +437,10 @@ const SCRIPT = `({ name: 'Who plays', buttons: () => [{ id: 'who', label: 'Who p
   await P.clickItem(host, pile);
   await host.waitForSelector('#action-bar [data-cmd="del"]');
   await host.click('#action-bar [data-cmd="del"]');
-  ok(await P.waitView(host, `!Object.values(v.items).some((it) => it.k === 'p' || it.k === 'c')`), 'the host removes the deck (🗑)');
+  // (a pile of more than 5 asks first: "🗑 Remove all 51?", and a second press removes it — D312)
+  await host.waitForFunction(() => /^🗑 Remove all \d+\?$/.test(document.querySelector('#action-bar [data-cmd="del"]')?.textContent), null, { timeout: 3000 });
+  await host.click('#action-bar [data-cmd="del"]');
+  ok(await P.waitView(host, `!Object.values(v.items).some((it) => it.k === 'p' || it.k === 'c')`), 'the host removes the deck (🗑, asked first, then pressed again)');
   await handBar(host, false, 'when the deck is gone');
   await handBar(carol, false, 'when the deck is gone');
   await h.sleep(500);

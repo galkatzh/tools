@@ -7,7 +7,7 @@
 //      n and n + 1 (the error names the field), back equality, fills and
 //      marks as addresses, address-like space ids, src / by dropped, bad
 //      colours, labels and ids, a 2,000-mutation fuzz (only Error is thrown,
-//      no invalid field is returned); canon, boxKey and isBuiltin.
+//      no invalid field is returned); canon and isBuiltin.
 //  (2) Every new action and every changed one, with its refusals: the
 //      mayHandle / notLocked table of §2c row by row, cap() on every op that
 //      adds items, split {onto} atomicity, piles of pieces, the hidden-item
@@ -43,7 +43,7 @@ import { APP_ROOT, core, ok, section, report, crash, guard, rng, json, canon as 
 
 const grid = await import(pathToFileURL(path.join(APP_ROOT, 'cardtable/grid.js')));
 const { BOXES } = await import(pathToFileURL(path.join(APP_ROOT, 'cardtable/templates.js')));
-const { createTable, cleanBox, canon, boxKey, isBuiltin, COLOR_RE, MIGRATE, migrate, STATE_V, RULED_ACTIONS, PUBLIC_ACTIONS, randInt } = core;
+const { createTable, cleanBox, canon, isBuiltin, COLOR_RE, MIGRATE, migrate, STATE_V, RULED_ACTIONS, PUBLIC_ACTIONS, randInt } = core;
 
 // --- small tools ----------------------------------------------------------------
 const range = (n) => Array.from({ length: n }, (_, k) => k);
@@ -193,7 +193,7 @@ function testGrid() {
 }
 
 // =============================================================================
-// (1) cleanBox, canon, boxKey, isBuiltin
+// (1) cleanBox, canon, isBuiltin
 // =============================================================================
 /** A box around `types` (and any other top-level fields). */
 const boxOf = (types, extra = {}) => ({ name: 'Test', imgs: [], ...extra, types });
@@ -709,13 +709,12 @@ function testCleanBox() {
   ok(accepted > 200 && refused > 200, `the fuzz exercises both outcomes (${accepted} accepted, ${refused} refused)`);
   ok(Object.getOwnPropertyNames(Object.prototype).join() === proto && ({}).zz === undefined && ({}).src === undefined, 'no prototype pollution after the fuzz');
 
-  section('(1) canon, boxKey and isBuiltin');
+  section('(1) canon and isBuiltin');
   const reversed = (v) => (Array.isArray(v) ? v.map(reversed) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).reverse().map((k) => [k, reversed(v[k])])) : v);
   const a = cleanBox(RICH), b = cleanBox(reversed(json(RICH)));
-  ok(canon(a) === canon(b) && boxKey(a) === boxKey(b), 'key order does not matter: the same box with every object\'s keys reversed has the same canon and boxKey');
+  ok(canon(a) === canon(b), 'key order does not matter: the same box with every object\'s keys reversed has the same canon');
   ok(canon(a) === sortedJSON(a) && isDeepStrictEqual(JSON.parse(canon(a)), json(a)), 'canon is the cleaned box as JSON with sorted keys');
-  const k = boxKey(a), k2 = boxKey(cleanBox({ ...RICH, name: 'Rich box 2' }));
-  ok(Number.isSafeInteger(k) && k >= 0 && k < 2 ** 53 && k !== k2, `boxKey is a 53-bit hash (${k}), and another box has another (${k2})`);
+  ok(canon(a) !== canon(cleanBox({ ...RICH, name: 'Rich box 2' })), 'another box has another canon');
   for (const [name, box] of Object.entries(BOXES)) {
     ok(isBuiltin(json(box)) && isBuiltin(cleanBox(json(box))), `isBuiltin(BOXES.${name}) is true, raw or cleaned`);
     ok(isBuiltin({ ...json(box), src: 'upload', by: BOB, builtin: false }), `BOXES.${name} with src/by/builtin fields is still built in (by content alone)`);
@@ -2171,7 +2170,7 @@ function testBuiltins() {
   section('(8) BOXES.draughts as §2g describes it');
   {
     const B = cleanBox(json(BOXES.draughts));
-    ok(isDeepStrictEqual(B.table, { shape: 'rect', w: 1400, h: 1200 }), `a 1400 × 1200 rect table (${JSON.stringify(B.table)})`);
+    ok(isDeepStrictEqual(B.table, { shape: 'rect', w: 1000, h: 1360 }), `a 1000 × 1360 rect table, taller than wide (D311) (${JSON.stringify(B.table)})`);
     const seat = (id) => B.seats?.find((s) => s.id === id);
     ok(B.seats?.length === 2 && seat('light')?.edge === 'bottom' && seat('light').color === '#f5f5f4' && seat('dark')?.edge === 'top' && seat('dark').color === '#1c1917', `seats light (bottom, #f5f5f4) and dark (top, #1c1917) (${JSON.stringify(B.seats)})`);
     const boards = Object.values(B.types).filter((t) => t.kind === 'board'), men = Object.entries(B.types).filter(([, t]) => t.kind === 'token');
@@ -2183,7 +2182,7 @@ function testBuiltins() {
     const T = mk({}, { players: { [HOST]: player('Alice', 90), [BOB]: player('Bob', 270) } });
     run(T, HOST, { t: 'loadBox', box: json(BOXES.draughts), setup: true, clear: true });
     const all = Object.values(items(T)), board = all.find((it) => T.boxes[it.t.split('/')[0]].types[it.t.split('/')[1]].kind === 'board'), pieces = all.filter((it) => it !== board);
-    ok(board && board.x + 420 === 700 && board.y + 420 === 600 && board.lock === true && pieces.length === 24, `loaded: the board centred and locked, 24 men (${pieces.length})`);
+    ok(board && board.x + 420 === 500 && board.y + 420 === 680 && board.lock === true && pieces.length === 24, `loaded: the board centred and locked, 24 men (${pieces.length})`);
     const sq = (it) => [(it.x + 40 - board.x - 20) / 100 - 0.5, (it.y + 40 - board.y - 20) / 100 - 0.5];
     const off = pieces.filter((it) => { const [c, r] = sq(it); return !(Number.isInteger(c) && Number.isInteger(r) && c >= 0 && c < 8 && r >= 0 && r < 8 && (c + r) % 2 === 1); });
     ok(!off.length, `every man is centred on a dark square (a1's colour: (c + r) odd) (${off.length} are not)`);
@@ -2198,7 +2197,7 @@ function testBuiltins() {
   section('(8) BOXES.backgammon as §2g describes it');
   {
     const B = cleanBox(json(BOXES.backgammon));
-    ok(isDeepStrictEqual(B.table, { shape: 'rect', w: 1800, h: 1300 }) && B.seats?.find((s) => s.id === 'light')?.edge === 'bottom' && B.seats.find((s) => s.id === 'dark')?.edge === 'top', 'an 1800 × 1300 rect table; seats light (bottom) and dark (top)');
+    ok(isDeepStrictEqual(B.table, { shape: 'rect', w: 1480, h: 1520 }) && B.seats?.find((s) => s.id === 'light')?.edge === 'bottom' && B.seats.find((s) => s.id === 'dark')?.edge === 'top', 'a 1480 × 1520 rect table, taller than wide (D311); seats light (bottom) and dark (top)');
     const types = Object.values(B.types), board = types.find((t) => t.kind === 'board'), sp = board?.board?.spaces || [];
     const tris = sp.filter((s) => s.mark === 'tri'), byId = (id) => sp.find((s) => s.id === id);
     ok(board?.w === 1400 && board.h === 1000, `a 1400 × 1000 board (${board?.w} × ${board?.h})`);
