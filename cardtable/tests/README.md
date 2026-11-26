@@ -3011,6 +3011,72 @@ for hooks and selectors.
   most 0.25 + the 99 % binomial margin. Her first snapshots name no North
   type and carry no `meta`.
 
+## Phase 5 (the test author's demo suite: `t-p5-demos.js`, written from the spec)
+
+§5l t-p5-demos and §5j case 10, from §5a–§5g and D269–D273; the
+implementation was read for hooks and selectors alone. Alice hosts on a
+desktop (mouse), Bob plays on an iPhone 13 (p4m-lib's CDP finger drags and
+taps; upright, and sideways for one move). Each guest gesture is followed by
+`hostSees(host, fn)` — the expected effect in the host state, then an idle
+queue — before anything is read: a guest's action reaches the host a moment
+after its gesture ends. About 35 s alone; not serial (no timing budget).
+
+- **(0) the boxes as §5g has them** (cleanBox's form, in Node): Dominoes'
+  28 tiles one per pair (pips, 60 × 120, one back, quarter turns, no hand),
+  the boneyard bag of 28 face down, the rack a board whose one `'reveal'`
+  zone covers it, one per seat; Veiled Ranks' primary 10 × 10 chess-labelled
+  field, its two `'keep'` screens (rows 1–3 South's, 8–10 North's, by cell
+  centres), each side a shuffled group of 12 face-down tokens under its own
+  back in §5g's composition and ranks, and no commercial game's rank names
+  (Marshal … Sergeant, Scout, Miner, Spy, Bomb) in its names or script.
+- **(10) case 10** (Node, through core.js): 20 fresh tables, each seeded
+  (`stream(seed)`: sha256 in counter mode drives `random` and the 8-hex ids,
+  so every run draws the same tables); the host sits North, Mallory South;
+  her first snapshot is the very text the broadcast builds (`snapContent`,
+  `mine`, `sharedText`, `spliceBody`). Checked: its items in sorted-id order,
+  North's 12 their back alone. Guessers of a unit's rank: the box's
+  declaration by z order, by key order and by square (240 guesses each), and
+  per feature value — z rank, key rank, id rank among all keys, square, the
+  id's first digit — trained on tables 1–10 and scored on 11–20 (120 each).
+  Each must stay within the binomial bound at 1 − 0.01/8 over the best
+  constant guess (3 of 12): Bonferroni, so the family is at 99 % and a sound
+  engine fails less than once in a hundred samples. A planted leak (z in
+  declaration order) must score 240/240 (the test can see one).
+- **Dominoes** (D1–D6): from 🎲 (marked playing, D269); each rack "🔒 Your
+  rack" / "🔒 {name}'s rack" and hatched in its seat's colour; Draw 7 by
+  Bob's tap: seven tiles in each rack, wholly on it, none over another, each
+  `up: false`, `vis: ['seat:<s>']`, `pv`, owned by the seat with `po`; the
+  boneyard 28 → 14 in the views and on the bag; each player's own pips
+  drawn (lit pips = a + b) with 🙈, the other rack backs; the player to move
+  drags a tile to the table — face up for both, no vis, pv, po or owner —
+  and the turn passes; the other draws with 🔒 Draw to my rack (14 → 13,
+  hidden for that seat, in a free slot) and plays; out of turn a tile off
+  the rack and a draw are refused (D271); every body Bob got never carries
+  Alice's hidden tiles' t, f, type refs or names, nor any `pips` key.
+- **Veiled Ranks** (V1–V10): from 📦's Built in; each army behind its screen
+  (the host state, both views, the drawn faces with 🙈 and backs, "🔒 Your
+  screen" / "🔒 {name}'s screen"); deploying a swap and six moves on the
+  desktop, three on the phone (each still face down behind the screen,
+  both screens in step), outside the rows refused on both; ✓ Ready — Alice's
+  deployment then locked (D273) — then Bob's; refused with nothing changed:
+  a move out of turn, a diagonal, two squares for a Crown, the Banner, a
+  Lancer three squares, a Lancer through its own Pike; a legal step (off its
+  screen it stays hidden: `keep`); the Lancers' two-square moves (North's
+  with the phone sideways); a Herald's parley (both face up on both screens,
+  neither removed, the Herald where it was); an attack (the Crown beats a
+  Blade: the Blade gone, the Crown face up, both named in each log); a
+  revealed unit moving on stays revealed; a hidden South Lancer stepping into
+  North's rows stays South's alone (D273's `step`: no body of that move, nor
+  any before its reveal, gave Bob its face or an override); a Trap attacked
+  (both gone); the Banner taken (🏆 on Bob's seat label on both screens,
+  every unit left face up); the scan of every body Bob got before the end
+  for the South units still hidden then. North marks time with a unit away
+  from every square in play, so the plan runs whoever moves first.
+- Checked against broken copies of the app (scratch only, served with
+  `APP_ROOT`): `step()` without its `setVis` (5 checks fail), the armies'
+  group without `shuffle` (6, case 10's among them), patch overrides sent to
+  every player (20). Screenshots: `shots/p5d-*.png`.
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores
