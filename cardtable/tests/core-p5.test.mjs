@@ -27,12 +27,21 @@
 //      equal; the setup grammar's vis and po; checkPatch's gates.
 // (B22, B23) The budgets: a vis tile's move per recipient; a snapshot with
 //      160 vis items for one recipient.
+//  (F) The fix-up's regressions (D277–D285): a zone never widens who sees a
+//      piece; no laundering through a pile, a bag or a hand; a pull never
+//      refused for what it draws; a hidden die and token alike on a spot;
+//      a rules veto of one's own hidden piece quiet; exports that keep what
+//      re-placing wouldn't; Dominoes by seat; Veiled Ranks' moves, combat,
+//      draw and labels.
 // Then the test author's own sections, (1′) to (CP′), written apart from the
 // implementation (see their header below): §5l's items 1–8 again against an
 // oracle read off the host state by §5a's rule, the setup grammar's vis and
 // po laid out, checkPatch on honest and forged private material, B22, B23.
-import { core, ok, section, report, crash, guard, json, canon, rng, seeds, HOST, BOB, CAROL, DAVE } from './node-lib.mjs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { APP_ROOT, core, ok, section, report, crash, guard, json, canon, rng, seeds, HOST, BOB, CAROL, DAVE } from './node-lib.mjs';
 
+const { BOXES } = await import(pathToFileURL(path.join(APP_ROOT, 'cardtable/templates.js')));
 const {
   createTable, boxFromDef, boxOfDef, cleanBox, scriptHooks, spliceBody, sharedText, viewFromSnap, applyViewPatch, hiddenFrom,
   PROTO, STATE_V, MIGRATE, migrate, MAX_VIS, RULED_ACTIONS, GROUP_OPS, PUBLIC_ACTIONS, RULES,
@@ -552,6 +561,215 @@ function testExport() {
   const same = [ID.d1, ID.t1, ID.u2, ID.u1, ID.t2].map((id) => [id, J(priv(it(id))), J(priv(U.state.items[id]))]);
   ok(same.every(([, a, b]) => a === b), `each comes back with the same up, vis, owner, pv and po (${J(same.filter(([, a, b]) => a !== b))})`);
   ok(pids(HOST) === HOST && cleanBox(boxFromDef(json(box))).setup.length === box.setup.length, 'the export passes the gate whole');
+}
+
+// --- (F) the Phase 5 fix-up: what the reviewers found, closed -------------------------------------
+/** Starts the rules a box's setup asked for (the app's `enable` effect, which this room's job leaves alone). */
+function enabled(R, r) {
+  for (const e of r.fx.filter((x) => x.t === 'enable')) {
+    const box = R.H.state.boxes[e.box];
+    R.job(HOST, { t: 'setRules', enabled: true, reset: true, code: box.rules, box: e.box, remap: e.remap, ...(box.rulesState && { state: box.rulesState }) });
+  }
+  return r;
+}
+/** A built-in box set up with its rules, Alice south and Bob north (Carol and Mallory watch). */
+function demo(box, units) {
+  const R = room({ box: false });
+  if (units) box = { ...json(box), setup: [{ piece: 'field', at: 'center' }, ...Object.entries(units).map(([sq, k]) => ({ piece: k, at: sq, up: false, owner: `seat:${k[0] === 's' ? 'south' : 'north'}` }))] };
+  enabled(R, R.job(HOST, { t: 'loadBox', box, setup: true, clear: true, rules: true }));
+  for (const [p, id] of [[CAROL, null], [MAL, null], [HOST, 'south'], [BOB, 'north']]) R.job(HOST, id ? { t: 'seat', p, id } : { t: 'seat', p, watch: true });
+  R.tick();
+  return R;
+}
+/** Every body p got since index k, as one text. */
+const since = (R, p, k) => R.peers.get(p).texts.slice(k).join('\n');
+const SNAPBOX = {
+  name: 'Snap', table: { shape: 'rect', w: 2000, h: 1400 }, backs: [{ id: 'cup', color: '#7c2d12' }],
+  pieces: [{ id: 'grid', kind: 'board', w: 600, h: 600, grid: { type: 'square', cols: 6, rows: 6, cell: 100, x: 0, y: 0 } },
+    { id: 'die', kind: 'die', back: 'cup' }, { id: 'gem', kind: 'token', shape: 'rect', w: 56, stack: 'none', back: 'cup', faces: ['ZQXJ'] }, { id: 'pawn', kind: 'token', shape: 'rect', w: 56, stack: 'none', back: 'cup', faces: ['ZQXW'] }],
+  setup: [{ piece: 'grid', at: [100, 100], id: 'cccc0001' }, { piece: 'die', at: [1200, 1000], id: 'cccc0002' }, { piece: 'gem', at: [1300, 1000], id: 'cccc0003' }, { piece: 'pawn', at: [1400, 1000], id: 'cccc0004' }],
+};
+const QUIET = `({ name: 'Quiet', validate(t, a) {
+  const it = t.item(a.id ?? a.ids?.[0]);
+  if (a.t === 'move' && it?.k === 'g' && t.type(it.t)?.faces[it.f]?.label?.startsWith('ZQX')) return 'The ' + t.type(it.t).faces[it.f].label + ' never moves';
+} })`;
+function testFixup() {
+  section('(F1) a private zone never widens who sees a piece (D277): a rack takes a private piece only from one who sees it; a screen never takes one over');
+  {
+    const R = room(), it = R.it, onRack = (id) => ({ x: it(id).x + 30, y: it(id).y + 10 });
+    R.api((t) => { t.hide(ID.u1, ['seat:south']); t.hide(ID.t1, ['seat:south']); });
+    R.tick();
+    const k0 = R.peers.get(BOB).texts.length; // (from here: "hid ZQXK" named it as it showed a moment ago)
+    const u0 = J(priv(it(ID.u1)));
+    let r = R.job(BOB, { t: 'move', id: ID.u1, ...onRack(ID.rackN) });
+    ok(r.notes.join() === '🚫 That piece is hidden' && J(priv(it(ID.u1))) === u0 && !r.lines.length, `Bob (north), not in its vis, drops South's unowned private unit on his rack: the uniform refusal, nothing changed (${J(r.notes)})`);
+    r = R.job(BOB, { t: 'group', op: 'move', ids: [ID.u1], dx: onRack(ID.rackN).x - it(ID.u1).x, dy: onRack(ID.rackN).y - it(ID.u1).y });
+    ok(r.notes.join() === '🚫 That piece is hidden' && J(priv(it(ID.u1))) === u0, `…as a group's move too (${J(r.notes)})`);
+    R.tick();
+    ok(!/ZQXK/.test(since(R, BOB, k0)) && !('t' in R.view(BOB).items[ID.u1]), `Bob was shown nothing of it (${since(R, BOB, k0).match(/.{0,80}ZQXK.{0,40}/)?.[0]})`);
+    r = R.job(HOST, { t: 'move', id: ID.t1, ...onRack(ID.rackN) });
+    ok(!r.notes.length && J(priv(it(ID.t1))) === J({ up: false, vis: ['seat:north'], pv: 1, po: 1, owner: 'seat:north' }), `Alice, who sees South's tile, hands it to Bob's rack: his now (${J(priv(it(ID.t1)))})`);
+    // a screen ('keep') hides what is shown, and never takes a private piece over: a person's move, a script's
+    R.api((t) => t.hide(ID.u2, ['seat:south']));
+    r = R.job(HOST, { t: 'move', id: ID.u2, x: it(ID.screen).x + 100, y: it(ID.screen).y + 100 });
+    ok(!r.notes.length && J(priv(it(ID.u2))) === J({ up: false, vis: ['seat:south'], pv: null, po: null, owner: null }), `South's private unit dropped behind North's screen: still South's alone (${J(priv(it(ID.u2)))})`);
+    R.api((t) => t.move(ID.u2, it(ID.screen).x + 300, it(ID.screen).y + 100));
+    ok(J(it(ID.u2).vis) === J(['seat:south']), "…and a script's move there: the same");
+    R.job(HOST, { t: 'move', id: ID.coin, x: 1500, y: 1300 });
+    R.job(BOB, { t: 'move', id: ID.t2, x: it(ID.screen).x + 400, y: it(ID.screen).y + 100 });
+    ok(J(priv(it(ID.t2))) === J({ up: false, vis: ['seat:north'], pv: 1, po: 1, owner: 'seat:north' }), 'a shown tile set behind the screen: hidden for its seat, as before');
+  }
+  section('(F2) what strips a private piece of its vis asks the private-piece rule (D280): stack, toPile, toBag, a split onto a bag — no laundering into a hand or a rack');
+  {
+    const R = room(), it = R.it;
+    R.api((t) => t.hide(ID.t2, ['seat:south']));
+    R.tick();
+    const k0 = R.peers.get(BOB).texts.length;
+    const t0 = J(priv(it(ID.t2))), n0 = Object.keys(R.H.state.items).length;
+    for (const [what, a] of [['stacks it onto a shown tile', { t: 'stack', id: ID.t2, onto: ID.t1 }], ['stacks a shown tile onto it', { t: 'stack', id: ID.t1, onto: ID.t2 }],
+      ['puts it into the bag', { t: 'toBag', id: ID.t2, bag: ID.bag }], ['takes it into his hand', { t: 'toHand', id: ID.t2 }], ['claims it', { t: 'owner', id: ID.t2, to: BOB }]]) {
+      const r = R.job(BOB, a);
+      ok(r.notes.join() === '🚫 That piece is hidden' && J(priv(it(ID.t2))) === t0 && Object.keys(R.H.state.items).length === n0, `Bob ${what}: the uniform refusal, nothing changed (${J(r.notes)})`);
+    }
+    R.job(HOST, { t: 'stack', id: ID.u1, onto: ID.u2 }); // (two shown units, no pile: units don't pile — a split onto a bag instead)
+    R.api((t) => t.hide(ID.stack, ['seat:south']));
+    let r = R.job(BOB, { t: 'split', id: ID.stack, n: 1, onto: ID.bag });
+    ok(r.notes.join() === '🚫 That piece is hidden' && it(ID.stack).n === 3, `Bob splits one of South's private stack onto the bag: refused (${J(r.notes)})`);
+    R.tick();
+    ok(!/ZQXB/.test(since(R, BOB, k0)) && !R.H.state.players[BOB].hand.length, 'Bob was shown nothing, his hand is empty');
+    r = R.job(HOST, { t: 'toBag', id: ID.t2, bag: ID.bag });
+    ok(!r.notes.length && !it(ID.t2), 'Alice, who sees it, may bag it');
+  }
+  section('(F3) a pull into a private zone never depends on what it draws (D278): a piece with no hidden side lands shown, untouched by the zone');
+  {
+    const R = room(), it = R.it, box = it(ID.t1).t.split('/')[0];
+    const bag = R.api((t) => t.newBag([...Array(3)].flatMap(() => [{ t: `${box}/coin` }, { t: `${box}/tile`, up: false }]), { at: { x: 2600, y: 900 }, name: 'Mixed' }));
+    const got = [], notes = [];
+    for (let k = 0; k < 6; k++) {
+      const before = new Set(Object.keys(R.H.state.items)), r = R.job(HOST, { t: 'pull', id: bag, x: it(ID.rackS).x + 6 + 80 * k, y: it(ID.rackS).y + 6 });
+      notes.push(...r.notes);
+      got.push(...Object.keys(R.H.state.items).filter((id) => !before.has(id)));
+    }
+    const coins = got.filter((id) => it(id).t.endsWith('/coin')), tiles = got.filter((id) => it(id).t.endsWith('/tile'));
+    ok(!notes.length && coins.length === 3 && tiles.length === 3, `six pulls into Alice's rack, none refused (${J(notes)})`);
+    ok(coins.every((id) => it(id).up !== false && !it(id).vis && !it(id).pv) && tiles.every((id) => J(priv(it(id))) === J({ up: false, vis: ['seat:south'], pv: 1, po: 1, owner: 'seat:south' })),
+      'the coins lie there shown; the tiles hidden for South');
+  }
+  section('(F4) where a hidden piece lands never tells a die from a token under one back (D279): a back a die wears never snaps');
+  {
+    const R = room({ def: SNAPBOX }), it = R.it, [grid, die, gem, pawn] = ['cccc0001', 'cccc0002', 'cccc0003', 'cccc0004'];
+    R.job(HOST, { t: 'move', id: pawn, x: it(grid).x + 210, y: it(grid).y + 10 });
+    ok(!!it(pawn).at, `a shown token set on a cell takes its address (${it(pawn).at})`);
+    R.job(HOST, { t: 'hide', ids: [die, gem, pawn] });
+    ok(!('at' in it(pawn)), 'hidden under the cup, it loses it');
+    R.job(HOST, { t: 'move', id: die, x: it(grid).x + 15, y: it(grid).y + 15 });
+    R.job(HOST, { t: 'move', id: gem, x: it(grid).x + 115, y: it(grid).y + 15 });
+    R.tick();
+    const m = R.view(MAL).items, shape = (o) => J(Object.keys(o).sort());
+    ok(!('at' in it(die)) && !('at' in it(gem)) && shape(m[die]) === shape(m[gem]) && m[die].b === m[gem].b, `a hidden die and a hidden token set on cells: neither snaps, alike to Mallory (${J([m[die], m[gem]])})`);
+    R.job(HOST, { t: 'flip', id: pawn });
+    ok(it(pawn).up !== false && !!it(pawn).at, `turned over where it lies, the token has its cell's address again (${it(pawn).at})`);
+  }
+  section("(F5) the rules' refusal of a move of one's own hidden piece is that player's alone (D282): no \"blocked\" line, nothing re-sent to the others, no live drag");
+  {
+    const R = room(), it = R.it;
+    R.job(HOST, { t: 'hide', ids: [ID.u1] });
+    R.job(HOST, { t: 'setRules', enabled: true, code: QUIET });
+    R.tick();
+    const k = { b: R.peers.get(BOB).texts.length, m: R.peers.get(MAL).texts.length }, n0 = R.H.state.log.length;
+    let r = R.job(HOST, { t: 'move', id: ID.u1, x: 1500, y: 600 });
+    const back = r.fx.find((e) => e.t === 'back');
+    ok(r.notes.join() === '🚫 The ZQXK never moves' && R.H.state.log.length === n0 && J(back) === J({ t: 'back', p: HOST, ids: [ID.u1] }), `Alice's move of her cupped unit, vetoed: the notice to her alone, no log line, drawn again on her screen alone (${J(r.notes)}, ${J(back)})`);
+    r = R.job(HOST, { t: 'group', op: 'move', ids: [ID.u1], dx: 300, dy: 0 });
+    ok(/ZQXK never moves/.test(r.notes.join()) && R.H.state.log.length === n0, `…a group's too (${J(r.notes)})`);
+    ok(R.H.drag(HOST, { t: 'drag', id: ID.u1, x: 1400, y: 700 }) === false && R.H.drag(HOST, { t: 'drag', id: ID.t1, x: 1400, y: 700 }) === true, 'its live drag goes to nobody (a shown tile\'s does)');
+    R.H.drain();
+    R.tick();
+    const bodies = since(R, BOB, k.b) + since(R, MAL, k.m);
+    ok(!bodies.includes(ID.u1) && !/ZQX|blocked/.test(bodies) && R.same(), "Bob's and Mallory's bodies since: not its id, no reason, no blocked line");
+    r = R.job(HOST, { t: 'move', id: ID.t1, x: 1500, y: 600 });
+    ok(R.H.state.log.at(-1).txt === 'blocked Alice: The ZQXA never moves' && !r.fx.some((e) => e.t === 'back'), `a shown tile's veto is public, as before (${R.H.state.log.at(-1).txt})`);
+  }
+  section('(F6) export writes what re-placing would not give back (D283): a unit in the other side\'s screen, a revealed one in its own, a rack whose owner left');
+  {
+    const R = demo(BOXES.ranks), H = R.H, it = R.it, units = (side) => Object.keys(H.state.items).filter((id) => it(id).t?.includes(`/${side[0]}-`));
+    const [deep, shown] = units('south');
+    R.api((t) => { t.move(deep, 'e9', { unzoned: true }); t.reveal(shown); t.move(shown, 'a3', { unzoned: true }); });
+    ok(J(it(deep).vis) === J(['seat:south']) && it(shown).up !== false, "a South unit among North's rows still South's alone; a revealed one shown in South's");
+    const { box } = quietly(() => H.exportBox({ rules: true, state: true })).value, E = Object.fromEntries(box.setup.filter((e) => e.id).map((e) => [e.id, e]));
+    ok(E[deep].unzoned === true && E[deep].up === false && J(E[deep].vis) === J(['seat:south']) && E[shown].unzoned === true && !('up' in E[shown]), `both written as they lie, unzoned (${J([E[deep], E[shown]])})`);
+    const B = room({ box: false, prefix: 'c' }), U = B.H;
+    quietly(() => U.apply(HOST, { t: 'addBox', box: json(box) }));
+    const bid = U.drain().find((e) => e.t === 'added')?.id;
+    for (const [p, id] of [[CAROL, null], [MAL, null], [HOST, 'south'], [BOB, 'north']]) quietly(() => U.apply(HOST, id ? { t: 'seat', p, id } : { t: 'seat', p, watch: true }));
+    quietly(() => U.apply(HOST, { t: 'setup', box: bid }));
+    U.drain();
+    const diff = [...units('south'), ...units('north')].filter((id) => J(priv(it(id))) !== J(priv(U.state.items[id])));
+    ok(!diff.length, `every unit set up again with the same up, vis, owner, pv and po (${J(diff.map((id) => [priv(it(id)), priv(U.state.items[id])]))})`);
+    B.tick();
+    ok(!('t' in B.view(BOB).items[deep]) && 't' in B.view(HOST).items[deep], 'after the import North still sees its back, South its face');
+  }
+  {
+    const R = room(), H = R.H, it = R.it;
+    R.set(HOST, { t: 'owner', id: ID.rackX, to: CAROL });
+    R.job(CAROL, { t: 'move', id: ID.t1, x: it(ID.rackX).x + 30, y: it(ID.rackX).y + 10 });
+    ok(J(it(ID.t1).vis) === J([CAROL]), "a tile on Carol's own rack: hers alone");
+    R.job(HOST, { t: 'seat', p: CAROL, watch: true });
+    const { box, warnings } = quietly(() => H.exportBox()).value, e = box.setup.find((x) => x.id === ID.t1);
+    ok(e.up === false && !e.vis && !e.owner && e.unzoned === true && warnings.some((w) => /sees it isn't seated/.test(w)), `Carol stood up: the tile goes hidden from everyone, never shown (${J(e)})`);
+  }
+  section('(F7) Dominoes (D284): the turn is a seat\'s; a tile leaves a rack only as a play, and only its seat\'s; a round\'s end shows the racks');
+  {
+    const R = demo(BOXES.dominoes), H = R.H, it = R.it, D = () => H.state.rules.data, holder = (s) => Object.keys(H.state.players).find((p) => H.state.players[p].seatId === s);
+    const rack = (s) => Object.values(H.state.items).find((x) => x.owner === `seat:${s}` && x.t.endsWith('/rack'));
+    const on = (s) => Object.keys(H.state.items).filter((id) => /\/t\d\d$/.test(it(id).t) && it(id).x + 30 >= rack(s).x && it(id).x + 30 <= rack(s).x + 600 && it(id).y + 60 >= rack(s).y && it(id).y + 60 <= rack(s).y + 140);
+    R.job(BOB, { t: 'rulesBtn', id: `deal-${BOB}` });
+    const s = D().turn, o = s === 'south' ? 'north' : 'south', [tile] = on(s);
+    ok(['south', 'north'].includes(s) && H.state.rules.public.turn === holder(s) && on('south').length === 7 && on('north').length === 7, `Draw 7: seven a rack, the lead a seat (${s}), its player the public turn`);
+    for (const [what, a, want] of [['turns a rack tile over', { t: 'flip', id: tile }, 'Play a tile by moving it off your rack'], ['hides a tile', { t: 'hide', ids: [tile] }, 'Tiles hide in your rack'],
+      ['draws onto the table', { t: 'pull', id: Object.keys(H.state.items).find((id) => it(id).k === 'b'), x: 450, y: 900 }, 'Draw into your rack (🔒 Draw to my rack)']]) {
+      const r = R.job(holder(s), a);
+      ok(r.notes.join() === `🚫 ${want}`, `the player to move ${what}: "${want}" (${J(r.notes)})`);
+    }
+    ok(R.job(holder(o), { t: 'move', id: tile, x: 450, y: 900 }).notes.join() === `🚫 That belongs to ${s === 'south' ? 'South' : 'North'}`, "the other player can't touch it (the engine's words)");
+    const was = holder(s);
+    R.job(HOST, { t: 'seat', p: was, watch: true });
+    R.job(HOST, { t: 'seat', p: CAROL, id: s });
+    ok(D().turn === s && H.state.rules.public.turn === CAROL, 'the player to move stands up and Carol takes the seat: the turn is hers');
+    let r = R.job(CAROL, { t: 'move', id: tile, x: 450, y: 600 });
+    ok(!r.notes.length && it(tile).up !== false && D().turn === o && J(D().played) === J([tile]), `Carol plays the tile: face up, the turn passes (${J(r.notes)})`);
+    r = R.job(holder(o), { t: 'move', id: tile, x: 480, y: 640 });
+    ok(D().turn === o && D().played.length === 1, 'nudging the line tile is no play');
+    ok(R.job(holder(o), { t: 'move', id: tile, x: rack(o).x + 6 + 66 * 8, y: rack(o).y + 6 }).notes.join() === '🚫 That tile is played', 'a played tile never goes back onto a rack');
+    for (let n = 0; D().turn && n < 30; n++) R.job(holder(D().turn), { t: 'move', id: on(D().turn)[0], x: 100 + 100 * (n % 8), y: 420 + 130 * Math.floor(n / 8) });
+    const left = [...on('south'), ...on('north')];
+    ok(!D().turn && H.state.rules.public.winners.length === 1 && left.length === 1 && left.every((id) => it(id).up !== false) && /domino!$/.test(H.state.log.at(-1).txt), `a rack emptied: domino, and the tile left on the other rack is shown (${H.state.log.at(-1).txt})`);
+    ok(R.same(), "the mirror's digest equals the host's");
+  }
+  section("(F8) Veiled Ranks (D285): moves keep a unit as it was, combat is announced, a stalemate of both sides is a draw, each unit its own label and log name");
+  {
+    const R = demo(BOXES.ranks, { a1: 's-banner', d4: 's-pike', e3: 's-crown', a10: 'n-banner', d5: 'n-pike' }), H = R.H, it = R.it, d = () => H.state.rules.data;
+    const at = (sq) => Object.keys(H.state.items).find((id) => it(id).at?.endsWith(`:${sq}`) && /\/[sn]-/.test(it(id).t)), field = () => Object.values(H.state.items).find((x) => x.t.endsWith('/field'));
+    const mv = (p, a, b) => { const f = field(), c = 'abcdefghij'.indexOf(b[0]), r = +b.slice(1) - 1; return R.job(p, { t: 'move', id: at(a), x: f.x + 30 + c * 100, y: f.y + 30 + (9 - r) * 100 }); };
+    R.job(HOST, { t: 'rulesBtn', id: 'ready-south' });
+    R.job(BOB, { t: 'rulesBtn', id: 'ready-north' });
+    const crown = at('e3');
+    let r = mv(HOST, 'e3', 'e4');
+    ok(r.lines.map((e) => e.txt).join() === 'moved a hidden piece e3 → e4' && J(it(crown).vis) === J(['seat:south']), `a hidden step: one line, the unit still South's alone (${J(r.lines.map((e) => e.txt))})`);
+    r = mv(BOB, 'd5', 'd4');
+    ok(r.lines.some((e) => e.txt === '📣 North Pike (2) and South Pike (2) fall together at d4') && r.fx.some((e) => e.t === 'ann'), `an attack's outcome is announced on every screen (${J(r.lines.map((e) => e.txt))})`);
+    ok(r.lines.some((e) => /^revealed (South|North) Pike/.test(e.txt)), 'a revealed unit is logged by its name');
+    mv(HOST, 'e4', 'e5');
+    ok(d().phase === 'over' && J(H.state.rules.public.winners) === J([HOST]), 'North has no unit that can move, South does: South wins');
+    const D = demo(BOXES.ranks, { a1: 's-banner', d4: 's-pike', a10: 'n-banner', d5: 'n-pike' });
+    D.job(HOST, { t: 'rulesBtn', id: 'ready-south' });
+    D.job(BOB, { t: 'rulesBtn', id: 'ready-north' });
+    const f = Object.values(D.H.state.items).find((x) => x.t.endsWith('/field')), pike = Object.keys(D.H.state.items).find((id) => D.it(id).at?.endsWith(':d4'));
+    r = D.job(HOST, { t: 'move', id: pike, x: f.x + 330, y: f.y + 530 }); // (d4 → d5)
+    ok(D.H.state.rules.data.phase === 'over' && !D.H.state.rules.public.winners.length && /a draw$/.test(D.H.state.log.at(-1).txt), `the last movers of both sides fall together: a draw, no 🏆 (${D.H.state.log.at(-1).txt})`);
+    const labels = Object.values(BOXES.ranks.types).filter((ty) => ty.meta?.side === 'south').map((ty) => ty.faces[0].label);
+    ok(new Set(labels).size === labels.length && Object.values(BOXES.ranks.types).every((ty) => !ty.meta || ty.faces[0].name === ty.name), `each unit its own label (${labels.join(' ')}), its face named as its type`);
+  }
 }
 
 // --- (9) the facade on the Worker path, the grammar, checkPatch ---------------------------------------
@@ -1689,7 +1907,7 @@ function indepBudgets() {
 }
 
 try {
-  for (const [what, fn] of [['reduction', testReduction], ['zones', testZones], ['peek', testPeek], ['hide', testHide], ['seats', testSeats], ['migrate', testMigrate], ['fuzz', testFuzz], ['export', testExport], ['facade', testFacade], ['budgets', testBudgets],
+  for (const [what, fn] of [['reduction', testReduction], ['zones', testZones], ['peek', testPeek], ['hide', testHide], ['seats', testSeats], ['migrate', testMigrate], ['fuzz', testFuzz], ['export', testExport], ['facade', testFacade], ['budgets', testBudgets], ['fix-up', testFixup],
     ['(1′)', indepReduction], ['(2′)', indepZones], ['(3′)', indepPeek], ['(4′)', indepHide], ['(5′)', indepSeats], ['(6′)', indepMigrate],
     ['(7′)', indepFuzz], ['(8′)', indepExport], ['(CP′)', indepCheckPatch], ['(B22′, B23′)', indepBudgets]]) await guard(what, fn);
 } catch (e) { crash(e); }

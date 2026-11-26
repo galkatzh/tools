@@ -46,11 +46,14 @@ const TOKENS = [...DEF.pieces[0].faces.flatMap((f) => [f.label, f.text]), 'Kt25'
   const env = await h.start();
   const alice = await player(env, 'Alice', env.url), bob = await player(env, 'Bob', alice.url());
   const invite = await alice.evaluate(() => `${location.origin}${location.pathname}${location.hash}`);
-  const snaps = {}, R = {};
+  const snaps = {}, heard = { Alice: [], Bob: [] }, R = {};
   for (const [page, name, lang] of [[alice, 'Alice', 'python'], [bob, 'Bob', 'node']]) {
-    // (the tab posts its snapshot to the bridge: kept here as the bridge reads it)
+    // (the tab posts its snapshot to the bridge: kept here as the bridge reads it — and
+    //  every msg it carried, as the REPL hears them: a msg rides one snapshot alone,
+    //  the next one, ≤ 500 ms later, goes without it)
     await page.route(/127\.0\.0\.1:\d+\/state\?/, (route) => {
       snaps[name] = route.request().postData();
+      try { heard[name].push(...(JSON.parse(snaps[name]).msgs || [])); } catch (err) { console.error('an unreadable snapshot', err); }
       route.continue().catch((err) => console.error('route.continue failed', err.message));
     });
     R[name] = await repl(lang, invite);
@@ -60,6 +63,8 @@ const TOKENS = [...DEF.pieces[0].faces.flatMap((f) => [f.label, f.text]), 'Kt25'
     ok(await until(() => R[name].c.buf.includes(`tab connected: ${name}`), 20000, 200), `${lang}: ${name}'s tab is connected to its REPL`);
   }
   const snap = (name) => { try { return JSON.parse(snaps[name] || 'null'); } catch (err) { console.error('an unreadable snapshot', err); return null; } };
+  /** Every msg tab `name`'s snapshots have carried so far. */
+  const msgs = (name) => heard[name];
   const item = (name, id) => snap(name)?.items.find((x) => x.id === id);
   const S = () => alice.evaluate(() => window.__ct.hostState());
   /** The lines REPL `name` printed after buffer offset `from` that match `re` (its prompts stripped). */
@@ -91,10 +96,10 @@ const TOKENS = [...DEF.pieces[0].faces.flatMap((f) => [f.label, f.text]), 'Kt25'
   from = mark();
   type('Bob', `peek ${ID.d1}`);
   const face = `Kd${st.items[ID.d1].f + 1}`;
-  ok(await until(() => (snap('Bob')?.msgs || []).some((m) => m.startsWith('peek: ') && m.includes(face)), 15000, 100), `Bob's snapshot: msgs gains "peek: …" naming the face ${face} (§5i, D267) (${json((snap('Bob')?.msgs || []).filter((m) => m.startsWith('peek')))})`);
+  ok(await until(() => msgs('Bob').some((m) => m.startsWith('peek: ') && m.includes(face)), 15000, 100), `Bob's snapshot: msgs gains "peek: …" naming the face ${face} (§5i, D267) (${json(msgs('Bob').filter((m) => m.startsWith('peek')))})`);
   ok(await until(() => printed('Bob', from.Bob, new RegExp(`peek: ${face}`)).length === 1, 10000, 100), `his REPL prints it (${json(printed('Bob', from.Bob, /peek/))})`);
   ok(await until(() => printed('Alice', from.Alice, /Bob peeked at a hidden piece/).length === 1, 10000, 100), "Alice's REPL: \"Bob peeked at a hidden piece\"");
-  ok(!(snap('Alice')?.msgs || []).some((m) => m.startsWith('peek')) && !printed('Alice', from.Alice, new RegExp(face)).length, "…and never the face: no peek in Alice's msgs");
+  ok(!msgs('Alice').some((m) => m.startsWith('peek')) && !printed('Alice', from.Alice, new RegExp(face)).length, "…and never the face: no peek in Alice's msgs");
   ok(item('Bob', ID.d1).kind === 'hidden', "Bob's snapshot still holds the die hidden: a peek is one message");
   from = mark();
   type('Alice', `peek ${ID.d2}`);
@@ -117,14 +122,14 @@ const TOKENS = [...DEF.pieces[0].faces.flatMap((f) => [f.label, f.text]), 'Kt25'
   leak = V.scan(snap('Alice').items, ['Kt25', 'Kt-two-five', refs[1], 'pips']);
   ok(!leak.length, `no pips, name or type ref of it in Alice's items ${json(leak.slice(0, 3))}`);
   type('Alice', `peek ${ID.tile}`);
-  ok(await until(() => (snap('Alice')?.msgs || []).some((m) => m.startsWith('peek: ') && /Kt25|2\|5/.test(m)), 15000, 100),
-    `Alice's peek at Bob's tile: in her msgs (${json((snap('Alice')?.msgs || []).filter((m) => m.startsWith('peek')))})`);
+  ok(await until(() => msgs('Alice').some((m) => m.startsWith('peek: ') && /Kt25|2\|5/.test(m)), 15000, 100),
+    `Alice's peek at Bob's tile: in her msgs (${json(msgs('Alice').filter((m) => m.startsWith('peek')))})`);
   ok(await until(() => printed('Bob', from.Bob, /Alice peeked at a hidden piece/).length === 1, 10000, 100), "Bob's REPL: \"Alice peeked at a hidden piece\"");
   type('Bob', `reveal ${ID.tile}`);
   ok(await until(() => item('Alice', ID.tile)?.kind === 'tile', 15000, 100), `Bob's reveal: the tile face up in Alice's snapshot (${json(item('Alice', ID.tile))})`);
   from = mark();
   type('Bob', `hide ${ID.coin}`);
-  ok(await until(() => (snap('Bob')?.msgs || []).some((m) => m === 'note: 🚫 That piece has no hidden side'), 10000, 100), `his hide of the coin is refused, said in his msgs (${json((snap('Bob')?.msgs || []).slice(-2))})`);
+  ok(await until(() => msgs('Bob').some((m) => m === 'note: 🚫 That piece has no hidden side'), 10000, 100), `his hide of the coin is refused, said in his msgs (${json(msgs('Bob').slice(-2))})`);
   st = await S();
   ok(st.items[ID.coin].up !== false && !st.items[ID.coin].vis, 'the coin as it was');
   const lb = V.scan(snap('Bob').items.filter((x) => x.id === ID.d2), [...TOKENS.filter((t) => t.startsWith('Kd')), refs[0]]);

@@ -233,10 +233,13 @@ included ("Alice hid 3 pieces", "rolled 2 hidden dice": never what they are).
   that corner faintly hatched — "Hidden from the others: only you can see
   it", says its tooltip. A piece you hide is yours until it is revealed:
   nobody else may turn it over, roll it, set its face, take it into a hand
-  or claim it, and the refusal is the same whatever it is ("🚫 That piece
-  is hidden").
+  or claim it — nor put it where it would show them, or lose who sees it:
+  onto a pile, into a bag, onto their own rack — and the refusal is the
+  same whatever it is ("🚫 That piece is hidden"). While you drag a hidden
+  piece of yours, the others see it only where you set it down.
 - **Dice under a cup.** 🙈 Hide on a die cups it with the dice touching it
-  (as 🎲 Roll throws them together). Roll them under the cup: everyone sees
+  (as 🎲 Roll throws them together; one locked in place stays out). The
+  built-in dice — Backgammon's, Hexfront's — wear a cup. Roll them under the cup: everyone sees
   the cup shake, you alone see the faces, and the log says "rolled 3 hidden
   dice" — or, rolled with dice in the open, their values alone ("rolled 4
   dice (2 hidden): 3 · 5"). **Reveal** (or **F**) shows them to everyone.
@@ -245,10 +248,14 @@ included ("Alice hid 3 pieces", "rolled 2 hidden dice": never what they are).
   ("🔒 Your rack" on your own screen; "🔓 Nobody's rack" while its board
   has no owner, when it hides nothing). Whatever is set down in one hides
   for its owner — and is theirs, unless it already belongs to someone. A
-  tile taken off a rack is played face up; a unit moved out from behind a
-  screen stays hidden until it is revealed. A bag's **🔒 Draw to my rack**
-  draws a piece straight into the first free slot of your rack, so it is
-  never seen face up on the way. In a box, a rack is a board's zone with
+  zone never shows anyone a piece hidden from them: a piece hidden for
+  someone else goes onto your rack only from a hand that sees it (handing
+  a tile over), and behind a screen it stays theirs alone. A tile taken off
+  a rack is played face up; a unit moved out from behind a screen stays
+  hidden until it is revealed. A bag's **🔒 Draw to my rack** draws a
+  piece straight into the first free slot of your rack, so it is never seen
+  face up on the way (a full rack takes it half a slot on, every tile still
+  in sight; a piece with no hidden side lands there face up). In a box, a rack is a board's zone with
   `"private": "reveal"` (a screen: `"keep"`) and `"owner": "board"` (the
   board item's owner: `"owner": "seat"` in `forEachSeat` gives each seat
   its own) or `"seat:<id>"`; its label stands beside it on the side of the
@@ -260,8 +267,16 @@ included ("Alice hid 3 pieces", "rolled 2 hidden dice": never what they are).
 - **Seats.** A piece hidden for a seat is seen by whoever sits there: stand
   up, and its back is all you see; the next player there sees its face.
 - **Exporting.** An exported game keeps it all: a cup's dice stay cupped
-  for the same player, a screen's units that left it stay hidden, and a
-  rack's tiles are hidden again by their rack when the game is set up.
+  for the same player, a screen's units that left it stay hidden, a rack's
+  tiles are hidden again by their rack when the game is set up, and what a
+  zone wouldn't give back as it is — a unit standing in the other side's
+  rows, one revealed behind its own screen — is written as it lies
+  (`"unzoned": true`). Someone who sees a piece but isn't seated can't be
+  written: it goes hidden from everyone, never shown.
+- **Rules that refuse.** A game's refusal of a move of your own hidden
+  piece is yours alone — the others get no "blocked" line and don't see
+  which piece you reached for, since its words may name it ("The Banner
+  never moves").
 - **In the terminal**: `hide <id…>`, `reveal <id>` and `peek <id>` (see
   [Terminal bridge & bots](#terminal-bridge--bots-clijs--clipy)).
 
@@ -276,15 +291,18 @@ scripts start with them):
   play a tile out of your rack onto the line — that passes the turn — or
   draw (the bag's **🔒 Draw to my rack** drops it straight into a free slot
   of yours) until you can; **⏭ Pass** once the boneyard is empty.
-  Emptying your rack is a domino (🏆); the line blocked, everyone shows
-  their tiles. Nobody peeks at a hidden tile, and nobody but the player to
-  move plays or draws. Which ends match, the spinner and the score are
+  Emptying your rack is a domino (🏆); at a domino or a blocked line every
+  rack shows its tiles, for the count. Nobody peeks at a hidden tile;
+  nobody but the player to move plays or draws; a tile leaves a rack only
+  as a play — never turned over there — and only its own seat moves it.
+  The turn belongs to a seat: someone who takes it over mid-round plays
+  on. Which ends match, the spinner and the score are
   yours to keep, as at a kitchen table; **♻ New round** gathers every tile
   back into the boneyard.
 - **Veiled Ranks** — an original game of hidden units for two (South and
   North) on a 10 × 10 field: capture the other side's Banner. Each side's
-  twelve units — Banner, Crown (rank 4), two Blades (3), three Pikes (2),
-  two Lancers (1), a Herald (1) and two Traps — lie face down for the
+  twelve units — Banner (⚑), Crown (rank 4), two Blades (3), three Pikes
+  (2), two Lancers (1»), a Herald (1✉) and two Traps (✕) — lie face down for the
   other side, behind **screens** on its three home rows, dealt out at
   random so no square tells which is which. **Deploy** by dragging your
   units within your rows (onto one of yours, the two swap), then
@@ -294,8 +312,11 @@ scripts start with them):
   go. Moving onto an enemy attacks it: both are revealed for good, the
   higher rank stays and the lower is removed (both, if equal); a Trap takes
   its attacker with it; a **Herald parleys** — both revealed, nothing
-  removed, the Herald back where it was. Take the Banner, or leave the
-  other side no move, to win: then every unit is turned over, and
+  removed, the Herald back where it was. Every outcome is announced on
+  every screen. A unit keeps how it is seen wherever it goes: a hidden one
+  stays hidden in the other side's rows, a revealed one shown in yours.
+  Take the Banner, or leave the other side no move, to win (neither side
+  able to move is a draw): then every unit is turned over, and
   **♻ New game** deals new armies. The script enforces it all (a strict
   script: nothing else moves, and nobody peeks).
 
@@ -594,7 +615,11 @@ together, or as one **`.zip`** of them:
   before it places); with an address, `"off": [dx, dy]` sets a piece that
   far from the spot's centre, still on it (an export writes one a moved
   board left so), and with `[x, y]`, `"free": true` sets it down without
-  snapping. `owner` may be `"seat:<id>"` or `"#k"`. In a `group` with
+  snapping. `owner` may be `"seat:<id>"` or `"#k"`. A face-down piece may
+  say who sees it, `"vis"` (a seat, `"#k"`, `"seat"` in `forEachSeat`, or a
+  list of up to eight), with `"po": true` when its owner is the one its
+  hiding gave it; `"unzoned": true` lays a piece out exactly as written, in
+  a private zone too (an export writes it). In a `group` with
   `"shuffle": true`, the face-down pieces that share a back are dealt out
   among the group's places (an `id` stays with its place); they must look
   alike once dealt — the same `rot`, `lock`, `n` and `owner`, and all dice
@@ -1025,7 +1050,7 @@ quota, storage failures, the image pull and its checks), and
 `t-p1-flood.js` floods the host with image requests and big decks while
 asserting it never blocks for 50 ms. The benchmarks (`t-p1-bench.js`, `core-p1-bench.mjs`)
 assert the Phase 1 budgets on a 1,000-card table: bytes per move, apply and
-render times, phone panning (and no layout in a gesture's frames, a piece's bar open or not), snapshot size, indexed reads, the save's
+render times, phone panning (and no layout in a gesture's frames, a piece's bar open or not, a labelled board on the table or not), snapshot size, indexed reads, the save's
 main-thread time and zero image bytes on a warm rejoin.
 Pieces have theirs: `core-p2.test.mjs` (game boxes, every piece action and
 refusal, the public view, seats; `core-p2-bench.mjs` times a 20-dice roll),
@@ -1077,4 +1102,13 @@ fuzz scanning every body, the export round trip, B22 and B23),
 `t-p5-wire.js` (a raw attacker's view of cups, racks and seats),
 `t-p5-private.js` (the cue, the bar's Hide, Reveal and Peek, racks and
 §5j's attacker cases on a desktop and a phone) and `t-p5-cli.js` (the
-terminal's `hide`, `reveal` and `peek` in both REPLs).
+terminal's `hide`, `reveal` and `peek` in both REPLs); the suites written
+from the spec apart from the code check it again — `t-p5-veil.js` (§5j's
+attacker cases through a host reload, a demotion and an export, every body
+an attacker gets scanned), `t-p5-veil-cli.js` (both REPLs),
+`t-p5-bones.js` (Dominoes' racks against a watching attacker),
+`t-p5-order.js` (twenty Veiled Ranks setups: no order tells a rank) and
+`t-p5-demos.js` (both demos played on a desktop and a phone) — and
+`t-p5-fix.js` keeps the Phase 5 review's fix-ups on the screen (a
+domino's two halves, a full rack, a hidden unit's refusal kept to its
+player, a cup over unlocked dice, a wheel over the 🔒 card).

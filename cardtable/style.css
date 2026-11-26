@@ -361,6 +361,7 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
   overflow: hidden; box-shadow: 0 1px 2px #0006, 0 3px 8px #0005;
 }
 .pimg, .psvg, .plabel, .ptext, .pips, .pips2 { grid-area: 1 / 1; }
+.pips2 > .pips { grid-area: auto; } /* a domino's two halves: a cell of .pips2 each, not both in its first */
 .pimg, .psvg { width: 100%; height: 100%; }
 .psvg { pointer-events: none; }
 .blabels { font-family: Georgia, 'Times New Roman', serif; font-weight: 700; opacity: 0.85; }
@@ -376,12 +377,17 @@ img.face, img.back { width: 100%; height: 100%; object-fit: cover; display: bloc
    <text>, so the selectors stay a piece's. */
 .psvg text { transform-box: fill-box; transform-origin: center; transform: rotate(calc(-1 * (var(--view, 0deg) + var(--rot, 0deg)))); }
 .psvg .slabel { transform: rotate(calc(-1 * round(nearest, var(--view, 0deg) + var(--rot, 0deg), 180deg))); }
+/* …and none is drawn while a gesture moves the view (app.js moving, D288): an SVG text on the table laid
+   the page out in every frame of a pan, pinch, twist or wheel zoom, each layout followed by a hover
+   hit-test of the whole table — 16 layouts a wheel and 33 ms pinch frames on 1,000 pieces with one rack */
+#table.moving .psvg text { display: none; }
 .plabel { line-height: 1; font-weight: 700; text-shadow: 0 1px 0 #ffffff30, 0 -1px 0 #0003; }
 .ptext {
   font-size: 11px; line-height: 1.2; padding: 6%; overflow: hidden; text-align: center;
   display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
 }
 .plabel + .ptext { align-self: end; -webkit-line-clamp: 2; padding-bottom: 4%; } /* under a label: along the bottom edge */
+.veiled .plabel + .ptext { align-self: start; padding: 4% 6% 0; } /* …along the top while 🙈 holds the bottom corner */
 .pips { width: 80%; height: 80%; display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr); place-items: center; }
 .pip { width: 64%; height: 64%; border-radius: 50%; }
 .pip.on { background: currentColor; box-shadow: inset 0 1px 1px #0006; }

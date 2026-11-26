@@ -2765,8 +2765,9 @@ author's, written from the spec after this part. What it needs, by name
   `hand: false`, one face `{pips: [a, b], name: 'a|b'}` — the log calls a
   shown tile "3|4". A bag named "Boneyard" (`kind: 'bag'`) of the 28, face
   down, at [24, 600]. Script name "Dominoes"; `t.data`: `{dealt, turn
-  (pid | null), lead, played (the ids played this round), passes}`;
-  `public.turn` the player to move.
+  (a seat id, 'south' | 'north', or null), lead (a seat id), played (the
+  ids played this round), passes, taking}`; `public.turn` the holder of the
+  seat to move (the fix-up, D284: it was a pid).
   - Buttons: `deal-<pid>` "Draw 7" for each seated player before the deal;
     `pass` "⏭ Pass" for the player to move once the boneyard is empty;
     `new-<pid>` "♻ New round" for the host during a round, and for the
@@ -2777,19 +2778,27 @@ author's, written from the spec after this part. What it needs, by name
     false, `vis: ['seat:<s>']`, `pv: 1`, owned by `seat:<s>` with `po: 1`.
     "📣 {name} leads" (drawn by lot: one "used randomness" line), then the
     lead goes round, a round each.
-  - A play is a `move` by the player to move that leaves a tile face up (a
-    tile off its rack) and that this round hasn't played yet: the turn
-    passes (`t.nextSeat`); a played tile moved again passes nothing. A rack
-    emptied: "📣 {name} plays the last tile — domino!" and 🏆 (`t.win`).
-    Every seated player passing in a row: "📣 The line is blocked — show
-    your tiles: the lowest count wins". New round: "removed N items…",
+  - A play is the move that takes a tile off its seat's rack, on that
+    seat's turn (validate notes it, `taking`), once the tile lies on the
+    table face up: the turn passes to the other seat; a line tile moved
+    again passes nothing. A rack emptied (tiles counted where they lie):
+    "📣 {name} plays the last tile — domino!" and 🏆 (`t.win`). Every seat
+    passing in a row: "📣 The line is blocked — every rack shows its tiles:
+    the lowest count wins". At either end every tile left on a rack is
+    revealed. New round: "removed N items…",
     "made the bag Boneyard (28 pieces)", "A new round: the tiles are back in
     the boneyard".
   - Refusals (notices): "🚫 It's {name}'s turn" (a pull from the boneyard,
     or a tile of your own rack set down off it, out of turn — rearranging
     your own rack is never refused), "🚫 Press Draw 7 first", "🚫 The round
     is over — ♻ New round to play again", "🚫 No peeking at hidden tiles"
-    (every `peek`); a told "Dominoes needs two seated players and a full
+    (every `peek`), "🚫 Draw into your rack (🔒 Draw to my rack)" (a pull
+    landing elsewhere), "🚫 Play a tile by moving it off your rack" (a
+    flip, a bag, anything but a move or a turn of a rack tile), "🚫 Tiles
+    hide in your rack" (every `hide`), "🚫 That tile is on {name}'s rack"
+    (another seat's shown rack tile; a hidden one gets the engine's
+    uniform refusal), "🚫 Keep to your own rack", "🚫 That tile is
+    played"; a told "Dominoes needs two seated players and a full
     boneyard".
 - **Veiled Ranks.** A 1160 × 1560 table, seats South (`#d97706`) and North
   (`#2563eb`). Types: `field` (the board: 1040 square, `primary`, a 10 × 10
@@ -2797,10 +2806,11 @@ author's, written from the spec after this part. What it needs, by name
   left corner; zones `north` — board-local y 0–320 — and `south` — y
   720–1040 —, `owner: 'seat:<id>'`, `private: 'keep'`) and per side the
   units `s-<unit>` / `n-<unit>`: `banner` (1, rank 0, label "⚑"), `crown`
-  (1, 4), `blade` (2, 3), `pike` (3, 2), `lancer` (2, 1), `herald` (1, 1),
-  `trap` (2, rank null, "✕"); tokens, rect 80, `upright`, `back: 'south'` /
-  `'north'` (◆ on the side's colour), one face `{color, label: the rank or
-  glyph, text: the unit's name}`, `meta: {side, unit, rank}`, type names
+  (1, 4), `blade` (2, 3), `pike` (3, 2), `lancer` (2, 1, label "1»"),
+  `herald` (1, 1, "1✉"), `trap` (2, rank null, "✕"); tokens, rect 80,
+  `upright`, `back: 'south'` / `'north'` (◆ on the side's colour), one face
+  `{color, label: the rank or glyph, text: the unit's name, name: "South
+  Crown" — the log's name for it shown}`, `meta: {side, unit, rank}`, type names
   "South Crown" …. The setup: the field at the centre, then a `group` with
   `shuffle: true` per side of twelve piece entries, each `up: false` and
   `owner: 'seat:<side>'`, at c1–h1, c2–h2 (South) and c10–h10, c9–h9
@@ -2825,17 +2835,18 @@ author's, written from the spec after this part. What it needs, by name
   - Moves are drags (`move` with `a.to`): deploying, within your rows
     (onto one of yours, the two swap: two "moved a hidden piece" lines);
     in play, one square along a rank or a file, a Lancer one or two with
-    its first square empty — onto an enemy is an attack.
-  - Lines: "{Side Unit} parleys with {Side Unit (r)} at {sq}: both stand
-    revealed", "{Side Unit (r)} springs {Side} Trap at {sq}: both are
-    lost", "{A (r)} beats {B (r)} at {sq}", "{A (r)} and {B (r)} fall
-    together at {sq}", "📣 {A (r)} takes {Side}'s Banner — {Side} wins",
-    "📣 {Side} has no unit that can move — {Other} wins"; at the end every
-    unit still hidden is revealed ("revealed N pieces: …") and 🏆 goes to
-    the winner's seat. Revealed units stay revealed (a unit that combat
-    showed and that steps into a screen is revealed again); a hidden unit
-    that steps into the other side's rows stays hidden for its own side
-    ("changed who sees a hidden piece on {sq}" follows its move).
+    its first square empty — onto an enemy is an attack. The script moves
+    every unit `{unzoned: true}`: it keeps how it is seen wherever it lands
+    (one line, "moved a hidden piece e3 → e4" or "moved South Crown b7 →
+    b8").
+  - Lines, each announced (📣, a banner on every screen): "{Side Unit}
+    parleys with {Side Unit (r)} at {sq}: both stand revealed", "{Side
+    Unit (r)} springs {Side} Trap at {sq}: both are lost", "{A (r)} beats
+    {B (r)} at {sq}", "{A (r)} and {B (r)} fall together at {sq}", "{A
+    (r)} takes {Side}'s Banner — {Side} wins", "{Side} has no unit that
+    can move — {Other} wins", "Neither side has a unit that can move — a
+    draw" (no 🏆); at the end every unit still hidden is revealed
+    ("revealed N pieces: …") and 🏆 goes to the winner's seat.
   - Refusals: "🚫 Deploy inside your three rows", "🚫 You're ready — wait
     for {Side}", "🚫 Only the two players move the units" (a watcher),
     "🚫 That's not your unit", "🚫 Drop the unit on a square of the
@@ -2845,7 +2856,9 @@ author's, written from the spec after this part. What it needs, by name
     square at a time", "🚫 A Lancer moves one or two squares", "🚫 A
     Lancer's first square must be empty ({sq})", "🚫 The game is over — ♻
     New game for another"; strict's "🚫 Not a move in this game" for
-    anything but a move (a peek, a flip, a 🙈 Hide).
+    anything but a move (a peek, a flip, a 🙈 Hide). While the unit moved
+    is hidden, a refusal is its player's alone (D282): no "blocked" line,
+    nothing re-sent to the other screens.
 - **Mechanism changes, no check weakened:** `t-fun-games.js` checks that the
   game strip offers every shipped game, in order, and that the 🎲 dialog
   lists them all: the two box games join the list after Backgammon (15
@@ -3076,6 +3089,75 @@ after its gesture ends. About 35 s alone; not serial (no timing budget).
   `APP_ROOT`): `step()` without its `setVis` (5 checks fail), the armies'
   group without `shuffle` (6, case 10's among them), patch overrides sent to
   every player (20). Screenshots: `shots/p5d-*.png`.
+
+## Phase 5 fix-up (the review's findings)
+
+SPEC §9 D277–D292.
+
+- **`core-p5.test.mjs` section (F)**, in the implementation's own runner
+  (`testFixup`), with `demo(box, units?)` — a built-in box set up with its
+  rules in this file's `room()` (the app's `enable` effect started by hand:
+  `enabled`), Alice south, Bob north, optionally a Veiled Ranks position —
+  and `since(R, p, k)`, every body p got since its k-th:
+  - (F1) a zone never widens who sees a piece (D277): Bob's move, and a
+    group's, of South's unowned private unit onto his rack refused
+    uniformly, nothing shown him; Alice (who sees it) hands South's tile
+    to Bob's rack; a screen keeps a private piece South's for a person's
+    move and a script's; a shown tile behind the screen hides as before.
+  - (F2) the private-piece rule on stack (either side), toBag, toHand, a
+    claim and a split onto a bag (D280); Alice may bag her own.
+  - (F3) six pulls from a bag of coins and tiles into Alice's rack, none
+    refused: the coins shown, the tiles hidden (D278).
+  - (F4) a hidden die and a hidden token under one back set on cells: no
+    address, alike to Mallory; hiding drops a token's address, revealing
+    gives it back (D279) — `SNAPBOX`.
+  - (F5) a `QUIET` script vetoes moves with the piece's face label in its
+    words: Alice's move and group move of her cupped unit refused with no
+    log line and a `back` effect to her alone; its live drag relayed to
+    nobody; Bob's and Mallory's bodies never name it; a shown tile's veto
+    public as before (D282).
+  - (F6) Veiled Ranks exported with a hidden South unit in North's rows
+    and a revealed one in South's: written as they lie (`unzoned`), every
+    unit's up, vis, owner, pv and po the same in a fresh room, North still
+    seeing the back; a rack tile of a player who stood up goes hidden from
+    everyone (D283).
+  - (F7) Dominoes by seat: the turn a seat, refusals of a flip, a hide and
+    a draw off the rack, the engine's words for another seat's tile, a seat
+    taken over mid-round, a play, a nudge that isn't one, a played tile kept
+    off the racks, a domino that reveals the tile left (D284).
+  - (F8) Veiled Ranks: a hidden step one line, an outcome announced, a
+    revealed unit logged by name, a stalemate of the side to move a loss,
+    of both a draw; each kind its own label, its face named (D285).
+  Against the code before the fix-up the section fails 28 times.
+- **`t-p5-fix.js`** (E2E, ~60 s; Alice hosts on a desktop, Bob on an
+  iPhone 13): (1) Dominoes from 🎲 — each tile's two `.pips2 > .pips`
+  boxes apart on both screens (D291), then the player to move draws four
+  times with 🔒 Draw to my rack: eleven tiles at eleven places, none
+  covering more than half another (D287); (2) Veiled Ranks — seven labels
+  on Alice's screen, a 🙈 unit's `.ptext` in the top half of its face
+  (D291), and her drag of a unit out of her rows refused with the unit
+  back home within a second while Bob (`__rtc.keep`) receives no body
+  naming it and no "blocked" line, then a legal swap that does reach him
+  (the control) (D282); (3) Backgammon's dice wear a cup, and 🙈 Hide over
+  a handful with a locked die cups the other alone with no refusal (D286,
+  D290); (4) a wheel over the 🔒 For you card scrolls it, the table's
+  transform unchanged (D289). Shots: `shots/p5fix-*.png`.
+- **`t-p1-bench.js`, a board-text B4 row** (D288): 1,000 ×3 stacks with a
+  chess-labelled board and a rack (its private zone's label) on the
+  table (`loadStacks(…, extra)`): the pinch under B4's budgets and
+  B4_LAYOUTS, then sixteen synthetic wheel turns on the phone — at most
+  B4_LAYOUTS layouts, the board's text `display: none` at every turn and
+  back at the wheel's rest.
+- **Mechanism changes, no check weakened:** `core-p4.test.mjs`'s D210 check
+  reads, for the tokens of a shuffled group under a die's back, that each
+  place keeps its spot with no address (D279: a hidden piece under a back a
+  die wears never snaps; it read the address before). `t-p5-bones.js` waits
+  for Alice's view to hold each tile before reading it (`v[k] && …`: under
+  load it threw on an id not there yet) and reads the player to move from
+  `public.turn` (D284: `t.data.turn` is a seat now). `t-p5-veil-cli.js`
+  keeps every msg its tabs' snapshots carried (`msgs(name)`): a msg rides
+  one snapshot, and the next, ≤ 500 ms later, goes without it — reading
+  the latest alone missed Alice's peek under a full run's load.
 
 ## Storage and images (Phase 1B)
 

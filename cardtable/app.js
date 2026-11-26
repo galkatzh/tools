@@ -256,7 +256,9 @@ function enqueue(p, a) {
  *  refreshFor has its own flood bucket), so a flood never grows the queue
  *  while a slow hook holds it. */
 function refused(p, a) {
-  if (T.refreshFor(p, a)) scheduleBroadcast();
+  const changed = T.refreshFor(p, a);
+  drain(p); // (p's own hidden piece is drawn again on p's screen alone: a `back`)
+  if (changed) scheduleBroadcast();
 }
 /** Runs the queued jobs in order while none is in flight. */
 function pump() {
@@ -840,6 +842,7 @@ function drain(actor) {
         tell(e.p, e.msg, e.ruled);
         break;
       case 'peek': if (e.p === pid) showPeek(e.c); else noteTo(e.p, { peek: e.c }); break;
+      case 'back': if (e.p === pid) letGoOf(e.ids); else noteTo(e.p, { back: e.ids }); break;
       case 'toast': toast(e.msg); break;
       case 'deck': dirtyDecks.add(e.id); break;
       case 'box': dirtyBoxes.add(e.id); break;
@@ -1494,6 +1497,7 @@ function connect() {
       heardAt = Math.max(heardAt, Date.now() + Math.min(num(n.wait), ASSET_WINDOW_MS));
       note(`Card images are coming slowly — the host sends at most ${PEER_ASSET_BUDGET / 1e6} MB of them a minute`);
     } else if (n.msg) note(String(n.msg), n.ruled === true); // toast + the terminal bridge
+    if (Array.isArray(n.back) && n.to === pid) letGoOf(n.back.filter((id) => typeof id === 'string')); // our refused drop of our own hidden piece
     if (n.peek && n.to === pid) { // the host's private answer to our peek: a card {d, i}, or a piece {t, f}
       showPeek('t' in n.peek ? { t: peerText(n.peek.t), f: num(n.peek.f, -1) } : { d: peerText(n.peek.d), i: num(n.peek.i, -1) });
     }
@@ -1972,10 +1976,12 @@ function myZones() {
  *  first free slot of this player's private zones — each zone's bounding box
  *  on the table scanned row by row in steps of the piece's size, keeping the
  *  slots whose centre lies in the zone (where the host's place() reads it) —
- *  one that no item overlaps, else the first slot (a full rack still takes
- *  it, overlapping), else the zone's middle: a top-left {x, y}. The piece's
- *  size is the largest back among the bag's box's pieces (it lands hidden:
- *  its back's size), else a placeholder's. */
+ *  that no item overlaps; the zones full, the spot half a step on from a
+ *  slot that covers the least of what lies there (a draw game's tenth tile
+ *  lands between two, all three in sight, D287); a zone smaller than a piece,
+ *  its middle: a top-left {x, y}. The piece's size is the largest back among
+ *  the bag's box's pieces (it lands hidden: its back's size), else a
+ *  placeholder's. */
 function rackSlot(bag) {
   const box = boxes[bag.box], backs = Object.values(box?.types || {}).filter((ty) => ty.kind !== 'board' && ty.back).map((ty) => box.backs[ty.back]);
   const w = Math.max(...backs.map((k) => num(k?.w)), 0) || PLACEHOLDER, h = Math.max(...backs.map((k) => num(k?.h)), 0) || PLACEHOLDER, gap = 6, TB = boardsNow();
@@ -1983,14 +1989,17 @@ function rackSlot(bag) {
     const s = sizeOf(o, boxes), [ow, oh] = Math.round(num(o.rot) / 90) % 2 ? [s.h, s.w] : [s.w, s.h], cx = o.x + s.w / 2, cy = o.y + s.h / 2;
     return [cx - ow / 2, cy - oh / 2, cx + ow / 2, cy + oh / 2];
   });
-  const slots = myZones().flatMap(({ b, z }) => {
-    const pts = z.poly.map(([x, y]) => fromLocal(b, x, y)), xs = pts.map((p) => p.x), ys = pts.map((p) => p.y), x0 = Math.min(...xs), y0 = Math.min(...ys), x1 = Math.max(...xs), y1 = Math.max(...ys), out = [];
-    for (let y = y0 + gap; y + h <= y1 + 0.5; y += h + gap) {
-      for (let x = x0 + gap; x + w <= x1 + 0.5; x += w + gap) if (zonesUnder(TB, x + w / 2, y + h / 2).includes(`${b.id}:${z.id}`)) out.push({ x, y });
-    }
-    return out.length ? out : [{ x: (x0 + x1 - w) / 2, y: (y0 + y1 - h) / 2 }]; // (a zone smaller than a piece: its middle)
+  /** How much of what lies on the table a piece at top-left (x, y) would cover. */
+  const cover = ({ x, y }) => taken.reduce((a, [l, t, r, b]) => a + Math.max(0, Math.min(r, x + w) - Math.max(l, x)) * Math.max(0, Math.min(b, y + h) - Math.max(t, y)), 0);
+  const zones = myZones().map(({ b, z }) => {
+    const pts = z.poly.map(([x, y]) => fromLocal(b, x, y)), xs = pts.map((p) => p.x), ys = pts.map((p) => p.y), x0 = Math.min(...xs), y0 = Math.min(...ys), x1 = Math.max(...xs), y1 = Math.max(...ys);
+    const inZone = ({ x, y }) => zonesUnder(TB, x + w / 2, y + h / 2).includes(`${b.id}:${z.id}`), slots = [];
+    for (let y = y0 + gap; y + h <= y1 + 0.5; y += h + gap) for (let x = x0 + gap; x + w <= x1 + 0.5; x += w + gap) slots.push({ x, y });
+    const mine = slots.filter(inZone);
+    return mine.length ? { slots: mine, half: mine.map(({ x, y }) => ({ x: x + (w + gap) / 2, y })).filter(inZone) } : { slots: [{ x: (x0 + x1 - w) / 2, y: (y0 + y1 - h) / 2 }], half: [] };
   });
-  return slots.find(({ x, y }) => !taken.some(([l, t, r, bt]) => l < x + w - 1 && r > x + 1 && t < y + h - 1 && bt > y + 1)) || slots[0] || null;
+  const all = [...zones.flatMap((Z) => Z.slots), ...zones.flatMap((Z) => Z.half)];
+  return all.find((p) => cover(p) < w) || all.reduce((best, p) => (!best || cover(p) < cover(best) ? p : best), null); // (free: less than a unit's strip of it covered)
 }
 
 // --- motion (UX-I1) ----------------------------------------------------------
@@ -2017,6 +2026,14 @@ function hold(list) {
     for (const L of due) landings.delete(L.id);
     if (due.length) renderItems(new Map(due.map((L) => [L.id, view.items[L.id]])));
   }, 1500);
+}
+
+/** Our refused action named items `ids` that only we see as they are (our
+ *  own hidden pieces: the host re-sent them to us alone, core's `back`):
+ *  our drops of them go back to where the view has them, now. */
+function letGoOf(ids) {
+  const here = ids.filter((id) => own(view.items, id));
+  if (here.length) renderItems(new Map(here.map((id) => [id, view.items[id]])));
 }
 
 /** Where player p sits, in table coords: on the rim at their seat's angle,
@@ -3157,15 +3174,18 @@ function anchorView(t, cx, cy, r = wrapEl.getBoundingClientRect()) {
 
 // Wheel: zoom about the cursor so the point under it stays put. Its turns
 // are a gesture, as a pinch's moves are (viewMoves): what would lay the page
-// out waits until WHEEL_REST_MS after the last (D247). A wheel over the bar
-// or the inspector is theirs, not the view's: a one-row bar scrolls by it.
+// out waits until WHEEL_REST_MS after the last (D247). Only a wheel over the
+// felt is the view's (D289): over a popover — the bar, the inspector, the
+// 🔒 For you card, the game strip — it is the popover's (a one-row bar
+// scrolls by it, the others as the browser scrolls them).
 const WHEEL_REST_MS = 200;
 let wheelT = 0; // the timer that ends a wheel's zoom (0: none goes on)
 wrapEl.addEventListener('wheel', (e) => {
-  if (e.target.closest('#action-bar, #inspector')) return;
+  if (e.target !== wrapEl && !tableEl.contains(e.target)) return;
   e.preventDefault();
   clearTimeout(wheelT);
-  wheelT = setTimeout(() => { wheelT = 0; placeSeats(); }, WHEEL_REST_MS); // (the sizes it held back)
+  wheelT = setTimeout(() => { wheelT = 0; moving(); placeSeats(); }, WHEEL_REST_MS); // (the sizes it held back)
+  moving();
   const before = toTable(e);
   zoomZ = clamp(zoomZ * Math.exp(-e.deltaY * 0.0015), 0.5, zoomMax());
   fit();
@@ -3177,6 +3197,11 @@ wrapEl.addEventListener('wheel', (e) => {
  *  after each layout the browser hit-tests the whole table for hover, which
  *  with 1,000 pieces made a phone's frames 33 ms (B4, D246, D247). */
 function viewMoves() { return !!(pinch || feltDrag?.moved || wheelT); }
+/** #table is `.moving` while a gesture moves the view (viewMoves; set as one
+ *  starts and ends): no board's SVG text is drawn then (style.css) — a
+ *  printed coordinate or a private zone's label laid the page out in every
+ *  frame of it, and so hit-tested the whole table (D288). */
+const moving = () => tableEl.classList.toggle('moving', viewMoves());
 
 /** Item rotation that appears upright on THIS player's rotated screen. */
 const uprightRot = () => ((-viewAngle % 360) + 360) % 360;
@@ -3799,7 +3824,7 @@ const CMDS = {
   shuffle: (id) => act({ t: 'shuffle', id }),
   peek: (id) => act({ t: 'peek', id }), // the host logs it, then reveals the card to us alone (showPeek)
   zoom: (id, it) => showZoom(it.k === 'c' ? it : pieces.zoomable(it, boxes), pieces.veiled(it) ? 'Only you can see this. Click to close.' : ''), // a face we see: silent
-  hide: (id, it) => act({ t: 'hide', ids: isDie(it) ? handful(id).filter((d) => hides(view.items[d])) : [id] }), // (a die: the cup over its handful)
+  hide: (id, it) => act({ t: 'hide', ids: isDie(it) ? handful(id).filter((d) => hides(view.items[d]) && (d === id || !view.items[d].lock)) : [id] }), // (a die: the cup over its handful — the dice it can cover: a locked one stays out, D290)
   roll: (id) => act({ t: 'roll', ids: handful(id) }),
   take: (id, it) => act({ t: 'take', id, ...dealSpot(it) }),
   takeHand: (id) => act({ t: 'take', id, hand: true }),
@@ -4109,6 +4134,7 @@ const pressFace = (it) => (it.k === 'c' ? it.up && it : it.k === 'p' && 'd' in (
 function dropFelt() {
   const f = feltDrag;
   feltDrag = null;
+  moving();
   bandEl.classList.add('hidden');
   if (f?.moved && !f.band) placeSeats(); // (a pan's end: the sizes it held back)
 }
@@ -4127,6 +4153,7 @@ function startPinch() {
     fit: scale / zoomZ, // the fit as the fingers land: whether a rest resizes the badges goes by it too (pinchRest)
     rest: 0, // the timer that sees the fingers rest (pinchRest)
   };
+  moving();
 }
 
 /** The fingers rest mid-pinch: the badges take the view's exact size if it
@@ -4142,6 +4169,7 @@ function pinchRest() {
 function endPinch() {
   clearTimeout(pinch.rest);
   pinch = null;
+  moving();
   layout();
 }
 
@@ -4261,7 +4289,7 @@ window.addEventListener('pointermove', (e) => {
   if (handDrag) { moveGhost(e); return; }
   if (feltDrag) {
     if (!feltDrag.moved && Math.hypot(e.clientX - feltDrag.sx, e.clientY - feltDrag.sy) < 5) return;
-    feltDrag.moved = true;
+    if (!feltDrag.moved) { feltDrag.moved = true; moving(); }
     if (feltDrag.band) { drawBand(feltDrag, e); return; }
     panX = feltDrag.px + (e.clientX - feltDrag.sx);
     panY = feltDrag.py + (e.clientY - feltDrag.sy);

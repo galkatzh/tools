@@ -56,7 +56,7 @@ const MAL = V.MAL;
   st = await S();
   const AT = racked(st, 'south'), BT = racked(st, 'north');
   ok([...AT, ...BT].every((k) => st.items[k].up === false && st.items[k].po === 1), 'each face down, its seat\'s through po');
-  await M.until(async () => { const v = await M.items(alice); return AT.every((k) => 't' in v[k]); }, 10000, 100);
+  await M.until(async () => { const v = await M.items(alice); return AT.every((k) => v[k] && 't' in v[k]); }, 10000, 100); // (an id not in the view yet: wait, never throw)
   for (const [p, mine, theirs, who] of [[alice, AT, BT, 'Alice'], [bob, BT, AT, 'Bob']]) {
     const v = await M.items(p);
     ok(mine.every((k) => v[k].t === st.items[k].t && v[k].up === false) && theirs.every((k) => !('t' in v[k]) && 'b' in v[k]), `${who}'s view: her or his own seven in full, the other rack's backs`);
@@ -94,7 +94,8 @@ const MAL = V.MAL;
 
   section('4 the leader plays a tile out of their rack: face up for all; the thirteen left stay hidden from Mallory');
   st = await S();
-  const lead = st.rules.data.turn, p = lead === ALICE ? alice : bob, mine = lead === ALICE ? AT : BT, tile = mine[mine.length - 1];
+  const lead = st.rules.public.turn, p = lead === ALICE ? alice : bob, // (the player to move: the public cue — t.data keeps the turn by seat, D284)
+    mine = lead === ALICE ? AT : BT, tile = mine[mine.length - 1];
   const pts = P3.steps(await M.centre(p, tile), await M.pt(p, 470, 600), 10);
   if (p.touch) await M.fingerDrag(p, pts);
   else await P3.gesture(p, pts);

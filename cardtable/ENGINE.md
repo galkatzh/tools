@@ -510,7 +510,9 @@ setups. `{x, y, free: true}` skips it.
   400-piece game stays fast.
 - **`t.move(id, addr)`** centres an item on a spot (`t.move(id, {x, y,
   free})` places its top-left, `t.move(id, x, y)` still works). A move
-  logs its addresses: "moved White pawn e2 → e4".
+  logs its addresses: "moved White pawn e2 → e4". `t.move(id, addr,
+  {unzoned: true})` sets a piece down as it is: no private zone where it
+  lands hides it or changes who sees it (see *Private zones*).
 - **What an action says** (`validate`, `onAction`): `a.to` is the address
   the piece it places will snap to — the moved piece, or the new piece of
   a `take`, `split`, `play`, `pull` or a `deal` from a pile of pieces (by
@@ -662,12 +664,25 @@ every message, so nothing private ever reaches anyone it isn't for.
 
 A player's own `hide` makes an unowned piece theirs until it is revealed —
 a cup belongs to a person. A private piece (one with a `vis`) hidden from a
-player is refused to them for `flip`, `roll`, `face`, `toHand` and a claim,
-with one uniform "🚫 That piece is hidden", unless they own it; anyone may
-`peek` at it, on the record ("peeked at a hidden piece"), and a script's
-`validate` may veto that. Rolls of hidden dice log the shown values alone
-("rolled 4 dice (2 hidden): 3 · 5"; `t.roll` of one: "📜 Rules rolled a
-hidden die").
+player is refused to them for whatever would show it to them or strip who
+sees it — `flip`, `roll`, `face`, `toHand`, a claim, `stack` and `toPile`
+(either side), `toBag`, a split onto a bag, and a move onto their own rack
+— with one uniform "🚫 That piece is hidden", unless they own it; anyone
+may `peek` at it, on the record ("peeked at a hidden piece"), and a
+script's `validate` may veto that. Rolls of hidden dice log the shown
+values alone ("rolled 4 dice (2 hidden): 3 · 5"; `t.roll` of one: "📜 Rules
+rolled a hidden die"). A hidden piece under a back that a die of its box
+wears never snaps to a spot, so where it lands never tells a die from a
+token.
+
+**A refusal about a player's own hidden piece is theirs alone.** When
+`handle` or `validate` refuses an action that names a piece its player
+sees while it lies hidden from others (their cupped die, their unit behind
+its screen), the engine writes no "blocked …" line and re-sends nothing to
+the others — the reason goes to that player alone, and their piece snaps
+back on their screen alone. So a script may word a refusal by what the
+piece is ("The Banner never moves"): nobody else hears it. A live drag of
+such a piece is shown to nobody either; the others see where it lands.
 
 **Private zones.** A board's zone with `private: 'reveal'` (a rack) or
 `'keep'` (a screen) and an `owner` — `'board'` (the board item's owner) or
@@ -676,17 +691,26 @@ hidden die").
 piece is face up for everyone again; moved out from behind a screen, it
 stays hidden until a flip or the script reveals it. This happens whenever a
 piece is **placed** — by a player, a script (`t.move`, `t.spawn`,
-`t.pull`, …) or a setup — and never because a board moved under it. So:
+`t.pull`, …) or a setup — and never because a board moved under it. A zone
+never shows anyone a piece hidden from them:
 
+- a **screen** never takes over a piece hidden for someone else: it keeps
+  who sees it (a unit crossing into the other side's deployment rows stays
+  its own side's);
+- a **rack** takes such a piece for its owner — a tile handed from one rack
+  to another — only when the one setting it down sees it or owns it; anyone
+  else is refused, uniformly;
 - a piece placed back in a zone (a unit revealed in combat that steps back
-  into its owner's screen) is hidden again: call `t.reveal` after your own
-  move if your game keeps revealed pieces revealed;
-- a piece placed in **another** owner's zone becomes theirs (its `vis`, and
-  an owner its hiding gave it): a game whose pieces cross into the other
-  side's zones (a deployment area on the main board) gives them back with
-  `t.setVis(id, refs)` and `t.setOwner(id, owner)` after the move;
+  into its owner's screen) is hidden again: move it with `{unzoned: true}`
+  if your game keeps revealed pieces revealed — Veiled Ranks moves every
+  unit so;
 - a piece with no back can't go into one: a player's move is refused, a
-  script's throws a `TypeError`.
+  script's throws a `TypeError` (a bag's draw is never refused for what it
+  draws: a piece with no back lands shown, as if unzoned).
+
+In a setup, `"unzoned": true` on a piece entry lays it out as written — up,
+`vis` and owner — whatever zone it lands in; an export writes it for a
+piece its zone wouldn't give back as it is.
 
 **Fog of war is the script's.** The engine hides what lies face down and
 nothing else: positions, moves and ownership are public. A game that hides
@@ -984,27 +1008,34 @@ not in the 📜 dropdown.
 
 9. **Dominoes** (`BOXES.dominoes`) — light rules over the draw game for
    two: *Draw 7* (`t.pull(bag, {at})` into the seven slots of each rack: a
-   tile lands hidden for the rack's seat), a leader by lot (`t.random()`)
-   and then in turn, `validate` keeping the boneyard and a tile's way off a
-   rack to the player to move (rearranging your rack is free) and vetoing
-   every peek, `onAction` passing the turn when that player set a tile down
-   face up for the first time, ⏭ *Pass* once the boneyard is empty, a
-   domino when a rack empties (`t.win`), and *New round* (`t.remove`, then
-   `t.newBag` where the boneyard stood). What matches, the spinner and the
-   score are the players'.
+   tile lands hidden for the rack's seat), a lead seat by lot
+   (`t.random()`) and then in turn — the turn is a seat's, so whoever sits
+   there plays it —, `validate` keeping a rack's tiles to its seat (another
+   seat's hidden tile left to the engine's uniform refusal), a tile's way
+   off a rack and the boneyard's draws (into the drawer's own rack) to the
+   seat to move, refusing turns, bags and hides of rack tiles and every
+   peek, and noting the tile a play takes off its rack (`t.data.taking`);
+   `onAction` counts that tile, laid on the table face up, as the play and
+   passes the turn; ⏭ *Pass* once the boneyard is empty; a domino when a
+   rack empties (`t.win`) or a blocked line, where every rack tile is
+   revealed for the count; *New round* (`t.remove`, then `t.newBag` where
+   the boneyard stood). What matches, the spinner and the score are the
+   players'.
 10. **Veiled Ranks** (`BOXES.ranks`) — strict, hidden units: deployment
     (`handle` moves a unit within its side's screen, swapping onto one of
     its own; ✓ *Ready* for each side), then one step a turn (a Lancer's
     two through an empty first square, `t.line`), attacks that `t.reveal`
     both units and remove the lower rank, a Trap that takes its attacker,
-    a Herald's parley, the Banner taken or no move left to end it
-    (`t.win`, every unit revealed). `onSelect` hints a unit's moves. A
-    unit stepping into a screen is hidden there for that screen's seat
-    (place()'s zones), so after each move the script gives it back to its
-    own side (`t.setVis`), or reveals it again once combat showed it; its
-    owner is its seat's from the setup, never one a zone gave. *New game*
-    lays the armies out again with `t.layout` (a shuffled group a side:
-    nothing in their order tells a rank).
+    a Herald's parley, every outcome announced (`t.announce`), the Banner
+    taken or no move left to end it (`t.win`; neither side able to move,
+    a draw), every unit revealed. `onSelect` hints a unit's moves. Every
+    move is `t.move(id, sq, {unzoned: true})`: a unit keeps how it is seen
+    wherever it lands — hidden for its side in the other side's rows,
+    shown once combat showed it — and its owner is its seat's from the
+    setup, never one a zone gave. Its refusals name ranks ("The Banner
+    never moves"): the engine keeps them to the unit's player while the
+    unit is hidden. *New game* lays the armies out again with `t.layout` (a
+    shuffled group a side: nothing in their order tells a rank).
 
 ## What it deliberately does NOT do
 

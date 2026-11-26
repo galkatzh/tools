@@ -1856,6 +1856,11 @@ function draughts() {
  *  point's `dir`: from its base toward its tip, spec §3g); the cube waits
  *  beside the board, off every space, so the checkers sent to the bar never
  *  fan in with it. */
+/** A die's cup (spec §5g): the back a built-in die wears, so 🙈 Hide rolls it
+ *  out of sight — a back no other piece wears (a hidden die and a hidden
+ *  token never look alike, D279). */
+const CUP = { face: { color: '#7c2d12', label: '?' } };
+
 function backgammon() {
   const W = 1800, H = 1300, BW = 1400, BH = 1000, bx = (W - BW) / 2, by = (H - BH) / 2, man = 80;
   /** Point k's column centre, board-local (the bar is at 610–690, the trays right of 1300). */
@@ -1884,11 +1889,12 @@ function backgammon() {
     table: { shape: 'rect', w: W, h: H },
     seats: [{ id: 'light', name: 'Light', color: '#f5f5f4', edge: 'bottom' }, { id: 'dark', name: 'Dark', color: '#1c1917', edge: 'top' }],
     players: [2, 2],
+    backs: { cup: CUP },
     types: {
       board: { kind: 'board', name: 'Backgammon board', w: BW, h: BH, faces: [{ color: '#4a2e17' }], board: { spaces } },
       light: { kind: 'token', name: 'Light checker', w: man, stack: 'none', faces: [{ color: '#f5f5f4' }] },
       dark: { kind: 'token', name: 'Dark checker', w: man, stack: 'none', faces: [{ color: '#1c1917' }] },
-      die: { kind: 'die', name: 'Die' },
+      die: { kind: 'die', name: 'Die', back: 'cup' }, // (🙈 Hide cups a die: its own back, D286)
       cube: { kind: 'token', name: 'Doubling cube', shape: 'rect', w: 64, stack: 'none', faces: ['64', '2', '4', '8', '16', '32'] },
     },
     setup: [
@@ -2036,7 +2042,7 @@ function hexfront() {
       kind: 'board', name: 'Hexfront map', w: BW, h: BH, faces: [{ color: '#a7b56b' }],
       board: { grid: { type: 'hex', hex: 'pointy', cols: COLS, rows: ROWS, cell: CELL, x: gx, y: gy, draw: 'cells', fills, marks }, zones },
     },
-    d6: { kind: 'die', name: 'Die' },
+    d6: { kind: 'die', name: 'Die', back: 'cup' }, // (🙈 Hide cups a die: its own back, never a counter's, D286)
     event: { kind: 'tile', name: 'Event', w: 100, h: 140, rotStep: 0, back: 'event', faces: EVENTS.map(([name, text]) => ({ name, text: `${name}\n${text}`, color: '#fdf6e3' })) },
   };
   const setup = [{ piece: 'map', at: 'center' }];
@@ -2060,7 +2066,7 @@ function hexfront() {
     table: { shape: 'rect', w: W, h: H, felt: '#27352a' },
     seats: [{ id: 'azure', name: 'Azure', color: '#2563eb', edge: 'bottom' }, { id: 'ember', name: 'Ember', color: '#dc2626', edge: 'top' }],
     players: [2, 2],
-    backs: { event: { face: { color: '#1f2a44', label: '⚡' } } },
+    backs: { event: { face: { color: '#1f2a44', label: '⚡' } }, cup: CUP },
     types,
     setup,
     rules: HEXFRONT_RULES,
@@ -2103,42 +2109,57 @@ const DOMINOES_RULES = `(() => {
   // board whose private zone ('reveal') lays any tile set down in it face
   // down for that seat alone — and a tile taken off it is face up for all.
   //   Draw 7: seven tiles from the boneyard into each rack (t.pull at a slot
-  //   of the rack: it lands hidden). The first leader is drawn by lot; the
+  //   of the rack: it lands hidden). The first lead is drawn by lot; the
   //   lead then goes round, one round each.
   //   Your turn: play a tile from your rack onto the table — that passes the
-  //   turn — or draw from the boneyard until you can (🔒 Draw to my rack).
-  //   ⏭ Pass once the boneyard is empty. Your rack emptied: domino!
-  // Nobody peeks at a hidden tile (validate vetoes it, as Hold'em's peek at
-  // its deck). Which ends match, the spinner and the score are the players' own.
+  //   turn — or draw from the boneyard into your rack until you can (🔒 Draw
+  //   to my rack). ⏭ Pass once the boneyard is empty. Your rack emptied:
+  //   domino! A round's end shows every tile still on a rack.
+  // The turn is a seat's (whoever sits there plays it: a seat that changes
+  // hands mid-round goes on). A tile on a rack is its seat's to move, and is
+  // played by moving it off, never turned over there; nobody peeks at a
+  // hidden tile (validate vetoes it, as Hold'em's peek at its deck). Which
+  // ends match, the spinner and the score are the players' own.
   const SLOT = 66; // a rack slot: a tile's 60 units and the 6 between (the bag's 🔒 Draw to my rack fills the same slots)
-  /** Player p's seat id, or undefined (a watcher). */
-  const seatOf = (t, p) => t.players().find((x) => x.id === p)?.seatId;
-  /** Player p's name, for a line or a banner. */
-  const nameOf = (t, p) => t.players({ all: true }).find((x) => x.id === p)?.name || 'A player';
-  /** Seat s's rack: the board it owns. */
+  const racks = (t) => t.find({ type: 'rack' });
   const rackOf = (t, s) => t.find({ type: 'rack', owner: 'seat:' + s })[0];
   const boneyard = (t) => t.find({ kind: 'bag', name: 'Boneyard' })[0];
-  /** The tiles seat s holds: hidden in its rack (a rack's tiles are its seat's: po). */
-  const held = (t, s) => t.find({ kind: 'tile', owner: 'seat:' + s }).filter((it) => it.pv);
-  /** Whether the point (x, y) lies on rack r. */
-  function onRack(t, r, x, y) {
-    const { w, h } = t.type(r.t);
-    return x >= r.x && x <= r.x + w && y >= r.y && y <= r.y + h;
+  /** The seats with a rack: the round's, in turn order. */
+  const seats = (t) => racks(t).map((r) => r.owner?.slice(5)).filter(Boolean).sort();
+  /** The seat after seat s. */
+  const next = (t, s) => { const S = seats(t); return S[(S.indexOf(s) + 1) % S.length]; };
+  /** Who sits in seat s, or undefined. */
+  const holder = (t, s) => t.players().find((p) => p.seatId === s)?.id;
+  /** Player p's seat id, or undefined (a watcher). */
+  const seatOf = (t, p) => t.players().find((x) => x.id === p)?.seatId;
+  /** Seat s's player's name, for a line or a banner. */
+  const nameOf = (t, s) => t.players().find((p) => p.seatId === s)?.name || 'Seat ' + s;
+  /** The seat whose rack holds a tile at top-left (x, y) — by its centre, whatever its turn — or undefined. */
+  function rackAt(t, x, y) {
+    const r = racks(t).find((r) => { const { w, h } = t.type(r.t); return x + 30 >= r.x && x + 30 <= r.x + w && y + 60 >= r.y && y + 60 <= r.y + h; });
+    return r?.owner?.slice(5);
   }
-  /** The seated players with a rack: the round's players, in turn order. */
-  const players = (t) => t.players().filter((p) => p.seatId && rackOf(t, p.seatId));
+  /** The tiles on seat s's rack (where they lie: hidden or turned up). */
+  const held = (t, s) => t.find({ kind: 'tile' }).filter((it) => rackAt(t, it.x, it.y) === s);
 
-  /** Draw 7 (pressed by p): seven tiles into each player's rack, and the lead. */
+  /** Draw 7 (pressed by p): seven tiles into each seat's rack, and the lead. */
   function deal(t, p) {
-    const d = t.data, ps = players(t), bag = boneyard(t);
-    if (ps.length < 2 || !bag || bag.of.length < 7 * ps.length) return t.tell(p, 'Dominoes needs two seated players and a full boneyard');
-    for (const p of ps) {
-      const r = rackOf(t, p.seatId);
+    const d = t.data, S = seats(t), bag = boneyard(t);
+    if (S.length < 2 || !S.every((s) => holder(t, s)) || !bag || bag.of.length < 7 * S.length) return t.tell(p, 'Dominoes needs two seated players and a full boneyard');
+    for (const s of S) {
+      const r = rackOf(t, s);
       for (let k = 0; k < 7; k++) t.pull(bag.id, { at: { x: r.x + 6 + k * SLOT, y: r.y + 6 } });
     }
-    d.lead = d.lead && ps.some((p) => p.id === d.lead) ? t.nextSeat(d.lead) : ps[Math.floor(t.random() * ps.length)].id;
-    Object.assign(d, { dealt: true, turn: d.lead, played: [], passes: 0 });
+    d.lead = S.includes(d.lead) ? next(t, d.lead) : S[Math.floor(t.random() * S.length)];
+    Object.assign(d, { dealt: true, turn: d.lead, played: [], passes: 0, taking: null });
     t.announce(nameOf(t, d.lead) + ' leads');
+  }
+  /** The round ends (seat \`won\` went out, or none: blocked) — every tile left on a rack is shown, for the count. */
+  function endRound(t, won, msg) {
+    t.data.turn = null;
+    for (const s of seats(t)) for (const it of held(t, s)) if (it.up === false) t.reveal(it.id);
+    if (won) t.win(holder(t, won), msg);
+    else t.announce(msg);
   }
   /** A new round: every tile back into a full boneyard, face down, where the old one stood. */
   function newRound(t, p) {
@@ -2148,7 +2169,7 @@ const DOMINOES_RULES = `(() => {
     const box = bag.box, all = [];
     for (let a = 0; a <= 6; a++) for (let b = a; b <= 6; b++) all.push({ t: box + '/t' + a + b, up: false });
     t.newBag(all, { at: { x: bag.x, y: bag.y }, name: 'Boneyard' });
-    Object.assign(t.data, { dealt: false, turn: null, played: [], passes: 0 });
+    Object.assign(t.data, { dealt: false, turn: null, played: [], passes: 0, taking: null });
     t.public.winners = [];
     t.say('A new round: the tiles are back in the boneyard');
   }
@@ -2157,54 +2178,60 @@ const DOMINOES_RULES = `(() => {
     name: 'Dominoes',
     setup(t) {
       if (t.data.dealt !== undefined) return; // enabled again: the round goes on
-      Object.assign(t.data, { dealt: false, turn: null, lead: null, played: [], passes: 0 });
+      Object.assign(t.data, { dealt: false, turn: null, lead: null, played: [], passes: 0, taking: null });
       t.say('Dominoes: sit at South and North, then press Draw 7');
     },
-    // No peeking; only the player whose turn it is draws, and plays a tile out of a rack.
+    // No peeking. A rack's tiles are its seat's; one leaves it (a play) on that
+    // seat's turn alone, and the boneyard draws into the rack of the seat to move.
     validate(t, a) {
       if (a.t === 'peek') return 'No peeking at hidden tiles';
-      const d = t.data, theirs = a.p === d.turn ? '' : d.turn ? "It's " + nameOf(t, d.turn) + "'s turn" : d.dealt ? 'The round is over — ♻ New round to play again' : 'Press Draw 7 first';
-      if (a.t === 'pull' && a.id === boneyard(t)?.id) return theirs;
-      if (a.t !== 'move' || !theirs) return;
-      const it = t.item(a.id), s = seatOf(t, a.p), r = s && rackOf(t, s);
-      if (it?.pv && it.owner === 'seat:' + s && !onRack(t, r, a.x + 30, a.y + 60)) return theirs; // (rearranging your rack is fine at any time)
-    },
-    // A tile the player to move set down face up for the first time is played: the turn passes.
-    onAction(t, a) {
-      const d = t.data, it = a.t === 'move' && a.p === d.turn && t.item(a.id);
-      if (!it || it.up === false || t.type(it.t)?.kind !== 'tile' || d.played.includes(a.id)) return;
-      d.played.push(a.id);
-      d.passes = 0;
-      if (!held(t, seatOf(t, a.p)).length) {
-        d.turn = null;
-        return t.win(a.p, nameOf(t, a.p) + ' plays the last tile — domino!');
+      if (a.t === 'hide') return 'Tiles hide in your rack';
+      const d = t.data, mine = seatOf(t, a.p), it = typeof a.id === 'string' && t.item(a.id);
+      const why = !d.turn ? (d.dealt ? 'The round is over — ♻ New round to play again' : 'Press Draw 7 first') : mine === d.turn ? '' : "It's " + nameOf(t, d.turn) + "'s turn";
+      if (a.t === 'pull' && it?.id === boneyard(t)?.id) return why || (rackAt(t, a.x, a.y) === mine ? undefined : 'Draw into your rack (🔒 Draw to my rack)');
+      if (!it || t.type(it.t)?.kind !== 'tile') return;
+      const from = rackAt(t, it.x, it.y);
+      if (from && from !== mine && !t.canSee(a.p, it.id)) return; // (another seat's hidden tile: the engine refuses it, in its uniform words)
+      if (from && a.t !== 'move' && a.t !== 'rot') return 'Play a tile by moving it off your rack'; // (never turned over or bagged there)
+      if (a.t !== 'move') return;
+      const to = rackAt(t, a.x, a.y);
+      d.taking = null;
+      if (from && from !== mine) return "That tile is on " + nameOf(t, from) + "'s rack";
+      if (to && (to !== mine || d.played.includes(it.id))) return to !== mine ? 'Keep to your own rack' : 'That tile is played';
+      if (from && !to) { // (off your rack: a play, on your turn)
+        if (why) return why;
+        d.taking = it.id;
       }
-      d.turn = t.nextSeat(d.turn);
+    },
+    // The tile the player to move took off their rack (validate's \`taking\`) is played: the turn passes.
+    onAction(t, a) {
+      const d = t.data, it = a.t === 'move' && a.id === d.taking && t.item(a.id);
+      if (!it) return;
+      d.taking = null;
+      if (it.up === false || rackAt(t, it.x, it.y)) return; // (not laid on the table face up: no play)
+      d.played.push(it.id);
+      d.passes = 0;
+      if (!held(t, d.turn).length) return endRound(t, d.turn, nameOf(t, d.turn) + ' plays the last tile — domino!');
+      d.turn = next(t, d.turn);
     },
     buttons(t) {
-      const d = t.data, ps = players(t), host = t.hostId;
-      t.public.turn = d.turn;
+      const d = t.data, ps = seats(t).map((s) => holder(t, s)).filter(Boolean), turn = d.turn && holder(t, d.turn);
+      t.public.turn = turn || null;
       // (a button's id is its player's own: each is offered to one pid)
-      if (!d.dealt) return ps.map((p) => ({ id: 'deal-' + p.id, label: 'Draw 7', pid: p.id }));
-      const out = d.turn && !boneyard(t)?.of.length ? [{ id: 'pass', label: '⏭ Pass', pid: d.turn }] : [];
-      for (const pid of new Set(d.turn ? [host] : [...ps.map((p) => p.id), host])) out.push({ id: 'new-' + pid, label: '♻ New round', pid });
+      if (!d.dealt) return ps.map((p) => ({ id: 'deal-' + p, label: 'Draw 7', pid: p }));
+      const out = turn && !boneyard(t)?.of.length ? [{ id: 'pass', label: '⏭ Pass', pid: turn }] : [];
+      for (const pid of new Set(d.turn ? [t.hostId] : [...ps, t.hostId])) out.push({ id: 'new-' + pid, label: '♻ New round', pid });
       return out;
     },
     onButton(t, id, p) {
       const d = t.data;
       if (id.startsWith('deal-') && !d.dealt) deal(t, p);
       else if (id.startsWith('new-')) newRound(t, p);
-      else if (id === 'pass' && p === d.turn) {
-        t.say(nameOf(t, p) + ' passes');
-        d.turn = t.nextSeat(p);
-        if (++d.passes >= players(t).length) { // (nobody could play, and nothing is left to draw)
-          d.turn = null;
-          t.announce('The line is blocked — show your tiles: the lowest count wins');
-        }
+      else if (id === 'pass' && d.turn && seatOf(t, p) === d.turn) {
+        t.say(nameOf(t, d.turn) + ' passes');
+        d.turn = next(t, d.turn);
+        if (++d.passes >= seats(t).length) endRound(t, null, 'The line is blocked — every rack shows its tiles: the lowest count wins'); // (nobody could play, and nothing is left to draw)
       }
-    },
-    onLeave(t, p) {
-      if (p === t.data.turn) { t.data.turn = t.nextSeat(p); t.say('The turn passes on — its player left'); }
     },
   };
 })()`;
@@ -2248,7 +2275,7 @@ function dominoes() {
  *  of its home rows (files c–h of its first two), face down. The box lays
  *  them out first, and the script again for each new game. */
 const RANKS = [['banner', 'Banner', 1, 0, '⚑'], ['crown', 'Crown', 1, 4, '4'], ['blade', 'Blade', 2, 3, '3'], ['pike', 'Pike', 3, 2, '2'],
-  ['lancer', 'Lancer', 2, 1, '1'], ['herald', 'Herald', 1, 1, '1'], ['trap', 'Trap', 2, null, '✕']];
+  ['lancer', 'Lancer', 2, 1, '1»'], ['herald', 'Herald', 1, 1, '1✉'], ['trap', 'Trap', 2, null, '✕']]; // (each label its own: a Lancer's » its double step, a Herald's ✉ its parley)
 const ARMIES = ['south', 'north'].map((side) => {
   const rows = side === 'south' ? [1, 2] : [10, 9], squares = rows.flatMap((r) => [...'cdefgh'].map((f) => f + r));
   const units = RANKS.flatMap(([unit, , n]) => Array(n).fill(`${side[0]}-${unit}`));
@@ -2271,10 +2298,14 @@ const RANKS_RULES = `(() => {
   //   Onto an enemy is an attack: both are revealed (and stay so), then the
   //   higher rank stays and the lower is removed (both, if equal). A Trap
   //   takes its attacker with it. A Herald parleys: both are revealed,
-  //   nothing is removed, and the Herald stays where it was.
-  //   Take the Banner, or leave the other side no move, to win.
+  //   nothing is removed, and the Herald stays where it was. Every outcome
+  //   is announced on every screen.
+  //   Take the Banner, or leave the other side no move, to win (neither side
+  //   able to move: a draw).
   // The table is the position: each hook reads where the units stand
   // (position). t.data keeps the phase, who is ready and whose turn it is.
+  // A refusal of a unit still hidden is its player's alone (the engine's
+  // quiet veto): the words may name its rank, so nobody else hears them.
   const ARMIES = ${JSON.stringify(ARMIES)}; // (the box's own layout of the units, for a new game)
   const NAME = { south: 'South', north: 'North' }, OTHER = { south: 'north', north: 'south' };
   const FILES = 'abcdefghij', STEPS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -2327,50 +2358,48 @@ const RANKS_RULES = `(() => {
     if (Math.abs(x - c) + Math.abs(y - r) > 2) return 'A Lancer moves one or two squares';
     return "A Lancer's first square must be empty (" + t.line(u.at, s)[0] + ')';
   }
-  /** Moves unit u to square s, as its side had it: a zone it lands in would
-   *  hide it for that zone's seat — the other side's rows would show it to
-   *  them — so it is hidden for its own side again, or shown again if combat
-   *  showed it. */
-  function step(t, u, s) {
-    t.move(u.id, s);
-    if (u.shown) t.reveal(u.id);
-    else t.setVis(u.id, ['seat:' + u.side]);
-  }
+  /** Moves unit \`id\` to square s as it is — hidden for its side, or shown
+   *  since combat — whatever screen it lands in (unzoned: no private zone
+   *  acts on it, so the other side's rows never hide it for that side). */
+  const step = (t, id, s) => t.move(id, s, { unzoned: true });
   /** Unit u attacks foe: both revealed, then the outcome (the header's rules). */
   function attack(t, u, foe) {
     t.reveal(u.id);
     t.reveal(foe.id);
-    const won = { ...u, shown: true }, at = foe.at;
-    if (u.unit === 'herald') return t.say(u.name + ' parleys with ' + named(foe) + ' at ' + at + ': both stand revealed');
+    const at = foe.at;
+    if (u.unit === 'herald') return t.announce(u.name + ' parleys with ' + named(foe) + ' at ' + at + ': both stand revealed');
     if (foe.unit === 'trap') {
       t.remove([u.id, foe.id]);
-      return t.say(named(u) + ' springs ' + foe.name + ' at ' + at + ': both are lost');
+      return t.announce(named(u) + ' springs ' + foe.name + ' at ' + at + ': both are lost');
     }
     if (foe.unit === 'banner') {
       t.remove(foe.id);
-      step(t, won, at);
+      step(t, u.id, at);
       return finish(t, u.side, named(u) + ' takes ' + NAME[foe.side] + "'s Banner — " + NAME[u.side] + ' wins');
     }
     if (u.rank === foe.rank) {
       t.remove([u.id, foe.id]);
-      return t.say(named(u) + ' and ' + named(foe) + ' fall together at ' + at);
+      return t.announce(named(u) + ' and ' + named(foe) + ' fall together at ' + at);
     }
     const [hi, lo] = u.rank > foe.rank ? [u, foe] : [foe, u];
     t.remove(lo.id);
-    if (hi === u) step(t, won, at);
-    t.say(named(hi) + ' beats ' + named(lo) + ' at ' + at);
+    if (hi === u) step(t, u.id, at);
+    t.announce(named(hi) + ' beats ' + named(lo) + ' at ' + at);
   }
-  /** The other side's turn — unless it has no unit that can move: then it loses. */
+  /** The other side's turn — unless it has no unit that can move: then it
+   *  loses, or, when the side that just moved has none either, it is a draw. */
   function endTurn(t) {
-    const g = t.data, P = position(t);
+    const g = t.data, P = position(t), stuck = (side) => !Object.values(P).some((u) => u.side === side && targets(P, u).length);
     g.turn = OTHER[g.turn];
-    if (!Object.values(P).some((u) => u.side === g.turn && targets(P, u).length)) finish(t, OTHER[g.turn], NAME[g.turn] + ' has no unit that can move — ' + NAME[OTHER[g.turn]] + ' wins');
+    if (!stuck(g.turn)) return;
+    if (stuck(OTHER[g.turn])) finish(t, null, 'Neither side has a unit that can move — a draw');
+    else finish(t, OTHER[g.turn], NAME[g.turn] + ' has no unit that can move — ' + NAME[OTHER[g.turn]] + ' wins');
   }
-  /** The game is over: side wins (🏆 on its seat), and every unit is shown. */
+  /** The game is over: side wins (🏆 on its seat; null: nobody), and every unit is shown. */
   function finish(t, side, msg) {
     t.data.phase = 'over';
     for (const u of Object.values(position(t))) if (!u.shown) t.reveal(u.id);
-    t.win(holder(t, side), msg);
+    t.win(side ? holder(t, side) : [], msg);
   }
   /** A new game: the units laid out afresh (the box's layout: shuffled, face down), deployment first. */
   function newGame(t) {
@@ -2421,15 +2450,15 @@ const RANKS_RULES = `(() => {
       if (g.phase === 'deploy') {
         if (g.ready[side]) return "You're ready — wait for " + NAME[OTHER[side]];
         if (!home(side, a.to)) return 'Deploy inside your three rows';
-        if (P[a.to]) t.move(P[a.to].id, u.at); // (onto one of yours: the two swap)
-        t.move(u.id, a.to);
+        if (P[a.to]) step(t, P[a.to].id, u.at); // (onto one of yours: the two swap)
+        step(t, u.id, a.to);
         return true;
       }
       if (g.phase === 'over') return 'The game is over — ♻ New game for another';
       if (side !== g.turn) return "It's " + NAME[g.turn] + "'s turn";
       if (!targets(P, u).includes(a.to)) return whyNot(t, P, u, a.to);
       if (P[a.to]) attack(t, u, P[a.to]);
-      else step(t, u, a.to);
+      else step(t, u.id, a.to);
       if (g.phase === 'play') endTurn(t);
       return true;
     },
@@ -2474,7 +2503,7 @@ function veiledRanks() {
   for (const [side, [Side, face]] of Object.entries(SIDES)) {
     for (const [unit, name, , rank, label] of RANKS) {
       types[`${side[0]}-${unit}`] = { kind: 'token', name: `${Side} ${name}`, shape: 'rect', w: 80, stack: 'none', back: side, upright: true,
-        faces: [{ color: face, label, text: name }], meta: { side, unit, rank } };
+        faces: [{ color: face, label, text: name, name: `${Side} ${name}` }], meta: { side, unit, rank } };
     }
   }
   return {

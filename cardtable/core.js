@@ -24,6 +24,7 @@
 //      {t:'ann', msg}      a banner for every screen (t.announce)
 //      {t:'note', p, msg, ruled?}  a private notice for player p (ruled: the rules refused p's action)
 //      {t:'peek', p, c}    a peeked card {d, i} or piece {t, f}, for player p's eyes only
+//      {t:'back', p, ids}  p's refused action named these: draw them again on p's screen alone (named)
 //      {t:'toast', msg}    a notice for the host's own screen (script errors)
 //      {t:'deck', id}      a new deck, to send to everyone
 //      {t:'box', id}       a new game box, to send to everyone (and to save)
@@ -400,10 +401,11 @@ export function seatAt(tb, a, def) {
   const [x, y] = def.at, dx = tb.w / 2 - x, dy = tb.h / 2 - y, d = Math.hypot(dx, dy) || 1;
   return { x, y, ux: dx / d, uy: dy / d };
 }
-/** A face's name: its label, else its `name` (never drawn: a reversi disc's
- *  "Light disc"), else its pips ("5", "3|4"), else its number from 1. */
+/** A face's name: its `name` (never drawn: a reversi disc's "Light disc", a
+ *  Veiled Ranks unit's "South Pike" beside its label "2"), else its label,
+ *  else its pips ("5", "3|4"), else its number from 1. */
 export function faceLabel(face, f) {
-  if (face?.label || face?.name) return face.label || face.name;
+  if (face?.label || face?.name) return face.name || face.label;
   if (face?.pips !== undefined) return Array.isArray(face.pips) ? face.pips.join('|') : String(face.pips);
   return String(num(f) + 1);
 }
@@ -413,10 +415,10 @@ export function faceLabel(face, f) {
  *  a group's (`counted`) says how many when all show: "rolled 2 dice: 3 · 5". */
 const rollLine = (faces, k, counted) => `rolled ${!k ? `${counted ? `${faces.length} ${faces.length === 1 ? 'die' : 'dice'}: ` : ''}${faces.join(' · ')}`
   : faces.length ? `${faces.length + k} dice (${k} hidden): ${faces.join(' · ')}` : k === 1 ? 'a hidden die' : `${k} hidden dice`}`;
-/** A SHOWN piece's name {t, f}: its face's label or name if it has one, else its type's name. */
+/** A SHOWN piece's name {t, f}: its face's name or label if it has one, else its type's name. */
 export function pieceName(boxes, t, f) {
   const ty = typeAt(boxes, t);
-  return ty ? ty.faces[f]?.label || ty.faces[f]?.name || ty.name : 'an unknown piece';
+  return ty ? ty.faces[f]?.name || ty.faces[f]?.label || ty.name : 'an unknown piece';
 }
 /** What the log calls item `it` (a host item), naming nothing hidden: a card
  *  or a face-down one, a pile, a bag, a supply or "a supply of hidden
@@ -936,6 +938,10 @@ function cleanSetup(list, types, seats, deckNames = []) {
       if (R.get('po') !== true || kind !== 'piece' || o.up !== false || !o.owner) R.fail('po', 'must be true, on a piece entry with up: false and an owner (the one its hiding gave it)');
       o.po = true;
     }
+    if (R.has('unzoned')) { // (laid out as it says, in a private zone too: no zone hides it or changes who sees it — an export writes one so, D278)
+      if (R.get('unzoned') !== true || kind !== 'piece') R.fail('unzoned', 'must be true, on a piece entry');
+      o.unzoned = true;
+    }
     if (R.has('id')) { // (kept when no item holds it: an exported game's ids, which its script may store — spec §4c)
       const id = R.get('id');
       if (typeof id !== 'string' || !CATALOG_ID_RE.test(id)) R.fail('id', 'must be an item id (8 hex digits)');
@@ -1284,10 +1290,23 @@ export function zonesUnder(TB, cx, cy, onId) {
  *  dropped on a backgammon point would join the checkers' fan, count in
  *  their ×k and, on top, take every press there. */
 const NO_SNAP = new Set(['board', 'die']);
-/** Whether item `it` (host or public: a hidden one's type is read from its
- *  `t` when it has one) snaps to the boards' spots and gets an address
- *  (spec §3a): a piece that is neither a board nor a die. `boxes`: the box map. */
-export const snaps = (it, boxes) => it.k === 'g' && !(it.z < 0) && !NO_SNAP.has(typeAt(boxes, it.t)?.kind);
+/** Whether item `it` (host or public) snaps to the boards' spots and gets
+ *  an address (spec §3a): a piece that is neither a board nor a die — and,
+ *  hidden (face down; or drawn by its back, `b`), by its back alone: a back
+ *  a die of its box wears never snaps, so where a hidden piece lands never
+ *  tells a die from a token under one back (D279, closing D210's case).
+ *  The host, the page and every viewer read it alike. `boxes`: the box map. */
+export const snaps = (it, boxes) => it.k === 'g' && !(it.z < 0)
+  && (it.up === false || 'b' in it ? !dieBack(boxes, 'b' in it ? it.b : backRef(boxes, it.t)) : !NO_SNAP.has(typeAt(boxes, it.t)?.kind));
+const DIE_BACKS = new WeakMap(); // a box → the ids of the backs its dice wear (a box is never changed in place)
+/** Whether back `ref` ("<boxId>/<backId>") is one a die type of its box wears. */
+function dieBack(boxes, ref) {
+  const s = split(boxes, ref);
+  if (!s) return false;
+  let ids = DIE_BACKS.get(s[0]);
+  if (!ids) DIE_BACKS.set(s[0], ids = new Set(Object.values(s[0].types).flatMap((ty) => (ty.kind === 'die' && ty.back ? [ty.back] : []))));
+  return ids.has(s[1]);
+}
 /** Where a piece w × h put at top-left (x, y) lands on table `tb` with
  *  boards TB (spec §3a, Snapping) — what the host does (place), the page
  *  previews (the snap preview, __ct.snap) and the CLI's `place` sends, one
@@ -2017,13 +2036,18 @@ export const hiddenFrom = (p, it, holder = () => null) => (it.k === 'g' || it.k 
 const isVisRef = (r) => typeof r === 'string' && (PID_RE.test(r) || (r.startsWith('seat:') && isId(r.slice(5))));
 /** Why item `it`'s private fields are malformed, or '' (spec §5a): `vis`, a
  *  list of 1 to MAX_VIS distinct VisRefs; `pv` (hidden by a private zone)
- *  and `po` (its owner set by hiding), each 1 — on a piece alone. A Worker's
- *  patch is refused for one (checkPatch); a save drops them (createTable). */
+ *  and `po` (its owner set by hiding), each 1 — on a piece alone, and only
+ *  as the engine writes them (D281): `pv` on a piece face down with a vis,
+ *  `po` on one face down with an owner (every reveal takes both). A
+ *  Worker's patch is refused for one (checkPatch); a save drops them
+ *  (createTable). */
 function visProblem(it) {
   if (it.vis === undefined && it.pv === undefined && it.po === undefined) return '';
   if (it.k !== 'g') return 'vis, pv and po are for pieces alone';
   if (it.vis !== undefined && !(Array.isArray(it.vis) && it.vis.length >= 1 && it.vis.length <= MAX_VIS && new Set(it.vis).size === it.vis.length && it.vis.every(isVisRef))) return `its vis is not a list of 1 to ${MAX_VIS} players and seats`;
-  return (it.pv ?? 1) !== 1 || (it.po ?? 1) !== 1 ? 'its pv or po is not 1' : '';
+  if ((it.pv ?? 1) !== 1 || (it.po ?? 1) !== 1) return 'its pv or po is not 1';
+  if (it.pv && (it.up !== false || !it.vis)) return 'pv on a piece not hidden for someone (only a private zone hides one so)';
+  return it.po && (it.up !== false || !it.owner) ? 'po on a piece not hidden with its owner (only hiding gives one so)' : '';
 }
 /** A pile member, an item or a hand entry: a card (else a piece)? */
 const isCard = (m) => m.k === 'c' || 'd' in m;
@@ -2242,7 +2266,11 @@ export function createTable(host, env = {}) {
   /** Item `id` (`it`) now belongs to `to` (an owner; null: nobody), indexed. */
   function setOwner(id, it, to) {
     touch(id);
-    reindexed(id, it, () => { if (to) it.owner = to; else delete it.owner; });
+    reindexed(id, it, () => {
+      if (to) it.owner = to;
+      else delete it.owner;
+      delete it.po; // (given or released by someone, it is no longer the owner a hiding gave it)
+    });
   }
   /** Item `id` is about to change in place (moved, turned, flipped, its pile
    *  changed) — or is re-sent unchanged (a refusal). Ids not on the table are
@@ -2440,35 +2468,47 @@ export function createTable(host, env = {}) {
    *  its index entries follow it; `o.from`: the item a new one comes off (a
    *  split's stack), for the private zone it leaves.
    *  Then the private zones (spec §5a), on a piece set down — never on one a
-   *  board's move carried, which goes through no place(): one that enters an
-   *  active private zone (privateAt) — but the one of the same owner a zone
-   *  hides it in already — lies face down for the zone's owner (`vis`),
-   *  marked `pv`, and becomes theirs (`po`) unless someone else owns it (an
-   *  owner `po` set is the engine's: it follows the zone). One whose type has
-   *  no back can't (a TypeError: a person's action is refused before,
-   *  mayPlace). One a zone hid that lands outside every zone of that owner
-   *  leaves the zone it lay in: a rack ('reveal') turns it face up, its vis
-   *  and the owner it gave gone; a screen ('keep') — or a zone that is no
-   *  longer under it — lets it go hidden. */
+   *  board's move carried, which goes through no place(): the active private
+   *  zone it enters (privateAt) acts on it (zoneActs) — unless it is that
+   *  owner's already (pv) — laying it face down for the zone's owner
+   *  (`vis`), marked `pv`, theirs (`po`) unless someone else owns it (an
+   *  owner `po` set is the engine's: it follows the zone). A screen ('keep')
+   *  never takes a private piece over — one whose vis doesn't name it keeps
+   *  who sees it (D277); a rack ('reveal') does, and only those who see it
+   *  may set it there (mayPlace). One whose type has no back can't be hidden
+   *  (a TypeError: a person's action is refused before, mayPlace). One a
+   *  zone hid that lands outside every zone of that owner leaves the zone it
+   *  lay in: a rack ('reveal') turns it face up, its vis and the owner it
+   *  gave gone; a screen ('keep') — or a zone that is no longer under it, or
+   *  doesn't act on it — lets it go hidden. `o.unzoned`: no zone acts on it
+   *  — it lies as it did (a setup entry `unzoned`, an export's; a script's
+   *  t.move(…, {unzoned: true}); a bag's draw with no hidden side: D278). A
+   *  piece hidden under a back a die wears never snaps (snaps, D279). */
   function place(it, x, y, o = {}) {
-    const p = landing(it, x, y, o), Z = zoneAt(it, p), was = it.pv && privateAt(o.from ?? it);
-    if (Z && !typeOf(it.t)?.back) throw new TypeError(`${label(it)} has no hidden side: it can't go into a private zone`);
+    const p = landing(it, x, y, o), Z = zoneAt(it, p), was = it.pv && privateAt(o.from ?? it), A = zoneActs(it, Z, o);
+    if (A && !typeOf(it.t)?.back) throw new TypeError(`${label(it)} has no hidden side: it can't go into a private zone`);
     if (o.id) index(o.id, it, false);
-    if (isPiece(it)) {
-      if (p.at) it.at = p.at;
-      else delete it.at;
-    }
+    if (isPiece(it) && p.at) it.at = p.at;
+    else delete it.at;
     ({ x: it.x, y: it.y } = p);
     if (!(it.z < 0)) it.z = isBoard(it) ? BOARD_Z0 + ++host.boardSeq : zTop();
-    if (Z && !(it.pv && it.vis?.includes(Z.ref))) {
-      Object.assign(it, { up: false, vis: [Z.ref], pv: 1 });
+    if (A) {
+      facedown(it);
+      Object.assign(it, { vis: [Z.ref], pv: 1 });
       if (!it.owner || it.po) Object.assign(it, { owner: Z.ref, po: 1 });
-    } else if (!Z && it.pv) {
+    } else if (it.pv && !(Z && it.vis?.includes(Z.ref))) {
       delete it.pv;
-      if (was?.mode === 'reveal' && it.vis?.includes(was.ref)) unveil(it);
+      if (!Z && !o.unzoned && was?.mode === 'reveal' && it.vis?.includes(was.ref)) unveil(it);
     }
     if (o.id) index(o.id, it, true);
   }
+  /** Whether private zone `Z` (privateAt's, or null) acts on piece `it` set
+   *  down in it (place's `o`): not with o.unzoned; not when it is that owner's
+   *  already (pv, its vis naming the zone's ref); and a screen ('keep') not
+   *  on a private piece its vis doesn't name it for (D277). */
+  const zoneActs = (it, Z, o = {}) => !!Z && !o.unzoned && !(it.pv && it.vis?.includes(Z.ref)) && !(Z.mode === 'keep' && foreign(it, Z));
+  /** Piece `it` is private (hidden, with a vis) for others than zone Z's owner. */
+  const foreign = (it, Z) => it.up === false && !!it.vis?.length && !it.vis.includes(Z.ref);
   /** Where place() puts item `it` at top-left (x, y), `o` as for place —
    *  nothing changes: a piece's spot (snapPiece: {x, y, at}), anything else
    *  clamped onto the table ({x, y}). */
@@ -2495,17 +2535,43 @@ export function createTable(host, env = {}) {
    *  {x, y, at?}), or null — a board never lies in one. */
   const zoneAt = (it, p) => (it.k === 'g' && !(it.z < 0) && !isBoard(it) ? privateAt({ ...it, at: undefined, ...p }) : null);
   /** Whether p may set piece `it` down at top-left (x, y) (`o` as for
-   *  place): a piece with no hidden side can't land in an active private
-   *  zone (spec §5a) — refused, before anything is changed. A script's goes
-   *  on to place(), which throws. */
-  const mayPlace = (p, it, x, y, o) => p === RULES || !!typeOf(it.t)?.back || !zoneAt(it, landing(it, x, y, o)) || no(p, '🚫 That piece has no hidden side');
-  /** Piece `it` face up, for everyone: its vis and pv go, and the owner its hiding gave it (po). (The caller re-indexes it.) */
+   *  place), before anything is changed: a piece with no hidden side can't
+   *  be hidden by the active private zone it would land in (spec §5a); and a
+   *  rack shows its owner a private piece set on it — so only someone who
+   *  sees it, or owns it, may (the private-piece rule, seen: D277). A
+   *  script's goes on to place(), which throws for the first. */
+  function mayPlace(p, it, x, y, o) {
+    const Z = p !== RULES && zoneAt(it, landing(it, x, y, o));
+    if (!zoneActs(it, Z, o)) return true;
+    return (!!typeOf(it.t)?.back || no(p, '🚫 That piece has no hidden side')) && (!foreign(it, Z) || seen(p, it));
+  }
+  /** Piece `it` face up, for everyone: its vis and pv go, and the owner its
+   *  hiding gave it (po); a token a die's back hid (no address while hidden,
+   *  D279) takes the address of the spot its centre lies on, as containment
+   *  reads it. (The caller re-indexes it.) */
   function unveil(it) {
+    const snapped = isPiece(it);
     for (const k of ['up', 'vis', 'pv']) delete it[k];
     if (it.po) { delete it.owner; delete it.po; }
+    if (!snapped && isPiece(it)) {
+      const { w, h } = size(it), s = snapAt(tb(), it.x + w / 2, it.y + h / 2);
+      if (s) it.at = s.at;
+    }
   }
   /** Whether item `it` (host or new) is a piece that snaps (snaps: never a board or a die, D22, D112). */
   const isPiece = (it) => snaps(it, host.boxes);
+  /** Piece `it`'s viewers: `vis` (refs), or none — and then no zone's (pv
+   *  goes with them: a zone hides a piece for its owner, D281). (The caller re-indexes it.) */
+  function visTo(it, vis) {
+    if (vis.length) it.vis = vis;
+    else { delete it.vis; delete it.pv; }
+  }
+  /** Piece `it` face down where it lies (a turn, a hide): one hidden under a
+   *  back a die wears no longer snaps, so it loses its address (D279). (The caller re-indexes it.) */
+  function facedown(it) {
+    it.up = false;
+    if (!isPiece(it)) delete it.at;
+  }
   /** Where piece `it` (on the table or not: nothing changes) lands when put
    *  at top-left (x, y) (spec §3a, Snapping; snapTo): its centre, in its
    *  size (its back's when hidden), on the spot in reach of the topmost board
@@ -2574,10 +2640,10 @@ export function createTable(host, env = {}) {
     [spotTB, spotSig, respot] = [T, tbSig, false];
     for (const id of [...byKind.get('g')]) {
       const it = host.items[id];
-      if (!isPiece(it)) continue;
+      if (!isPiece(it) && !it.at) continue; // (a board, a die — a piece hidden under a back a die wears, D279: one that had an address loses it here)
       const before = it.at ? displayAddr(was, it.at) : null, { w, h } = size(it), cx = it.x + w / 2, cy = it.y + h / 2;
       if (all || (it.at && movedIds.has(it.at.slice(0, it.at.indexOf(':')))) || moved.some((b) => onBoard(b, cx, cy))) {
-        const s = snapAt(T, cx, cy);
+        const s = isPiece(it) && snapAt(T, cx, cy);
         jot(`i:${id}`, it); // (its address and zones change: a rollback puts them back)
         index(id, it, false);
         if (s) it.at = s.at;
@@ -2610,7 +2676,10 @@ export function createTable(host, env = {}) {
   spotSig = tbSig;
   for (const [id, it] of Object.entries(host.items)) {
     if (it.k === 'g') index(id, it, false);
-    if (!isPiece(it)) dropAt(id, it);
+    if (!isPiece(it)) {
+      if (snaps({ ...it, up: true }, host.boxes)) delete it.at; // (a token hidden under a back a die wears: it snapped before D279 — its address goes, quietly)
+      else dropAt(id, it);
+    }
     else if (it.at !== undefined && resolveAddr(spotTB, it.at)?.at !== it.at) { console.error(`item ${id}: its saved address ${String(JSON.stringify(it.at)).slice(0, 60)} names no spot on the table — dropped`); delete it.at; }
     if (it.k === 'g') index(id, it, true);
   }
@@ -2893,6 +2962,12 @@ export function createTable(host, env = {}) {
    *  Alice's cupped dice and a script's units hidden for a seat are hers,
    *  or that seat's, alone. */
   const seen = (p, it) => p === RULES || !hidden(p, it) || (!!it.vis?.length && owns(p, it)) || no(p, '🚫 That piece is hidden');
+  /** The private-piece rule for what would hand a private piece on, or
+   *  strip its vis — a turn, a hand, a claim, a pile (stacked onto, or
+   *  stacking), a bag (D249: in there it is hidden from everyone, and a
+   *  draw shows it to its drawer): only those who see it or own it (seen,
+   *  D254, D280). Any other piece passes. */
+  const privy = (p, it) => !it.vis?.length || seen(p, it);
   /** Room for k more items (MAX_ITEMS); a save above it still loads. */
   const cap = (p, k = 1) => itemCount() + k <= MAX_ITEMS || no(p, `🚫 The table is full (${MAX_ITEMS.toLocaleString('en-US')} items)`);
   /** Room for k more entries in player q's hand (MAX_HAND), for actor p. */
@@ -2977,8 +3052,7 @@ export function createTable(host, env = {}) {
     const it = own(host.items, id);
     if (!it) return gone('flip', id);
     if (it.k === 'b') { console.warn('flip: a bag has no sides', id); return false; }
-    if (it.vis?.length && !seen(actor, it)) return false;
-    if (!may(actor, it)) return false;
+    if (!privy(actor, it) || !may(actor, it)) return false;
     if (it.k === 'c') {
       touch(id);
       it.up = !it.up;
@@ -2996,7 +3070,7 @@ export function createTable(host, env = {}) {
       if (!ty.back && n < 2) return no(actor, '🚫 That has only one side');
       touch(id);
       if (ty.back && it.up === false) { reindexed(id, it, unveil); logEvent(actor, `turned over ${label(it)}`); } // the face is public now…
-      else if (ty.back) { it.up = false; logEvent(actor, `turned ${before} face down`); }            // …and was a moment ago
+      else if (ty.back) { reindexed(id, it, facedown); logEvent(actor, `turned ${before} face down`); } // …and was a moment ago
       else if (n === 2) { it.f = 1 - it.f; logEvent(actor, `flipped ${before}`); }
       else { it.f = (it.f + 1) % n; logEvent(actor, `turned ${before} to ${faceLabel(ty.faces[it.f], it.f)}`); }
     }
@@ -3009,7 +3083,7 @@ export function createTable(host, env = {}) {
     const it = own(host.items, id), pile = own(host.items, pileId);
     if (!it || pile?.k !== 'p' || (it.k !== 'c' && it.k !== 'g')) return false;
     if (!goesOn(it, pile)) return no(actor, "🚫 Those don't stack together");
-    if (!may(actor, it) || !mayHandle(actor, pile) || !pileRoom(actor, pile)) return false;
+    if (!privy(actor, it) || !may(actor, it) || !mayHandle(actor, pile) || !pileRoom(actor, pile)) return false;
     logEvent(actor, `put ${label(it)} onto ${label(pile)}`);
     mark(actor, pileId);
     touch(pileId);
@@ -3044,7 +3118,7 @@ export function createTable(host, env = {}) {
     const it = own(host.items, id), b = own(host.items, ontoId);
     if (!it || !b || it === b) return false;
     if (!['c', 'g'].includes(it.k) || !['c', 'g'].includes(b.k) || !fits(it, b)) return no(actor, "🚫 Those don't stack together");
-    if (!may(actor, it) || !mayHandle(actor, b)) return false;
+    if (!privy(actor, it) || !privy(actor, b) || !may(actor, it) || !mayHandle(actor, b)) return false;
     logEvent(actor, `stacked ${label(it)} onto ${label(b)}`);
     const m = (x) => (isCard(x) ? { d: x.d, i: x.i, up: x.up } : { t: x.t, f: x.f, up: x.up !== false });
     const nid = put(mint(host.items), { k: 'p', x: b.x, y: b.y, rot: b.rot, z: zTop(), name: '', cards: [m(b), m(it)] });
@@ -3117,8 +3191,7 @@ export function createTable(host, env = {}) {
   function opToHand(actor, id, q) {
     const it = own(host.items, id), pl = own(host.players, q);
     if (!it || !pl || (it.k !== 'c' && it.k !== 'g')) return false;
-    if (it.vis?.length && !seen(actor, it)) return false; // (a hand shows its holder what it holds: never a private piece hidden from them)
-    if (!may(actor, it)) return false;
+    if (!privy(actor, it) || !may(actor, it)) return false; // (a hand shows its holder what it holds: never a private piece hidden from them)
     if (it.k === 'g' && !flags(it).hand) return no(actor, "🚫 That can't be held in a hand");
     if (!handRoom(actor, q)) return false;
     const what = it.k === 'c' ? label(it) : oneLabel(it);
@@ -3228,7 +3301,8 @@ export function createTable(host, env = {}) {
     for (const [id, it] of its) {
       touch(id);
       reindexed(id, it, () => {
-        Object.assign(it, { up: false, vis: [actor] });
+        facedown(it);
+        it.vis = [actor];
         if (!it.owner) Object.assign(it, { owner: actor, po: 1 });
       });
     }
@@ -3254,7 +3328,8 @@ export function createTable(host, env = {}) {
       ...(it.vis && { vis: [...it.vis] }), ...(it.pv && { pv: 1 }), ...(it.po && { po: 1 }) };
     if (onto !== undefined) {
       if (!to) return gone('split', onto);
-      if (to.k === 'b') { // the toBag checks (a bag takes hidden pieces: no hidden-item rule)
+      if (to.k === 'b') { // the toBag checks (a bag takes hidden pieces: no hidden-item rule — but the private-piece rule's)
+        if (!privy(actor, it)) return false;
         if (to.of.length + k > MAX_BAG) return no(actor, `🚫 That bag is full (${MAX_BAG.toLocaleString('en-US')} pieces)`);
         if (to.hand && !flags(it).hand) return no(actor, '🚫 That bag only holds pieces that can be held in a hand');
       } else {
@@ -3353,7 +3428,9 @@ export function createTable(host, env = {}) {
     if (hand ? !handRoom(actor, to) : !cap(actor)) return false;
     const at = nextTo(bag), k = drawFrom(id, bag), m = bag.of[k], X = num(x, at.x), Y = num(y, at.y);
     const nu = { k: 'g', t: m.t, f: m.f, rot: 0, ...(m.up === false && { up: false }) };
-    if (!hand && !mayPlace(actor, nu, X, Y, po)) return false; // (its draw stays pending: a refusal never redraws, D114)
+    // (a draw is never refused for what it drew — its draw stays pending, D114, so the refusal would say what the
+    //  next one is: a piece with no hidden side lands shown, and no private zone acts on it, D278)
+    if (!typeOf(m.t)?.back) po = { ...po, unzoned: true };
     touch(id);
     bag.of.splice(k, 1);
     J?.frames.at(-1).taken.push([id, drawn.get(id)]); // (a rollback of this pull puts its draw back: see restore)
@@ -3377,7 +3454,7 @@ export function createTable(host, env = {}) {
     const it = own(host.items, id), bag = own(host.items, bagId);
     if (!it || !bag) return gone('toBag', it ? bagId : id);
     if (it.k !== 'g' || bag.k !== 'b') return no(actor, '🚫 Only pieces go into a bag');
-    if (!may(actor, it) || !mayHandle(actor, bag)) return false;
+    if (!privy(actor, it) || !may(actor, it) || !mayHandle(actor, bag)) return false;
     const n = it.n || 1;
     if (bag.of.length + n > MAX_BAG) return no(actor, `🚫 That bag is full (${MAX_BAG.toLocaleString('en-US')} pieces)`);
     if (bag.hand && !flags(it).hand) return no(actor, '🚫 That bag only holds pieces that can be held in a hand');
@@ -3428,7 +3505,7 @@ export function createTable(host, env = {}) {
         if (seat) return no(actor, '🚫 Only the host can give that away');
       } else if (it.owner) return no(actor, `🚫 That belongs to ${ownerName(it.owner)}`);
       else if (to !== actor) return no(actor, '🚫 Only the host can give that away');
-      else if (it.vis?.length && !seen(actor, it)) return false; // (claimed, a private piece would be p's to turn over: seen's owner)
+      else if (!privy(actor, it)) return false; // (claimed, a private piece would be p's to turn over: seen's owner)
       else if (isBoard(it)) return no(actor, "🚫 Boards can't be claimed");
       else if (!notLocked(actor, it)) return false;
     }
@@ -3692,7 +3769,7 @@ export function createTable(host, env = {}) {
         if (lock) it.lock = true;
         it.rot = turned(it, e.rot);
         const [x, y, po] = spot(e, it, seat, k);
-        place(it, x, y, po);
+        place(it, x, y, e.unzoned ? { ...po, unzoned: true } : po); // (as the entry says: no private zone acts on it, D278)
         if (po?.on) { // (off its spot's centre: the spot is its own as containment reads it, while its centre lies in reach — D119)
           const { w, h } = size(it);
           if (snapAt(tb(), it.x + w / 2, it.y + h / 2)?.at !== po.on) throw new Error(`"off" [${e.off}] takes the piece out of reach of its spot '${display(po.on)}'`);
@@ -3897,12 +3974,18 @@ export function createTable(host, env = {}) {
       : typeRef.has(m.t) ? { piece: typeRef.get(m.t), ...(m.f && { f: m.f }), ...(hand ? m.up === false && { up: false } : { up: m.up !== false }) } : null);
     const setup = [];
     for (const [id, it] of [...items.filter(([, x]) => x.z < 0), ...items.filter(([, x]) => !(x.z < 0))]) {
-      // (a piece a private zone hides goes as it would be placed there: placing it on import hides it again — its up, vis, pv, and the owner its hiding gave, re-derived: spec §5h)
-      const t = it.t !== undefined && typeRef.get(it.t), pile = it.k === 'p' && it.cards.map((m) => member(m, false)), pv = it.k === 'g' && !!it.pv;
+      // A piece in an active private zone (Z): one the zone hides goes as it would be placed there — placing it on import
+      // hides it again, its up, vis, pv and the owner its hiding gave re-derived (spec §5h) — when that gives it back
+      // exactly (rd): its vis the zone's owner alone, a seat or a seated player (who travel), its po owner that one. Any
+      // other there goes as it lies — hidden for those it is (up false, vis, owner, po), or shown — and `unzoned`: no zone
+      // acts on it as it is laid out (D283). A viewer or owner that can't travel is left out (warned): hidden from more, never shown.
+      const t = it.t !== undefined && typeRef.get(it.t), pile = it.k === 'p' && it.cards.map((m) => member(m, false));
+      const Z = it.k === 'g' && !(it.z < 0) && privateAt(it), rd = !!Z && !!it.pv && it.vis?.length === 1 && it.vis[0] === Z.ref
+        && (!it.po || it.owner === Z.ref) && (Z.ref.startsWith('seat:') || K.has(Z.ref));
       const e = it.k === 'c' ? deckName.has(it.d) && { card: { deck: deckName.get(it.d), i: it.i }, ...(it.up && { up: true }) }
         : it.k === 'p' ? !pile.includes(null) && { pile, ...(it.name && { name: it.name }) }
           : it.k === 'b' ? it.of.every((m) => typeRef.has(m.t)) && { bag: it.of.map((m) => ({ t: typeRef.get(m.t), ...(m.f && { f: m.f }), ...(m.up === false && { up: false }) })), ...(it.name && { name: it.name }), hand: !!it.hand }
-            : t && { [it.k === 's' ? 'supply' : 'piece']: t, ...(it.f && { f: it.f }), ...(it.up === false && !pv && { up: false }), ...(it.n > 1 && { n: it.n }) };
+            : t && { [it.k === 's' ? 'supply' : 'piece']: t, ...(it.f && { f: it.f }), ...(it.up === false && !rd && { up: false }), ...(it.n > 1 && { n: it.n }), ...(Z && !rd && { unzoned: true }) };
       if (!e) { warnings.push(`${label(it)}: its ${it.k === 'c' || it.k === 'p' ? 'deck or game box' : 'game box'} is missing`); continue; }
       const { w, h } = size(it);
       e.at = [it.x, it.y];
@@ -3919,7 +4002,7 @@ export function createTable(host, env = {}) {
       if (!!it.lock !== board) e.lock = !!it.lock;
       /** Player or seat ref `r` as a setup names it: "seat:<id>", or "#k" for a seated player — else null (`what` warned). */
       const ref = (r, what) => (r.startsWith('seat:') ? r : K.get(r) ?? (warnings.push(`${label(it)}: ${what}`), null));
-      const owner = it.owner && !(pv && it.po) && ref(it.owner, "its owner isn't seated, so it goes ownerless");
+      const owner = it.owner && !(rd && it.po) && ref(it.owner, "its owner isn't seated, so it goes ownerless");
       if (owner) e.owner = owner;
       if (e.up === false && it.vis) { // (who sees it, and whether its owner is its hiding's: po)
         const vis = it.vis.map((r) => ref(r, "a player who sees it isn't seated, so they won't")).filter(Boolean);
@@ -4123,9 +4206,16 @@ export function createTable(host, env = {}) {
    *  (mayHandle and notLocked, checked quietly — a refusal of live traffic
    *  is a console.warn, never a notice) goes out as one fx {p, id, x, y,
    *  live: 1} or {p, ids, dx, dy, live: 1}, finite, every member landing on
-   *  the table (clampShift, D118). True when one was queued. */
+   *  the table (clampShift, D118). A private piece (hidden, with a vis) goes
+   *  unseen until it lands: its way, and a refused drop's way back, would
+   *  tell the others which one its player reached for (D282). True when one
+   *  was queued. */
   function drag(p, a) {
-    const ok = (id) => movable(p, id) || (console.warn('drag: not relayed', id, 'from', p), null);
+    const ok = (id) => {
+      const it = movable(p, id);
+      if (!it) console.warn('drag: not relayed', id, 'from', p);
+      return it && !(it.up === false && it.vis?.length) ? it : null; // (a private piece goes unseen until it lands)
+    };
     if (Array.isArray(a.ids)) {
       const ids = [...new Set(a.ids.slice(0, MAX_GROUP))].filter(ok);
       if (!ids.length) return false;
@@ -4221,8 +4311,9 @@ export function createTable(host, env = {}) {
       const vetoed = (why) => {
         rollbackTo(base);
         if (!g) return veto(p, a, why);
-        g.why = { msg: String(why).slice(0, 300), ruled: true };
-        touchNamed(p, a);
+        const mine = secretOf(p, a); // (as veto's: no "blocked" line for it, D282)
+        g.why = { msg: String(why).slice(0, 300), ruled: true, ...(mine && { mine }) };
+        named(p, a);
         return false;
       };
       let r = tryHook('handle', A());
@@ -4255,14 +4346,15 @@ export function createTable(host, env = {}) {
     // re-sent; a single action's job keeps them, as it always has.
     if (g && J && !took && !handled) {
       rollbackTo(base);
-      touchNamed(p, a);
+      named(p, a);
       return false;
     }
     // A ruled action that did nothing (refused, or its target had just gone: a
     // pile merged away under a drop), or that the script handled, re-sends what
     // it named: the actor's screen still shows its optimistic move, and deltas
-    // carry only what is marked.
-    if (ruled && (handled || !took)) touchNamed(p, a);
+    // carry only what is marked (named: the actor's own hidden piece, on their
+    // screen alone).
+    if (ruled && (handled || !took)) named(p, a);
     const done = handled ? 'handled' : took && 'took';
     if (!host.rules?.enabled) return g ? done : bump();
     // The checkpoint: what is kept even if a later hook fails. Its gates
@@ -4338,8 +4430,8 @@ export function createTable(host, env = {}) {
       // (a member that did nothing was rolled back to its savepoint: the state is `json` still, nothing to settle)
       if (on && !g.stop && (!host.rules?.enabled || (r && (json = settle()) === null))) g.stop = 'off';
     }
-    if (g.stop === 'closed') { // (the job rolled back whole: every member re-sent, one refusal)
-      for (const id of ids) refreshItem(id);
+    if (g.stop === 'closed') { // (the job rolled back whole: every member re-sent — p's own hidden pieces to p alone, named — one refusal)
+      for (const id of ids) if (!secretOf(p, { id })) refreshItem(id);
       return veto(p, a, 'rules script error');
     }
     if (!dice) for (let k = here.length; k < ids.length; k++) skipped.push({ msg: 'it is gone' });
@@ -4348,7 +4440,7 @@ export function createTable(host, env = {}) {
       const it = own(host.items, fx.id); // (where the first member is now: a removed one's bulb stays where it was)
       emit({ t: 'fx', f: { ...fx, ...(it && { x: it.x, y: it.y }) } });
     }
-    const vetoes = skipped.filter((s) => s.ruled), k = skipped.length, many = !dice && N > 1;
+    const vetoes = skipped.filter((s) => s.ruled && !s.mine), k = skipped.length, many = !dice && N > 1;
     if (vetoes.length) logEvent(RULES, `blocked ${own(host.players, p)?.name || 'a player'}: ${vetoes[0].msg}${many ? ` (${vetoes.length} of ${N})` : ''}`);
     if (k) { // (a group of one, and a roll, which is one, say the single action's refusal word for word: a veto's bare words get its 🚫)
       const [{ msg, ruled }] = skipped, marked = /^(🚫|🔒)/u.test(msg);
@@ -4796,10 +4888,10 @@ export function createTable(host, env = {}) {
    *  and what it named re-sent, so their optimistic move snaps back. */
   function veto(p, a, why) {
     why = String(why).slice(0, 300); // (a script's words: as long as t.say's)
-    touchNamed(p, a);
-    logEvent(RULES, `blocked ${own(host.players, p)?.name || 'a player'}: ${why}`);
+    const quiet = secretOf(p, a), changed = named(p, a); // (words about a piece only p sees may tell what it is: p's alone, D282)
+    if (!quiet) logEvent(RULES, `blocked ${own(host.players, p)?.name || 'a player'}: ${why}`);
     notify(p, `🚫 ${why}`, true);
-    return bump();
+    return quiet && !changed ? false : bump();
   }
   /** Why the rules' state `json` (rulesJSON) fails the engine's gates (spec
    *  §3a), or '': t.data at most DATA_MAX_CHARS; the values in t.data,
@@ -5195,8 +5287,9 @@ export function createTable(host, env = {}) {
       if (typeof a === 'string' || isObj(a)) {
         const it = scriptItem('t.move', id);
         if (!it) return false;
+        if (b !== undefined && !(isObj(b) && Object.keys(b).every((k) => k === 'unzoned'))) throw new TypeError('t.move: its options are {unzoned?: true}');
         const [x, y, o] = scriptSpot('t.move', it, a);
-        return opMove(RULES, id, x, y, o);
+        return opMove(RULES, id, x, y, b?.unzoned === true ? { ...o, unzoned: true } : o); // (no private zone acts on it where it lands, D278)
       }
       return opMove(RULES, id, a, b);
     },
@@ -5467,9 +5560,8 @@ export function createTable(host, env = {}) {
       logOp(RULES, 'hid', `hid ${label(it)}${onAt(it)}`, it);
       touch(id);
       reindexed(id, it, () => {
-        it.up = false;
-        if (vis.length) it.vis = vis;
-        else delete it.vis;
+        facedown(it);
+        visTo(it, vis);
       });
       mark(RULES, id);
       return true;
@@ -5498,8 +5590,7 @@ export function createTable(host, env = {}) {
       if (String(vis) === String(it.vis ?? [])) return true;
       touch(id);
       reindexed(id, it, () => {
-        if (vis.length) it.vis = vis;
-        else delete it.vis;
+        visTo(it, vis);
       });
       logOp(RULES, 'vis', `changed who sees ${label(it)}${onAt(it)}`, it);
       mark(RULES, id);
@@ -5847,18 +5938,39 @@ export function createTable(host, env = {}) {
    *  marked. True when anything was marked. */
   function touchNamed(p, a) {
     let any = false;
-    for (const id of [a.id, a.pile, a.onto, a.bag, ...(Array.isArray(a.ids) ? a.ids.slice(0, NAMED_IDS) : [])]) any = refreshItem(id) || any;
+    for (const id of namedIds(a)) any = refreshItem(id) || any;
     if (HAND_ACTIONS.has(a.t) && own(host.players, p)) { refreshHand(p); any = true; }
     return any;
   }
+  /** The ids action `a` names (id, pile, onto, bag, and the first NAMED_IDS of ids). */
+  const namedIds = (a) => [a.id, a.pile, a.onto, a.bag, ...(Array.isArray(a.ids) ? a.ids.slice(0, NAMED_IDS) : [])];
+  /** Whether action `a` of p's names a piece p sees while it lies hidden
+   *  from others (p's full form of it: p's own private piece): what the
+   *  rules say against it is p's alone — no "blocked" line, nothing re-sent
+   *  to the others — since a script's reason may tell what it is ("The
+   *  Banner never moves"), and its re-send which piece p reached for (D282). */
+  const secretOf = (p, a) => namedIds(a).some((id) => { const it = typeof id === 'string' && own(host.items, id); return it?.k === 'g' && it.up === false && !hidden(p, it); });
+  /** What p's refused (or handled) action `a` named goes out again, so their
+   *  optimistic move snaps back: re-sent to everyone (touchNamed) — or, when
+   *  it names p's own hidden piece (secretOf), drawn again on p's screen
+   *  alone (the effect `back`: p's view holds it as it was; a hand action's
+   *  hand in p's own part). True when the table changed (something re-sent). */
+  function named(p, a) {
+    if (!secretOf(p, a)) return touchNamed(p, a);
+    emit({ t: 'back', p, ids: namedIds(a).filter((id) => typeof id === 'string' && own(host.items, id)) });
+    if (!HAND_ACTIONS.has(a.t) || !own(host.players, p)) return false;
+    refreshHand(p);
+    return true;
+  }
   const refusals = new Map(); // player id → token bucket (refreshFor)
   /** An action of p's was refused before it reached the table (flood
-   *  control): re-send what it names (touchNamed). A refused action costs no
-   *  flood token, so these re-sends have their own bucket (a burst of 10,
-   *  then 5 per second): a flood can't make the host re-send the table to
+   *  control): re-send what it names (named: p's own hidden piece to p
+   *  alone, an effect the app drains). A refused action costs no flood
+   *  token, so these re-sends have their own bucket (a burst of 10, then 5
+   *  per second): a flood can't make the host re-send the table to
    *  everyone. True when something was re-sent (renumbered). */
   function refreshFor(p, a) {
-    return flood(refusals, p, 10, 5) && touchNamed(p, textIds(a)) ? bump() : false;
+    return flood(refusals, p, 10, 5) && named(p, textIds(a)) ? bump() : false;
   }
   /** Why the rules' fields of a Worker's patch `r` fail the engine's gates
    *  (spec §3a: they run on every write), checked again here, in the host's
@@ -5904,6 +6016,7 @@ export function createTable(host, env = {}) {
     for (const e of effects) {
       if (e.t === 'fx' && e.f.p !== p && e.f.p !== RULES) return `the script put ${whose(e.f.p)} name bulb into ${whose(p)} ${a.t}`;
       if (e.t === 'peek' && (a.t !== 'peek' || e.p !== p)) return `the script showed ${whose(e.p)} eyes a card in ${whose(p)} ${a.t}`;
+      if (e.t === 'back' && e.p !== p) return `the script redrew ${whose(e.p)} screen in ${whose(p)} ${a.t}`;
     }
     return '';
   }
@@ -5924,6 +6037,7 @@ export function createTable(host, env = {}) {
     toast: ({ msg }) => (texty(msg) ? { t: 'toast', msg } : null),
     note: ({ p, msg, ruled }) => (typeof p === 'string' && texty(msg) ? { t: 'note', p, msg, ...(ruled === true && { ruled }) } : null),
     peek: ({ p, c }) => (typeof p === 'string' && memberProblem(c) === '' ? { t: 'peek', p, c: typeof c.d === 'string' ? { d: c.d, i: c.i } : { t: c.t, f: c.f } } : null),
+    back: ({ p, ids }) => (typeof p === 'string' && Array.isArray(ids) && ids.length <= NAMED_IDS + 4 && ids.every((id) => typeof id === 'string') ? { t: 'back', p, ids: [...ids] } : null),
     deck: ({ id }) => (typeof id === 'string' ? { t: 'deck', id } : null),
     box: ({ id }) => (typeof id === 'string' ? { t: 'box', id } : null),
     rules: () => ({ t: 'rules' }),

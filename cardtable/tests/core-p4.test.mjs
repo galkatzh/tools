@@ -2405,15 +2405,21 @@ function testFixup2() {
     const T = hostTable({ seed: 71, players: [[BOB, 'Bob']] }), r = act(T, BOB, { t: 'addBox', box: mixed, cost: 2000 });
     ok(!r.id && /^🚫 Box rejected: setup\[1\]\.group\[1\]: being a die differs/.test(r.notes[0] || '') && !Object.keys(T.state.boxes).length, `Bob's upload of it: rejected, said (${r.notes[0]})`);
     ok(!thrown(() => boxOfDef(tiles({ group: [{ piece: 'gem', up: false, at: 'a1' }, { piece: 'die', up: false, at: 'b1' }] }))), 'unshuffled, the two may share the back (alike from outside, §2c)');
-    // tokens alone: every place keeps its address through the shuffle, whatever was dealt to it
+    // tokens alone: every place keeps its spot through the shuffle, whatever was dealt to it — centred on its square,
+    // with no address: hidden under a back a die wears, no piece snaps, the token as the die (D279, which closes D210's case)
     const b = act(T, HOST, { t: 'addBox', box: tiles({ shuffle: true, group: ['gem', 'pebble', 'gem'].map((k, i) => ({ piece: k, up: false, at: 'abc'[i] + '1', id: `0000c0d${i}` })) }) }).id;
     let kept = true;
-    const seen = new Set();
+    const seen = new Set(), spot0 = [];
     for (let n = 0; n < 20; n++) {
       act(T, HOST, { t: 'setup', box: b });
-      [0, 1, 2].forEach((i) => { const it = T.state.items[`0000c0d${i}`]; kept &&= it?.at?.endsWith(`:${'abc'[i]}1`); seen.add(`${i}${tid(it?.t)}`); });
+      [0, 1, 2].forEach((i) => {
+        const it = T.state.items[`0000c0d${i}`], at = it && `${it.x},${it.y}`;
+        spot0[i] ??= at;
+        kept &&= at === spot0[i] && !('at' in it);
+        seen.add(`${i}${tid(it?.t)}`);
+      });
     }
-    ok(kept && seen.size === 6, `tokens alone: 20 shuffles, every place keeps its address (${kept}); each place held both kinds (${seen.size} of 6 place-kind pairs)`);
+    ok(kept && seen.size === 6, `tokens alone: 20 shuffles, every place keeps its spot, none an address (${kept}); each place held both kinds (${seen.size} of 6 place-kind pairs)`);
   }
 
   section("(G) a refusal the rules made says so (`ruled`) — the engine's own and a storage failure never do (D211)");

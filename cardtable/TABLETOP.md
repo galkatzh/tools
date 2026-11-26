@@ -861,9 +861,10 @@ sync and rendering, and the Worker together with `handle`.
    - `vis` (owner-visible pieces, dice under a cup), private areas beyond the
      hand (a tile rack, a screen), and peeking at any hidden piece.
    - *Demos:* dominoes and a hidden-units game.
-   - *Done* (private material: state v6, wire version 6), in three parts:
-     the engine and the wire, the table and the terminal, then the two
-     demos. With it the build order is complete.
+   - *Done* (private material: state v6, wire version 6), in three parts
+     and a review: the engine and the wire, the table and the terminal, the
+     two demos, then what review found closed. With it the build order is
+     complete.
    - The engine and the wire (part 1 of the phase):
      - A piece lies hidden for whom its `vis` names — a player, or a seat
        and so whoever sits there — and every other player gets its back.
@@ -881,13 +882,16 @@ sync and rendering, and the Worker together with `handle`.
        in it hides for its owner (and belongs to them, unless it already
        belongs to someone); off a rack it is face up again, out from
        behind a screen it stays hidden; a board moved under or away from a
-       piece changes nothing.
+       piece changes nothing. A zone never shows anyone a piece hidden from
+       them: a screen keeps who sees a piece hidden for someone else, and a
+       rack takes one over only from a hand that sees it.
      - Scripts hide, reveal and change who sees a piece; what a game hides
        beyond a piece's face (where things are, fog of war) stays the
        script's.
      - Exported games keep it all: a cup's dice, a screen's units that
        left it, and a script's hidden pieces as they were; a rack's tiles
-       are hidden again by their rack when the game is set up.
+       are hidden again by their rack when the game is set up, and what a
+       zone wouldn't give back as it is is written as it lies.
    - The table and the terminal (part 2 of the phase):
      - A piece you see while the others see its back is drawn face up with
        🙈 on its corner and that corner faintly hatched; its tooltip names
@@ -927,6 +931,27 @@ sync and rendering, and the Worker together with `handle`.
      - Each played as two players and a watcher on a desktop and on
        phones held both ways; a game exported mid-play sets up again with
        every hidden piece hidden for the same players.
+   - What review found and fixed:
+     - Nothing hidden from a player reaches them by a detour any more: not
+       by dropping someone's private piece on one's own rack, nor by
+       stacking it, bagging it or drawing it back out; not by a draw
+       refused for what it would have drawn; not by where a hidden die
+       lands beside a hidden token; not by a game's refusal of a move of
+       one's own hidden unit (its words, "The Banner never moves", and its
+       piece's way back are that player's alone, and nobody sees a hidden
+       piece dragged); not by an export set up again (a unit in the other
+       side's rows, a revealed one behind its own screen, a rack whose
+       owner left are written as they lie, hidden from more, never shown).
+     - Dominoes keeps the turn by seat (a player taking over a seat plays
+       on), counts the tiles where they lie, plays a tile only by taking it
+       off its rack on its seat's turn, and shows the racks at a round's
+       end; its tiles draw each half's pips in its own half, and a full
+       rack takes the next tile half a slot on. Veiled Ranks moves units as
+       they are, announces every fight, calls a draw when neither side can
+       move, and gives every kind its own label. The built-in dice wear a
+       cup; a cup leaves a locked die out; a wheel over the 🔒 card scrolls
+       it; and no board text is drawn while the view moves, so a labelled
+       board or a rack costs a gesture nothing.
 
 The terminal bridge follows each phase:
 - pieces and boxes appear in its snapshot;
@@ -1089,10 +1114,24 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
 - **Drawing into your rack shows nothing:** Draw to my rack sets the piece
   down straight in a free slot of your rack, hidden as it lands, rather
   than face down beside the bag to be dragged over (§2).
-- **A game's private pieces stay its sides':** a script that moves a
-  hidden piece into another seat's screen gives it back to its own side
-  at once, and one combat revealed stays revealed; a side's units belong
-  to its seat from the setup, so no zone hands them over (§2, §5).
+- **A zone never shows anyone a piece hidden from them:** a screen keeps
+  who sees a piece hidden for someone else, a rack takes one over only from
+  a hand that sees it, and whatever would show a private piece or strip
+  who sees it — a pile, a bag, a hand, a claim — is its viewers' or its
+  owner's alone; a piece can also be set down "unzoned", exactly as it is
+  (§2, §3).
+- **A game's private pieces stay its sides':** Veiled Ranks moves every
+  unit unzoned, so one hidden in the other side's rows stays its own
+  side's and one combat revealed stays revealed; a side's units belong to
+  its seat from the setup, so no zone hands them over (§2, §5).
+- **A refusal about your own hidden piece is yours:** a game's words
+  against a move of a piece only you see ("The Banner never moves") reach
+  you alone, with no line on the log and nothing re-sent to the others —
+  and nobody sees a hidden piece of yours dragged, only where it lands
+  (§3, §5).
+- **Hidden things look alike everywhere they could differ:** a hidden die
+  and a hidden token under one back land alike (neither snaps), and a draw
+  is never refused for what it would draw (§1, §2).
 - **What a script says names nothing hidden:** a script's lines and
   banners may only say what the table shows — Dominoes draws its leader
   by lot rather than name who holds the highest double (§5).

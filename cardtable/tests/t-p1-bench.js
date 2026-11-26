@@ -33,7 +33,10 @@
 //        D246. The 1,000-piece pan and the 6000 × 4000 twist run again with
 //        a piece's own bar open beside it (placeBeside, which read its size
 //        and wrote its left and top each frame: 178–181 layouts a pan,
-//        302–355 a twist, D247)
+//        302–355 a twist, D247); the pinch again, and sixteen turns of a
+//        wheel, with a chess-labelled board and a rack's private zone on the
+//        table, whose SVG text is not drawn while the view moves (each frame
+//        laid the page out: 49–101 layouts a pinch, 16 a wheel, D288)
 //   B6   the host saves the 1,000-item table: every save's main-thread part ≤ 8 ms
 //        (__ct.perf.lastSaveSyncMs, around doSave's synchronous IndexedDB put): ten
 //        throttled saves (rapid play) and five unthrottled ones (a move 1.1 s
@@ -473,10 +476,11 @@ function placeholderWatch() {
   await rejoinB8(deck0, 5000, 100, true, ', and the 1,000 pieces');
 
   /** Loads 1,000 stacks of 3 chips on a w × h rectangle (20 rows of 50 from
-   *  `at`, `step` apart), and waits for the phone to draw them. */
-  async function loadStacks(w, h, at, step) {
-    const box = { name: 'Stacks', imgs: [], table: { shape: 'rect', w, h }, types: { chip: { kind: 'token', name: 'Chip', faces: [{ color: '#facc15' }] } },
-      setup: Array.from({ length: 20 }, (_, k) => ({ piece: 'chip', n: 3, at: [at[0], at[1] + step[1] * k], count: 50, spread: [step[0], 0] })) };
+   *  `at`, `step` apart), and waits for the phone to draw them. `extra`:
+   *  {types, setup} the box has besides. */
+  async function loadStacks(w, h, at, step, extra = { types: {}, setup: [] }) {
+    const box = { name: 'Stacks', imgs: [], table: { shape: 'rect', w, h }, types: { chip: { kind: 'token', name: 'Chip', faces: [{ color: '#facc15' }] }, ...extra.types },
+      setup: [...extra.setup, ...Array.from({ length: 20 }, (_, k) => ({ piece: 'chip', n: 3, at: [at[0], at[1] + step[1] * k], count: 50, spread: [step[0], 0] }))] };
     ok((await L.act(host, { t: 'loadBox', box, setup: true, clear: true })).ok, `the host loads 1,000 stacks of 3 chips on a ${w} × ${h} table`);
     ok(await phone.waitForFunction((w) => window.__ct.view().table.w === w && document.querySelectorAll('.item > .count').length >= 1000, w, { timeout: 60000 }).then(() => true, () => false), 'the phone draws them, with their ×3');
   }
@@ -552,6 +556,38 @@ function placeholderWatch() {
   await loadStacks(1800, 1200, [100, 100], [32, 50]);
   const tr = await gestureB4('twist (half a turn)', { turn: 1 });
   ok(tr.gaps.length > 30 && Math.abs(tr.turned - 180) < 20, `the scripted twist turns the view (${tr.turned.toFixed(1)}°, ${tr.gaps.length} frames)`);
+  await refit();
+
+  section('§2k B4 (board text): the pinch, and a wheel zoom, over 1,000 ×3 stacks beside a chess-labelled board and a rack\'s private zone — no SVG text is drawn while the view moves (D288)');
+  // (a board's printed coordinates and a zone's label are SVG text: each frame
+  // that moved the view laid the page out, and hit-tested the whole table)
+  const LABELLED = {
+    types: {
+      board: { kind: 'board', name: 'Labelled', w: 500, h: 500, faces: [{ color: '#8f8a84' }], board: { grid: { type: 'square', cols: 5, rows: 5, cell: 100, x: 0, y: 0, labels: 'chess' } } },
+      rack: { kind: 'board', name: 'Rack', w: 520, h: 140, faces: [{ color: '#7a4b24' }], board: { zones: [{ id: 'r', poly: [[0, 0], [520, 0], [520, 140], [0, 140]], owner: 'board', private: 'reveal' }] } },
+    },
+    setup: [{ piece: 'board', at: [40, 400] }, { piece: 'rack', at: [30, 1000] }],
+  };
+  await loadStacks(6000, 4000, [600, 400], [100, 160], LABELLED);
+  const texts = await phone.evaluate(() => [...document.querySelectorAll('#table .psvg text')].map((t) => t.textContent));
+  ok(texts.length >= 10 && texts.some((t) => /rack/.test(t)), `the phone draws the board's coordinates and the zone's label (${texts.length} texts: ${texts.slice(0, 3).join(', ')}, …, ${texts.find((t) => /rack/.test(t))})`);
+  await gestureB4('pinch, a labelled board and a rack on the table', { from: 20, to: 240 });
+  await refit();
+  {
+    const r = await phone.evaluate(() => document.getElementById('table-wrap').getBoundingClientRect()), tf = () => phone.evaluate(() => document.getElementById('table').style.transform);
+    const tf0 = await tf(), laid = await layouts(phone), q = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    const hiddenMid = await phone.evaluate(async ([x, y]) => {
+      const wheel = () => document.elementFromPoint(x, y).dispatchEvent(new WheelEvent('wheel', { deltaY: -40, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+      const seen = [];
+      for (let k = 0; k < 16; k++) { wheel(); seen.push(getComputedStyle(document.querySelector('#table .psvg text')).display); await new Promise((res) => setTimeout(res, 30)); }
+      return seen;
+    }, [q.x, q.y]);
+    await h.sleep(600);
+    const n = await laid(), back = await phone.evaluate(() => getComputedStyle(document.querySelector('#table .psvg text')).display);
+    console.log(`  wheel zoom: ${n} layouts in 16 turns; the board's text while it turned: ${[...new Set(hiddenMid)]}, after its rest: ${back}`);
+    ok((await tf()) !== tf0 && n <= B4_LAYOUTS, `B4: sixteen turns of a wheel zoom the view and lay the page out ${n} times (≤ ${B4_LAYOUTS})`);
+    ok(hiddenMid.every((d) => d === 'none') && back !== 'none', 'the board\'s text is not drawn while the wheel turns, and is again at its rest');
+  }
   await refit();
 
   // --- Phase 1 (spec §1k): the 1,000-card table ---
