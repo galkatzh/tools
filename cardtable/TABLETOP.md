@@ -1088,7 +1088,8 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
   and racks' labels are drawn as HTML over the board's drawing, turned to
   each screen by transforms — they stay in sight while the view moves, at
   no cost to a gesture's frames, its start or its end, whichever way a
-  player's view is turned (§2).
+  player's view is turned; as when it was part of the drawing, a screen
+  reader passes over it rather than read out every coordinate (§2).
 - **A selection mode means selecting:** with ⬚ on, a drag draws a box
   wherever it starts (but on a picked piece, which carries the lot) and a
   click only picks — a double one never flips or rolls (§3).

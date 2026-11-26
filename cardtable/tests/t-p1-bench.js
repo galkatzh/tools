@@ -40,7 +40,8 @@
 //        it is HTML now, D297); and the reviewers' flow at a view turned half
 //        round: the phone seated North over Dominoes, three pinches deep in,
 //        then four over Veiled Ranks (52–91 ms at their start while a board's
-//        text was SVG hidden for the gesture: D297)
+//        text was SVG hidden for the gesture: D297) — last in the suite, as
+//        it leaves the players in Veiled Ranks' named seats (D300)
 //   B6   the host saves the 1,000-item table: every save's main-thread part ≤ 8 ms
 //        (__ct.perf.lastSaveSyncMs, around doSave's synchronous IndexedDB put): ten
 //        throttled saves (rapid play) and five unthrottled ones (a move 1.1 s
@@ -241,6 +242,13 @@ function placeholderWatch() {
   const mover = await L.player(env, 'Bob', host.url());
   const phone = await L.player(env, 'Pat', host.url(), { ctx: P.PHONE });
   await host.waitForFunction(() => document.querySelectorAll('.seat').length >= 3, null, { timeout: 30000 });
+  const pids = await Promise.all([host, mover, phone].map(L.pidOf)); // (Alice, Bob, Pat)
+  /** The host's named seats and the three players' seats ([angle, named seat] each), as JSON. */
+  const seating = () => host.evaluate((pids) => {
+    const s = window.__ct.hostState();
+    return JSON.stringify([s.seats ?? null, pids.map((q) => [s.players[q]?.seat ?? null, s.players[q]?.seatId ?? null])]);
+  }, pids);
+  const seated = await seating(); // (automatic seating, each where they sat as they joined: every row runs so)
 
   /** The phone's rAF p95 while panning: logged, and checked to move the view. */
   async function panOn(what) {
@@ -608,45 +616,11 @@ function placeholderWatch() {
   }
   await refit();
 
-  section('§2k B4 (a view turned half round, after a deep zoom): Pat on the phone at North — Dominoes, a pinch deep in three times, then Veiled Ranks, pinched four times (D297)');
-  // (The reviewers' flow: while a board's text was SVG, a turned text was a
-  // compositing layer of its own, and hiding it as a gesture began merged
-  // it back into the table's layer, rastered again at the scale it was last
-  // rastered at — after a pinch deep into Dominoes, 52–91 ms at the start of
-  // 11 of 13 Veiled Ranks pinches. Each pinch here is measured, but the
-  // first, the page's first zoom over these boxes.)
-  {
-    const { BOXES } = require(path.join(h.APP_ROOT, 'cardtable/templates.js'));
-    const [alice, bob, pat] = [await L.pidOf(host), await L.pidOf(mover), await L.pidOf(phone)];
-    const sit = async (box) => {
-      ok((await L.act(host, { t: 'loadBox', box: BOXES[box], setup: true, clear: true, rules: true })).ok, `the host sets up ${BOXES[box].name}, its rules on`);
-      for (const a of [{ p: bob, watch: true }, { p: pat, watch: true }, { p: alice, watch: true }, { p: alice, id: 'south' }, { p: pat, id: 'north' }]) await L.act(host, { t: 'seat', ...a });
-      ok(await L.until(async () => (await phone.evaluate(() => document.getElementById('table').style.transform)).includes('rotate(180deg)'), 10000, 100), 'Pat sits North: the phone\'s view is turned 180°');
-    };
-    const pinchN = async (what, k, measured) => {
-      await refit();
-      const r = await gesture(phone, { from: 20, to: 160 }), p95 = L.pct(r.gaps, 95), limit = Math.max(B4_FLOOR, 1.25 * pbase.p95);
-      console.log(`  ${what} pinch ${k + 1}${measured ? '' : ' (not measured)'}: ${r.gaps.length} frames, zoomed ${r.zoomed.toFixed(2)}×, rAF p95 ${p95.toFixed(1)} ms, long tasks [${r.long}], then [${r.settle}] as the fingers lift, ${r.layouts} layouts`);
-      if (!measured) return;
-      ok(!r.long.some((d) => d > B4_LONG) && p95 <= limit && !r.settle.some((d) => d > B4_SETTLE) && r.layouts <= B4_LAYOUTS,
-        `B4, ${what} pinch ${k + 1}: no long task over ${B4_LONG} ms while the fingers are down (${r.long.join(', ') || 'none'}), rAF p95 ${p95.toFixed(1)} ≤ ${limit.toFixed(1)} ms, none over ${B4_SETTLE} ms as they lift (${r.settle.join(', ') || 'none'}), ${r.layouts} layouts (≤ ${B4_LAYOUTS})`);
-    };
-    await sit('dominoes');
-    ok((await L.act(host, { t: 'rulesBtn', id: `deal-${alice}` })).ok, 'Alice draws 7');
-    await h.sleep(1500);
-    for (let k = 0; k < 3; k++) await pinchN('Dominoes', k, k > 0);
-    await sit('ranks');
-    await h.sleep(1500);
-    ok((await phone.evaluate(textsDrawn)) && (await phone.evaluate(() => document.querySelectorAll('#table .btext').length)) >= 22, 'the phone draws the board\'s 20 coordinates and the two screens\' labels');
-    for (let k = 0; k < 4; k++) await pinchN('Veiled Ranks', k, true);
-    ok((await L.act(host, { t: 'setRules', enabled: false })).ok, '(the rules off again)');
-  }
-  await refit();
-
   // --- Phase 1 (spec §1k): the 1,000-card table ---
 
 
   section('an empty large table (the B4 baseline)');
+  ok((await seating()) === seated, `the players sit where they joined, no named seats: as every row before (${await seating()})`);
   await L.act(host, { t: 'clear' });
   await L.act(host, { t: 'size', size: 2400 });
   ok(await L.until(async () => { const v = await L.view(phone); return v.table.w === 2400 && !Object.keys(v.items).length; }, 15000), // (Phase 2: the size is table.w)
@@ -751,5 +725,41 @@ function placeholderWatch() {
   ok(Object.keys(b11).length === 8 && Object.values(b11).every((r) => r.svg), 'eight 64 × 64 boards (square and hex, every draw mode, 4,096 fills, 64 marks) each draw an SVG over the board');
   ok(Object.values(b11).every((r) => r.first <= B11_MAX), `B11: each takes ≤ ${B11_MAX} ms the first time (max ${Math.max(...Object.values(b11).map((r) => r.first)).toFixed(2)} ms)`);
   ok(Object.values(b11).every((r) => r.same && r.cached <= 1), `B11: and is cached: the second call returns the same string, and a cached call takes ≤ 1 ms (the fastest of three; max ${Math.max(...Object.values(b11).map((r) => r.cached)).toFixed(3)} ms)`);
+
+  section('§2k B4 (a view turned half round, after a deep zoom): Pat on the phone at North — Dominoes, a pinch deep in three times, then Veiled Ranks, pinched four times (D297)');
+  // (The reviewers' flow: while a board's text was SVG, a turned text was a
+  // compositing layer of its own, and hiding it as a gesture began merged
+  // it back into the table's layer, rastered again at the scale it was last
+  // rastered at — after a pinch deep into Dominoes, 52–91 ms at the start of
+  // 11 of 13 Veiled Ranks pinches. Each pinch here is measured, but the
+  // first, the page's first zoom over these boxes. The row runs last: it
+  // leaves the players in Veiled Ranks' named seats, Bob watching, which
+  // nothing in the suite can undo — the card rows ran on them once, D300.)
+  {
+    const { BOXES } = require(path.join(h.APP_ROOT, 'cardtable/templates.js'));
+    const [alice, bob, pat] = pids;
+    const sit = async (box) => {
+      ok((await L.act(host, { t: 'loadBox', box: BOXES[box], setup: true, clear: true, rules: true })).ok, `the host sets up ${BOXES[box].name}, its rules on`);
+      for (const a of [{ p: bob, watch: true }, { p: pat, watch: true }, { p: alice, watch: true }, { p: alice, id: 'south' }, { p: pat, id: 'north' }]) await L.act(host, { t: 'seat', ...a });
+      ok(await L.until(async () => (await phone.evaluate(() => document.getElementById('table').style.transform)).includes('rotate(180deg)'), 10000, 100), 'Pat sits North: the phone\'s view is turned 180°');
+    };
+    const pinchN = async (what, k, measured) => {
+      await refit();
+      const r = await gesture(phone, { from: 20, to: 160 }), p95 = L.pct(r.gaps, 95), limit = Math.max(B4_FLOOR, 1.25 * pbase.p95);
+      console.log(`  ${what} pinch ${k + 1}${measured ? '' : ' (not measured)'}: ${r.gaps.length} frames, zoomed ${r.zoomed.toFixed(2)}×, rAF p95 ${p95.toFixed(1)} ms, long tasks [${r.long}], then [${r.settle}] as the fingers lift, ${r.layouts} layouts`);
+      if (!measured) return;
+      ok(!r.long.some((d) => d > B4_LONG) && p95 <= limit && !r.settle.some((d) => d > B4_SETTLE) && r.layouts <= B4_LAYOUTS,
+        `B4, ${what} pinch ${k + 1}: no long task over ${B4_LONG} ms while the fingers are down (${r.long.join(', ') || 'none'}), rAF p95 ${p95.toFixed(1)} ≤ ${limit.toFixed(1)} ms, none over ${B4_SETTLE} ms as they lift (${r.settle.join(', ') || 'none'}), ${r.layouts} layouts (≤ ${B4_LAYOUTS})`);
+    };
+    await sit('dominoes');
+    ok((await L.act(host, { t: 'rulesBtn', id: `deal-${alice}` })).ok, 'Alice draws 7');
+    await h.sleep(1500);
+    for (let k = 0; k < 3; k++) await pinchN('Dominoes', k, k > 0);
+    await sit('ranks');
+    await h.sleep(1500);
+    ok((await phone.evaluate(textsDrawn)) && (await phone.evaluate(() => document.querySelectorAll('#table .btext').length)) >= 22, 'the phone draws the board\'s 20 coordinates and the two screens\' labels');
+    for (let k = 0; k < 4; k++) await pinchN('Veiled Ranks', k, true);
+    ok((await L.act(host, { t: 'setRules', enabled: false })).ok, '(the rules off again)');
+  }
   await env.done();
 })().catch(h.crash);

@@ -99,10 +99,12 @@ const drawn = async (p, id) => (await p.waitForSelector(`#table .item[data-id="$
   const el = document.querySelector(`#table .item[data-id="${i}"]`);
   return el && { badge: !!el.querySelector(':scope > .visb') && getComputedStyle(el.querySelector(':scope > .visb')).display !== 'none', veiled: el.classList.contains('veiled'), title: el.title, face: !el.querySelector('.pback') };
 }, id);
-/** The private zone labels page p draws on board `id`, and the colour of its hatch (a <pattern>'s first fill), or null. */
+/** The private zone labels page p draws on board `id`, the colour of its hatch (a <pattern>'s first fill) or null, and
+ *  whether its one text layer is aria-hidden (`ariaHidden`, D300). */
 const zoneOf = (p, id) => p.evaluate((i) => {
   const el = document.querySelector(`#table .item[data-id="${i}"]`);
-  return el && { texts: [...el.querySelectorAll('.btexts .slabel')].map((t) => t.textContent), hatch: el.querySelector('.psvg pattern rect')?.getAttribute('fill') || null };
+  return el && { texts: [...el.querySelectorAll('.btexts .slabel')].map((t) => t.textContent), hatch: el.querySelector('.psvg pattern rect')?.getAttribute('fill') || null,
+    ariaHidden: [...el.querySelectorAll('.btexts')].map((b) => b.getAttribute('aria-hidden')).join() === 'true' };
 }, id);
 /** Clears page p's selection (Esc; a phone has no key: the same keydown, dispatched). */
 const deselect = (p) => (p.touch ? p.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))) : p.keyboard.press('Escape'));
@@ -231,6 +233,7 @@ async function barOn(p, id) {
   ok(J(zs.b.texts) === J(["🔒 Alice's rack"]) && J(zs.bN.texts) === J(['🔒 Your rack']) && J(zs.bSc.texts) === J(['🔒 Your screen']), `Bob's screen: ${J([zs.b.texts, zs.bN.texts, zs.bSc.texts])}`);
   ok(zs.a.hatch === '#f59e0b' && zs.aN.hatch === '#38bdf8' && zs.b.hatch === '#f59e0b' && zs.bSc.hatch === '#38bdf8', `hatched in the owner's colour: South's amber, North's blue (${zs.a.hatch}, ${zs.aN.hatch})`);
   ok(J(zs.aX.texts) === J(["🔓 Nobody's rack"]) && zs.aX.hatch === null, `the rack nobody owns: plain, "${zs.aX.texts}"`);
+  ok(Object.values(zs).every((z) => z.ariaHidden), 'on both screens each rack\'s and screen\'s one text layer is aria-hidden, as its SVG is (D300)');
   btns = await barOn(alice, ID.bag);
   ok(btns.includes('Draw') && btns.includes('🔒 Draw to my rack'), `the bag's bar offers 🔒 Draw to my rack (${J(btns)})`);
   for (let k = 0; k < 2; k++) {

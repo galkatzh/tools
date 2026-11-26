@@ -372,8 +372,8 @@ What `t-p2-pieces.js`, `t-p2-tables.js`, `t-p2-demos.js` and the
   DOM; `boardSVG(type)` takes a cleanBox'd board type (`cleanBox(box).types.x`)
   and returns its markup, cached per type object (the same string, at
   once, the second time): the `svg.psvg` (grid, zones, spaces, links) and,
-  over it, its printed text as HTML (D297) — a `div.btexts` of
-  `span.btext`s, each centred on its anchor (`left`/`top` in board units,
+  over it, its printed text as HTML (D297) — a `div.btexts`
+  (`aria-hidden="true"`, as the SVG is: D300) of `span.btext`s, each centred on its anchor (`left`/`top` in board units,
   `translate: -50% -50%`): the coordinates `.btext.coord` (files in the
   margin strip right under the grid: `top` = grid bottom + min(margins) /
   2), the spaces' and zones' labels `.btext.slabel` (a private zone's also
@@ -3193,7 +3193,10 @@ SPEC §9 D277–D292, the second fix-up's D293–D296 and the third's D297–D29
   Veiled Ranks and four pinches, each under B4's budgets (no long task over
   B4_LONG while the fingers are down, the rAF p95, nothing over B4_SETTLE
   at the lift, B4_LAYOUTS); before D297 the Veiled Ranks pinches started
-  with a 52–91 ms task. Mechanism changes, no check weakened:
+  with a 52–91 ms task. It runs last in the suite (D300): Veiled Ranks'
+  named seats put Bob among the watchers and Pat North, and nothing
+  restores the seats the players took as they joined — in the third
+  fix-up it ran before the card part, whose rows all ran on those seats. Mechanism changes, no check weakened:
   `boardTexts` reads the HTML text (each span's screen map from three
   probes, where `getScreenCTM` read an SVG text's); the label selectors of
   t-p2-pieces, t-p2-demos, t-p2-tables, t-p5-demos, t-p5-private,
@@ -3213,6 +3216,15 @@ SPEC §9 D277–D292, the second fix-up's D293–D296 and the third's D297–D29
   grown 3×, covers its own stack's centre, and a tap there opens the
   inspector — all twelve tries did in three full runs (the twist with a
   stack's bar open).
+- **The fourth fix-up (D300).** New checks: `t-p2-pieces.js` asks a
+  board's one text layer `aria-hidden`, as its SVG is, on both screens and
+  devices, and `t-p5-private.js` every rack's and screen's (the layer
+  D297 made was read out by screen readers, every coordinate of every
+  board); `t-p1-bench.js`'s card part begins by checking the seats are
+  as the players took them when they joined, no named seats
+  (`seating()`, read after the three join). Mechanism change: the
+  half-turned row moved after B11, the last in the suite (it leaves the
+  players in Veiled Ranks' named seats); no check changed.
 
 ## Storage and images (Phase 1B)
 

@@ -362,12 +362,14 @@ async function pass(env, mode) {
         return {
           board: el(board).classList.contains('board') && !!svg && svg.getAttribute('viewBox') === '0 0 300 300' && getComputedStyle(svg).pointerEvents === 'none' && +el(board).style.zIndex < 0,
           labels: [...el(board).querySelectorAll('.btexts .btext')].map((t) => t.textContent).join(''),
+          ariaHidden: [...el(board).querySelectorAll('.btexts')].map((b) => b.getAttribute('aria-hidden')).join() === 'true' && svg.getAttribute('aria-hidden') === 'true',
           hex: cs(hex).clipPath !== 'none', rect: cs(t1).borderRadius === '8%', disc: cs(A).borderRadius === '50%',
           hidden: !!el(hdie).querySelector('.pback') && !el(hdie).classList.contains('die'), die: el(d1).classList.contains('die') && !!el(d1).querySelector('.pips'),
         };
       }, [I.board, I.hex, I.t1, I.A, I.hdie, I.d1]);
       ok(r.board, say(`${NAME.get(p)}: the board is .item.board with one svg.psvg (viewBox 0 0 300 300, pointer-events none), in the negative z band`));
       ok(r.labels === 'abcd4321', say(`${NAME.get(p)}: its chess labels a–d, 1–4 (${r.labels})`));
+      ok(r.ariaHidden, say(`${NAME.get(p)}: its one text layer is aria-hidden, as its SVG is (D300: a screen reader doesn't read out its coordinates)`));
       ok(r.hex && r.rect && r.disc, say(`${NAME.get(p)}: hex clip-path, rect 8% radius, disc 50% (${r.hex}, ${r.rect}, ${r.disc})`));
       ok(r.hidden && r.die, say(`${NAME.get(p)}: a hidden die draws its back and is not marked a die; a shown die has pips`));
     }

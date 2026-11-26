@@ -221,10 +221,13 @@ export function tumble(el) {
 // the view took a compositing layer of its own, which every piece drawn over
 // it followed into layers of their own, so that hiding them during a gesture
 // re-rastered the table (D288, D295); a span turned and grown by CSS lays
-// nothing out and is drawn in the table's own layer. A grid of any size is a
-// handful of <path>s (one per colour), so a 64 × 64 board stays cheap to
-// build and to draw (B11). Both are built once per type (cached: a type is
-// an immutable object of the box map), its private zones apart (privateSVG).
+// nothing out and is drawn in the table's own layer. The text layer is
+// aria-hidden, as the SVG that held it was (D300): a screen reader would
+// read out every coordinate of every board on the table. A grid of any
+// size is a handful of <path>s (one per colour), so a 64 × 64 board stays
+// cheap to build and to draw (B11). Both are built once per type (cached: a
+// type is an immutable object of the box map), its private zones apart
+// (privateSVG).
 const svgCache = new WeakMap();
 /** A number for an SVG attribute: finite, at most two decimals. */
 const n2 = (v) => Math.round(num(v) * 100) / 100;
@@ -357,7 +360,7 @@ export function boardSVG(type, zoneLook) {
   }
   const o = { svg: c.svg, texts: c.texts };
   if (priv.length) privateSVG(priv, zoneLook, num(type.h), o);
-  return `${o.svg}</svg>${o.texts && `<div class="btexts"${c.lmax ? ` style="--lmax:${c.lmax}"` : ''}>${o.texts}</div>`}`;
+  return `${o.svg}</svg>${o.texts && `<div class="btexts" aria-hidden="true"${c.lmax ? ` style="--lmax:${c.lmax}"` : ''}>${o.texts}</div>`}`;
 }
 let hatchN = 0; // (each hatch pattern's id: unique in the page, which holds every board's SVG)
 /** The private zones `priv` of a board `boardH` units tall (spec §5g), over
