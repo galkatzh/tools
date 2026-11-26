@@ -3,9 +3,10 @@
 //       board and ends its named seats (the confirm says so), so the third
 //       player, who watched draughts, sits and is dealt into Hold'em; the
 //       host's seat menu ends the named seats on its own; a guest's endSeats
-//       is refused; a watcher's box never covers a seat label, a new table
-//       starts the view afresh, and the log follows its newest line when
-//       the hand bar comes back.
+//       is refused; a watcher's box never covers a seat label, a new game
+//       starts the view afresh — on a table of the same size too (chess
+//       zoomed, then Draughts: D317) — and the log follows its newest line
+//       when the hand bar comes back.
 //   (2) 🗑 of what holds many asks first (a bag of 28), as a group's does,
 //       and Dominoes' rules keep its boneyard; Reveal on a cupped die lifts
 //       the whole cup.
@@ -22,6 +23,7 @@
 const h = require('./h');
 const L = require('./p1-lib');
 const P = require('./p2t-lib');
+const { pinch } = require('./p4s-lib');
 const { pickGame } = require('./stones-lib');
 const { ok, section } = h;
 
@@ -59,8 +61,35 @@ const itemsOf = (p, k) => P.viewOf(p, 'Object.keys(v.items).filter((id) => v.ite
     const b = await boxes(w), hit = b.labels.filter((l) => overlap(l, b.watch));
     ok(b.watch && b.labels.length >= 2 && !hit.length, `${name}'s "every seat is taken" box covers no seat label (${hit.map((l) => l.txt).join(', ') || 'none'}; box ${b.watch.t | 0}–${b.watch.b | 0}): D313`);
   }
+  // Both phones zoom in on chess, their own edge off-screen: Draughts' table is the same size (1000 × 1360)
+  const phones = [[bo, 'Bo'], [cy, 'Cy']];
+  for (const [p, n] of phones) {
+    // (two fingers on the table, below the watchers' box: a touch beside it lands on it)
+    const s0 = (await P.tf(p)).s, c = await p.evaluate(() => {
+      const r = document.getElementById('table-wrap').getBoundingClientRect(), on = (x, y) => document.getElementById('table').contains(document.elementFromPoint(x, y));
+      for (let f = 0.45; f < 0.7; f += 0.02) { const y = r.top + r.height * f, x = r.left + r.width / 2; if ([30, 100].every((d) => on(x - d, y) && on(x + d, y))) return { x, y }; }
+      return null;
+    });
+    await pinch(p, c, 60, 200);
+    const t = await P.tf(p);
+    ok(t.s > s0 * 2 && Math.hypot(t.px, t.py) > 20, `${n} zooms in on chess (scale ${s0.toFixed(2)} → ${t.s.toFixed(2)}, pan ${t.px | 0}, ${t.py | 0})`);
+  }
+  const chessTf = await Promise.all(phones.map(([p]) => P.tf(p)));
   ok(/Clear the table/.test(await pickGame(ann, 'draughts') || ''), '🎲 Draughts');
   ok(await P.waitView(ann, "v.seats?.length === 2 && Object.values(v.players).filter((pl) => pl.seat == null).length === 1"), 'two named seats, one watcher');
+  for (const [k, [p, n]] of phones.entries()) {
+    const seat = await P.waitView(p, "v.seats?.[0]?.id === 'light' && Object.values(v.items).filter((it) => it.k === 'g' && it.owner).length === 24") && await P.viewOf(p, 'v.players[me].seatId || null');
+    await p.waitForTimeout(300);
+    const t = await P.tf(p), w = await P.wrap(p), fitS = P.fit({ shape: 'rect', w: 1000, h: 1360 }, t.rot, w.W, w.H);
+    ok(t.px === 0 && t.py === 0 && Math.abs(t.s - fitS) < 1e-3, `${n}'s view starts afresh on Draughts, a table as large as chess's (scale ${chessTf[k].s.toFixed(2)} → ${t.s.toFixed(3)}, fit ${fitS.toFixed(3)}; pan ${t.px}, ${t.py}): D317`);
+    if (!seat) continue;
+    const men = await P.viewOf(p, "Object.keys(v.items).filter((id) => v.items[id].owner === 'seat:' + a)", seat);
+    const off = await p.evaluate((ids) => {
+      const r = document.getElementById('table-wrap').getBoundingClientRect();
+      return ids.filter((id) => { const b = document.querySelector(`.item[data-id="${id}"]`).getBoundingClientRect(); return b.left < r.left || b.right > r.right || b.top < r.top || b.bottom > r.bottom; }).length;
+    }, men);
+    ok(men.length === 12 && off === 0, `${n} (${seat}) sees all ${men.length} of his own men (${off} off-screen): D317`);
+  }
   const watcher = await P.viewOf(ann, 'Object.entries(v.players).find(([, pl]) => pl.seat == null)[1].name');
   const wp = watcher === 'Cy' ? cy : watcher === 'Bo' ? bo : ann;
   ok(watcher !== 'Ann' && await P.waitView(wp, 'v.players[me].seat == null'), `${watcher} watches`);

@@ -39,6 +39,42 @@ async function mallory(env, invite, peers = 2) {
   return page;
 }
 
+/** A churner: a RAW page that, round after round, joins the room as a fresh
+ *  connection (the page reloaded: a new Trystero peer id, its old
+ *  connections closed) and knocks with a fresh player id every 150 ms until
+ *  the host registers it (sends it a state addressed to it), then goes.
+ *  `tag` (one hex digit) keeps its player ids apart from other churners'.
+ *  Returns {at: when each of its players was registered, stop()}. */
+async function churner(env, invite, tag) {
+  const page = await h.rawPage(env, `Churn${tag}`), C = { at: [], stopped: false };
+  const round = (pid) => page.evaluate(async ({ invite, relay, v, pid }) => {
+    const { joinRoom } = await import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm');
+    const [, roomId, password] = invite.match(/#room~([0-9a-f]+)~([0-9a-f]+)/);
+    const room = joinRoom({ appId: 'gk-cardtable', password, rtcPolyfill: window.RawRTC, relayConfig: { urls: [relay] } }, roomId);
+    const act = room.makeAction('act'), state = room.makeAction('state');
+    let host = null, registered = false;
+    state.onMessage = (m, { peerId }) => { host ||= peerId; registered ||= (typeof m.b === 'string' ? JSON.parse(m.b) : m).to === pid; }; // (only the host sends states)
+    window.stopKnock = false;
+    for (const t0 = Date.now(); !registered && !window.stopKnock && Date.now() - t0 < 60000; await new Promise((r) => setTimeout(r, 150))) {
+      if (host) act.send({ _v: v, _pid: pid, _name: 'Churn', _key: 'c'.repeat(32), t: 'hello' }, { target: host });
+    }
+    await room.leave();
+    return registered;
+  }, { invite, relay: env.relayUrl, v: h.PROTO, pid });
+  const done = (async () => {
+    for (let n = 0; !C.stopped; n++) {
+      if (n) await page.reload();
+      if (await round(`c${tag}${n.toString(16).padStart(14, '0')}`)) C.at.push(Date.now());
+    }
+  })();
+  C.stop = async () => {
+    C.stopped = true;
+    await page.evaluate(() => { window.stopKnock = true; }).catch((err) => console.error(`Churn${tag}: stop between rounds`, err.message));
+    await done;
+  };
+  return C;
+}
+
 const APP = path.join(h.APP_ROOT, 'cardtable');
 const { createTable, standardDeck, cleanDeck, RULES } = require(path.join(APP, 'core.js'));
 const { RULES_TEMPLATES } = require(path.join(APP, 'templates.js'));
@@ -133,4 +169,4 @@ function table(tpl, names, o = {}) {
 const rects = (p, sel) => p.$$eval(sel, (els) => els.map((el) => { const r = el.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom, txt: el.textContent.trim().slice(0, 30) }; }));
 const overlapPast1px = (a, b) => a.l < b.r - 1 && b.l < a.r - 1 && a.t < b.b - 1 && b.t < a.b - 1;
 
-module.exports = { mallory, table, rects, overlapPast1px };
+module.exports = { mallory, churner, table, rects, overlapPast1px };

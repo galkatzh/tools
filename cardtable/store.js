@@ -468,7 +468,10 @@ export async function prune(exceptRoom, need) {
  *  played on) replaces it the same way, and is resumed (`fromOld`). A lost
  *  marker never stands for one: when the migration couldn't be written and
  *  the saves since failed too, the old keys hold the table's last good copy,
- *  and it is resumed, `behind`. A record that holds no table becomes a lost
+ *  and it is resumed, `behind`; and a newer pre-Phase 1 save that holds no
+ *  table (that tab's lost marker: its save failed, the browser's storage
+ *  full) or can't be read is why the latest save can't be resumed, so the
+ *  IndexedDB table is, `behind` (D317). A record that holds no table becomes a lost
  *  marker, its catalog dropped (the fresh table's decks must not join the
  *  old ones). Every catalog deck passes cleanDeck, and every box cleanBox
  *  (one that fails is dropped from the table, loudly, and kept in storage:
@@ -483,7 +486,12 @@ export async function loadSave(room) {
     const v = Math.max(num(s.v, 1), num(s.state?.v, 1));
     if (v > STATE_V) return { newer: v };
     if (s.state?.items && s.state.players) {
-      if (legacyNewer(room, s.ts)) return migrateLegacy(room, undefined, true);
+      let behind = '';
+      if (legacyNewer(room, s.ts)) {
+        const old = await migrateLegacy(room, undefined, true);
+        if (!old.lost) return old;
+        behind = old.lost; // (it holds no table it can resume — that tab's lost marker, say: this one stands, D317)
+      }
       const decks = {}, boxes = {}, boxSrc = {};
       for (const c of cat.result) {
         try {
@@ -493,7 +501,7 @@ export async function loadSave(room) {
           } else decks[c.id] = cleanDeck(c.deck);
         } catch (err) { console.error(`saved ${c.kind === 'box' ? 'game box' : 'deck'} ${c.id} dropped`, err); }
       }
-      return { state: s.state, decks, boxes, boxSrc, stored: true };
+      return { state: s.state, decks, boxes, boxSrc, stored: true, ...(behind && { behind }) };
     }
     lost = 'the save is unreadable: it holds no table';
     console.error(`the save of ${room} holds no table: marked lost`, s);
@@ -520,7 +528,8 @@ function legacyNewer(room, ts) {
  *  `behind`: why the room's later save can't be resumed (the migrated table
  *  says so), when IndexedDB holds a lost marker for it. `newer`: it replaces
  *  an older IndexedDB save of the room, catalog and all (legacyNewer), and
- *  the result says so (`fromOld`). */
+ *  the result says so (`fromOld`) — or, holding no table to resume (a lost
+ *  marker, unreadable), it replaces nothing and goes, said as {lost}. */
 async function migrateLegacy(room, behind, newer = false) {
   const key = `ct-save-${room}`, raw = localStorage.getItem(key);
   if (raw === null) return null;
@@ -552,8 +561,8 @@ async function migrateLegacy(room, behind, newer = false) {
     out = { lost: `the save is unreadable: ${err.message}` };
   }
   try {
-    if (out.lost) await markLost(room, out.lost, out.ts);
-    else await writeSave(room, out.state, Object.entries(out.decks).map(([id, deck]) => ({ id, kind: 'deck', deck })), newer);
+    if (!out.lost) await writeSave(room, out.state, Object.entries(out.decks).map(([id, deck]) => ({ id, kind: 'deck', deck })), newer);
+    else if (!newer) await markLost(room, out.lost, out.ts); // (a newer one never replaces the room's table with a lost marker: loadSave resumes that, behind)
     localStorage.removeItem(key);
     localStorage.removeItem(`ct-decks-${room}`);
   } catch (err) {
@@ -682,6 +691,13 @@ function touch(rec) {
     tx(['assets'], 'readwrite', (a) => { for (const r of recs) a.put({ ...r, used: now }); })
       .catch((err) => console.error('marking images as used failed', err));
   }, 5000);
+}
+
+/** The seq of the table each of `rooms` has saved, in order: null for a
+ *  room with none (no save, a lost marker, a record that holds no table). */
+export async function savedSeqs(rooms) {
+  const recs = await tx(['saves'], 'readonly', (s) => rooms.map((r) => s.get(r))).catch(fail('reading the saves'));
+  return recs.map(({ result: s }) => (s?.state?.items && s.state.players ? num(s.state.seq) : null));
 }
 
 /** Deletes cached images that no table needs: images no catalog record (of

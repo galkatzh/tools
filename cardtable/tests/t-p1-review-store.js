@@ -27,6 +27,9 @@
 //                 the previous Card Table played on after the move, D303): it
 //                 is resumed, loudly, and replaces the IndexedDB save (its
 //                 catalog too) — never kept aside, then deleted
+//   (10) old lost a newer legacy save that holds no table (that tab's lost
+//                 marker: its own save failed): the IndexedDB table is resumed,
+//                 loudly, and kept — never replaced by the marker (D317)
 'use strict';
 const h = require('./h');
 const L = require('./p1-lib');
@@ -330,6 +333,29 @@ const OLDER = /^Couldn't resume this table's last save \(browser storage is full
     await okWait(L.until(async () => (await L.view(o)).items[card]?.x === 333), 'a reload resumes it again: IndexedDB holds it now');
     await o.context().close();
   })().catch((e) => ok(false, `(9) crashed: ${e.stack}`));
+
+  section('(10) a newer legacy save that holds no table never replaces the IndexedDB table (D317)');
+  await (async () => {
+    const q = await A.seat(env, 'Quin', env.url, [A.toastLog]);
+    const room = await roomOf(q), invite = q.url(), pile = await waitPile(q, 'Standard');
+    await L.act(q, { t: 'move', id: pile, x: 444, y: 333 });
+    await L.act(q, { t: 'chat', msg: 'played on this version' });
+    ok(await settled(q), 'the IndexedDB save holds the table');
+    await q.goto(h.plain(env));
+    const rec = await h.idb(q, 'saves', room);
+    // The previous Card Table's tab, still open, fails its next save (its image decks filled localStorage): its lost marker, newer
+    await q.evaluate(([room, s]) => localStorage.setItem(`ct-save-${room}`, s), [room, JSON.stringify({ ts: rec.ts + 60000, lost: 'browser storage is full' })]);
+    await back(q, invite);
+    await okWait(toasted(q, OLDER), "the host is told the last save couldn't be resumed, and an older one was");
+    const v = await L.view(q);
+    ok(v.items[pile]?.x === 444 && v.log.some((e) => e.txt === 'played on this version'), 'the IndexedDB table is resumed: the pile where it was moved, the chat kept');
+    ok(!(await legacyKeys(q)).length && !(await toasts(q)).some((t) => /started a fresh one/.test(t)), 'the legacy marker is gone, and no fresh table was started');
+    ok(await settled(q) && (await h.idb(q, 'saves', room)).state.seq > rec.state.seq, 'IndexedDB holds the table, saved on — never the marker');
+    await q.reload();
+    await q.waitForSelector('.item.pile .count', { timeout: 30000 });
+    await okWait(L.until(async () => (await L.view(q)).items[pile]?.x === 444), 'a reload resumes it again');
+    await q.context().close();
+  })().catch((e) => ok(false, `(10) crashed: ${e.stack}`));
 
   await env.done();
 })().catch(h.crash);

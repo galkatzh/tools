@@ -554,8 +554,9 @@ setups. `{x, y, free: true}` skips it.
   piece onto the table (next to it, or `at`) or into player `to`'s hand
   (`{hand: true, t, f}`). `t.setFace(id, f)` (a die too), `t.setCount(id, n)`
   (0 removes it), `t.lock(id, on)`, `t.setOwner(id, pid | 'seat:<id>' |
-  null)`, `t.setSeats(defs | null)` and `t.setTable({shape, w, h, felt})`.
-  A malformed argument (an unknown type, a face out of range, a bad
+  null)`, `t.setSeats(defs | null)` and `t.setTable({shape, w, h, felt})`
+  (setting the seats, or a new shape or size, starts every player's view
+  afresh, as a new game: call them as the game starts). A malformed argument (an unknown type, a face out of range, a bad
   address) throws a `TypeError` naming the call; an item that is gone is
   `false`.
 - **Their log lines aggregate**: in one action, four or more consecutive

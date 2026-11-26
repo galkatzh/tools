@@ -209,8 +209,9 @@ Playing on the free table:
 large): it fits the screen whichever way it turns, and each view turns
 in quarter turns so the player's own edge is at the bottom. The host's size
 menu shows it (▭ 1000 × 1360); picking a round size switches back, after a
-confirm. A new table's shape or size starts everyone's view afresh, as 🧭
-does. A game can also name its **seats** (Light and Dark): players take
+confirm. A new game starts everyone's view afresh, as 🧭 does: a box set
+up or reset, a rules game starting, named seats set or ended, or a new
+table shape or size (Chess, Draughts and Reversi share one size). A game can also name its **seats** (Light and Dark): players take
 them in order, the rest **watch** (👀 top right, with how to sit — or that
 every seat is taken; on a phone held sideways two small chips, "👀 2" and
 "👀 Watching", that a tap opens for a few seconds). Tap a seat label for its
@@ -414,8 +415,11 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   so a lost answer heals even on a quiet table. A connection registers one
   player for good (a page that leaves and joins again under a new id is
   refused), a seat key is 16 to 64 characters, and the table takes new
-  players 20 at once, then one every 3 s (the rest keep knocking): the
-  host's save keeps every player's key, so nobody can grow it at will.
+  players 20 at once, then one every 3 s: the host's save keeps every
+  player's key, so nobody can grow it at will. The rest keep knocking and
+  get in in the order they first knocked (a connection that stops knocking
+  for 9 s, or leaves, loses its place), so fresh connections knocking
+  faster can't keep a newcomer out.
 - **Signaling health**: public Nostr relays are best-effort, so the status
   dot shows the truth — green with a player count when peers are connected,
   `● …` while searching, red `● ✕` when zero relays are reachable. A watchdog
@@ -501,9 +505,15 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   saved catalog lacks and fits in 2 million characters, else its move
   number), and the next
   start resumes from it, or, with the number alone, says "the last moment
-  of play before the reload wasn't saved". A save the previous Card Table
+  of play before the reload wasn't saved". Any page's upkeep, a few
+  seconds after it starts, removes what no start needs (the room's save
+  holds it, as it does wherever the write landed after all, or the room
+  has no table saved), and cuts a table left more than a day ago to its
+  move number: localStorage is shared by every app of the site. A save the previous Card Table
   wrote after this one moved the table to IndexedDB (a tab of it left open
-  across the deploy) is newer: it is resumed, and said so, never dropped. A browser that blocks IndexedDB runs the table unsaved, and
+  across the deploy) is newer: it is resumed, and said so, never dropped;
+  one that holds no table (that tab's own save failed, the browser's
+  storage full) leaves this table as it is, resumed with a warning. A browser that blocks IndexedDB runs the table unsaved, and
   says so (no fallback); it still hosts its room after a reload, by the host
   key. A save written by a newer Card Table (a tab left open across a
   deploy) is never resumed or overwritten: the older tab says "reload this

@@ -86,8 +86,10 @@ const { ok, section } = h;
   `require(path.join(h.APP_ROOT, 'cardtable/core.js'))`, make checks with `ok`,
   and finish with `h.report()` (see `t-core-node.js`).
 - Shared helpers: `fun-lib.js` (seated players, screenshots into `shots/`),
-  `final-lib.js` (a raw attacker peer, and `table(template, players)`: a
-  rules template running on a real `core.js` table in Node).
+  `final-lib.js` (a raw attacker peer; `churner(env, invite, tag)`, a raw
+  page that joins again and again as a fresh connection, each time under a
+  fresh player id; and `table(template, players)`: a rules template running
+  on a real `core.js` table in Node).
 
 ## The wire, for raw peers and state checks
 
@@ -3375,6 +3377,41 @@ SPEC §9 D311–D316: play on phones and desktops, the docs, the code.
   corner, where it allowed none: seen from a side seat, Draughts' taller
   table leaves 28 px of felt above the board, as Chess's has since D162.
   With the log closed (the margins) it still allows none.
+
+## The final review's third fix-up (D317)
+
+SPEC §9 D317: a new game's view, the newcomers' order, a newer legacy
+save that holds no table, and what pages leave pending. Each new check
+fails on the commit before (served with `APP_ROOT`) and passes on this one.
+
+- **`t-final-play.js`** (1): Bo and Cy pinch in on chess (scale 0.36 →
+  1.20, below the watchers' box: Chromium moves a touch beside it onto it),
+  then 🎲 Draughts, whose table is chess's size (1000 × 1360): each phone's
+  view is at its fit with no pan, and Cy, seated, sees all 12 of his men
+  (before: the transform kept, 12 off-screen).
+- **`t-final-sec.js`** D317: four churners (final-lib's `churner`: a raw
+  page that joins as a fresh connection — the page reloaded, a new peer id,
+  its old connections closed — and knocks with a fresh player id every
+  150 ms until the host registers it) drain the 20 newcomers at once and
+  take each token as it refills; Dee, the app, knocking every 3 s, gets in
+  within 30 s with at most 5 churned players ahead of her (about 15 s, 4
+  ahead; before: not in 30 s, 10 ahead).
+- **`t-p1-review-store.js`** (10): a legacy `{ts, lost: 'browser storage
+  is full'}` a minute newer than the IndexedDB save: the host says
+  "Couldn't resume this table's last save (browser storage is full) —
+  resumed an older one", the pile is where it was moved and the chat kept,
+  the legacy key is gone, IndexedDB saves on, and a reload resumes it again
+  (before: "started a fresh one", the save a lost marker).
+- **`t-final-compat.js`** (6): three tables, each left at once after a move
+  — Chromium's pagehide write commits, and each left its whole state
+  pending; with table 2's mark made ahead of its save and two days old,
+  table 3's ahead and fresh, and a mark for a room with no save, the next
+  page's upkeep removes table 1's and the room without a save's, cuts table
+  2's to its seq, keeps table 3's whole; table 2's next boot says "The last
+  moment of play before the reload wasn't saved (the browser closed first)".
+- **Mechanism change, no check weakened:** `t-final-compat.js` (1)'s
+  "neither joined the table" names what the host's log added when it fails
+  (it failed once in a full run, with nothing to say why, and passed alone).
 
 ## Storage and images (Phase 1B)
 

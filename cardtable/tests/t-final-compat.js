@@ -25,6 +25,12 @@
 //       row group bar is centred while it fits, and starts at ✕ once it
 //       overflows; a trackpad pinch (Safari's GestureEvents) zooms the table; a
 //       game box upload asks for persistent storage.
+//   (6) what pages leave pending (D317): three tables, each left at once
+//       after a move — Chromium's pagehide write commits, so their pending
+//       states stay in localStorage, and the next page's upkeep removes
+//       them; one ahead of its save is kept whole while fresh, cut to its
+//       seq once over a day old (its room's next boot says the moment was
+//       lost); one whose room saved no table goes.
 'use strict';
 const h = require('./h');
 const L = require('./p1-lib');
@@ -88,7 +94,8 @@ function dropPagehideSaves() {
     await h.joinAs(otto, 'Otto');
     ok(await toasted(otto, ['🚫 This table runs a different version of Card Table — reload this page', 'The host runs a newer Card Table — reload this page']), 'a guest with an older Card Table is told to reload');
     await h.sleep(1000);
-    ok((await logOf()) === log0, 'neither joined the table');
+    const log1 = await logOf();
+    ok(log1 === log0, `neither joined the table${log1 === log0 ? '' : ` (the log added: ${JSON.stringify(log1.slice(log0.length))})`}`);
     await nina.context().close();
     await otto.context().close();
     // A second tab of the host's own browser, on another version, opens the table: both host it.
@@ -257,6 +264,42 @@ function dropPagehideSaves() {
     await B.upload(u, [B.file('game.json', JSON.stringify({ name: 'Kept', pieces: [{ id: 'k', kind: 'token', faces: ['K'] }] }))]);
     ok(await u.evaluate(() => window.__persist) === 1, `a game box upload asks for persistent storage (${await u.evaluate(() => window.__persist)} call)`);
     await u.context().close();
+  }
+
+  section("(6) what pages leave pending goes once nothing needs it (D317)");
+  {
+    const o = await A.seat(env, 'Ola', env.url, [A.toastLog]), rooms = [];
+    const roomOf = () => o.evaluate(() => location.hash.match(/#room~([0-9a-f]+)/)[1]);
+    const marks = () => o.evaluate(() => Object.fromEntries(Object.entries(localStorage).filter(([k]) => k.startsWith('ct-pending-')).map(([k, v]) => [k.slice(11), v])));
+    for (let r = 0; r < 3; r++) {
+      if (r) { await o.goto(env.url); await o.waitForSelector('.item.pile .count', { timeout: 30000 }); } // (a new table each time)
+      const room = await roomOf(), invite = o.url(), pile = await A.pileOf(o, 'Standard');
+      ok(await L.until(async () => (await h.idb(o, 'saves', room))?.state?.seq === await o.evaluate(() => window.__ct.view().seq), 15000, 200), `table ${r + 1} is saved`);
+      await L.act(o, { t: 'move', id: pile, x: 300 + 40 * r, y: 400 });
+      const seq = await o.evaluate(() => window.__ct.view().seq);
+      await o.goto(h.plain(env)); // (left at once: pagehide's flushSave)
+      rooms.push({ room, invite, seq });
+    }
+    const saved = (room) => h.idb(o, 'saves', room).then((r) => r?.state?.seq);
+    ok(await L.until(async () => (await Promise.all(rooms.map(({ room }) => saved(room)))).every((s, k) => s === rooms[k].seq), 10000, 200), "each table's last save committed (Chromium)");
+    const left = await marks();
+    ok(rooms.every(({ room, seq }) => JSON.parse(left[room] || '{}').seq === seq && JSON.parse(left[room]).state), `…and each left its whole state pending all the same (${Object.values(left).map((v) => v.length).join(', ')} characters)`);
+    // table 2's pending state ahead of its save, left two days ago; table 3's ahead and fresh; a room that saved no table
+    const ahead = (k, at) => JSON.stringify({ ...JSON.parse(left[rooms[k].room]), seq: rooms[k].seq + 5, at });
+    await o.evaluate(([a, b, c]) => { for (const [k, v] of [a, b, c]) localStorage.setItem(`ct-pending-${k}`, v); },
+      [[rooms[1].room, ahead(1, Date.now() - 2 * 864e5)], [rooms[2].room, ahead(2, Date.now())], ['ab'.repeat(12), JSON.stringify({ seq: 9, at: Date.now(), state: {} })]]);
+    await o.goto(env.url); // (any page of the app: its upkeep sweeps, 5 s after it settles)
+    await o.waitForSelector('.item.pile .count', { timeout: 30000 });
+    ok(await L.until(async () => !(await marks())[rooms[0].room], 20000, 250), 'the next page removes the pending state its save holds');
+    const m = await marks();
+    ok(!m['ab'.repeat(12)], 'and the one whose room saved no table');
+    ok(m[rooms[1].room] === String(rooms[1].seq + 5), `a state ahead of its save, left two days ago, keeps its seq alone (${String(m[rooms[1].room]).slice(0, 20)})`);
+    ok(JSON.parse(m[rooms[2].room] || '{}').state && JSON.parse(m[rooms[2].room]).seq === rooms[2].seq + 5, 'a fresh one ahead of its save is kept whole');
+    await o.goto(h.plain(env));
+    await o.goto(rooms[1].invite); // (a page load: from the last table's page, only the hash would change)
+    await o.waitForSelector('.item.pile .count', { timeout: 30000 });
+    ok(await toasted(o, "The last moment of play before the reload wasn't saved (the browser closed first)"), "table 2's next boot says its last moment wasn't saved");
+    await o.context().close();
   }
 
   await env.done();

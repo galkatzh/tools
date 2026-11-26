@@ -460,7 +460,8 @@ sync and rendering, and the Worker together with `handle`.
      re-send what they named; host saves and the deck catalog in IndexedDB
      (one transaction per save, a `ct-pending-<room>` marker for a write the
      closing tab couldn't finish — holding the state itself when it can,
-     which the next boot resumes — a newer version's save never touched, the
+     which the next boot resumes, and swept by any page once its save holds
+     it — a newer version's save never touched, the
      host key as the fallback proof of ownership); images by SHA-256,
      pulled by guests from the host only, paced and budgeted, and checked
      (magic bytes, size, header pixel size, hash) before any peer stores

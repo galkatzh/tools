@@ -4,10 +4,12 @@
 // survives an action flood (SEC-F3), a burst of actions can't freeze the host
 // (SEC-F2), a refused rules button never reaches the script (QUAL-4), and
 // the network gate (D302) refuses an action nested too deep, a seat key too
-// long, and a new player id from a page that rejoins.
+// long, and a new player id from a page that rejoins, and lets new players
+// in in the order they came: fresh connections that knock every 150 ms
+// can't keep a newcomer out (D317).
 const h = require('./h');
 const { ok, section, logHas } = h;
-const { mallory } = require('./final-lib');
+const { mallory, churner } = require('./final-lib');
 
 /** The host's saved decks (the room's catalog), and its save record. */
 const savedDecks = async (page) => (await h.idb(page, 'catalog')).map((r) => r.deck);
@@ -130,5 +132,23 @@ const logText = (page) => page.textContent('#log');
   await guest.click('#rules-btns [data-rbtn="real"]');
   await logHas(host, 'onAction saw rulesBtn real');
   ok(!(await logText(host)).includes('saw rulesBtn ghost'), 'onAction saw the offered button, never the refused one');
+
+  section('D317: new players get in in the order they came — fresh connections knocking every 150 ms keep no one out');
+  {
+    const invite = await host.evaluate(() => location.href), names = () => host.evaluate(() => Object.values(window.__ct.view().players).map((pl) => pl.name));
+    const churners = await Promise.all([1, 2, 3, 4].map((k) => churner(env, invite, k))), all = () => churners.flatMap((c) => c.at).sort((a, b) => a - b);
+    const t0 = Date.now();
+    while (all().length < 22 && Date.now() - t0 < 90000) await h.sleep(500);
+    ok(all().length >= 22, `4 churners drain the table's ${20} new players at once and take each one as it comes back (${all().length} in ${((Date.now() - t0) / 1000).toFixed(1)} s)`);
+    const dee = await env.page('Dee');
+    await dee.goto(invite);
+    await h.joinAs(dee, 'Dee');
+    const tb = Date.now();
+    let inAt = 0;
+    while (!inAt && Date.now() - tb < 30000) { if ((await names()).includes('Dee')) inAt = Date.now(); else await h.sleep(250); }
+    const ahead = all().filter((t) => t > tb && t < (inAt || Infinity)).length;
+    ok(inAt && ahead <= 5, `Dee knocks every 3 s among them and gets in after ${inAt ? `${((inAt - tb) / 1000).toFixed(1)} s` : 'more than 30 s'}, ${ahead} churned players ahead of her (at most one per churner that came first)`);
+    for (const c of churners) await c.stop();
+  }
   await env.done();
 })().catch(h.crash);

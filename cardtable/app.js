@@ -62,12 +62,10 @@ const sideEl = $('side'), logEl = $('log');
 let TABLE = roundTable(), TABLE_W = 1300, TABLE_H = 1300;
 let PLAY_R = 540; // a round table: the max distance of an item's centre from the table centre
 
-/** Draws the table `tb` ({shape, w, h, felt?}, core.js cleanTable's). A
- *  new shape or size is another game's table: the view starts afresh, as 🧭
- *  resets it (a pan or zoom of the last game — a drag on a piece we may not
- *  move pans, D66 — left the next one off-centre, our own area off-screen). */
-function setTable(tb) {
-  if (tb.shape !== TABLE.shape || tb.w !== TABLE_W || tb.h !== TABLE_H) [manualView, zoomZ, panX, panY] = [false, 1, 0, 0];
+/** Draws the table `tb` ({shape, w, h, felt?}, core.js cleanTable's); with
+ *  `fresh` (receive: another game took the table) the view starts afresh. */
+function setTable(tb, fresh) {
+  if (fresh) freshView();
   TABLE = tb;
   TABLE_W = tb.w;
   TABLE_H = tb.h;
@@ -1042,6 +1040,7 @@ function demote() {
   sync.clear();
   peerPid = {};
   firstPid.clear();
+  knocking.clear();
   clearTimeout(bcastT);
   clearTimeout(persistT);
   bcastT = persistT = 0;
@@ -1148,7 +1147,7 @@ let resyncing = false, resyncT = 0; // guest: waiting for a snapshot after a gap
  *  times all of it: the fold and every redraw. */
 function receive(d, peer) {
   if (d.to && d.to !== pid) return; // addressed to someone else: a replay
-  const t0 = performance.now(), drawn0 = perf.drawn;
+  const t0 = performance.now(), drawn0 = perf.drawn, seats0 = JSON.stringify(view.seats);
   let prev = null, players = null;
   if (d.kind === 'snap') {
     // A NEWER epoch is always accepted, an older one never is (a replay).
@@ -1176,7 +1175,14 @@ function receive(d, peer) {
     if (!registered) introduce(); // the host doesn't know this seat yet
     if (pendingActs.length) flushPending();
   }
-  if (view.table.shape !== TABLE.shape || view.table.w !== TABLE_W || view.table.h !== TABLE_H || view.table.felt !== TABLE.felt) setTable(view.table);
+  // Another game took the table — named seats set (a box set up or reset, a
+  // rules script starting, End the named seats: a patch carries them, a
+  // snapshot brings others) or a new shape or size: the view starts afresh,
+  // as 🧭 resets it. The last game's zoom or pan (a drag on a piece we may
+  // not move pans, D66) left the next one's own area off-screen, on a table
+  // of the same size too (D313, D317).
+  const tb = view.table, fresh = (d.kind === 'patch' ? 'seats' in d : JSON.stringify(view.seats) !== seats0) || tb.shape !== TABLE.shape || tb.w !== TABLE_W || tb.h !== TABLE_H;
+  if (fresh || tb.felt !== TABLE.felt) setTable(tb, fresh);
   for (const read of (peer && early.get(peer)?.splice(0)) || []) read(); // the catalog it sent just before: every face draws at once
   renderAll(prev, players);
   // B10: a snapshot's whole render — the fold, the catalog held for it, the
@@ -1207,17 +1213,25 @@ function requestSnap() {
   resyncT = setTimeout(() => { resyncT = 0; if (resyncing) requestSnap(); }, SNAP_MIN_MS);
 }
 
-const NEWCOMERS = 20, NEWCOMER_MS = 3000;
+const NEWCOMERS = 20, NEWCOMER_MS = 3000, KNOCK_MS = 3000;
 let newcomers = { n: NEWCOMERS, at: 0 }; // host: the table's bucket of new players (newcomer)
-/** Host: whether a player new to this table may register now — NEWCOMERS at
- *  once, then one every NEWCOMER_MS, for the whole table — so a page that
- *  mints a player id at each reconnect (a seat key and an image budget
- *  each, which the host keeps) mints few (D302). A refused one keeps
- *  knocking (introduce) and gets in once there is room. */
-function newcomer() {
+const knocking = new Map(); // host: refused connection → when it last knocked, in the order they first knocked (newcomer)
+/** Host: whether connection `peer`, whose player is new to this table, may
+ *  register now — NEWCOMERS at once, then one every NEWCOMER_MS, for the
+ *  whole table — so a page that mints a player id at each reconnect (a seat
+ *  key and an image budget each, which the host keeps) mints few (D302).
+ *  The refused wait in the order they first knocked, each keeping its place
+ *  while it knocks (a guest knocks every KNOCK_MS: introduce) and losing it
+ *  after 3 knocks missed or on leaving: fresh connections that knock faster
+ *  take no turn from one that came first, which gets in once the tokens
+ *  reach it (D317). */
+function newcomer(peer) {
   const now = Date.now();
   newcomers = { n: Math.min(NEWCOMERS, newcomers.n + (now - newcomers.at) / NEWCOMER_MS), at: now };
-  if (newcomers.n < 1) return false;
+  for (const [q, at] of knocking) if (now - at > 3 * KNOCK_MS) knocking.delete(q);
+  const ahead = knocking.has(peer) ? [...knocking.keys()].indexOf(peer) : knocking.size;
+  if (newcomers.n < ahead + 1) { knocking.set(peer, now); return false; } // (a waiting one keeps its place: a Map keeps a key's first order)
+  knocking.delete(peer);
   newcomers.n--;
   return true;
 }
@@ -1659,7 +1673,7 @@ function connect() {
       refused(p, action); // what it named goes out again (rate-limited): the guest's optimistic move snaps back
       return;
     }
-    if (!own(T.state.players, p) && !own(T.state.keys, p) && !newcomer()) { refuse(peer, 'Many players are joining at once — you are next in a moment'); return; }
+    if (!own(T.state.players, p) && !own(T.state.keys, p) && !newcomer(peer)) { refuse(peer, 'Many players are joining at once — you are next in a moment'); return; }
     // Register/refresh the sender on EVERY action, not just hello — if the
     // keyed hello was lost, the first real action still registers the player.
     // The seat key binds at once, here (two claims of one seat can't both
@@ -1713,6 +1727,7 @@ function connect() {
     clearTimeout(outbox.get(peer)?.wait);
     outbox.delete(peer);
     incompatible.delete(peer);
+    knocking.delete(peer);
     const p = peerPid[peer];
     delete peerPid[peer];
     if (p && !Object.values(peerPid).includes(p)) enqueue(p, { t: '_leave' });
@@ -1721,7 +1736,7 @@ function connect() {
 // Belt and braces: until the host has bound our seat, keep knocking — covers
 // hellos (or their answers) lost in connection churn and a host that comes
 // back after a reload.
-setInterval(() => { if (room && role === 'guest' && !registered) introduce(); }, 3000);
+setInterval(() => { if (room && role === 'guest' && !registered) introduce(); }, KNOCK_MS);
 
 /** Open WebSockets to signaling relays right now. 0 = we're invisible. */
 function openRelays() {
@@ -1881,8 +1896,9 @@ function resumePaused() {
 // PENDING_MAX characters, else its seq alone. A commit of that seq removes
 // it; a boot that finds it ahead of the save resumes the state it holds
 // (and saves it), or, with a seq alone, says the last moment of play was
-// lost (D308).
-const SAVE_DEFER_MS = 250, PENDING_MAX = 2e6;
+// lost (D308). What a page that left can't remove (its save committed after
+// all: every engine but WebKit), any page's upkeep does (sweepPending).
+const SAVE_DEFER_MS = 250, PENDING_MAX = 2e6, PENDING_MS = 864e5;
 let persistT = 0, lastSave = 0, again = false, persistWarned = false;
 let savedSeq = -1; // host: the seq of the last save that committed
 let savingSeq = -1; // host: a save is in flight (-1: none), holding this seq at least (it may take a later state: store.js saveTable)
@@ -1943,7 +1959,7 @@ function flushSave(leaving) {
   if (role !== 'host' || noSave || T.state.seq === savedSeq) return;
   let whole = false;
   try {
-    const { state, catalog } = snap(), text = !catalog.length && JSON.stringify({ seq: state.seq, state });
+    const { state, catalog } = snap(), text = !catalog.length && JSON.stringify({ seq: state.seq, at: Date.now(), state });
     if (text && text.length <= PENDING_MAX) { localStorage.setItem(pendingKey(), text); whole = true; }
   } catch (err) { console.error('could not leave the state itself pending (its seq, then)', err); } // (say, localStorage full)
   if (!whole) try { localStorage.setItem(pendingKey(), String(T.state.seq)); } catch (err) { console.error('could not mark the save as pending', err); }
@@ -1960,11 +1976,32 @@ window.addEventListener('pagehide', () => {
   try { room?.leave(); } catch (err) { console.error('leaving the room failed', err); }
 });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(false); });
-/** The save this tab left pending (flushSave): {seq, state?}, or null. */
-function pending() {
-  const mark = localStorage.getItem(pendingKey());
+/** The save a tab left pending (flushSave) under key `k` — this room's by
+ *  default: {seq, at?, state?}, or null. */
+function pending(k = pendingKey()) {
+  const mark = localStorage.getItem(k);
   if (mark === null) return null;
   try { return mark[0] === '{' ? JSON.parse(mark) : { seq: +mark }; } catch (err) { console.error('an unreadable pending save', err); return { seq: NaN }; }
+}
+/** Upkeep (D317): the saves left pending that no boot needs any more go —
+ *  localStorage is shared by every app of the site, and each holds up to
+ *  PENDING_MAX characters. One its room's save holds (at or past its seq:
+ *  the write of the page that left committed), or whose room has no table
+ *  saved to resume it on, is removed; a state left over PENDING_MS ago,
+ *  ahead of its save (WebKit's, never committed), keeps its seq alone, so
+ *  that room's next boot still says its last moment of play wasn't saved. */
+async function sweepPending() {
+  const keys = Object.keys(localStorage).filter((k) => k.startsWith('ct-pending-'));
+  if (!keys.length) return;
+  const seqs = await store.savedSeqs(keys.map((k) => k.slice('ct-pending-'.length))), now = Date.now();
+  keys.forEach((k, j) => {
+    const p = pending(k); // (read now, after the save's: a mark written meanwhile is never older than it)
+    const gone = !!p && (seqs[j] === null || !(p.seq > seqs[j]));
+    if (gone) localStorage.removeItem(k);
+    else if (p?.state && !(now - num(p.at) < PENDING_MS)) localStorage.setItem(k, String(p.seq));
+    else return;
+    console.info(`${k}: ${gone ? 'removed: its save holds it, or there is none' : 'its state, left over a day ago, cut to its seq'}`);
+  });
 }
 /** Host, at boot: the save to resume — `save`, or the state a save this
  *  tab left pending (flushSave) holds when it never committed and is ahead
@@ -3412,6 +3449,10 @@ wrapEl.addEventListener('gesturechange', (e) => {
  *  after each layout the browser hit-tests the whole table for hover, which
  *  with 1,000 pieces made a phone's frames 33 ms (B4, D246, D247). */
 function viewMoves() { return !!(pinch || feltDrag?.moved || wheelT); }
+
+/** Starts this player's view afresh (🧭, another game): zoom 1, no pan, and
+ *  the seat's turn (applySeatView, which the caller runs, or renderAll). */
+function freshView() { [manualView, zoomZ, panX, panY] = [false, 1, 0, 0]; }
 
 /** Item rotation that appears upright on THIS player's rotated screen. */
 const uprightRot = () => ((-viewAngle % 360) + 360) % 360;
@@ -5023,10 +5064,7 @@ $('rules-disable').addEventListener('click', () => {
   updateRulesDialog();
 });
 $('view-btn').addEventListener('click', () => {
-  // Full view reset: zoom, pan, and rotation back to "my seat at the bottom".
-  manualView = false;
-  zoomZ = 1;
-  panX = panY = 0;
+  freshView();
   applySeatView();
   layout();
 });
@@ -5898,10 +5936,14 @@ async function boot() {
   renderAll(null);
   connect();
   cliConnect();
-  // Upkeep, once the page is settled: the image cache's GC (store.js gc).
-  setTimeout(() => (window.requestIdleCallback || ((f) => f()))(() => store.gc({ keep: keepImages() }).then(
-    ({ deleted, bytes }) => { if (deleted) console.info(`image cache: deleted ${deleted} unused images (${(bytes / 1e6).toFixed(1)} MB)`); },
-    (err) => console.error('image cache upkeep failed', err))), 5000);
+  // Upkeep, once the page is settled: the image cache's GC (store.js gc),
+  // and the saves pages left pending that no boot needs (sweepPending).
+  if (!idbFailed) setTimeout(() => (window.requestIdleCallback || ((f) => f()))(() => {
+    store.gc({ keep: keepImages() }).then(
+      ({ deleted, bytes }) => { if (deleted) console.info(`image cache: deleted ${deleted} unused images (${(bytes / 1e6).toFixed(1)} MB)`); },
+      (err) => console.error('image cache upkeep failed', err));
+    sweepPending().catch((err) => console.error('sweeping the saves left pending failed', err));
+  }), 5000);
 }
 // The test hook (the harness sets window.CARDTABLE_TEST before load): the same
 // act() a click uses, the view, this player's hand and log, the game boxes it
