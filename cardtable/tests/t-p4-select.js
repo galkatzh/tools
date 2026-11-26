@@ -338,6 +338,7 @@ function byCell(v, ty) {
   await shot(carol, 'p4-select-iphone-land');
   await carol.tap('#sel-mode');
   await tap(carol, await badgeAt(carol, stack, 'count'), true);
+  await until(async () => !!(await inspector(carol)), 5000); // (the tap is handled a moment after it returns: under run-all's load its box was read before it opened)
   const ib = await box(carol, '#inspector');
   ok(ib && inside(ib, ...L), 'the inspector, opened by a tap on the ×4 badge, fits the short screen');
   await shot(carol, 'p4-inspector-iphone-land');

@@ -753,9 +753,12 @@ function testFixup() {
     const mv = (p, a, b) => { const f = field(), c = 'abcdefghij'.indexOf(b[0]), r = +b.slice(1) - 1; return R.job(p, { t: 'move', id: at(a), x: f.x + 30 + c * 100, y: f.y + 30 + (9 - r) * 100 }); };
     R.job(HOST, { t: 'rulesBtn', id: 'ready-south' });
     R.job(BOB, { t: 'rulesBtn', id: 'ready-north' });
-    const crown = at('e3');
-    let r = mv(HOST, 'e3', 'e4');
+    const crown = at('e3'), banner = at('a1'), backs = (r) => J(r.fx.filter((e) => e.t === 'back'));
+    let r = mv(HOST, 'a1', 'a2');
+    ok(r.notes.length === 1 && it(banner).at.endsWith(':a1') && backs(r) === J([{ t: 'back', p: HOST, ids: [banner] }]), `the Banner's step, refused: drawn back on Alice's screen alone (${J(r.notes)}, ${backs(r)})`);
+    r = mv(HOST, 'e3', 'e4');
     ok(r.lines.map((e) => e.txt).join() === 'moved a hidden piece e3 → e4' && J(it(crown).vis) === J(['seat:south']), `a hidden step: one line, the unit still South's alone (${J(r.lines.map((e) => e.txt))})`);
+    ok(backs(r) === '[]', `…and no \`back\` for it: the patch carries the step, a \`back\` ahead of it would draw the unit on e3 again for a frame (D293) (${backs(r)})`);
     r = mv(BOB, 'd5', 'd4');
     ok(r.lines.some((e) => e.txt === '📣 North Pike (2) and South Pike (2) fall together at d4') && r.fx.some((e) => e.t === 'ann'), `an attack's outcome is announced on every screen (${J(r.lines.map((e) => e.txt))})`);
     ok(r.lines.some((e) => /^revealed (South|North) Pike/.test(e.txt)), 'a revealed unit is logged by its name');

@@ -36,7 +36,10 @@
 //        302–355 a twist, D247); the pinch again, and sixteen turns of a
 //        wheel, with a chess-labelled board and a rack's private zone on the
 //        table, whose SVG text is not drawn while the view moves (each frame
-//        laid the page out: 49–101 layouts a pinch, 16 a wheel, D288)
+//        laid the page out: 49–101 layouts a pinch, 16 a wheel, D288) — its
+//        task budget B4_SETTLE's, as the paused pinch's: hiding the text at
+//        the first frame and showing it at the lift repaint the boards once
+//        (D295)
 //   B6   the host saves the 1,000-item table: every save's main-thread part ≤ 8 ms
 //        (__ct.perf.lastSaveSyncMs, around doSave's synchronous IndexedDB put): ten
 //        throttled saves (rapid play) and five unthrottled ones (a move 1.1 s
@@ -571,7 +574,13 @@ function placeholderWatch() {
   await loadStacks(6000, 4000, [600, 400], [100, 160], LABELLED);
   const texts = await phone.evaluate(() => [...document.querySelectorAll('#table .psvg text')].map((t) => t.textContent));
   ok(texts.length >= 10 && texts.some((t) => /rack/.test(t)), `the phone draws the board's coordinates and the zone's label (${texts.length} texts: ${texts.slice(0, 3).join(', ')}, …, ${texts.find((t) => /rack/.test(t))})`);
-  await gestureB4('pinch, a labelled board and a rack on the table', { from: 20, to: 240 });
+  // (Its task budget is B4_SETTLE's, as the paused pinch's: the gesture's first
+  // frame, which hides the text, and the lift, which shows it, repaint the
+  // boards — one raster, never one per frame, D295. The toggle's own restyle
+  // is under 1 ms; the frame it lands in ran 56 ms once under run-all's load,
+  // and on a view turned half round from the board's, 100–130 ms: there the
+  // turned labels are layers of their own, which hiding them merges away.)
+  await gestureB4('pinch, a labelled board and a rack on the table', { from: 20, to: 240 }, { long: B4_SETTLE });
   await refit();
   {
     const r = await phone.evaluate(() => document.getElementById('table-wrap').getBoundingClientRect()), tf = () => phone.evaluate(() => document.getElementById('table').style.transform);

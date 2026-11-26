@@ -1976,30 +1976,39 @@ function myZones() {
  *  first free slot of this player's private zones — each zone's bounding box
  *  on the table scanned row by row in steps of the piece's size, keeping the
  *  slots whose centre lies in the zone (where the host's place() reads it) —
- *  that no item overlaps; the zones full, the spot half a step on from a
- *  slot that covers the least of what lies there (a draw game's tenth tile
- *  lands between two, all three in sight, D287); a zone smaller than a piece,
- *  its middle: a top-left {x, y}. The piece's size is the largest back among
+ *  that no item overlaps; the zones full, a spot half a step on from a slot
+ *  (wholly inside the zone's box), the one that leaves the most covered
+ *  item there least covered, counting what already lies over it (D294: a
+ *  draw game's tiles past the slots go between every other pair, none more
+ *  than half hidden); a zone smaller than a piece, its middle: a top-left
+ *  {x, y}, or null (no zone). The piece's size is the largest back among
  *  the bag's box's pieces (it lands hidden: its back's size), else a
  *  placeholder's. */
 function rackSlot(bag) {
   const box = boxes[bag.box], backs = Object.values(box?.types || {}).filter((ty) => ty.kind !== 'board' && ty.back).map((ty) => box.backs[ty.back]);
   const w = Math.max(...backs.map((k) => num(k?.w)), 0) || PLACEHOLDER, h = Math.max(...backs.map((k) => num(k?.h)), 0) || PLACEHOLDER, gap = 6, TB = boardsNow();
-  const taken = Object.values(view.items).filter((o) => !isBoard(o)).map((o) => {
-    const s = sizeOf(o, boxes), [ow, oh] = Math.round(num(o.rot) / 90) % 2 ? [s.h, s.w] : [s.w, s.h], cx = o.x + s.w / 2, cy = o.y + s.h / 2;
-    return [cx - ow / 2, cy - oh / 2, cx + ow / 2, cy + oh / 2];
-  });
-  /** How much of what lies on the table a piece at top-left (x, y) would cover. */
-  const cover = ({ x, y }) => taken.reduce((a, [l, t, r, b]) => a + Math.max(0, Math.min(r, x + w) - Math.max(l, x)) * Math.max(0, Math.min(b, y + h) - Math.max(t, y)), 0);
   const zones = myZones().map(({ b, z }) => {
     const pts = z.poly.map(([x, y]) => fromLocal(b, x, y)), xs = pts.map((p) => p.x), ys = pts.map((p) => p.y), x0 = Math.min(...xs), y0 = Math.min(...ys), x1 = Math.max(...xs), y1 = Math.max(...ys);
     const inZone = ({ x, y }) => zonesUnder(TB, x + w / 2, y + h / 2).includes(`${b.id}:${z.id}`), slots = [];
     for (let y = y0 + gap; y + h <= y1 + 0.5; y += h + gap) for (let x = x0 + gap; x + w <= x1 + 0.5; x += w + gap) slots.push({ x, y });
-    const mine = slots.filter(inZone);
-    return mine.length ? { slots: mine, half: mine.map(({ x, y }) => ({ x: x + (w + gap) / 2, y })).filter(inZone) } : { slots: [{ x: (x0 + x1 - w) / 2, y: (y0 + y1 - h) / 2 }], half: [] };
+    const mine = slots.filter(inZone), box = { l: x0, t: y0, r: x1, b: y1 };
+    return mine.length ? { box, slots: mine, half: mine.map(({ x, y }) => ({ x: x + (w + gap) / 2, y })).filter((p) => p.x + w <= x1 + 0.5 && inZone(p)) }
+      : { box, slots: [{ x: (x0 + x1 - w) / 2, y: (y0 + y1 - h) / 2 }], half: [] };
   });
   const all = [...zones.flatMap((Z) => Z.slots), ...zones.flatMap((Z) => Z.half)];
-  return all.find((p) => cover(p) < w) || all.reduce((best, p) => (!best || cover(p) < cover(best) ? p : best), null); // (free: less than a unit's strip of it covered)
+  if (!all.length) return null;
+  /** The area two boxes {l, t, r, b} share. */
+  const over = (a, c) => Math.max(0, Math.min(a.r, c.r) - Math.max(a.l, c.l)) * Math.max(0, Math.min(a.b, c.b) - Math.max(a.t, c.t));
+  // what lies in the zones (its box turned with it), and how much of each lies under items above it
+  const near = Object.values(view.items).filter((o) => !isBoard(o)).map((o) => {
+    const s = sizeOf(o, boxes), [ow, oh] = Math.round(num(o.rot) / 90) % 2 ? [s.h, s.w] : [s.w, s.h], cx = o.x + s.w / 2, cy = o.y + s.h / 2;
+    return { l: cx - ow / 2, t: cy - oh / 2, r: cx + ow / 2, b: cy + oh / 2, z: num(o.z), area: ow * oh || 1 };
+  }).filter((o) => zones.some((Z) => over(o, Z.box)));
+  for (const o of near) o.cov = near.reduce((a, q) => a + (q.z > o.z ? over(o, q) : 0), 0);
+  /** How much of the most covered item a piece at top-left (x, y) lies on would be covered (0: a free spot). */
+  const worst = ({ x, y }) => near.reduce((m, o) => { const c = over(o, { l: x, t: y, r: x + w, b: y + h }); return c ? Math.max(m, (o.cov + c) / o.area) : m; }, 0);
+  const score = all.map((p) => Math.round(100 * worst(p))); // (in whole percents: spots alike tie, whatever a fraction of a unit)
+  return all[score.indexOf(Math.min(...score))]; // (the first of the best: the zones' free slots in order, then the half steps)
 }
 
 // --- motion (UX-I1) ----------------------------------------------------------

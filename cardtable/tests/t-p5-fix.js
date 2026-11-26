@@ -1,16 +1,19 @@
-// Phase 5's fix-up, on the screen (D282–D291): what the reviewers found
+// Phase 5's fix-ups, on the screen (D282–D294): what the reviewers found
 // there, closed — on a desktop host (Alice, 1280 × 800, the mouse) and an
 // iPhone 13 guest (Bob, held upright; sideways for a shot).
 //   1  Dominoes: each half of a tile draws its own pips in its own half (the
-//      two cells of .pips2, D291), on both screens; with nine tiles on the
-//      rack, 🔒 Draw to my rack sets the tenth and eleventh down half a slot
-//      on, every tile still in sight (D287).
+//      two cells of .pips2, D291), on both screens; the player to move draws
+//      the whole boneyard with 🔒 Draw to my rack: 21 tiles on a rack of two
+//      rows, the three past its 18 slots half a slot on, no tile more than
+//      half covered by all the tiles above it, none off the rack (D294).
 //   2  Veiled Ranks: Alice's refused move of a hidden unit is hers alone —
 //      the notice on her screen and the unit back on its square at once
 //      (core's `back`), while Bob gets no line, no live drag and no body
-//      naming it (D282); a unit's name reads along the top of its face while
-//      🙈 holds its corner (D291); each kind its own label, the Lancer's 1»
-//      and the Herald's 1✉ (D285).
+//      naming it (D282); Bob's legal step of his own unit, which the script
+//      handles, is never drawn back on its old square while the patch is on
+//      its way (no `back` for what the job wrote, D293); a unit's name reads
+//      along the top of its face while 🙈 holds its corner (D291); each kind
+//      its own label, the Lancer's 1» and the Herald's 1✉ (D285).
 //   3  Backgammon: its dice wear a cup (D286); 🙈 Hide on a die cups its
 //      handful but a locked die, with no refusal (D290).
 //   4  A wheel over the 🔒 For you card scrolls the card and zooms nothing (D289).
@@ -48,7 +51,7 @@ const area = (a, b) => Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l)) * Ma
     await settle(alice);
   }
 
-  section('1 Dominoes: a tile\'s two halves in their own halves; the tenth and eleventh tile on a full rack land half a slot on, all in sight');
+  section('1 Dominoes: a tile\'s two halves in their own halves; the whole boneyard drawn into one rack, every tile in sight');
   await ST.pickGame(alice, 'dominoes');
   await settle(alice);
   await seatUs();
@@ -59,7 +62,8 @@ const area = (a, b) => Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l)) * Ma
   await settle(alice);
   let S = await state(alice);
   const rackOf = (seat) => S.items[Object.keys(S.items).find((k) => /\/rack$/.test(S.items[k].t) && S.items[k].owner === `seat:${seat}`)];
-  const onRack = (S, it, seat) => { const r = Object.values(S.items).find((x) => /\/rack$/.test(x.t) && x.owner === `seat:${seat}`); return it.x + 30 >= r.x && it.x + 30 <= r.x + 600 && it.y + 60 >= r.y && it.y + 60 <= r.y + 140; };
+  const RACK = S.boxes[S.items[tileIds(S)[0]].t.split('/')[0]].types.rack;
+  const onRack = (S, it, seat) => { const r = Object.values(S.items).find((x) => /\/rack$/.test(x.t) && x.owner === `seat:${seat}`); return it.x + 30 >= r.x && it.x + 30 <= r.x + RACK.w && it.y + 60 >= r.y && it.y + 60 <= r.y + RACK.h; };
   for (const [p, seat] of [[alice, 'south'], [bob, 'north']]) {
     const mine = tileIds(S).filter((k) => onRack(S, S.items[k], seat));
     await M.until(async () => (await rects(p, mine[0], '.pips2 > .pips'))?.parts.length === 2, 5000, 100);
@@ -71,7 +75,7 @@ const area = (a, b) => Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l)) * Ma
   await M.shot(alice, 'p5fix-dominoes-desk');
   await M.shot(bob, 'p5fix-dominoes-phone');
   const lead = S.rules.public.turn, q = page[lead], seat = S.players[lead].seatId, bag = Object.keys(S.items).find((k) => S.items[k].k === 'b');
-  for (let k = 0; k < 4; k++) {
+  for (let k = 0; k < 14; k++) { // (the boneyard's fourteen: the most a hand holds in a draw game for two)
     const n0 = (await state(alice)).items[bag].of.length;
     await deselect(q);
     await touch(q, bag);
@@ -82,10 +86,12 @@ const area = (a, b) => Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l)) * Ma
   }
   S = await state(alice);
   const held = tileIds(S).filter((k) => onRack(S, S.items[k], seat)).map((k) => S.items[k]);
-  const box = (it) => ({ l: it.x, t: it.y, r: it.x + 60, b: it.y + 120 });
-  const worst = Math.max(...held.flatMap((a, i) => held.slice(i + 1).map((b) => area(box(a), box(b)) / 7200)));
-  ok(held.length === 11 && new Set(held.map((it) => Math.round(it.x))).size === 11 && worst <= 0.5,
-    `eleven tiles on the rack, at eleven places, none covering more than half another (${held.map((it) => Math.round(it.x - rackOf(seat).x)).sort((a, b) => a - b).join(', ')}; the most covered ${(worst * 100).toFixed(0)}%)`);
+  const box = (it) => ({ l: it.x, t: it.y, r: it.x + 60, b: it.y + 120 }), rk = rackOf(seat);
+  // each tile's share hidden by ALL the tiles above it (z), not by any one of them
+  const hid = held.map((a) => held.reduce((c, b) => c + (b.z > a.z ? area(box(a), box(b)) : 0), 0) / 7200), worst = Math.max(...hid);
+  ok(held.length === 21 && new Set(held.map((it) => `${Math.round(it.x)},${Math.round(it.y)}`)).size === 21 && worst <= 0.5,
+    `twenty-one tiles on the rack, at 21 places, none more than half hidden by the tiles above it (most hidden ${(worst * 100).toFixed(0)}%; ${held.map((it) => `${Math.round(it.x - rk.x)}:${Math.round(it.y - rk.y)}`).sort().join(' ')})`);
+  ok(held.every((it) => it.x >= rk.x && it.x + 60 <= rk.x + RACK.w && it.y >= rk.y && it.y + 120 <= rk.y + RACK.h), 'every one wholly on the rack');
   await M.shot(q, 'p5fix-dominoes-full-rack');
 
   section('2 Veiled Ranks: a refused move of a hidden unit is its player\'s alone; the name along the top of a 🙈 face; a label for each kind');
@@ -117,6 +123,21 @@ const area = (a, b) => Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l)) * Ma
   const other = mineV.find((k) => k !== u && sqOf(S.items[k])?.endsWith(from.slice(1)));
   await act(alice, { t: 'move', id: u, x: S.items[other].x, y: S.items[other].y }); // (a legal swap within her rows: the control)
   ok(await M.until(async () => (await bob.evaluate(() => window.__rtc.bodies.map((b) => JSON.stringify(b.body)))).some((b) => b.includes(u)), 5000, 100), 'a legal swap of it then reaches Bob (its back): what he receives is being recorded');
+  await settle(alice);
+  // Bob's legal step of his own hidden unit, which the script handles: the patch carries it, and no `back`
+  // outruns that patch to draw it on its old square for a frame (D293; the phone prefers reduced motion: no glide hides it)
+  S = await state(alice);
+  const field = Object.values(S.items).find((x) => x.t?.endsWith('/field')), taken = new Set(Object.values(S.items).map((x) => x.at?.split(':').pop()));
+  const dest8 = [...'abcdefghij'].map((f) => `${f}8`).find((sq) => !taken.has(sq)), bu = Object.keys(S.items).find((k) => S.items[k].t?.includes('/n-') && /^[a-j]9$/.test(sqOf(S.items[k])));
+  const bFrom = await M.centre(bob, bu), bTo = await P3.screenOf(bob, field.x + 20 + 'abcdefghij'.indexOf(dest8[0]) * 100 + 50, field.y + 20 + 2 * 100 + 50);
+  await deselect(bob);
+  await bob.evaluate((id) => { window.__smp = []; const t0 = performance.now(); const f = () => { const b = document.querySelector(`#table .item[data-id="${id}"]`)?.getBoundingClientRect(); if (b) window.__smp.push([b.left + b.width / 2, b.top + b.height / 2]); if (performance.now() - t0 < 2500) requestAnimationFrame(f); }; requestAnimationFrame(f); }, bu);
+  await M.fingerDrag(bob, P3.steps(bFrom, bTo, 10, 30));
+  await h.sleep(2600);
+  const smp = await bob.evaluate(() => window.__smp), off = (s) => Math.hypot(s[0] - bTo.x, s[1] - bTo.y);
+  const landed = smp.slice(smp.findIndex((s) => off(s) < 12)), astray = landed.filter((s) => off(s) > 25).length;
+  ok(sqOf((await state(alice)).items[bu]) === dest8 && landed.length > 10 && !astray, `Bob steps a unit of his to ${dest8}: taken, and never drawn off its new square once his finger set it there (${astray} of ${landed.length} frames astray)`);
+  await settle(alice);
   await M.shot(alice, 'p5fix-ranks-desk');
   await M.shot(bob, 'p5fix-ranks-phone');
   await bob.setViewportSize({ width: 844, height: 390 });

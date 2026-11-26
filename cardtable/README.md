@@ -254,8 +254,9 @@ included ("Alice hid 3 pieces", "rolled 2 hidden dice": never what they are).
   a rack is played face up; a unit moved out from behind a screen stays
   hidden until it is revealed. A bag's **🔒 Draw to my rack** draws a
   piece straight into the first free slot of your rack, so it is never seen
-  face up on the way (a full rack takes it half a slot on, every tile still
-  in sight; a piece with no hidden side lands there face up). In a box, a rack is a board's zone with
+  face up on the way (the slots full, it lands half a slot on, where no
+  tile ends up more than half covered; a piece with no hidden side lands
+  there face up). In a box, a rack is a board's zone with
   `"private": "reveal"` (a screen: `"keep"`) and `"owner": "board"` (the
   board item's owner: `"owner": "seat"` in `forEachSeat` gives each seat
   its own) or `"seat:<id>"`; its label stands beside it on the side of the
@@ -284,9 +285,10 @@ Two built-in games are made of it (🎲, or 📦's Built-in section; their
 scripts start with them):
 
 - **Dominoes** — the double-six set and the draw game for two, South and
-  North. Each seat has a **rack** in front of it: whatever lies on it is
-  yours alone to see (🙈 on each tile), and a tile you take off it lands
-  face up for everyone. **Draw 7** fills both racks from the boneyard, and
+  North. Each seat has a **rack** in front of it, two rows of nine:
+  whatever lies on it is yours alone to see (🙈 on each tile), and a tile
+  you take off it lands face up for everyone. A hand that grows past 18
+  (draw the whole boneyard: 21) still shows every tile at least half. **Draw 7** fills both racks from the boneyard, and
   a player drawn by lot leads (then the lead goes round). On your turn,
   play a tile out of your rack onto the line — that passes the turn — or
   draw (the bag's **🔒 Draw to my rack** drops it straight into a free slot

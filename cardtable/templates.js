@@ -2242,7 +2242,7 @@ const DOMINOES_RULES = `(() => {
  *  for each of the two seats: a small board whose one private zone covers
  *  it ('reveal'). Its script deals and keeps the turn. */
 function dominoes() {
-  const W = 1000, H = 1300, RW = 600, RH = 140; // (a rack: nine slots of 60 × 120 at the 6-unit gap of 🔒 Draw to my rack)
+  const W = 1000, H = 1500, RW = 600, RH = 258; // (a rack: two rows of nine slots of 60 × 120 at the 6-unit gap of 🔒 Draw to my rack — a draw game's whole hand in sight, D294)
   const types = {
     rack: { kind: 'board', name: 'Rack', w: RW, h: RH, faces: [{ color: '#7a4b24' }],
       board: { zones: [{ id: 'tiles', poly: [[0, 0], [RW, 0], [RW, RH], [0, RH]], owner: 'board', private: 'reveal' }] } },
@@ -2263,7 +2263,7 @@ function dominoes() {
     backs: { bone: { face: { color: '#1e293b' } } },
     types,
     setup: [
-      { forEachSeat: [{ piece: 'rack', at: { seat: [0, 210] }, owner: 'seat' }] }, // (a rack per seat, its own: 'seat:<id>')
+      { forEachSeat: [{ piece: 'rack', at: { seat: [0, 269] }, owner: 'seat' }] }, // (a rack per seat, its own: 'seat:<id>'; its near edge 140 in from the seat)
       { bag: bones, name: 'Boneyard', at: [24, H / 2 - 50] },
     ],
     rules: DOMINOES_RULES,

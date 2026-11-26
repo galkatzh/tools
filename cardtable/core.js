@@ -24,7 +24,7 @@
 //      {t:'ann', msg}      a banner for every screen (t.announce)
 //      {t:'note', p, msg, ruled?}  a private notice for player p (ruled: the rules refused p's action)
 //      {t:'peek', p, c}    a peeked card {d, i} or piece {t, f}, for player p's eyes only
-//      {t:'back', p, ids}  p's refused action named these: draw them again on p's screen alone (named)
+//      {t:'back', p, ids}  p's refused (or handled) action named these, and the job left them as they were: draw them again on p's screen alone (named)
 //      {t:'toast', msg}    a notice for the host's own screen (script errors)
 //      {t:'deck', id}      a new deck, to send to everyone
 //      {t:'box', id}       a new game box, to send to everyone (and to save)
@@ -5954,10 +5954,14 @@ export function createTable(host, env = {}) {
    *  optimistic move snaps back: re-sent to everyone (touchNamed) — or, when
    *  it names p's own hidden piece (secretOf), drawn again on p's screen
    *  alone (the effect `back`: p's view holds it as it was; a hand action's
-   *  hand in p's own part). True when the table changed (something re-sent). */
+   *  hand in p's own part). A `back` leaves out what the job wrote (J.first):
+   *  the patch carries it, and a `back` that outran that patch would draw a
+   *  move the script made (a handled step) back where p's view still has it
+   *  (D293). True when the table changed (something re-sent). */
   function named(p, a) {
     if (!secretOf(p, a)) return touchNamed(p, a);
-    emit({ t: 'back', p, ids: namedIds(a).filter((id) => typeof id === 'string' && own(host.items, id)) });
+    const ids = namedIds(a).filter((id) => typeof id === 'string' && own(host.items, id) && !J?.first.has(`i:${id}`));
+    if (ids.length) emit({ t: 'back', p, ids });
     if (!HAND_ACTIONS.has(a.t) || !own(host.players, p)) return false;
     refreshHand(p);
     return true;

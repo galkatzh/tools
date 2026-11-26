@@ -2756,15 +2756,16 @@ author's, written from the spec after this part. What it needs, by name
   joining order (a run had Carol north and Bob watching): seat them with the
   host's `{t: 'seat', p, id}` / `{t: 'seat', p, watch: true}` as
   t-p5-private does.
-- **Dominoes.** A 1000 × 1300 table, seats South (`#f59e0b`) and North
-  (`#38bdf8`). Types: `rack` (a board 600 × 140, one zone `tiles` covering
+- **Dominoes.** A 1000 × 1500 table, seats South (`#f59e0b`) and North
+  (`#38bdf8`). Types: `rack` (a board 600 × 258 — two rows of nine slots,
+  the second fix-up, D294; it was 1000 × 1300 and 600 × 140 — one zone `tiles` covering
   it, `owner: 'board'`, `private: 'reveal'`; laid by `forEachSeat` with
   `owner: 'seat'`, so the racks are owned by `seat:south` and `seat:north`,
   locked) and 28 tiles `t<a><b>` (0 ≤ a ≤ b ≤ 6: `t00` … `t66`), each a
   `tile` named "Domino", 60 × 120, `back: 'bone'`, `stack: 'none'`,
   `hand: false`, one face `{pips: [a, b], name: 'a|b'}` — the log calls a
   shown tile "3|4". A bag named "Boneyard" (`kind: 'bag'`) of the 28, face
-  down, at [24, 600]. Script name "Dominoes"; `t.data`: `{dealt, turn
+  down, at [24, 700]. Script name "Dominoes"; `t.data`: `{dealt, turn
   (a seat id, 'south' | 'north', or null), lead (a seat id), played (the
   ids played this round), passes, taking}`; `public.turn` the holder of the
   seat to move (the fix-up, D284: it was a pid).
@@ -3092,7 +3093,7 @@ after its gesture ends. About 35 s alone; not serial (no timing budget).
 
 ## Phase 5 fix-up (the review's findings)
 
-SPEC §9 D277–D292.
+SPEC §9 D277–D292, and the second fix-up's D293–D296.
 
 - **`core-p5.test.mjs` section (F)**, in the implementation's own runner
   (`testFixup`), with `demo(box, units?)` — a built-in box set up with its
@@ -3125,29 +3126,40 @@ SPEC §9 D277–D292.
     a draw off the rack, the engine's words for another seat's tile, a seat
     taken over mid-round, a play, a nudge that isn't one, a played tile kept
     off the racks, a domino that reveals the tile left (D284).
-  - (F8) Veiled Ranks: a hidden step one line, an outcome announced, a
+  - (F8) Veiled Ranks: a refused Banner step draws it back on Alice's
+    screen alone (`back`), a legal hidden step has no `back` (the patch
+    carries it, D293), a hidden step one line, an outcome announced, a
     revealed unit logged by name, a stalemate of the side to move a loss,
     of both a draw; each kind its own label, its face named (D285).
-  Against the code before the fix-up the section fails 28 times.
+  Against the code before the fix-up the section fails 28 times (and its
+  `back` check once against the code before the second fix-up).
 - **`t-p5-fix.js`** (E2E, ~60 s; Alice hosts on a desktop, Bob on an
   iPhone 13): (1) Dominoes from 🎲 — each tile's two `.pips2 > .pips`
-  boxes apart on both screens (D291), then the player to move draws four
-  times with 🔒 Draw to my rack: eleven tiles at eleven places, none
-  covering more than half another (D287); (2) Veiled Ranks — seven labels
+  boxes apart on both screens (D291), then the player to move draws the
+  whole boneyard (14 times 🔒 Draw to my rack): 21 tiles at 21 places on
+  the two-row rack, each hidden at most half by ALL the tiles above it
+  (the sum by z, not pair by pair), every one wholly on the rack (the
+  rack's size read from its type) (D294); (2) Veiled Ranks — seven labels
   on Alice's screen, a 🙈 unit's `.ptext` in the top half of its face
   (D291), and her drag of a unit out of her rows refused with the unit
   back home within a second while Bob (`__rtc.keep`) receives no body
   naming it and no "blocked" line, then a legal swap that does reach him
-  (the control) (D282); (3) Backgammon's dice wear a cup, and 🙈 Hide over
+  (the control) (D282); then Bob's legal step of a unit of his on the
+  phone (reduced motion), its element sampled every frame for 2.5 s: no
+  frame off its new square once his finger set it there (a `back` that
+  outran the patch drew it on its old square for a frame, D293); (3) Backgammon's dice wear a cup, and 🙈 Hide over
   a handful with a locked die cups the other alone with no refusal (D286,
   D290); (4) a wheel over the 🔒 For you card scrolls it, the table's
   transform unchanged (D289). Shots: `shots/p5fix-*.png`.
 - **`t-p1-bench.js`, a board-text B4 row** (D288): 1,000 ×3 stacks with a
   chess-labelled board and a rack (its private zone's label) on the
-  table (`loadStacks(…, extra)`): the pinch under B4's budgets and
-  B4_LAYOUTS, then sixteen synthetic wheel turns on the phone — at most
-  B4_LAYOUTS layouts, the board's text `display: none` at every turn and
-  back at the wheel's rest.
+  table (`loadStacks(…, extra)`): the pinch under B4's p95 and B4_LAYOUTS
+  with B4_SETTLE's task budget (150 ms, as the paused pinch's: the first
+  frame hides the text and the lift shows it, one repaint each — on a view
+  turned half round from the board's, one raster of the table layer,
+  100–130 ms, D295), then sixteen synthetic wheel turns on the phone — at
+  most B4_LAYOUTS layouts, the board's text `display: none` at every turn
+  and back at the wheel's rest.
 - **Mechanism changes, no check weakened:** `core-p4.test.mjs`'s D210 check
   reads, for the tokens of a shuffled group under a die's back, that each
   place keeps its spot with no address (D279: a hidden piece under a back a
@@ -3158,6 +3170,13 @@ SPEC §9 D277–D292.
   keeps every msg its tabs' snapshots carried (`msgs(name)`): a msg rides
   one snapshot, and the next, ≤ 500 ms later, goes without it — reading
   the latest alone missed Alice's peek under a full run's load.
+- **The second fix-up (D293–D296), mechanism changes, no check weakened:**
+  t-p5-fix §1's coverage check became the stricter aggregate one and reads
+  the rack's size from its type (it hard-coded 600 × 140); t-p1-bench's
+  board-text row takes B4_SETTLE (D295); `t-p4-select.js` waits for the
+  inspector to open before reading its box on the sideways phone (under
+  run-all's load the tap was handled after Playwright's returned, and the
+  box was read closed).
 
 ## Storage and images (Phase 1B)
 
