@@ -27,7 +27,11 @@
 //      equal; the setup grammar's vis and po; checkPatch's gates.
 // (B22, B23) The budgets: a vis tile's move per recipient; a snapshot with
 //      160 vis items for one recipient.
-import { core, ok, section, report, crash, guard, json, canon, rng, HOST, BOB, CAROL, DAVE } from './node-lib.mjs';
+// Then the test author's own sections, (1′) to (CP′), written apart from the
+// implementation (see their header below): §5l's items 1–8 again against an
+// oracle read off the host state by §5a's rule, the setup grammar's vis and
+// po laid out, checkPatch on honest and forged private material, B22, B23.
+import { core, ok, section, report, crash, guard, json, canon, rng, seeds, HOST, BOB, CAROL, DAVE } from './node-lib.mjs';
 
 const {
   createTable, boxFromDef, boxOfDef, cleanBox, scriptHooks, spliceBody, sharedText, viewFromSnap, applyViewPatch, hiddenFrom,
@@ -636,7 +640,1057 @@ function testBudgets() {
   ok(Object.values(mine).flat().length === 160 && Object.keys(H.mine(ps[2]).vis).length === 20 && med <= 20, `160 vis items; P3's snapshot carries its 20 in full, built in ${med.toFixed(2)} ms median of 15 (≤ 20)`);
 }
 
+// =============================================================================
+// The test author's own sections, (1′) to (CP′), written apart from the
+// implementation, from spec §5 (and §0.1, §2c, §2d, §3a, §3f.6, §4a, §4c)
+// and the decisions it records (D249–D262): §5l's core list again (items 1
+// to 8), checkPatch on private material, B22 and B23. They share nothing
+// with the sections above but node-lib, RECT and the console helpers:
+//  - their own room, `stage()`: the host table, each peer's view folded from
+//    the bodies app.js's broadcast() builds (one shared text, each peer's own
+//    part spliced on), and while rules run a Worker-like mirror whose every
+//    patch the host checks (a refused one is kept in S.refused);
+//  - their own boxes: VAULT (racks — 'reveal' zones owned through their
+//    board, one of them Bob's by his id —, north's 'keep' screen, a zone of a
+//    seat the table lacks, a zone that isn't private, a grid board, tiles,
+//    gems, dice under a cup back, units, a stack, a coin with no back, a bag,
+//    supplies and a pile of hidden pieces) and MANY (the fuzz's: every piece
+//    of a type of its own, every face labelled apart, so a label or a type
+//    ref in a body names one piece);
+//  - an oracle: what each viewer must hold, read off the host state by §5a's
+//    rule (`expectView`), never off T.mine; `audit()` checks every body of a
+//    tick against §5d's forms and every folded view against the oracle.
+// =============================================================================
+const { typeAt, liveFx, floodCost } = core;
+const EVE = 'e'.repeat(16);
+const PEERS = [HOST, BOB, CAROL, DAVE];
+const NAME = { [HOST]: 'Alice', [BOB]: 'Bob', [CAROL]: 'Carol', [DAVE]: 'Dave', [EVE]: 'Eve' };
+const nm = (p) => NAME[p] || String(p).slice(0, 6);
+/** Whether fn throws a TypeError (a script's malformed call: spec §0.2). */
+const typeErr = (fn) => { try { quietly(fn); return false; } catch (e) { return e instanceof TypeError; } };
+/** A piece's private fields, for comparisons: {up, vis, pv, po, owner} (absent: true / null). */
+const pf = (x) => (x ? { up: x.up ?? true, vis: x.vis ?? null, pv: x.pv ?? null, po: x.po ?? null, owner: x.owner ?? null } : null);
+const txts = (r) => r.lines.map((e) => e.txt);
+
+/** VAULT's fixed item ids. */
+const VID = {
+  rackS: 'e1000001', rackS2: 'e1000002', rackB: 'e1000003', rackX: 'e1000004', rackN: 'e1000005', screen: 'e1000006', mat: 'e1000007', plain: 'e1000008', field: 'e1000009',
+  t1: 'e2000001', t2: 'e2000002', t3: 'e2000003', gem: 'e2000004', d1: 'e2000005', d2: 'e2000006', d3: 'e2000007', d4: 'e2000008',
+  u1: 'e2000009', u2: 'e200000a', stk: 'e200000b', coin: 'e200000c', bag: 'e200000d', sup: 'e200000e', coins: 'e200000f', pile: 'e2000010',
+};
+const BOARD_TYPES = [
+  { id: 'rack', kind: 'board', w: 500, h: 140, zones: [{ id: 'z', poly: RECT(500, 140), owner: 'board', private: 'reveal' }] },
+  { id: 'screen', kind: 'board', w: 600, h: 300, zones: [{ id: 's', poly: RECT(600, 300), owner: 'seat:north', private: 'keep' }] },
+  { id: 'mat', kind: 'board', w: 400, h: 200, zones: [{ id: 'm', poly: RECT(400, 200), owner: 'seat:west', private: 'keep' }] },
+  { id: 'plain', kind: 'board', w: 400, h: 200, zones: [{ id: 'p', poly: RECT(400, 200), owner: 'seat:south' }] },
+  { id: 'field', kind: 'board', w: 400, h: 400, primary: true, grid: { type: 'square', cols: 4, rows: 4, cell: 100 } },
+];
+const BOARD_SETUP = [
+  { piece: 'rack', at: [300, 1820], owner: 'seat:south', id: VID.rackS },
+  { piece: 'rack', at: [900, 1820], owner: 'seat:south', id: VID.rackS2 },
+  { piece: 'rack', at: [1500, 1820], id: VID.rackB }, // (the host gives it to Bob, by his id: stage's prep)
+  { piece: 'rack', at: [2100, 1820], id: VID.rackX }, // (nobody's: its zone does nothing)
+  { piece: 'rack', at: [300, 40], owner: 'seat:north', id: VID.rackN },
+  { piece: 'screen', at: [1200, 300], id: VID.screen },
+  { piece: 'mat', at: [2300, 300], id: VID.mat }, // (its owner a seat the table lacks: nothing)
+  { piece: 'plain', at: [2300, 600], id: VID.plain }, // (owned, but not private: nothing)
+  { piece: 'field', at: [2400, 1100], id: VID.field },
+];
+const SEATS3 = [{ id: 'south', name: 'South', edge: 'bottom' }, { id: 'north', name: 'North', edge: 'top' }, { id: 'east', name: 'East', edge: 'right' }];
+const BACKS3 = [{ id: 'bt', color: '#334155' }, { id: 'bc', color: '#7c2d12' }, { id: 'bu', color: '#1e3a8a' }];
+const VAULT = {
+  name: 'Vault', table: { shape: 'rect', w: 3000, h: 2000 }, seats: SEATS3, backs: BACKS3,
+  pieces: [...BOARD_TYPES,
+    { id: 'tile', kind: 'tile', w: 60, h: 120, back: 'bt', faces: ['Qx01a', 'Qx01b', 'Qx01c'] },
+    { id: 'gem', kind: 'tile', w: 60, h: 120, back: 'bt', faces: ['Qx02a', 'Qx02b'] },
+    { id: 'die', kind: 'die', back: 'bc', faces: ['Qx03a', 'Qx03b', 'Qx03c', 'Qx03d', 'Qx03e', 'Qx03f'] },
+    { id: 'unit', kind: 'token', shape: 'rect', w: 60, back: 'bu', faces: ['Qx04a', 'Qx04b'] },
+    { id: 'coin', kind: 'token', faces: ['C'] },
+  ],
+  setup: [...BOARD_SETUP,
+    { piece: 'tile', at: [100, 1000], id: VID.t1 },
+    { piece: 'tile', at: [180, 1000], f: 1, id: VID.t2 },
+    { piece: 'tile', at: [260, 1000], f: 2, id: VID.t3 },
+    { piece: 'gem', at: [340, 1000], up: false, id: VID.gem },
+    { piece: 'die', at: [600, 1000], id: VID.d1 },
+    { piece: 'die', at: [680, 1000], id: VID.d2 },
+    { piece: 'die', at: [760, 1000], id: VID.d3 },
+    { piece: 'die', at: [840, 1000], id: VID.d4 },
+    { piece: 'unit', at: [1000, 1000], id: VID.u1 },
+    { piece: 'unit', at: [1080, 1000], f: 1, id: VID.u2 },
+    { piece: 'unit', at: [1160, 1000], n: 3, id: VID.stk },
+    { piece: 'coin', at: [700, 1300], id: VID.coin },
+    { bag: [{ t: 'gem', up: false, n: 6 }], name: 'Sack', at: [2700, 80], id: VID.bag },
+    { supply: 'tile', at: [1400, 1300], id: VID.sup },
+    { supply: 'coin', at: [1520, 1300], id: VID.coins },
+    { pile: [{ piece: 'gem', f: 1, up: false }, { piece: 'tile', f: 0, up: false }], at: [1700, 1300], name: 'Tiles', id: VID.pile },
+  ],
+};
+/** MANY's ids: VAULT's boards, then its own pieces. */
+const MID = { bag: 'e3000100', sup: 'e3000101', stk: 'e3000102', coin: 'e3000103', pile: 'e3000104' };
+const BOARDS = BOARD_SETUP.map((e) => e.id);
+/** The fuzz's box: VAULT's boards, and 22 pieces each of a type of its own —
+ *  tiles p00–p11 and p20–p21 (those two in a pile, face down), dice p12–p15,
+ *  units p16–p19 —, every face labelled "Qx<nn><a–f>": no two faces alike,
+ *  so a label or a type ref in a body names one piece. Gems ("Qy…", a bag
+ *  and a supply of them, and what t.spawn makes), a stack and a coin share
+ *  their types. */
+const MANY = (() => {
+  const pieces = [...BOARD_TYPES], setup = [...BOARD_SETUP], pad = (k) => String(k).padStart(2, '0');
+  for (let k = 0; k < 22; k++) {
+    const id = `p${pad(k)}`, L = (c) => `Qx${pad(k)}${c}`;
+    if (k >= 12 && k < 16) pieces.push({ id, kind: 'die', back: 'bc', faces: [...'abcdef'].map(L) });
+    else if (k >= 16 && k < 20) pieces.push({ id, kind: 'token', shape: 'rect', w: 60, back: 'bu', faces: [L('a'), L('b')] });
+    else pieces.push({ id, kind: 'tile', w: 60, h: 120, back: 'bt', faces: [L('a'), L('b')] });
+    if (k < 20) setup.push({ piece: id, at: [100 + 80 * k, 1000 + 150 * (k % 2)], id: `e30000${k.toString(16).padStart(2, '0')}` });
+  }
+  pieces.push({ id: 'gem', kind: 'tile', w: 60, h: 120, back: 'bt', faces: ['Qy01a', 'Qy01b'] }, { id: 'stk', kind: 'token', shape: 'rect', w: 60, back: 'bu', faces: ['Qy02a'] },
+    { id: 'coin', kind: 'token', faces: ['C'] });
+  setup.push({ bag: [{ t: 'gem', up: false, n: 8 }], name: 'Sack', at: [2700, 80], id: MID.bag }, { supply: 'gem', at: [1400, 1450], id: MID.sup },
+    { piece: 'stk', n: 3, at: [1500, 1450], id: MID.stk }, { piece: 'coin', at: [700, 1450], id: MID.coin },
+    { pile: [{ piece: 'p20', up: false }, { piece: 'p21', f: 1, up: false }], at: [1800, 1350], name: 'Duo', id: MID.pile });
+  return { name: 'Many', table: { shape: 'rect', w: 3000, h: 2000 }, seats: SEATS3, backs: BACKS3, pieces, setup };
+})();
+
+/** A room as app.js runs one (built apart from room() above): the host
+ *  table `H`, the `cast` ([pid, name], the host first) joined, box `o.def`
+ *  (VAULT; null: none) set up and the players seated by the host as
+ *  `o.seats` says (Alice south, Bob north, Carol east, Dave watching), then
+ *  `o.prep` (VAULT's: the host gives rackB to Bob). Each peer's view folds
+ *  its bodies (S.tick: app.js's broadcast()). While rules run, a Worker-like
+ *  mirror built at each Enable, as rules-worker.js builds one, runs every job
+ *  and the host checks and takes its patch (S.job; a refused one is kept in
+ *  S.refused). `o.seed` drives every roll, pull and shuffle, `o.prefix` the
+ *  ids it mints. */
+function stage(o = {}) {
+  const cast = o.cast || [[HOST, 'Alice'], [BOB, 'Bob'], [CAROL, 'Carol'], [DAVE, 'Dave']], host = cast[0][0], seed = o.seed ?? 5;
+  let n = 0, ready = null;
+  const clk = { t: 1.8e12 }, uid = () => (o.prefix || '9') + (++n).toString(16).padStart(7, '0');
+  const pageHooks = { // (the page answers the rules view only: every hook runs in the mirror)
+    load: () => '', has: (h) => h === 'onSelect' && !!ready?.wants.includes('select'),
+    flag: (k) => (k === 'strict' ? ready?.strict : undefined), call(h) { throw new Error(`${h}() ran on the page`); },
+  };
+  const H = quietly(() => createTable({}, { pid: host, now: () => (clk.t += 1000), uid, random: rng(seed), hooks: pageHooks })).value;
+  H.open(cast[0][1]);
+  for (const [p, name] of cast.slice(1)) quietly(() => H.apply(p, { t: '_join', name }));
+  H.drain();
+  const S = { H, M: null, host, pending: [], refused: [], peers: new Map(cast.map(([p]) => [p, { view: null }])) };
+  const start = (code) => {
+    H.syncSpots();
+    const { keys, decks, boxes, boxSrc, ...state } = H.state, m = structuredClone({ state, decks, boxes, boxSrc }), hk = scriptHooks();
+    const name = hk.load(code);
+    S.M = quietly(() => createTable({ ...m.state, decks: m.decks, boxes: m.boxes, boxSrc: m.boxSrc }, { pid: host, now: () => clk.t, uid, random: rng(seed + 1), hooks: hk, mirror: true })).value;
+    ready = { name, wants: hk.has('onSelect') ? ['select'] : [], strict: hk.flag('strict') === true };
+  };
+  /** What the job since log entry `last` did, its effects queued for the next tick: {fx, notes (p's), peeks, lines, error}. */
+  const took = (p, last, error) => {
+    const fx = H.drain(), k = H.state.log.lastIndexOf(last);
+    S.pending.push(...fx);
+    if (!H.state.rules?.enabled) S.M = null;
+    return { fx, notes: fx.filter((e) => e.t === 'note' && e.p === p).map((e) => e.msg), peeks: fx.filter((e) => e.t === 'peek'), lines: H.state.log.slice(k + 1), error };
+  };
+  /** Job (p, a) where app.js runs it: on the mirror while rules run (its patch checked and taken by the host), else on the host. */
+  S.job = (p, a) => {
+    if (a.t === 'setRules' && p === host) { if (a.enabled) start(a.code); else S.M = null; }
+    const last = H.state.log.at(-1);
+    let error;
+    if (S.M) {
+      const r = quietly(() => S.M.job(p, a)).value;
+      if (r.fatal) throw new Error(`the mirror's ${a.t} job was fatal: ${r.fatal}`);
+      try { quietly(() => H.applyStatePatch(structuredClone(r.patch), structuredClone(r.out), { p, a })); } catch (e) { S.refused.push(`${a.t}: ${e.message}`); }
+      S.M.drain();
+      error = r.out.error;
+    } else quietly(() => H.apply(p, a));
+    return took(p, last, error);
+  };
+  /** A facade call straight on the host's table, as a hook makes it (rules off): [its value, the lines it wrote]. */
+  S.api = (fn) => {
+    const last = H.state.log.at(-1), v = quietly(() => fn(H.api)).value;
+    H.snapshot(); // (writes the rules' aggregated lines, as a job's end does)
+    return [v, took(HOST, last).lines];
+  };
+  /** One broadcast tick as app.js's broadcast(): the dirty sets taken once
+   *  (`d`), one shared patch (`patch`, with the tick's action markers and
+   *  banners), each peer's body spliced from it with its own part (T.mine) —
+   *  or a snapshot for a peer with no view yet — and folded into its view.
+   *  {d, patch, out: {pid: {body, text}}}. */
+  S.tick = () => {
+    const fxs = S.pending.filter((e) => e.t === 'fx').map((e) => e.f), anns = S.pending.filter((e) => e.t === 'ann').map((e) => e.msg);
+    S.pending = [];
+    const seq = H.state.seq, d = H.takeDirty(), content = H.patchContent(d), fx = liveFx(fxs, d);
+    if (fx.length) content.fx = fx;
+    if (anns.length) content.ann = anns;
+    const head = { v: PROTO, boot: 1, seq, host }, empty = !Object.keys(content).length, patch = sharedText({ ...head, kind: 'patch', ...content });
+    let snap = '';
+    const snapText = () => (snap ||= sharedText({ ...head, kind: 'snap', ...H.snapContent(), fx: content.fx || [], ann: content.ann || [] }));
+    const out = {};
+    for (const [p, P] of S.peers) {
+      let text;
+      if (!P.view) text = spliceBody({ to: p, tp: p, ...H.mine(p) }, snapText());
+      else {
+        const parts = H.mine(p, d);
+        if (empty && !Object.keys(parts).length) continue;
+        text = spliceBody({ to: p, tp: p, base: P.view.seq, ...parts }, patch);
+      }
+      const body = JSON.parse(text);
+      if (body.kind === 'snap') P.view = viewFromSnap(body);
+      else applyViewPatch(P.view, body);
+      out[p] = { body, text };
+    }
+    return { d, patch, out };
+  };
+  /** Peer p's view from a full snapshot now (call it right after a tick: a snapshot resets what the host last sent, as app.js's does). */
+  S.fresh = (p) => viewFromSnap(JSON.parse(spliceBody({ to: p, tp: p, ...H.mine(p) }, sharedText({ v: PROTO, boot: 1, seq: H.state.seq, host, kind: 'snap', ...H.snapContent(), fx: [], ann: [] }))));
+  S.it = (id) => H.state.items[id];
+  S.view = (p) => S.peers.get(p).view;
+  S.same = () => !S.M || H.digest() === S.M.digest();
+  if (o.def !== null) {
+    const def = o.def || VAULT, r = quietly(() => H.apply(host, { t: 'loadBox', box: boxFromDef(def), setup: true, clear: true }));
+    if (!r.value) throw new Error(`the stage's box didn't set up: ${J(H.drain())}`);
+    H.drain();
+    S.box = Object.keys(H.state.boxes).find((b) => H.state.boxes[b].name === def.name);
+    const seats = o.seats || { [HOST]: 'south', [BOB]: 'north', [CAROL]: 'east' };
+    for (const [p] of cast) if (H.state.players[p].seatId) quietly(() => H.apply(host, { t: 'seat', p, watch: true }));
+    for (const [p, s] of Object.entries(seats)) quietly(() => H.apply(host, { t: 'seat', p, id: s }));
+    H.drain();
+    (o.prep ?? ((T) => T.H.state.items[VID.rackB] && T.job(host, { t: 'owner', id: VID.rackB, to: BOB })))(S);
+  }
+  S.tick();
+  return S;
+}
+
+// --- the oracle: §5a's rule and §5d's forms, read off the host state ------------
+/** Who sits in named seat s on table H, or null: a seat ref names whoever holds it now (D261). */
+const sitter = (H, s) => Object.keys(H.state.players).find((q) => H.state.players[q].seatId === s) ?? null;
+/** The players vis list `vis` names on table H now, seat refs resolved. */
+const whoSee = (H, vis = []) => vis.map((r) => (r.startsWith('seat:') ? sitter(H, r.slice(5)) : r)).filter(Boolean);
+/** §5a's visibility rule: piece or supply `it` is hidden from viewer V — face down, and (a piece) its vis doesn't name V. */
+const veiled = (H, V, it) => (it.k === 'g' || it.k === 's') && it.up === false && !(it.k === 'g' && whoSee(H, it.vis).includes(V));
+/** Whether V's bodies must bring piece `it` in full (§5b): it lies hidden, its vis names V, and its box is in the catalog (§5d: otherwise the host can build no full form). */
+const privy = (H, V, it) => it.k === 'g' && it.up === false && whoSee(H, it.vis).includes(V) && !!typeAt(H.state.boxes, it.t);
+/** What viewer V must hold of every item on table H (§5b, §5d): the shared
+ *  public form (T.pub — its shape checked apart, formProblem), or for a
+ *  piece V holds privately that form shown (its t and f in place of b),
+ *  with up: false and its vis. */
+function expectView(H, V) {
+  const out = {};
+  for (const [id, it] of Object.entries(H.state.items)) {
+    const pub = H.pub.get(id);
+    if (!privy(H, V, it)) { out[id] = pub; continue; }
+    const { b, ...rest } = pub;
+    out[id] = { ...rest, t: it.t, f: it.f, up: false, vis: [...it.vis] };
+  }
+  return out;
+}
+const REDUCED = ['k', 'b', 'x', 'y', 'rot', 'z', 'n', 'owner', 'lock', 'at'];
+/** Why shared form `o` of host item `it` is not §5d's (and §2d's), or '':
+ *  a hidden piece or supply {k, b, x, y, rot, z, n?, owner?, lock?, at?} —
+ *  never t, f, up —; a shown one with its t and f; no item with vis, pv or
+ *  po (who sees a piece travels only in its viewers' own parts); a bag
+ *  without `of`. */
+function formProblem(it, o) {
+  if (!o) return 'no shared form';
+  const priv = ['vis', 'pv', 'po'].filter((k) => k in o);
+  if (priv.length) return `it carries ${priv}`;
+  if (it.k === 'b' && 'of' in o) return 'a bag shows what it holds';
+  if (it.k !== 'g' && it.k !== 's') return '';
+  if (it.up !== false) return 't' in o && 'f' in o && !('b' in o) ? '' : 'shown, without its t and f';
+  const extra = Object.keys(o).filter((k) => !REDUCED.includes(k));
+  return extra.length ? `hidden, it carries ${extra}` : 'b' in o ? '' : 'hidden, without its back';
+}
+/** The problems of one tick's bodies (`out`) and of every folded view, or []:
+ *  each body's items in §5d's shared forms (formProblem); an override (`vis`)
+ *  only beside an id of the same body's items, only for a piece its viewer
+ *  holds privately, and that viewer's expected form; a place (`pos`) only
+ *  numbers and an address; a marker only {p, id, x, y, roll?}; then every
+ *  viewer's view equal to expectView, and its hand to its own. */
+function audit(S, out) {
+  const H = S.H, bad = [];
+  for (const [V, { body }] of Object.entries(out)) {
+    const items = body.items || {};
+    for (const [id, o] of Object.entries(items)) {
+      const it = H.state.items[id], why = it ? formProblem(it, o) : 'is no item of the host';
+      if (why) bad.push(`${nm(V)}'s body: ${id} ${why}`);
+    }
+    const want = Object.keys(body.vis || {}).length ? expectView(H, V) : {};
+    for (const [id, o] of Object.entries(body.vis || {})) {
+      const it = H.state.items[id];
+      if (!(id in items)) bad.push(`${nm(V)}'s body: an override for ${id} beside no item of the body`);
+      else if (!it || !privy(H, V, it)) bad.push(`${nm(V)}'s body: an override for ${id}, which ${nm(V)} may not hold in full`);
+      else if (canon(o) !== canon(want[id])) bad.push(`${nm(V)}'s override of ${id}: ${J(o)} ≠ ${J(want[id])}`);
+    }
+    for (const [id, m] of Object.entries(body.pos || {})) {
+      if (!Array.isArray(m) || m.length < 4 || m.length > 5 || !m.slice(0, 4).every(Number.isFinite) || (m.length === 5 && typeof m[4] !== 'string')) bad.push(`${nm(V)}'s body: ${id}'s place is ${J(m)}`);
+    }
+    for (const f of body.fx || []) if (Object.keys(f).some((k) => !['p', 'id', 'x', 'y', 'roll'].includes(k))) bad.push(`${nm(V)}'s body: a marker ${J(f)}`);
+  }
+  for (const [V, P] of S.peers) {
+    if (!P.view) continue;
+    const want = expectView(H, V), got = P.view.items, ids = [...new Set([...Object.keys(want), ...Object.keys(got)])].filter((id) => canon(want[id]) !== canon(got[id]));
+    if (ids.length) bad.push(`${nm(V)}'s view of ${ids[0]}: ${J(got[ids[0]])} ≠ ${J(want[ids[0]])}${ids.length > 1 ? ` (and ${ids.length - 1} more)` : ''}`);
+    if (H.state.players[V] && canon(P.view.hand) !== canon(H.state.players[V].hand)) bad.push(`${nm(V)}'s hand: ${J(P.view.hand)} ≠ ${J(H.state.players[V].hand)}`);
+  }
+  return bad;
+}
+/** A tick, audited: ok() on it, labelled `what`; returns the tick. */
+function tickOK(S, what) {
+  const t = S.tick(), bad = audit(S, t.out);
+  ok(!bad.length, `${what} — every body as §5d says, every view as the rule says${bad.length ? `: ${bad.slice(0, 3).join('; ')}` : ''}`);
+  return t;
+}
+/** The face labels and type refs viewer V may read on table H now: of the pieces and supplies not hidden from V, of shown pile tops, of V's own hand. */
+function sight(H, V) {
+  const labels = new Set(), types = new Set(), add = (t, f) => { types.add(t); const l = typeAt(H.state.boxes, t)?.faces[f]?.label; if (l) labels.add(l); };
+  for (const it of Object.values(H.state.items)) {
+    if ((it.k === 'g' || it.k === 's') && !veiled(H, V, it)) add(it.t, it.f);
+    const top = it.k === 'p' && it.cards.at(-1);
+    if (top && top.up && top.t) add(top.t, top.f);
+  }
+  for (const m of H.state.players[V]?.hand || []) if (m.t) add(m.t, m.f);
+  return { labels, types };
+}
+/** The rules script the facade sections drive: each chat of the host's names
+ *  a facade call, `[op, ...args]` — 'spawnLike' spawns a piece of item
+ *  args[0]'s type with options args[1] (so no type ref goes into the log) —
+ *  and its value or its TypeError's message goes to t.data.r / t.data.e. */
+const VEX = `({ name: 'Vex',
+  onChat(t, msg, p) {
+    let c;
+    try { c = JSON.parse(msg); } catch (e) { return; }
+    if (!Array.isArray(c) || typeof c[0] !== 'string') return;
+    const [op, ...args] = c;
+    try {
+      t.data.r = (op === 'spawnLike' ? t.spawn(t.item(args[0]).t, args[1]) : t[op](...args)) ?? null;
+      t.data.e = null;
+    } catch (e) { t.data.r = null; t.data.e = String(e.message).slice(0, 200); }
+  },
+})`;
+
+// --- (1′) the reduction, every row of §5d ----------------------------------------
+function indepReduction() {
+  section("(1′) every row of §5d, for every viewer, against §5a's rule (spec §5a, §5b, §5d, §2d; D249, D250, D261)");
+  const S = stage(), H = S.H, it = S.it, V = S.view, keys = (o) => Object.keys(o || {}).sort().join();
+  ok(J(PEERS.map((p) => H.state.players[p].seatId ?? null)) === J(['south', 'north', 'east', null]), 'Alice sits south, Bob north, Carol east; Dave watches');
+  tickOK(S, 'the box set up');
+  // cards (no vis: as in Phase 1)
+  const [pile] = S.api((t) => t.addStandardDeck({ x: 2000, y: 1450 }));
+  S.job(HOST, { t: 'deal', id: pile, x: 2120, y: 1450, up: true });
+  S.job(HOST, { t: 'deal', id: pile, x: 2240, y: 1450 });
+  tickOK(S, 'two cards dealt, one face up');
+  const cards = Object.keys(H.state.items).filter((k) => it(k).k === 'c'), cu = cards.find((k) => it(k).up), cd = cards.find((k) => !it(k).up);
+  ok(cu && cd && PEERS.every((p) => canon(V(p).items[cd]) === canon(V(DAVE).items[cd]) && canon(V(p).items[cu]) === canon(V(DAVE).items[cu])) && !('i' in V(BOB).items[cd]) && V(BOB).items[cu].i === it(cu).i,
+    'a card: one form for everyone — face down without its index, face up with it');
+  ok(typeErr(() => H.api.hide(cd, [BOB])) && typeErr(() => H.api.setVis(cu, [BOB])) && !('vis' in it(cd)), 't.hide and t.setVis of a card: TypeErrors (vis is for pieces whose type has a back)');
+  ok(H.api.canSee(BOB, cu) === true && H.api.canSee(BOB, cd) === false, 't.canSee: a face-up card yes, a face-down one no');
+  H.drain();
+  // a shown piece: public, whatever its vis
+  S.api((t) => t.setVis(VID.t1, [BOB]));
+  tickOK(S, 't.setVis on a tile face up');
+  ok(J(it(VID.t1).vis) === J([BOB]) && PEERS.every((p) => canon(V(p).items[VID.t1]) === canon(H.pub.get(VID.t1)) && 't' in V(p).items[VID.t1] && !('vis' in V(p).items[VID.t1])),
+    'a shown piece that has a vis: {k, t, f, …} for everyone, and no vis on anyone\'s screen');
+  ok(H.api.canSee(CAROL, VID.t1) && H.api.canSee(DAVE, VID.t1), 't.canSee: a piece face up is seen by all, whatever its vis');
+  S.api((t) => t.setVis(VID.t1, null));
+  // hidden from everyone: the back, to everyone — its owner too
+  S.job(HOST, { t: 'flip', id: VID.t2 });
+  S.job(HOST, { t: 'owner', id: VID.t2, to: HOST });
+  let t = tickOK(S, 'a tile turned face down, then given to Alice');
+  ok(it(VID.t2).up === false && !it(VID.t2).vis && PEERS.every((p) => keys(V(p).items[VID.t2]) === 'b,k,owner,rot,x,y,z' && V(p).items[VID.t2].owner === HOST) && PEERS.every((p) => !t.out[p]?.body.vis),
+    'a piece hidden from everyone: {k, b, x, y, rot, z, owner} for all — Alice, its owner, too (owning is not seeing)');
+  // hidden with a vis: in full for those it names, by id or by seat; the reduced form for the rest
+  S.api((t) => t.hide(VID.u1, [BOB]));
+  t = tickOK(S, 't.hide(u1, [Bob])');
+  ok(keys(V(BOB).items[VID.u1]) === 'f,k,rot,t,up,vis,x,y,z' && V(BOB).items[VID.u1].t === it(VID.u1).t && V(BOB).items[VID.u1].f === it(VID.u1).f && V(BOB).items[VID.u1].up === false && J(V(BOB).items[VID.u1].vis) === J([BOB]),
+    `Bob, whom its vis names: {k, t, f, x, y, rot, z, up: false, vis} (${J(V(BOB).items[VID.u1])})`);
+  ok([HOST, CAROL, DAVE].every((p) => keys(V(p).items[VID.u1]) === 'b,k,rot,x,y,z' && V(p).items[VID.u1].b === `${S.box}/bu`), 'Alice, Carol, Dave: {k, b: the units\' back, x, y, rot, z}');
+  ok(!!t.out[BOB].body.vis?.[VID.u1] && [HOST, CAROL, DAVE].every((p) => !t.out[p].body.vis) && !('t' in t.out[BOB].body.items[VID.u1]), "the full form travels in Bob's own part alone; the shared items carry the reduced one");
+  const mvd = S.job(BOB, { t: 'move', id: VID.u1, x: 1000, y: 1050 }), [, vl] = S.api((t) => t.setVis(VID.u1, [BOB, 'seat:east']));
+  ok(txts(mvd).join() === 'moved a hidden piece' && J(vl.map((e) => e.txt)) === J(['changed who sees a hidden piece']), `Bob moves it, the script changes who sees it: "${txts(mvd)}", "${vl.map((e) => e.txt)}" — no line names it (§5d)`);
+  tickOK(S, "t.setVis(u1, [Bob, 'seat:east'])");
+  ok(['t', 'vis'].every((k) => k in V(BOB).items[VID.u1] && k in V(CAROL).items[VID.u1]) && !('t' in V(HOST).items[VID.u1]) && !('t' in V(DAVE).items[VID.u1]), 'by id and by seat: Bob and Carol (east) in full, Alice and Dave reduced');
+  ok(H.api.canSee(BOB, VID.u1) && H.api.canSee(CAROL, VID.u1) && !H.api.canSee(HOST, VID.u1) && !H.api.canSee(DAVE, VID.u1), "t.canSee follows the rule: Bob and Carol (by east's seat) yes, Alice and Dave no");
+  S.job(HOST, { t: 'lock', id: VID.u1, on: true });
+  S.job(HOST, { t: 'owner', id: VID.u1, to: 'seat:south' });
+  tickOK(S, 'u1 locked and given to south');
+  ok(PEERS.every((p) => V(p).items[VID.u1].lock === true && V(p).items[VID.u1].owner === 'seat:south') && !('t' in V(HOST).items[VID.u1]),
+    "a lock and an owner change show in the full form and in the reduced one; Alice, south's, owns it and still doesn't see it");
+  S.api((t) => t.hide(VID.stk, ['seat:north']));
+  S.job(HOST, { t: 'move', id: VID.u2, x: it(VID.field).x + 120, y: it(VID.field).y + 220 });
+  S.api((t) => t.hide(VID.u2, [CAROL]));
+  tickOK(S, "a ×3 stack hidden for north, a unit on the grid hidden for Carol");
+  ok(V(BOB).items[VID.stk].n === 3 && 't' in V(BOB).items[VID.stk] && V(DAVE).items[VID.stk].n === 3 && !('t' in V(DAVE).items[VID.stk]), 'a stack: n in both forms');
+  ok(typeof it(VID.u2).at === 'string' && V(CAROL).items[VID.u2].at === V(DAVE).items[VID.u2].at && typeof V(DAVE).items[VID.u2].at === 'string' && 't' in V(CAROL).items[VID.u2],
+    `an address: the same display form in both (${V(DAVE).items[VID.u2].at})`);
+  // per message, never sticky: dropped from the vis, Bob gets the reduced form and holds it
+  S.api((t) => t.setVis(VID.u1, ['seat:east']));
+  t = tickOK(S, "t.setVis(u1, ['seat:east'])");
+  ok(!!t.out[BOB].body.items?.[VID.u1] && !t.out[BOB].body.vis?.[VID.u1] && !('t' in V(BOB).items[VID.u1]) && 't' in V(CAROL).items[VID.u1],
+    "Bob, no longer in its vis: the next body brings u1 with no override, and his view holds the reduced form; Carol's the full one");
+  S.api((t) => t.setVis(VID.u1, null));
+  tickOK(S, 't.setVis(u1, null)');
+  ok(PEERS.every((p) => !('t' in V(p).items[VID.u1])), 'vis null: hidden from everyone, reduced for all');
+  const [sp] = S.api((t) => t.spawn(it(VID.u1).t, { at: { x: 1300, y: 700 }, up: false, vis: ['seat:north'] }));
+  tickOK(S, "t.spawn(unit, {up: false, vis: ['seat:north']}) on the open felt");
+  ok(J(pf(it(sp))) === J({ up: false, vis: ['seat:north'], pv: null, po: null, owner: null }) && 't' in V(BOB).items[sp] && [HOST, CAROL, DAVE].every((p) => !('t' in V(p).items[sp])), "t.spawn's vis: hidden for north, Bob sees it in full, the rest its back");
+  // a die under a cup: hers in full, its result too; a back to the rest — before and after a roll
+  S.job(HOST, { t: 'hide', ids: [VID.d1] });
+  tickOK(S, 'Alice cups d1');
+  ok(keys(V(HOST).items[VID.d1]) === 'f,k,owner,rot,t,up,vis,x,y,z' && V(HOST).items[VID.d1].f === it(VID.d1).f && [BOB, CAROL, DAVE].every((p) => keys(V(p).items[VID.d1]) === 'b,k,owner,rot,x,y,z' && V(p).items[VID.d1].b === `${S.box}/bc`),
+    'the cupped die: Alice holds it whole, its result included; the others {k, b: the cup, x, y, rot, z, owner}');
+  const f0 = it(VID.d1).f;
+  for (let k = 0; k < 6 && it(VID.d1).f === f0; k++) S.job(HOST, { t: 'roll', ids: [VID.d1] });
+  t = tickOK(S, 'Alice rolls under the cup');
+  ok(it(VID.d1).f !== f0 && V(HOST).items[VID.d1].f === it(VID.d1).f && [BOB, CAROL, DAVE].every((p) => !('f' in V(p).items[VID.d1]) && (t.out[p].body.fx || []).some((f) => f.roll?.includes(VID.d1))),
+    "rolled: Alice's view shows the new result; everyone gets the tumble's marker, and no result");
+  // a supply: as in Phase 2 — no vis
+  S.job(HOST, { t: 'flip', id: VID.sup });
+  tickOK(S, 'the supply turned face down');
+  ok(PEERS.every((p) => keys(V(p).items[VID.sup]) === 'b,k,rot,x,y,z') && typeErr(() => H.api.hide(VID.sup, [BOB])) && typeErr(() => H.api.setVis(VID.sup, [BOB])) && H.api.canSee(HOST, VID.sup) === false,
+    "a supply face down: {k, b, x, y, rot, z} for all; t.hide and t.setVis on it are TypeErrors (vis is for pieces); nobody can see it");
+  // a bag: its count, never what it holds
+  ok(PEERS.every((p) => V(p).items[VID.bag].n === 6 && !('of' in V(p).items[VID.bag])) && H.api.canSee(HOST, VID.bag) === false, 'a bag: {…, n} for all, never `of`; t.canSee: a bag never');
+  H.drain();
+  // a pile: a hidden piece on top is {b, up: false} to everyone — one that had a vis too (it stays behind: D249)
+  S.api((t) => t.hide(VID.t1, [HOST]));
+  S.job(HOST, { t: 'toPile', id: VID.t1, pile: VID.pile });
+  t = tickOK(S, "Alice's private tile put on the Tiles pile");
+  const top = H.state.items[VID.pile].cards.at(-1);
+  ok(top && !('vis' in top) && PEERS.every((p) => J(V(p).items[VID.pile].top) === J({ b: `${S.box}/bt`, up: false })) && PEERS.every((p) => !t.out[p].body.vis),
+    `the pile's top for everyone, Alice included: {b, up: false}; the member carries no vis (${J(top)})`);
+  S.job(HOST, { t: 'flip', id: VID.pile });
+  tickOK(S, 'the pile turned over');
+  ok(PEERS.every((p) => V(p).items[VID.pile].top?.up === true && 't' in V(p).items[VID.pile].top), 'turned over: a shown top {t, f, up: true} for everyone');
+  // a hand: its holder's alone
+  S.job(CAROL, { t: 'toHand', id: VID.gem });
+  S.api((t) => t.hide(VID.t3, [BOB]));
+  S.job(BOB, { t: 'toHand', id: VID.t3 });
+  tickOK(S, 'Carol takes the hidden gem into her hand, Bob his private tile');
+  ok(J(V(CAROL).hand) === J(H.state.players[CAROL].hand) && V(CAROL).hand.length === 1 && V(CAROL).hand[0].up === false && 't' in V(CAROL).hand[0] && J(V(BOB).hand.map((m) => m.t)) === J([`${S.box}/tile`]) && !V(DAVE).hand.length,
+    `each hand its holder's alone ({t, f, up?} entries: ${J(V(CAROL).hand)})`);
+  ok(PEERS.every((p) => V(p).players[CAROL].handCount === 1 && V(p).players[BOB].handCount === 1 && !('hand' in V(p).players[CAROL])) && !V(DAVE).items[VID.t3] && !V(DAVE).items[VID.gem], 'everyone else: a count; the pieces gone from the table');
+  // a box missing: no full form can be built — {b: null} for everyone, the vis viewers too
+  const T = quietly(() => createTable(structuredClone(H.snapshot()), { pid: HOST })).value;
+  T.takeDirty();
+  const hid = Object.entries(T.state.items).filter(([, x]) => x.k === 'g' && x.up === false), withVis = hid.filter(([, x]) => x.vis);
+  ok(withVis.length >= 2 && hid.every(([id]) => T.pub.get(id).b === null && !('t' in T.pub.get(id)) && !('f' in T.pub.get(id))) && PEERS.every((p) => !T.mine(p).vis),
+    `the same table loaded without its catalog: every hidden piece {b: null}, and no override for anyone — ${withVis.length} with a vis (§5d)`);
+  // a peer that is no registered player: the shared form alone
+  ok(!Object.keys(H.mine(null)).length && !Object.keys(H.mine('f'.repeat(16))).length, 'a peer that is no player at the table: no part of its own, no override');
+  S.tick();
+  ok(PEERS.every((p) => canon(S.fresh(p).items) === canon(V(p).items)), "each viewer's folded view equals its own snapshot");
+}
+
+// --- (2′) private zones ------------------------------------------------------------
+function indepZones() {
+  section("(2′) private zones (spec §5a, §3a; D252, D257): entering with and without a back, 'reveal' versus 'keep', one owner's zones, another owner's, po");
+  const S = stage(), H = S.H, it = S.it, V = S.view;
+  const at = (b, k = 0) => ({ x: it(b).x + 40 + 70 * k, y: it(b).y + 10 }), mv = (p, id, spot) => S.job(p, { t: 'move', id, ...spot });
+  const is = (id, want) => J(pf(it(id))) === J({ up: true, vis: null, pv: null, po: null, owner: null, ...want });
+  // entering, a piece nobody owns: hidden for the zone's owner, pv, and the owner the zone gave (po)
+  mv(HOST, VID.t1, at(VID.rackS));
+  ok(is(VID.t1, { up: false, vis: ['seat:south'], pv: 1, po: 1, owner: 'seat:south' }), `a tile Alice sets on her rack (its board south's): face down for seat:south, pv, owned by it through po (${J(pf(it(VID.t1)))})`);
+  // a real owner is kept: no po
+  S.job(HOST, { t: 'owner', id: VID.t2, to: HOST });
+  mv(HOST, VID.t2, at(VID.rackS, 1));
+  ok(is(VID.t2, { up: false, vis: ['seat:south'], pv: 1, owner: HOST }), `her own tile: hidden there, still hers, no po (${J(pf(it(VID.t2)))})`);
+  // a 'board' zone whose board a player owns by id: Bob's rack
+  mv(CAROL, VID.t3, at(VID.rackB));
+  ok(is(VID.t3, { up: false, vis: [BOB], pv: 1, po: 1, owner: BOB }), `Carol's tile set on Bob's rack (the board his, by id): hidden for Bob, his (${J(pf(it(VID.t3)))})`);
+  const t3 = J(it(VID.t3)), r0 = mv(CAROL, VID.t3, { x: 1000, y: 1500 });
+  ok(r0.notes.join() === '🚫 That belongs to Bob' && J(it(VID.t3)) === t3, `Carol can't take it back off (${r0.notes})`);
+  // a piece hidden from everyone enters: now its zone owner's
+  mv(BOB, VID.gem, at(VID.rackN));
+  ok(is(VID.gem, { up: false, vis: ['seat:north'], pv: 1, po: 1, owner: 'seat:north' }), "the gem, hidden from everyone, set on north's rack: hidden for seat:north");
+  tickOK(S, 'tiles on racks');
+  ok('t' in V(HOST).items[VID.t1] && 't' in V(BOB).items[VID.t3] && 't' in V(BOB).items[VID.gem] && !('t' in V(BOB).items[VID.t1]) && !('t' in V(CAROL).items[VID.t3]) && !('t' in V(DAVE).items[VID.gem]),
+    'each rack shows its tiles to its owner alone');
+  // within a zone, and between two zones of one owner: nothing changes
+  const was = J(pf(it(VID.t1))), along = mv(HOST, VID.t1, at(VID.rackS, 4));
+  mv(HOST, VID.t1, at(VID.rackS2, 2));
+  ok(J(pf(it(VID.t1))) === was && it(VID.t1).x >= it(VID.rackS2).x, 'moved along her rack, then onto her second rack: up, vis, pv, po and owner as they were');
+  ok(txts(along).join() === 'moved a hidden piece', `the log names no piece hidden from anyone (§5d): "${txts(along)}"`);
+  // leaving a rack ('reveal'): face up for everyone; the owner po gave goes with it — a real owner stays
+  mv(HOST, VID.t1, { x: 1000, y: 1500 });
+  ok(is(VID.t1, {}), `played off the rack: face up, its vis, pv, po and the zone's owner gone (${J(pf(it(VID.t1)))})`);
+  mv(HOST, VID.t2, { x: 1100, y: 1500 });
+  ok(is(VID.t2, { owner: HOST }), `Alice's own tile off the rack: face up, still hers (${J(pf(it(VID.t2)))})`);
+  // into another owner's zone: the entering rule again — the owner po gave follows the zone (D252), a real one stays
+  mv(HOST, VID.t1, at(VID.rackS));
+  mv(HOST, VID.t1, at(VID.rackB, 2));
+  ok(is(VID.t1, { up: false, vis: [BOB], pv: 1, po: 1, owner: BOB }), `from Alice's rack onto Bob's: hidden for Bob, his through po (${J(pf(it(VID.t1)))})`);
+  mv(HOST, VID.t2, at(VID.rackS, 2));
+  mv(HOST, VID.t2, at(VID.rackB, 3));
+  ok(is(VID.t2, { up: false, vis: [BOB], pv: 1, owner: HOST }), `Alice's own tile onto Bob's rack: hidden for Bob, still Alice's (${J(pf(it(VID.t2)))})`);
+  mv(HOST, VID.t2, { x: 1100, y: 1500 });
+  ok(is(VID.t2, { owner: HOST }), 'she takes it off his rack (hers to move): face up again, still hers');
+  // a screen ('keep'): leaving takes pv alone — hidden still, vis, owner and po kept; a flip reveals it and po's owner goes
+  mv(BOB, VID.u2, { x: it(VID.screen).x + 200, y: it(VID.screen).y + 100 });
+  ok(is(VID.u2, { up: false, vis: ['seat:north'], pv: 1, po: 1, owner: 'seat:north' }), "a unit behind north's screen: hidden for north");
+  mv(BOB, VID.u2, { x: 1700, y: 700 });
+  ok(is(VID.u2, { up: false, vis: ['seat:north'], po: 1, owner: 'seat:north' }), `moved out from behind it: pv gone, hidden from the others still (${J(pf(it(VID.u2)))})`);
+  tickOK(S, 'a unit out from behind the screen');
+  ok('t' in V(BOB).items[VID.u2] && [HOST, CAROL, DAVE].every((p) => !('t' in V(p).items[VID.u2])), 'Bob alone sees it out there');
+  S.job(BOB, { t: 'flip', id: VID.u2 });
+  ok(is(VID.u2, {}), `Bob turns it over: public, vis, po and the owner po gave all gone (${J(pf(it(VID.u2)))})`);
+  // a screen and a rack of one owner (north's): moving between them changes nothing; leaving the rack is leaving a rack
+  mv(BOB, VID.u1, { x: it(VID.screen).x + 300, y: it(VID.screen).y + 100 });
+  const u1 = J(pf(it(VID.u1)));
+  mv(BOB, VID.u1, at(VID.rackN, 3));
+  ok(J(pf(it(VID.u1))) === u1, "from north's screen onto north's rack: nothing changes");
+  mv(BOB, VID.u1, { x: 1000, y: 700 });
+  ok(is(VID.u1, {}), `then off the rack: a rack reveals what leaves it (${J(pf(it(VID.u1)))})`);
+  // no hidden side: refused for a person before anything changes, a TypeError for a script
+  const c0 = J(it(VID.coin)), n0 = Object.keys(H.state.items).length;
+  const rc = mv(HOST, VID.coin, at(VID.rackS, 5)), rt = S.job(HOST, { t: 'take', id: VID.coins, ...at(VID.rackS, 5) });
+  ok(rc.notes.join() === '🚫 That piece has no hidden side' && rt.notes.join() === '🚫 That piece has no hidden side' && J(it(VID.coin)) === c0 && Object.keys(H.state.items).length === n0,
+    `the coin (no back) onto a rack, a coin taken from its supply onto one: "🚫 That piece has no hidden side", nothing changed (${rc.notes}; ${rt.notes})`);
+  ok(typeErr(() => H.api.move(VID.coin, at(VID.rackS, 5).x, at(VID.rackS, 5).y)) && J(it(VID.coin)) === c0, 'a script moving it there: a TypeError, the coin where it was');
+  H.drain();
+  // zones that do nothing: a board nobody owns, a seat the table lacks, a zone that isn't private
+  mv(HOST, VID.d1, at(VID.rackX));
+  mv(HOST, VID.d2, { x: it(VID.mat).x + 100, y: it(VID.mat).y + 50 });
+  mv(HOST, VID.d3, { x: it(VID.plain).x + 100, y: it(VID.plain).y + 50 });
+  ok(is(VID.d1, {}) && is(VID.d2, {}) && is(VID.d3, {}), "a rack nobody owns, a zone of a seat the table lacks (seat:west), a zone that isn't private: nothing is hidden");
+  // a zone becomes active when its board gets an owner — what lies there is untouched until it is placed again
+  S.job(HOST, { t: 'owner', id: VID.rackX, to: CAROL });
+  ok(is(VID.d1, {}), 'the host gives that rack to Carol: the die on it stays as it was (nothing was placed)');
+  mv(HOST, VID.d1, at(VID.rackX, 2));
+  ok(is(VID.d1, { up: false, vis: [CAROL], pv: 1, po: 1, owner: CAROL }), 'moved along it: hidden for Carol now');
+  // a seat's zone is active whether or not the seat is held (D252): hidden for an empty north, then seen by whoever sits there
+  S.job(HOST, { t: 'seat', p: BOB, watch: true });
+  mv(CAROL, VID.u2, { x: it(VID.screen).x + 100, y: it(VID.screen).y + 100 });
+  tickOK(S, 'north left empty; a unit set behind its screen');
+  ok(is(VID.u2, { up: false, vis: ['seat:north'], pv: 1, po: 1, owner: 'seat:north' }) && PEERS.every((p) => !('t' in V(p).items[VID.u2])), "nobody holds north: the unit hidden for seat:north, seen by no one");
+  S.job(HOST, { t: 'seat', p: DAVE, id: 'north' });
+  tickOK(S, 'Dave sits north');
+  ok('t' in V(DAVE).items[VID.u2] && !('t' in V(BOB).items[VID.u2]), 'Dave, now north, sees it; Bob, watching, does not');
+  S.job(HOST, { t: 'seat', p: DAVE, watch: true });
+  S.job(HOST, { t: 'seat', p: BOB, id: 'north' });
+  // a board's move fires nothing: it leaves its tiles as they were, and a shown piece it slides under stays shown
+  S.job(HOST, { t: 'pull', id: VID.bag, ...at(VID.rackS, 4) });
+  const pulled = Object.keys(H.state.items).find((k) => it(k).k === 'g' && it(k).pv && it(k).vis?.[0] === 'seat:south' && !Object.values(VID).includes(k));
+  ok(pulled && is(pulled, { up: false, vis: ['seat:south'], pv: 1, po: 1, owner: 'seat:south' }), 'a gem pulled from the bag straight onto her rack lands hidden there');
+  S.job(HOST, { t: 'lock', id: VID.rackS, on: false });
+  const pz = J(pf(it(pulled))), ry = it(VID.rackS).y;
+  S.job(HOST, { t: 'move', id: VID.rackS, x: it(VID.rackS).x, y: ry - 400 });
+  ok(it(VID.rackS).y < ry && J(pf(it(pulled))) === pz, `Alice moves her rack (south's) away from the gem: the gem stays as it was (${pz})`);
+  S.job(HOST, { t: 'move', id: VID.rackS, x: it(VID.t2).x - 30, y: it(VID.t2).y - 10 });
+  ok(is(VID.t2, { owner: HOST }), 'and slides it under her shown tile: the tile stays shown');
+  mv(HOST, pulled, { x: 2000, y: 1000 });
+  ok(is(pulled, { up: false, vis: ['seat:south'], po: 1, owner: 'seat:south' }), `the gem, its rack gone from under it, moved: it leaves as from a screen — hidden still, pv gone (D252) (${J(pf(it(pulled)))})`);
+  // new pieces into a zone: a deal, a take, a split, a play, a group move, t.spawn, t.move
+  const fresh = (before) => Object.keys(H.state.items).filter((k) => !before.has(k));
+  let ids = new Set(Object.keys(H.state.items));
+  let r = S.job(HOST, { t: 'deal', id: VID.pile, ...at(VID.rackS2, 5) });
+  let nu = fresh(ids);
+  ok(nu.length === 1 && is(nu[0], { up: false, vis: ['seat:south'], pv: 1, po: 1, owner: 'seat:south' }) && /^dealt a piece face down\b/.test(txts(r).join()), `a piece dealt from the pile onto her rack: hidden there; "${txts(r)}" (D257)`);
+  S.job(HOST, { t: 'owner', id: VID.sup, to: HOST });
+  ids = new Set(Object.keys(H.state.items));
+  r = S.job(HOST, { t: 'take', id: VID.sup, ...at(VID.rackS2, 4) });
+  nu = fresh(ids);
+  ok(nu.length === 1 && is(nu[0], { up: false, vis: ['seat:south'], pv: 1, owner: HOST }), `a tile taken from her own supply onto her rack: hidden, hers (the supply's owner), no po (${J(nu.map((k) => pf(it(k))))})`);
+  ids = new Set(Object.keys(H.state.items));
+  S.job(BOB, { t: 'split', id: VID.stk, n: 1, x: it(VID.screen).x + 400, y: it(VID.screen).y + 100 });
+  nu = fresh(ids);
+  ok(nu.length === 1 && is(nu[0], { up: false, vis: ['seat:north'], pv: 1, po: 1, owner: 'seat:north' }) && is(VID.stk, {}) && it(VID.stk).n === 2, 'one split off the ×3 stack onto the screen: hidden for north; the stack (×2) shown');
+  S.job(HOST, { t: 'toHand', id: VID.t2 });
+  const h0 = H.state.players[HOST].hand[0];
+  ids = new Set(Object.keys(H.state.items));
+  r = S.job(HOST, { t: 'play', idx: 0, type: h0.t, f: h0.f, ...at(VID.rackS2, 3) });
+  nu = fresh(ids);
+  ok(nu.length === 1 && is(nu[0], { up: false, vis: ['seat:south'], pv: 1, po: 1, owner: 'seat:south' }) && /^played a piece face down/.test(txts(r).join()), `played from her hand onto her rack: hidden there; "${txts(r)}" (D257)`);
+  mv(HOST, VID.d3, { x: it(VID.d4).x + 80, y: it(VID.d4).y });
+  S.job(HOST, { t: 'group', op: 'move', ids: [VID.d3, VID.d4], dx: it(VID.rackN).x + 200 - it(VID.d4).x, dy: it(VID.rackN).y + 40 - it(VID.d4).y });
+  ok(is(VID.d3, { up: false, vis: ['seat:north'], pv: 1, po: 1, owner: 'seat:north' }) && is(VID.d4, { up: false, vis: ['seat:north'], pv: 1, po: 1, owner: 'seat:north' }), "a group move of two dice onto north's rack: each placed, each hidden for north");
+  const [sp] = S.api((t) => t.spawn(it(VID.t1).t, { at: { x: at(VID.rackS2, 1).x, y: at(VID.rackS2, 1).y } }));
+  S.api((t) => t.move(VID.t3, at(VID.rackN, 5).x, at(VID.rackN, 5).y));
+  ok(is(sp, { up: false, vis: ['seat:south'], pv: 1, po: 1, owner: 'seat:south' }) && is(VID.t3, { up: false, vis: ['seat:north'], pv: 1, po: 1, owner: 'seat:north' }),
+    "t.spawn onto south's second rack and t.move from Bob's rack onto north's: each hidden for the zone it lands in");
+  tickOK(S, 'every placement into a zone');
+}
+
+// --- (3′) peek -------------------------------------------------------------------
+function indepPeek() {
+  section('(3′) peek, the piece variant (spec §5c, §5j cases 4 and 7; D255): {t, f} to the peeker alone, loud, vetoable');
+  const S = stage(), it = S.it, V = S.view;
+  S.job(HOST, { t: 'move', id: VID.t1, x: it(VID.rackS).x + 40, y: it(VID.rackS).y + 10 });
+  S.job(HOST, { t: 'hide', ids: [VID.d1] });
+  tickOK(S, "a tile on Alice's rack, her die cupped");
+  let r = S.job(DAVE, { t: 'peek', id: VID.t1 });
+  ok(r.peeks.length === 1 && r.peeks[0].p === DAVE && J(r.peeks[0].c) === J({ t: it(VID.t1).t, f: it(VID.t1).f }), `Dave peeks at Alice's rack tile — owned through po, but a peek asks no owner: {t, f} to him alone (${J(r.peeks)})`);
+  ok(J(r.lines.map((e) => [e.p, e.txt, e.k])) === J([[DAVE, 'peeked at a hidden piece', 1]]), `one line on the record, loud, naming nothing (${J(r.lines)})`);
+  let t = tickOK(S, "after Dave's peek");
+  ok(!('t' in V(DAVE).items[VID.t1]) && !Object.values(t.out).some(({ text }) => /"peek"/.test(text)), "his view still holds the back: the answer went in a note, in no body");
+  r = S.job(CAROL, { t: 'peek', id: VID.d1 });
+  ok(r.peeks.length === 1 && r.peeks[0].p === CAROL && r.peeks[0].c.f === it(VID.d1).f, "Carol peeks under Alice's cup: the die's value, to her alone");
+  r = S.job(BOB, { t: 'peek', id: VID.gem });
+  ok(r.peeks.length === 1 && J(r.peeks[0].c) === J({ t: it(VID.gem).t, f: it(VID.gem).f }) && r.lines.length === 1, 'a piece hidden from everyone: answered, loud');
+  for (const [p, id, what] of [[HOST, VID.t1, 'Alice, her own rack tile'], [HOST, VID.d1, 'Alice, her cupped die'], [BOB, VID.t2, 'a piece face up']]) {
+    r = S.job(p, { t: 'peek', id });
+    ok(!r.peeks.length && !r.lines.length && r.notes.join() === 'You can already see it', `${what}: "You can already see it", no line, no answer (${r.notes})`);
+  }
+  // a pile whose top is a hidden piece: its top; an owned pile only for its owner (§2c: mayHandle on the pile)
+  r = S.job(BOB, { t: 'peek', id: VID.pile });
+  const top = it(VID.pile).cards.at(-1);
+  ok(r.peeks.length === 1 && J(r.peeks[0].c) === J({ t: top.t, f: top.f }) && r.lines.length === 1 && r.lines[0].k === 1, `a pile whose top is a hidden piece: {t, f} of the top, loud (${J(r.lines.map((e) => e.txt))})`);
+  S.job(HOST, { t: 'owner', id: VID.pile, to: HOST });
+  r = S.job(BOB, { t: 'peek', id: VID.pile });
+  ok(!r.peeks.length && r.notes.join() === '🚫 That belongs to Alice', `Alice's pile: refused to Bob (${r.notes})`);
+  tickOK(S, 'after the peeks');
+  // vetoable: a validate that refuses peeks blocks a piece peek, with the notice
+  S.job(HOST, { t: 'setRules', enabled: true, code: "({ name: 'Shut', validate(t, a) { if (a.t === 'peek') return 'No peeking'; } })" });
+  r = S.job(DAVE, { t: 'peek', id: VID.t1 });
+  ok(!r.peeks.length && /No peeking/.test(r.notes.join()) && !r.lines.some((e) => e.txt === 'peeked at a hidden piece'), `validate vetoes it: no answer, the notice (${r.notes})`);
+  // strict refuses a peek unless it is allowed
+  S.job(HOST, { t: 'setRules', enabled: true, code: "({ name: 'Tight', strict: true })" });
+  r = S.job(DAVE, { t: 'peek', id: VID.t1 });
+  ok(!r.peeks.length && r.notes.length === 1, `strict: refused (${r.notes})`);
+  S.job(HOST, { t: 'setRules', enabled: true, code: "({ name: 'Tight', strict: true, allow: ['peek'] })" });
+  r = S.job(DAVE, { t: 'peek', id: VID.t1 });
+  ok(r.peeks.length === 1 && r.peeks[0].p === DAVE && J(r.peeks[0].c) === J({ t: it(VID.t1).t, f: it(VID.t1).f }) && r.lines.some((e) => e.txt === 'peeked at a hidden piece' && e.k === 1),
+    'strict with allow: [\'peek\']: answered through the mirror, the host took its patch');
+  ok(!S.refused.length && S.same(), `host and mirror agree, no patch refused (${S.refused.join('; ')})`);
+  tickOK(S, 'with the rules on');
+}
+
+// --- (4′) hide, roll and flip of hidden dice; the private-piece rule ---------------------------
+function indepHide() {
+  section('(4′) hide, roll and flip of hidden dice; the private-piece rule (spec §5c, §5j cases 5, 6, 8, 9, 11; D253, D254, D256)');
+  const S = stage(), H = S.H, it = S.it, V = S.view, is = (id, want) => J(pf(it(id))) === J({ up: true, vis: null, pv: null, po: null, owner: null, ...want });
+  S.job(HOST, { t: 'owner', id: VID.d2, to: HOST });
+  S.job(HOST, { t: 'owner', id: VID.d3, to: 'seat:south' });
+  let r = S.job(HOST, { t: 'hide', ids: [VID.d1, VID.d2, VID.d3] });
+  ok(is(VID.d1, { up: false, vis: [HOST], po: 1, owner: HOST }), `hide on a die nobody owned: hidden for Alice, hers, po (${J(pf(it(VID.d1)))})`);
+  ok(is(VID.d2, { up: false, vis: [HOST], owner: HOST }), `on one she owned: no po (${J(pf(it(VID.d2)))})`);
+  ok(is(VID.d3, { up: false, vis: [HOST], owner: 'seat:south' }), `on one her seat owns: vis is her id, not her seat (§5c's decision); the seat keeps it; no po (${J(pf(it(VID.d3)))})`);
+  ok(txts(r).join() === 'hid 3 pieces', `"hid 3 pieces" (${txts(r)})`);
+  r = S.job(BOB, { t: 'hide', ids: [VID.u1] });
+  ok(txts(r).join() === 'hid Qx04a' && is(VID.u1, { up: false, vis: [BOB], po: 1, owner: BOB }), `one piece: "hid {label}", as it showed a moment ago (${txts(r)})`);
+  tickOK(S, 'three dice cupped, a unit hidden');
+  // flip (Reveal) clears both: the owner po gave and po; an owner of her own stays
+  r = S.job(HOST, { t: 'flip', id: VID.d1 });
+  ok(is(VID.d1, {}) && txts(r).join() === `turned over ${it(VID.d1) && H.state.boxes[S.box].types.die.faces[it(VID.d1).f].label}`, `Alice reveals d1: face up, vis, po and the owner po gave all gone; "${txts(r)}"`);
+  S.job(HOST, { t: 'flip', id: VID.d2 });
+  ok(is(VID.d2, { owner: HOST }), 'd2, which she owned before: face up, still hers');
+  // the private-piece rule: whoever neither sees nor owns a private piece is refused flip, roll and face, uniformly, before any other check
+  S.job(HOST, { t: 'hide', ids: [VID.d1] });
+  const before = J(H.state.items);
+  const tries = [[{ t: 'flip', id: VID.d1 }], [{ t: 'roll', ids: [VID.d1] }], [{ t: 'face', id: VID.d1, f: 1 }], [{ t: 'face', id: VID.d1, f: 99 }],
+    [{ t: 'roll', ids: [VID.u1] }], [{ t: 'face', id: VID.u1, f: 1 }], [{ t: 'flip', id: VID.u1 }]].map(([a]) => [a.t, S.job(CAROL, a).notes.join()]);
+  ok(tries.every(([, n]) => n === '🚫 That piece is hidden') && J(H.state.items) === before,
+    `Carol on Alice's cupped die and Bob's hidden unit — flip, roll, face (a face out of range too), a roll of what isn't a die: each "🚫 That piece is hidden", nothing changed (${J(tries)})`);
+  // a script's unit hidden for a seat, with no owner (case 9): refused uniformly to south; north rolls it
+  S.api((t) => t.hide(VID.d4, ['seat:north']));
+  const d4 = J(it(VID.d4)), nine = [{ t: 'flip', id: VID.d4 }, { t: 'roll', ids: [VID.d4] }, { t: 'face', id: VID.d4, f: 0 }].map((a) => S.job(HOST, a).notes.join());
+  ok(!it(VID.d4).owner && nine.every((n) => n === '🚫 That piece is hidden') && J(it(VID.d4)) === d4, `t.hide(d4, ['seat:north']), no owner: Alice's flip, roll and face, "🚫 That piece is hidden" (${J(nine)})`);
+  r = S.job(BOB, { t: 'roll', ids: [VID.d4] });
+  ok(!r.notes.length && txts(r).join() === 'rolled a hidden die', `Bob, north, in its vis, rolls it: "${txts(r)}"`);
+  // an owner its vis doesn't name may turn it over, roll it and set its face ("unless the actor owns it")
+  S.job(HOST, { t: 'owner', id: VID.u2, to: HOST });
+  S.api((t) => { t.hide(VID.u2, [BOB]); t.hide(VID.d2, [BOB]); });
+  r = S.job(HOST, { t: 'face', id: VID.u2, f: 0 });
+  ok(it(VID.u2).f === 0 && txts(r).join() === 'turned a hidden piece', `Alice owns u2, hidden for Bob alone: she sets its face — "${txts(r)}"`);
+  r = S.job(HOST, { t: 'roll', ids: [VID.d2] });
+  ok(!r.notes.length && txts(r).join() === 'rolled a hidden die', 'and rolls her die hidden for Bob');
+  tickOK(S, 'an owner outside the vis acts');
+  ok(!('t' in V(HOST).items[VID.u2]) && 't' in V(BOB).items[VID.u2] && V(BOB).items[VID.u2].f === 0, 'the face she set shows to Bob alone; she still sees the back');
+  S.job(HOST, { t: 'flip', id: VID.u2 });
+  ok(is(VID.u2, { owner: HOST }), 'and turns it over: public, still hers');
+  // a piece hidden from everyone (no vis) is unaffected: anyone who may handle it turns it over; a roll is refused (§2c)
+  S.job(HOST, { t: 'flip', id: VID.d2 }); // (Alice owns d2: revealed)
+  S.job(HOST, { t: 'flip', id: VID.d2 }); // (face down again, for nobody)
+  ok(is(VID.d2, { up: false, owner: HOST }), 'd2 turned face down: hidden from everyone, Alice its owner');
+  ok(S.job(HOST, { t: 'roll', ids: [VID.d2] }).notes.join() === '🚫 That piece is hidden', 'its owner may not roll a die hidden from everyone (§2c: no vis, no exception)');
+  r = S.job(DAVE, { t: 'flip', id: VID.gem });
+  ok(is(VID.gem, {}) && !r.notes.length, 'anyone turns over a piece hidden from everyone that they may handle (the gem: Dave)');
+  // rolls: everyone sees the tumble; the line names the shown dice's values alone
+  S.job(HOST, { t: 'flip', id: VID.d2 });
+  S.api((t) => t.reveal(VID.d4));
+  S.job(HOST, { t: 'hide', ids: [VID.d2] }); // (d1 and d2 under Alice's cup; d3 hers, turned up; d4 shown)
+  S.job(HOST, { t: 'flip', id: VID.d3 });
+  tickOK(S, 'two dice cupped, two shown');
+  const label = (id) => H.state.boxes[S.box].types.die.faces[it(id).f].label, four = [VID.d1, VID.d2, VID.d3, VID.d4];
+  r = S.job(HOST, { t: 'roll', ids: four });
+  let t = tickOK(S, 'a roll of two cupped and two shown dice');
+  ok(txts(r).join() === `rolled 4 dice (2 hidden): ${label(VID.d3)} · ${label(VID.d4)}`, `"rolled 4 dice (2 hidden): a · b" — the shown dice's values in id order (${txts(r)})`);
+  ok([BOB, CAROL, DAVE].every((p) => four.every((id) => (t.out[p].body.fx || []).some((f) => f.roll?.includes(id)))) && [VID.d1, VID.d2].every((id) => V(HOST).items[id].f === it(id).f),
+    "every die tumbles on every screen; the cupped dice's results reach Alice alone");
+  ok(txts(S.job(HOST, { t: 'roll', ids: [VID.d1, VID.d2] })).join() === 'rolled 2 hidden dice' && txts(S.job(HOST, { t: 'roll', ids: [VID.d1] })).join() === 'rolled a hidden die', '"rolled 2 hidden dice", "rolled a hidden die"');
+  r = S.job(HOST, { t: 'group', op: 'roll', ids: four });
+  ok(txts(r).join() === `rolled 4 dice (2 hidden): ${label(VID.d3)} · ${label(VID.d4)}`, `a group roll: the same line (${txts(r)})`);
+  const [, ln] = S.api((t) => t.roll(VID.d1));
+  ok(J(ln.map((e) => [e.p, e.txt])) === J([[RULES, 'rolled a hidden die']]), `t.roll of a cupped die: "📜 Rules rolled a hidden die" (${J(ln)})`);
+  tickOK(S, 'after the rolls');
+  // forged fields are ignored (case 6): no action sets anyone's vis but the actor's own hide
+  const t1 = pf(it(VID.t1));
+  S.job(DAVE, { t: 'move', id: VID.t1, x: 500, y: 600, vis: [DAVE], up: false, pv: 1, po: 1, owner: DAVE });
+  ok(J(pf(it(VID.t1))) === J(t1) && it(VID.t1).x === 500, `Dave's move carrying vis, up, pv, po and owner: moved, nothing else (${J(pf(it(VID.t1)))})`);
+  S.job(DAVE, { t: 'hide', ids: [VID.t3], vis: [DAVE, BOB], up: true, owner: BOB });
+  ok(is(VID.t3, { up: false, vis: [DAVE], po: 1, owner: DAVE }), `his hide carrying vis [Dave, Bob] and up: hidden for Dave alone (${J(pf(it(VID.t3)))})`);
+  // hide's own checks (§5j): a back, mayHandle, notLocked
+  S.job(HOST, { t: 'lock', id: VID.t2, on: true });
+  const five = [[VID.t2, 'locked'], [VID.d3, "Alice's (south's)"], [VID.coin, 'no back'], [VID.d1, 'cupped by Alice']].map(([id, what]) => [what, S.job(BOB, { t: 'hide', ids: [id] }).notes.join()]);
+  ok(J(five) === J([['locked', '🔒 That is locked in place'], ["Alice's (south's)", '🚫 That belongs to South'], ['no back', '🚫 That piece has no hidden side'], ['cupped by Alice', '🚫 That piece is hidden']]),
+    `Bob's hides refused: ${J(five)}`);
+  // a group hide: each member as a hide, one line; the flood cost of a group
+  r = S.job(CAROL, { t: 'group', op: 'hide', ids: [VID.u1, VID.stk, VID.coin] });
+  ok(is(VID.stk, { up: false, vis: [CAROL], po: 1, owner: CAROL }) && txts(r).join() === 'hid 1 piece' && /^2 of 3 were skipped: /.test(r.notes.join()),
+    `Carol's group hide of Bob's unit, the stack and the coin: the stack hidden for her, the rest skipped — one line, one notice (${txts(r)}; ${r.notes})`);
+  ok(GROUP_OPS.includes('hide') && RULED_ACTIONS.includes('hide') && PUBLIC_ACTIONS.includes('hide') && floodCost({ t: 'group', op: 'hide', ids: Array.from({ length: 40 }, (_, k) => `x${k}`) }) === 3 && floodCost({ t: 'hide', ids: [VID.t1] }) === 1,
+    'hide: a public, ruled action; a group op costing 1 + ⌊N/20⌋ (40 members: 3)');
+  tickOK(S, 'the end of (4′)');
+}
+
+// --- (5′) a seat changes hands --------------------------------------------------------
+function indepSeats() {
+  section('(5′) byVis: a seat changing hands re-sends every piece seen by that seat (spec §5a, §5j case 3; D251)');
+  const S = stage(), H = S.H, V = S.view;
+  S.api((t) => { t.hide(VID.u1, ['seat:north']); t.hide(VID.u2, [BOB]); t.hide(VID.t1, ['seat:east']); t.hide(VID.t2, ['seat:north', 'seat:east']); });
+  tickOK(S, "pieces seen by north, by Bob's id, by east, by both seats");
+  const sees = (p, id) => 't' in V(p).items[id];
+  ok(sees(BOB, VID.u1) && sees(BOB, VID.u2) && sees(CAROL, VID.t1) && sees(BOB, VID.t2) && sees(CAROL, VID.t2) && !sees(DAVE, VID.u1), 'Bob sees north\'s and his own, Carol east\'s, both the shared one, Dave none');
+  // north changes hands in one tick: Bob to the watchers, Dave north
+  S.job(HOST, { t: 'seat', p: BOB, watch: true });
+  S.job(HOST, { t: 'seat', p: DAVE, id: 'north' });
+  let t = tickOK(S, 'Bob stands up, Dave sits north');
+  ok(t.d.items.has(VID.u1) && t.d.items.has(VID.t2), "the pieces north's seat sees are re-sent (touched)");
+  ok(sees(DAVE, VID.u1) && !sees(BOB, VID.u1) && sees(BOB, VID.u2) && !sees(DAVE, VID.u2) && !!t.out[BOB].body.items?.[VID.u1] && !t.out[BOB].body.vis?.[VID.u1],
+    "Dave gains north's piece; Bob is sent its reduced form, and keeps the one his id sees, which Dave never gets");
+  // the seat left empty: nobody sees what it sees
+  S.job(HOST, { t: 'seat', p: DAVE, watch: true });
+  t = tickOK(S, 'Dave stands up: north is empty');
+  ok(t.d.items.has(VID.u1) && PEERS.every((p) => !sees(p, VID.u1)) && sees(CAROL, VID.t2), "nobody sees north's piece; the one both seats see, east still sees");
+  // a player sitting down by himself
+  S.job(BOB, { t: 'seat', id: 'north' });
+  tickOK(S, 'Bob sits north again');
+  ok(sees(BOB, VID.u1) && sees(BOB, VID.t2), 'Bob sees north\'s pieces again');
+  // two seats change hands in one tick
+  S.job(HOST, { t: 'seat', p: CAROL, watch: true });
+  S.job(HOST, { t: 'seat', p: BOB, id: 'east' });
+  S.job(HOST, { t: 'seat', p: CAROL, id: 'north' });
+  t = tickOK(S, 'Bob moves east, Carol north');
+  ok(t.d.items.has(VID.u1) && t.d.items.has(VID.t1) && sees(CAROL, VID.u1) && !sees(CAROL, VID.t1) && sees(BOB, VID.t1) && sees(BOB, VID.u2) && !sees(BOB, VID.u1), 'each sees what their new seat sees, and Bob still what his id sees');
+  // a newcomer who takes a free seat on joining (D251: whatever path)
+  S.job(HOST, { t: 'seat', p: CAROL, watch: true });
+  S.peers.set(EVE, { view: null });
+  S.job(EVE, { t: '_join', name: 'Eve' });
+  t = tickOK(S, 'Carol leaves north; Eve joins');
+  ok(H.state.players[EVE].seatId === 'north' && sees(EVE, VID.u1) && !sees(CAROL, VID.u1) && t.d.items.has(VID.u1), `Eve, seated north as she joins, gets north's piece; Carol, watching, its back (Eve: ${H.state.players[EVE].seatId})`);
+  // the rules re-seat everyone: t.setSeats
+  S.api((t) => t.setSeats([{ id: 'east', name: 'East', edge: 'right' }, { id: 'north', name: 'North', edge: 'top' }, { id: 'south', name: 'South', edge: 'bottom' }]));
+  t = tickOK(S, 't.setSeats re-seats the table');
+  const north = sitter(H, 'north'), east = sitter(H, 'east');
+  ok(PEERS.concat(EVE).every((p) => sees(p, VID.u1) === (p === north) && sees(p, VID.t1) === (p === east)), `after t.setSeats: north's piece to ${nm(north)}, east's to ${nm(east)}, and to no one else`);
+}
+
+// --- (6′) MIGRATE[5] -------------------------------------------------------------------
+function indepMigrate() {
+  section('(6′) MIGRATE[5]: a v5 save becomes v6 and nothing else changes; private fields are saved as they are (spec §5h; D262)');
+  ok(STATE_V === 6 && PROTO === 6 && MAX_VIS === 8 && typeof MIGRATE[5] === 'function' && MIGRATE[6] === undefined, `STATE_V 6, PROTO 6, MAX_VIS 8, MIGRATE[5] the last step (${STATE_V}, ${PROTO}, ${MAX_VIS})`);
+  const S = stage();
+  S.job(HOST, { t: 'flip', id: VID.t1 }); // (a piece hidden from everyone: what a v5 table can hold)
+  const save = (T) => structuredClone({ ...T.H.snapshot(), decks: T.H.state.decks, boxes: T.H.state.boxes, boxSrc: T.H.state.boxSrc });
+  const v5 = { ...save(S), v: 5 };
+  const m = MIGRATE[5](structuredClone(v5));
+  ok(m.v === 6 && canon({ ...m, v: 5 }) === canon(v5), 'MIGRATE[5]: v 6, every other field as it was');
+  ok(canon(migrate(structuredClone(v5))) === canon(m), 'migrate() of a v5 save stops at v6');
+  const v1 = { seq: 3, size: 1800, items: { c1: { k: 'c', d: 'dd000001', i: 0, up: false, x: 10, y: 20, rot: 0, z: 1 } }, players: { [HOST]: { name: 'Alice', color: '#f00', online: true, hand: [], seat: 90, key: 'k1' } }, log: [] };
+  ok(migrate(structuredClone(v1)).v === 6, 'a save from before Phase 1 runs the whole chain to v6');
+  ok(/newer/.test(thrown(() => migrate({ v: 7 }))), 'a v7 save is refused, never downgraded');
+  const T = quietly(() => createTable(structuredClone(v5), { pid: HOST })).value;
+  T.takeDirty();
+  const priv = Object.entries(T.state.items).filter(([, x]) => 'vis' in x || 'pv' in x || 'po' in x);
+  ok(T.state.v === 6 && !priv.length && T.pub.get(VID.t1).b && !('t' in T.pub.get(VID.t1)) && PEERS.every((p) => !T.mine(p).vis && hiddenFrom(p, T.state.items[VID.t1], (s) => sitter({ state: T.state }, s))),
+    'the v5 save loaded: v 6, no item given a vis, pv or po, the hidden tile hidden from everyone, no override');
+  // a v6 save keeps what is private, as plain item fields
+  S.job(HOST, { t: 'hide', ids: [VID.d1] });
+  S.job(HOST, { t: 'move', id: VID.t2, x: S.it(VID.rackS).x + 40, y: S.it(VID.rackS).y + 10 });
+  S.api((t) => t.hide(VID.u1, ['seat:north']));
+  const v6 = save(S), U = quietly(() => createTable(structuredClone(v6), { pid: HOST })).value;
+  U.takeDirty();
+  ok(canon(U.state.items) === canon(S.H.state.items) && PEERS.every((p) => canon(U.mine(p).vis ?? null) === canon(S.H.mine(p).vis ?? null)) && !!U.mine(BOB).vis?.[VID.u1] && !!U.mine(HOST).vis?.[VID.d1],
+    'a v6 save with a cup, a rack tile and a seat-ref unit: loaded with the same items, and each viewer gets the same full forms');
+}
+
+// --- (7′) a seeded random run of 500 ops --------------------------------------------
+/** One seeded run of 500 ops on MANY by Alice, Bob, Carol and Dave (three
+ *  seated, one watching, the seats changing hands as it goes), with the
+ *  rules off (the facade called as a hook would) or on (every job in the
+ *  mirror, its patch checked by the host; the facade through VEX). After
+ *  every op one broadcast tick, and: every body audited (audit: §5d's
+ *  shared forms, the overrides, every view equal to the oracle); no body's
+ *  text, and no notice, names a face label or carries a type ref of a
+ *  piece its viewer could not see before the op nor after it (sight) —
+ *  every piece of MANY's own types is one of a kind, so either would be a
+ *  hidden identity —; every peek answered to its asker alone, with what the
+ *  piece is. At the end every folded view equals its own snapshot. */
+function fuzzRun(seed, rules) {
+  const S = stage({ def: MANY, seed, prefix: rules ? '7' : '8' }), H = S.H, it = S.it, rnd = rng(seed * 7919 + 1);
+  if (rules) S.job(HOST, { t: 'setRules', enabled: true, code: VEX });
+  for (const b of BOARDS) S.job(HOST, { t: 'lock', id: b, on: false }); // (boards may move: a move fires nothing, D252)
+  S.tick();
+  const TYPE_RE = new RegExp(`${S.box}/p\\d\\d`, 'g'), LABEL_RE = /Qx\d\d[a-f]/g;
+  const stats = { ops: 0, overrides: 0, zoned: 0, seated: 0, peeks: 0, facade: 0 }, bad = [], leaks = [];
+  const pieces = () => Object.keys(H.state.items).filter((k) => it(k).k === 'g' && !(it(k).z < 0));
+  const dice = () => pieces().filter((k) => typeAt(H.state.boxes, it(k).t)?.kind === 'die');
+  /** A random place: inside a board (a rack, a screen, a zone that does nothing, the grid) most of the time, else on the open felt. */
+  const spot = () => {
+    const b = it(rnd.pick(BOARDS)), ty = b && typeAt(H.state.boxes, b.t);
+    if (ty && rnd() < 0.7) return { x: b.x + 10 + rnd.int(Math.max(1, ty.w - 80)), y: b.y + 5 + rnd.int(Math.max(1, ty.h - 130)) };
+    return { x: 100 + rnd.int(2600), y: 620 + rnd.int(500) };
+  };
+  const refsFor = (p) => rnd.pick([[], [p], ['seat:north'], [BOB, 'seat:east'], ['seat:south', CAROL], [DAVE]]);
+  const facade = (op, ...args) => {
+    stats.facade++;
+    if (rules) return S.job(HOST, { t: 'chat', msg: J([op, ...args]) });
+    S.api((t) => { try { return op === 'spawnLike' ? t.spawn(t.item(args[0]).t, args[1]) : t[op](...args); } catch (e) { if (e instanceof TypeError) return null; throw e; } });
+    return null;
+  };
+  for (let k = 0; k < 500; k++) {
+    const before = new Map([...S.peers.keys()].map((V) => [V, sight(H, V)]));
+    const p = rnd.pick(PEERS), id = rnd.pick(pieces()), r = rnd(), hand = H.state.players[p].hand, held = J(['south', 'north', 'east'].map((x) => sitter(H, x)));
+    let res, asked = null;
+    if (r < 0.27) res = S.job(p, { t: 'move', id, ...spot() });
+    else if (r < 0.35) res = S.job(p, { t: 'hide', ids: [...new Set([id, ...(rnd() < 0.3 ? [rnd.pick(pieces())] : [])])] });
+    else if (r < 0.42) res = S.job(p, { t: 'flip', id });
+    else if (r < 0.47) res = S.job(p, { t: 'roll', ids: [...new Set([rnd.pick(dice()), rnd.pick(dice())])] });
+    else if (r < 0.51) res = S.job(p, { t: 'face', id, f: rnd.int(2) });
+    else if (r < 0.55) res = S.job(p, { t: 'peek', id: (asked = rnd() < 0.9 || !it(MID.pile) ? id : MID.pile) });
+    else if (r < 0.59) res = S.job(p, { t: 'pull', id: MID.bag, ...spot() });
+    else if (r < 0.62) res = S.job(p, { t: 'take', id: MID.sup, ...spot() });
+    else if (r < 0.66) res = hand.length && rnd() < 0.6 ? S.job(p, { t: 'play', idx: 0, type: hand[0].t, f: hand[0].f, ...spot() }) : S.job(p, { t: 'toHand', id });
+    else if (r < 0.70) res = S.job(p, { t: 'group', op: rnd.pick(['hide', 'move', 'flip', 'roll']), ids: [...new Set([id, rnd.pick(pieces()), rnd.pick(pieces())])], dx: 40, dy: 10 });
+    else if (r < 0.74) res = S.job(rnd() < 0.5 ? p : HOST, { t: 'owner', id: rnd() < 0.2 ? rnd.pick(BOARDS) : id, to: rnd.pick([p, null, rnd.pick(PEERS), 'seat:south', 'seat:north']) });
+    else if (r < 0.77) res = it(MID.pile) ? S.job(p, rnd() < 0.5 ? { t: 'deal', id: MID.pile, ...spot(), up: rnd() < 0.3 } : { t: 'toPile', id, pile: MID.pile }) : null;
+    else if (r < 0.87) {
+      const op = rnd.pick(['hide', 'setVis', 'reveal', 'spawnLike', 'move', 'roll']), refs = refsFor(p), at = spot();
+      if (op === 'hide') res = facade('hide', id, refs);
+      else if (op === 'setVis') res = facade('setVis', id, refs.length ? refs : null);
+      else if (op === 'reveal') res = facade('reveal', id);
+      else if (op === 'spawnLike') res = facade('spawnLike', MID.sup, { at, up: false, ...(refs.length && { vis: refs }) });
+      else if (op === 'move') res = facade('move', id, at.x, at.y);
+      else res = facade('roll', rnd.pick(dice()));
+    } else if (r < 0.94) {
+      const q = rnd.pick(PEERS), s = rnd.pick(['south', 'north', 'east', null]);
+      res = S.job(HOST, s ? { t: 'seat', p: q, id: s } : { t: 'seat', p: q, watch: true });
+    } else { const b = rnd.pick(BOARDS); res = it(b) && S.job(p, { t: 'move', id: b, x: it(b).x + rnd.pick([-120, 120]), y: it(b).y + rnd.pick([-60, 60]) }); }
+    stats.ops++;
+    // peeks: to the asker alone, what the piece is (a pile: its top), and only of what the asker didn't see
+    for (const e of res?.peeks || []) {
+      const x = it(asked), m = x?.k === 'p' ? x.cards.at(-1) : x;
+      stats.peeks++;
+      if (e.p !== p || !m || J(e.c) !== J({ t: m.t, f: m.f }) || (x.k === 'g' && !veiled(H, p, x))) leaks.push(`${k}: a peek ${J(e)} for ${nm(p)}, who asked about ${asked}`);
+    }
+    const t = S.tick();
+    for (const why of audit(S, t.out)) bad.push(`${k}: ${why}`);
+    const after = new Map([...S.peers.keys()].map((V) => [V, sight(H, V)]));
+    for (const [V, { body, text }] of Object.entries(t.out)) {
+      const a = before.get(V), z = after.get(V);
+      const names = (text.match(LABEL_RE) || []).filter((l) => !a.labels.has(l) && !z.labels.has(l)), refs = (text.match(TYPE_RE) || []).filter((x) => !a.types.has(x) && !z.types.has(x));
+      if (names.length || refs.length) leaks.push(`${k}: ${nm(V)}'s body names ${J([...new Set([...names, ...refs])])}: ${text.match(new RegExp(`.{0,80}(${[...names, ...refs][0].replace('/', '\\/')}).{0,40}`))?.[0]}`);
+      if (body.vis) stats.overrides++;
+    }
+    for (const e of (res?.fx || []).filter((x) => x.t === 'note')) {
+      const a = before.get(e.p), z = after.get(e.p), names = (e.msg.match(LABEL_RE) || []).filter((l) => !a?.labels.has(l) && !z?.labels.has(l));
+      if (names.length) leaks.push(`${k}: a notice to ${nm(e.p)} names ${names}: ${e.msg}`);
+    }
+    if (pieces().some((x) => it(x).pv)) stats.zoned++;
+    const moved = ['south', 'north', 'east'].filter((x, j) => JSON.parse(held)[j] !== sitter(H, x));
+    if (moved.some((x) => (H.byVis.get(`seat:${x}`)?.size ?? 0) > 0)) stats.seated++; // (a seat changed hands while pieces were seen by it)
+  }
+  S.tick();
+  const stale = [...S.peers.keys()].filter((V) => { const w = S.fresh(V), g = S.view(V); return ['items', 'players', 'hand', 'log', 'seats', 'table'].some((f) => canon(w[f]) !== canon(g[f])); });
+  const tag = `seed ${seed}, rules ${rules ? 'on' : 'off'}`;
+  ok(stats.ops === 500 && stats.overrides > 20 && stats.zoned > 50 && stats.peeks > 3 && stats.seated > 3 && stats.facade > 30, `${tag}: 500 ops, with what they must cover (${J(stats)})`);
+  ok(!bad.length, `${tag}: every tick's bodies as §5d says, every viewer's folded view equal to what the rule says it holds (${bad.length} problems${bad.length ? `: ${bad.slice(0, 3).join('; ')}` : ''})`);
+  ok(!leaks.length, `${tag}: no body and no notice gave a viewer a hidden piece's type, face or value; every peek its asker's alone (${leaks.length}${leaks.length ? `: ${leaks.slice(0, 3).join('; ')}` : ''})`);
+  ok(!stale.length, `${tag}: each viewer's folded patches equal its own full snapshot — items, players, hand, log, seats, table (${stale.map(nm).join(', ') || 'all four'})`);
+  if (rules) ok(!S.refused.length && S.same(), `${tag}: the host took every patch the mirror made, and both hold one table (${S.refused.slice(0, 2).join('; ') || 'digests equal'})`);
+}
+function indepFuzz() {
+  section('(7′) seeded random runs of 500 ops with three viewers (and a watcher): folded patches equal each viewer\'s snapshot, and no body ever shows a viewer a hidden piece\'s type, face or value (spec §5l item 7, §0.1.3, §5b, §5d)');
+  for (const seed of seeds([21, 22])) fuzzRun(seed, seed % 2 === 0); // (an odd seed with the rules off, an even one with them on)
+}
+
+// --- (8′) export round trip -------------------------------------------------------------
+/** The rank of each seated player as an export writes it ("#k", clockwise from the bottom: §4a). */
+const ranks = (H) => new Map(Object.entries(H.state.players).filter(([, pl]) => pl.seat != null).sort(([, a], [, b]) => ((a.seat - 90 + 360) % 360) - ((b.seat - 90 + 360) % 360)).map(([q], k) => [q, `#${k + 1}`]));
+function indepExport() {
+  section("(8′) the setup grammar's vis and po, laid out (spec §5h, §4a): 'seat' in forEachSeat, a seat ref, \"#k\", po; a private zone hides what a setup places in it");
+  const GRAM = { ...VAULT, name: 'Vault grammar', setup: [BOARD_SETUP[0],
+    { forEachSeat: [{ piece: 'die', at: { seat: [300, 400] }, up: false, vis: 'seat', owner: 'seat', po: true }] },
+    { piece: 'unit', at: [1000, 1000], up: false, vis: ['#2', 'seat:east'], owner: '#1', po: true, id: 'e2000099' },
+    { piece: 'tile', at: [340, 1830], id: 'e2000098' }] };
+  const G = stage({ def: GRAM, prefix: '3' });
+  G.job(HOST, { t: 'setup', box: G.box }); // (again, now that everyone sits where the stage seats them: "#k" counts them)
+  const dice = Object.entries(G.H.state.items).filter(([, x]) => x.t?.endsWith('/die')).map(([, x]) => pf(x)).sort((a, b) => (a.owner < b.owner ? -1 : 1));
+  ok(J(dice) === J(['east', 'north', 'south'].map((s) => ({ up: false, vis: [`seat:${s}`], pv: null, po: 1, owner: `seat:${s}` }))), `forEachSeat's vis: 'seat' and owner: 'seat', po: each seat's die hidden for that seat, its owner through po (${J(dice)})`);
+  ok(J(pf(G.it('e2000099'))) === J({ up: false, vis: [BOB, 'seat:east'], pv: null, po: 1, owner: HOST }), `vis ["#2", "seat:east"], owner "#1", po: Bob (north, the 2nd clockwise) and east's seat; Alice's through po (${J(pf(G.it('e2000099')))})`);
+  ok(J(pf(G.it('e2000098'))) === J({ up: false, vis: ['seat:south'], pv: 1, po: 1, owner: 'seat:south' }), "a tile the setup places on south's rack: hidden there, as any placement would");
+  tickOK(G, 'the grammar laid out');
+  section('(8′) export round trip of private material into a fresh table (spec §5l item 8, §5h, §4c; D249, D259)');
+  const A = stage(), H = A.H, it = A.it, at = (b, k = 0) => ({ x: it(b).x + 40 + 70 * k, y: it(b).y + 10 });
+  // cupped dice: one nobody owned (po), one she owned
+  A.job(HOST, { t: 'owner', id: VID.d2, to: HOST });
+  A.job(HOST, { t: 'hide', ids: [VID.d1, VID.d2] });
+  // rack tiles: one the rack made its seat's (pv, po), one of Alice's own (pv)
+  A.job(HOST, { t: 'move', id: VID.t1, ...at(VID.rackS) });
+  A.job(HOST, { t: 'owner', id: VID.t2, to: HOST });
+  A.job(HOST, { t: 'move', id: VID.t2, ...at(VID.rackS, 1) });
+  // a unit that left north's screen (vis, po, no pv)
+  A.job(BOB, { t: 'move', id: VID.u2, x: it(VID.screen).x + 100, y: it(VID.screen).y + 50 });
+  A.job(BOB, { t: 'move', id: VID.u2, x: 1700, y: 700 });
+  // the script's: seat refs, no owner; a player and a seat
+  A.api((t) => { t.hide(VID.u1, ['seat:north', 'seat:east']); t.hide(VID.t3, [CAROL, 'seat:south']); });
+  // a gem on north's rack (the board's owner a seat)
+  A.job(BOB, { t: 'move', id: VID.gem, ...at(VID.rackN) });
+  // beyond §5l's list — what the export must not give away either: a tile its rack moved away from (pv, no zone under it), a tile on a rack given to someone else since
+  A.job(HOST, { t: 'take', id: VID.sup, ...at(VID.rackS2, 2) });
+  const away = Object.keys(H.state.items).find((k) => it(k).pv && it(k).x === at(VID.rackS2, 2).x);
+  A.job(HOST, { t: 'lock', id: VID.rackS2, on: false });
+  A.job(HOST, { t: 'move', id: VID.rackS2, x: 1900, y: 1300 });
+  A.job(CAROL, { t: 'pull', id: VID.bag, ...at(VID.rackB, 1) });
+  const given = Object.keys(H.state.items).find((k) => it(k).pv && J(it(k).vis) === J([BOB]));
+  A.job(HOST, { t: 'owner', id: VID.rackB, to: CAROL });
+  // and a tile on south's rack the script gave to north (t.setVis, as Veiled Ranks' step() does for a unit in the other side's rows, D273): pv, vis north
+  A.job(HOST, { t: 'take', id: VID.sup, ...at(VID.rackS, 5) });
+  const handed = Object.keys(H.state.items).find((k) => it(k).pv && it(k).x === at(VID.rackS, 5).x && it(k).y === at(VID.rackS, 5).y);
+  A.api((t) => t.setVis(handed, ['seat:north']));
+  A.tick();
+  ok(away && given && handed && it(away).up === false && J(it(away).vis) === J(['seat:south']) && J(it(given).vis) === J([BOB]) && it(VID.rackB).owner === CAROL && it(handed).pv && J(it(handed).vis) === J(['seat:north']),
+    "the scene: a tile its rack (south's) was moved away from, hidden for south; a gem on Bob's rack, hidden for Bob, the rack Carol's since; a tile on south's rack the script set for north");
+  const K = ranks(H), { box, warnings } = quietly(() => H.exportBox()).value, E = Object.fromEntries(box.setup.filter((e) => e.id).map((e) => [e.id, e]));
+  const pick = (e) => Object.fromEntries(['up', 'vis', 'owner', 'po'].filter((k) => k in e).map((k) => [k, e[k]]));
+  ok(!warnings.length && J(pick(E[VID.d1])) === J({ up: false, vis: [K.get(HOST)], owner: K.get(HOST), po: true }) && J(pick(E[VID.d2])) === J({ up: false, vis: [K.get(HOST)], owner: K.get(HOST) }),
+    `cupped dice: up false, vis and owner as "#k", po on the one the cup made hers (${J([pick(E[VID.d1]), pick(E[VID.d2])])})`);
+  ok(J(pick(E[VID.t1])) === J({}) && J(pick(E[VID.t2])) === J({ owner: K.get(HOST) }) && J(pick(E[VID.gem])) === J({}),
+    `rack tiles: no up, no vis, and no owner where the rack gave it — their racks hide them again (${J([pick(E[VID.t1]), pick(E[VID.t2]), pick(E[VID.gem])])})`);
+  ok(J(pick(E[VID.u2])) === J({ up: false, vis: ['seat:north'], owner: 'seat:north', po: true }), `the unit out of its screen: up false, vis, owner, po (${J(pick(E[VID.u2]))})`);
+  ok(J(pick(E[VID.u1])) === J({ up: false, vis: ['seat:north', 'seat:east'] }) && J(pick(E[VID.t3])) === J({ up: false, vis: [K.get(CAROL), 'seat:south'] }),
+    `the script's: seat refs kept, a player as "#k", no owner (${J([pick(E[VID.u1]), pick(E[VID.t3])])})`);
+  ok(![HOST, BOB, CAROL, DAVE].some((q) => JSON.stringify(box).includes(q)), 'no player id in the export: players travel as "#k"');
+  // a fresh table: other players, the same seats filled
+  const cast = [['1'.repeat(16), 'Ann'], ['2'.repeat(16), 'Ben'], ['3'.repeat(16), 'Cat'], ['4'.repeat(16), 'Dan']];
+  const B = stage({ def: null, cast, prefix: '6', seed: 9 }), U = B.H;
+  const added = B.job(cast[0][0], { t: 'addBox', box: json(box) }), bid = added.fx.find((e) => e.t === 'added')?.id;
+  const set = B.job(cast[0][0], { t: 'setup', box: bid });
+  B.tick();
+  const filled = ['south', 'north', 'east'].every((s) => sitter(U, s));
+  ok(!!bid && !set.notes.length && filled, `imported into a fresh room and set up, its three seats filled (${J(set.notes)})`);
+  // the same up, vis, owner, pv and po — pids compared by rank ("#k", which follows the seats), seat refs as they are
+  const KB = ranks(U), as = (Kx, r) => (r == null ? null : r.startsWith('seat:') ? r : Kx.get(r) ?? `unseated ${r}`);
+  const form = (T, Kx, x) => x && { up: x.up ?? true, vis: x.vis ? x.vis.map((r) => as(Kx, r)) : null, owner: as(Kx, x.owner ?? null), pv: x.pv ?? null, po: x.po ?? null };
+  const diff = [VID.d1, VID.d2, VID.t1, VID.t2, VID.u2, VID.u1, VID.t3, VID.gem].filter((id) => J(form(H, K, it(id))) !== J(form(U, KB, U.state.items[id])));
+  ok(!diff.length, `cupped dice, rack tiles, the unit out of its screen, the script's seat refs: each with the same up, vis, owner, pv and po (${diff.map((id) => `${id}: ${J(form(H, K, it(id)))} ≠ ${J(form(U, KB, U.state.items[id]))}`).join('; ') || 'all'})`);
+  // who sees what, by seat: the same in both rooms (every private piece, and the two beyond §5l's list)
+  const sightBySeat = (T, id) => ['south', 'north', 'east'].map((s) => !veiled(T, sitter(T, s), T.state.items[id]));
+  const seen = (id) => J(sightBySeat(H, id)) === J(sightBySeat(U, id));
+  ok([VID.d1, VID.d2, VID.t1, VID.t2, VID.u2, VID.u1, VID.t3, VID.gem].every(seen), 'and each is seen from the same seats, and only from them');
+  ok(!!U.state.items[away] && seen(away), `a tile its rack moved away from (pv, no zone under it) stays hidden through export and import, seen from south alone (before: ${J(sightBySeat(H, away))}, after: ${J(sightBySeat(U, away))}; spec §0.1.3, §5h)`);
+  ok(!!U.state.items[given] && seen(given), `a gem on a rack given to someone else since: still seen by its seat's player alone (before: ${J(sightBySeat(H, given))}, after: ${J(sightBySeat(U, given))}; spec §0.1.3, §5l item 8)`);
+  ok(!!U.state.items[handed] && seen(handed), `a rack tile the script set for another seat (t.setVis, pv kept): still seen from that seat alone (before: ${J(sightBySeat(H, handed))}, after: ${J(sightBySeat(U, handed))}; spec §0.1.3, §5e, §5l item 8)`);
+  tickOK(B, 'the fresh room');
+}
+
+// --- (CP′) checkPatch with the rules on --------------------------------------------------
+function indepCheckPatch() {
+  section("(CP′) checkPatch (spec §3f.6, §5f; D260): an honest job that hides, reveals or changes who sees is taken; a forged one is refused whole");
+  const S = stage({ prefix: '5' }), H = S.H, it = S.it, at = (b, k = 0) => ({ x: it(b).x + 40 + 70 * k, y: it(b).y + 10 });
+  S.job(HOST, { t: 'setRules', enabled: true, code: VEX });
+  const say = (...c) => { S.job(HOST, { t: 'chat', msg: J(c) }); return [H.state.rules.data.r, H.state.rules.data.e]; };
+  // honest jobs, each through the mirror; the host checks and takes each patch
+  S.job(HOST, { t: 'hide', ids: [VID.d1] });
+  say('hide', VID.u1, ['seat:north', BOB]);
+  say('setVis', VID.u1, ['seat:east']);
+  S.job(HOST, { t: 'move', id: VID.t1, ...at(VID.rackS) });
+  S.job(BOB, { t: 'move', id: VID.u2, x: it(VID.screen).x + 200, y: it(VID.screen).y + 100 });
+  S.job(BOB, { t: 'move', id: VID.u2, x: 1700, y: 700 });
+  const [sp] = say('spawnLike', VID.t2, { at: { x: at(VID.rackS, 3).x, y: at(VID.rackS, 3).y }, up: false, vis: [CAROL] });
+  S.job(CAROL, { t: 'group', op: 'hide', ids: [VID.t3, VID.coin] });
+  const pk = S.job(DAVE, { t: 'peek', id: VID.t1 });
+  S.job(HOST, { t: 'roll', ids: [VID.d1, VID.d2] });
+  S.job(CAROL, { t: 'split', id: VID.stk, n: 1, x: it(VID.screen).x + 400, y: it(VID.screen).y + 100 });
+  const mid = { d1: pf(it(VID.d1)), u1: pf(it(VID.u1)), t1: pf(it(VID.t1)), u2: pf(it(VID.u2)), sp: pf(it(sp)), t3: pf(it(VID.t3)) };
+  ok(!S.refused.length && S.same() && J(mid) === J({
+    d1: { up: false, vis: [HOST], pv: null, po: 1, owner: HOST }, u1: { up: false, vis: ['seat:east'], pv: null, po: null, owner: null },
+    t1: { up: false, vis: ['seat:south'], pv: 1, po: 1, owner: 'seat:south' }, u2: { up: false, vis: ['seat:north'], pv: null, po: 1, owner: 'seat:north' },
+    sp: { up: false, vis: ['seat:south'], pv: 1, po: 1, owner: 'seat:south' }, t3: { up: false, vis: [CAROL], pv: null, po: 1, owner: CAROL },
+  }) && pk.peeks.length === 1 && pk.peeks[0].p === DAVE, `hide, t.hide, t.setVis, a move into a rack and out of a screen, t.spawn with vis into a rack, a group hide, a peek, a roll under a cup, a split onto a screen: every patch taken, digests equal (${S.refused.join('; ') || J(mid)})`);
+  say('reveal', VID.u1);
+  S.job(HOST, { t: 'flip', id: VID.d1 });
+  S.job(HOST, { t: 'move', id: VID.t1, x: 1000, y: 1500 });
+  say('setVis', VID.t3, null);
+  ok(!S.refused.length && S.same() && J([pf(it(VID.u1)), pf(it(VID.d1)), pf(it(VID.t1))].map((x) => x.up)) === J([true, true, true]) && !('vis' in it(VID.t3)),
+    `t.reveal, a flip under the cup, a tile off its rack, t.setVis(…, null): taken (${S.refused.join('; ') || 'so'})`);
+  S.tick();
+  // forged: one field of an honest job's patch changed — refused, nothing applied; then the honest patch, so host and mirror stay one table
+  const [deck] = say('addStandardDeck', { x: 2000, y: 1450 });
+  S.job(HOST, { t: 'deal', id: deck, x: 2120, y: 1450 });
+  const card = Object.keys(H.state.items).find((k) => it(k).k === 'c');
+  const forge = (p, a, edit) => {
+    const r = quietly(() => S.M.job(p, a)).value, honest = structuredClone(r.patch), out = structuredClone(r.out), patch = structuredClone(r.patch), d0 = H.digest();
+    edit(patch, out);
+    let why = '';
+    try { quietly(() => H.applyStatePatch(patch, out, { p, a })); } catch (e) { why = e.message; }
+    const kept = H.digest() === d0, fx = H.drain();
+    quietly(() => H.applyStatePatch(honest, structuredClone(r.out), { p, a }));
+    S.M.drain();
+    H.drain();
+    return { why, kept, fx };
+  };
+  const cases = [
+    ['vis on a card', HOST, { t: 'move', id: card, x: 2200, y: 1450 }, (pt) => { pt.items[card].vis = [BOB]; }],
+    ['pv set outside place() (a tile face up on the open felt)', HOST, { t: 'move', id: VID.t2, x: 1100, y: 1400 }, (pt) => { pt.items[VID.t2].pv = 1; }],
+    ['po without hiding (a tile face up, owned)', HOST, { t: 'move', id: VID.t2, x: 1150, y: 1400 }, (pt) => { Object.assign(pt.items[VID.t2], { owner: HOST, po: 1 }); }],
+    ['vis on a bag', HOST, { t: 'move', id: VID.bag, x: 2650, y: 100 }, (pt) => { pt.items[VID.bag].vis = [HOST]; }],
+    ['vis empty', HOST, { t: 'move', id: VID.d2, x: 900, y: 1200 }, (pt) => { Object.assign(pt.items[VID.d2], { up: false, vis: [] }); }],
+    ['vis naming one player twice', HOST, { t: 'move', id: VID.d2, x: 950, y: 1200 }, (pt) => { Object.assign(pt.items[VID.d2], { up: false, vis: [BOB, BOB] }); }],
+    ['vis of 9 refs', HOST, { t: 'move', id: VID.d2, x: 900, y: 1250 }, (pt) => { Object.assign(pt.items[VID.d2], { up: false, vis: [HOST, BOB, CAROL, DAVE, EVE, 'seat:south', 'seat:north', 'seat:east', 'seat:west'] }); }],
+    ['vis naming no player', HOST, { t: 'move', id: VID.d2, x: 950, y: 1250 }, (pt) => { Object.assign(pt.items[VID.d2], { up: false, vis: ['Mallory'] }); }],
+    ['pv 2', HOST, { t: 'move', id: VID.d2, x: 900, y: 1300 }, (pt) => { Object.assign(pt.items[VID.d2], { up: false, vis: [HOST], pv: 2 }); }],
+    ['po true', HOST, { t: 'move', id: VID.d2, x: 950, y: 1300 }, (pt) => { Object.assign(pt.items[VID.d2], { up: false, vis: [HOST], owner: HOST, po: true }); }],
+    ["a piece's peek answer in a move", HOST, { t: 'move', id: VID.d2, x: 900, y: 1350 }, (pt, out) => { out.effects.push({ t: 'peek', p: DAVE, c: { t: it(VID.t1).t, f: it(VID.t1).f } }); }],
+  ];
+  for (const [what, p, a, edit] of cases) {
+    const r = forge(p, a, edit);
+    ok(!!r.why && r.kept && !r.fx.some((e) => e.t === 'peek'), `forged — ${what}: refused whole, nothing applied (${r.why || 'TAKEN'})`);
+  }
+  ok(!S.refused.length && S.same(), 'the honest patches after each: taken, host and mirror one table');
+  tickOK(S, 'after the forgeries');
+}
+
+// --- (B22′), (B23′) ---------------------------------------------------------------------
+function indepBudgets() {
+  section('(B22′) 8 players with 20 vis tiles each: one tile\'s move adds ≤ 400 B to its viewer\'s patch, 0 B to the 7 others\' (spec §5k; D250)');
+  const cast = [[HOST, 'P1'], ...Array.from({ length: 7 }, (_, k) => [String(k + 2).repeat(16), `P${k + 2}`])], ps = cast.map(([p]) => p);
+  const TILES = { name: 'Tiles', table: { shape: 'rect', w: 3000, h: 2000 }, backs: [{ id: 'bt', color: '#333' }], pieces: [{ id: 'tile', kind: 'tile', w: 60, h: 120, back: 'bt', faces: ['Qx01a', 'Qx01b'] }], setup: [] };
+  const S = stage({ def: TILES, cast, seats: {}, prep: () => {}, prefix: '4' }), H = S.H, type = `${S.box}/tile`;
+  const [mine] = S.api((t) => Object.fromEntries(ps.map((p, k) => [p, Array.from({ length: 20 }, (_, j) => t.spawn(type, { at: { x: 100 + 70 * j, y: 100 + 160 * k, free: true }, up: false, vis: [p] }))])));
+  S.tick();
+  const p4 = ps[3], moved = mine[p4][7];
+  S.job(p4, { t: 'move', id: moved, x: 2200, y: 1700 });
+  const { patch, out } = S.tick(), bytes = (s) => Buffer.byteLength(s, 'utf8');
+  const extra = ps.map((p) => (out[p] ? bytes(out[p].text) - bytes(spliceBody({ to: p, tp: p, base: out[p].body.base }, patch)) : NaN));
+  ok(Object.values(mine).flat().length === 160 && extra[3] > 0 && extra[3] <= 400 && extra.every((n, k) => k === 3 || n === 0), `P4's body: the shared patch + ${extra[3]} B (≤ 400); the 7 others': + 0 B (${J(extra)})`);
+  ok(J(Object.keys(out[p4].body.vis || {})) === J([moved]) && ps.every((p) => p === p4 || !out[p].body.vis) && !('t' in (out[ps[0]].body.items?.[moved] ?? { t: 1 })), "the extra is that tile's full form alone; the others hold its reduced form");
+  section('(B23′) a snapshot for one recipient, 160 vis items on the table: built in ≤ 20 ms (spec §5k)');
+  const time = (p) => {
+    const ms = [];
+    for (let k = 0; k < 15; k++) {
+      const t0 = performance.now();
+      spliceBody({ to: p, tp: p, ...H.mine(p) }, sharedText({ v: PROTO, boot: 1, seq: H.state.seq, host: HOST, kind: 'snap', ...H.snapContent(), fx: [], ann: [] }));
+      ms.push(performance.now() - t0);
+    }
+    return ms.sort((a, b) => a - b)[7];
+  };
+  const m20 = time(ps[2]);
+  S.api((t) => Object.values(mine).flat().forEach((id, k) => t.setVis(id, [...new Set([ps[2], ps[k % 8]])])));
+  const n160 = Object.keys(H.mine(ps[2]).vis || {}).length, m160 = time(ps[2]);
+  ok(m20 <= 20 && m160 <= 20 && n160 === 160, `P3's snapshot: ${m20.toFixed(2)} ms carrying its 20 tiles in full; ${m160.toFixed(2)} ms once it sees all 160 (median of 15; ≤ 20 ms)`);
+}
+
 try {
-  for (const [what, fn] of [['reduction', testReduction], ['zones', testZones], ['peek', testPeek], ['hide', testHide], ['seats', testSeats], ['migrate', testMigrate], ['fuzz', testFuzz], ['export', testExport], ['facade', testFacade], ['budgets', testBudgets]]) await guard(what, fn);
+  for (const [what, fn] of [['reduction', testReduction], ['zones', testZones], ['peek', testPeek], ['hide', testHide], ['seats', testSeats], ['migrate', testMigrate], ['fuzz', testFuzz], ['export', testExport], ['facade', testFacade], ['budgets', testBudgets],
+    ['(1′)', indepReduction], ['(2′)', indepZones], ['(3′)', indepPeek], ['(4′)', indepHide], ['(5′)', indepSeats], ['(6′)', indepMigrate],
+    ['(7′)', indepFuzz], ['(8′)', indepExport], ['(CP′)', indepCheckPatch], ['(B22′, B23′)', indepBudgets]]) await guard(what, fn);
 } catch (e) { crash(e); }
 report();

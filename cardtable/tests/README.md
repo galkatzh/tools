@@ -2857,6 +2857,65 @@ author's, written from the spec after this part. What it needs, by name
   Alice seats Mallory north: Bob's `seat` is a guest's action still on its
   way, and north still his was "🚫 That seat is taken" (once, in a full run).
 
+## Phase 5 (the test author's core sections: `core-p5.test.mjs` (1′) to (CP′))
+
+Written from spec §5 (with §0.1, §2c, §2d, §3a, §3f.6, §4a, §4c) and
+D249–D262, apart from the implementation: they share only node-lib, `RECT`
+and the console helpers with the sections above.
+
+- **`stage(o)`**: a room as app.js runs one — the host table, Alice (host,
+  south), Bob (north), Carol (east), Dave (watching), box `o.def` set up and
+  seated by the host, `o.prep` after (VAULT's: rackB given to Bob by his
+  id). `S.job(p, a)` runs a job where app.js runs it (the mirror while rules
+  run: a patch the host refuses lands in `S.refused`); `S.api(fn)` calls the
+  facade as a hook would and returns `[value, lines]`; `S.tick()` is one
+  broadcast tick (`{d, patch, out}`: one shared text, each peer's own part
+  spliced on, each body folded); `S.fresh(p)` a full snapshot's view.
+  Seeded (`o.seed`, `o.prefix`): every run is the same.
+- **The oracle**: `veiled(H, V, it)` is §5a's rule off the host state (seat
+  refs resolved to whoever sits there, `sitter`); `expectView(H, V)` is
+  what V must hold of every item (the shared form, or for a piece whose vis
+  names V that form shown with `up: false` and its vis); `formProblem`
+  checks a shared form against §5d (a hidden piece `{k, b, x, y, rot, z,
+  n?, owner?, lock?, at?}`, no vis/pv/po on anything, a bag without `of`);
+  `audit(S, out)` checks every body of a tick (shared forms, overrides only
+  beside their item and only for a viewer the vis names, places, markers)
+  and every folded view against `expectView`; `tickOK` ticks and audits.
+- **Boxes**: VAULT (racks with a `'board'` zone — two south's, one Bob's by
+  id, one nobody's, one north's —, north's `'keep'` screen, a zone of a seat
+  the table lacks, an owned zone that isn't private, a grid board, tiles,
+  gems, dice under a cup back, units, a ×3 stack, a coin with no back, a
+  bag, two supplies, a pile of hidden pieces; fixed ids `VID`) and MANY (the
+  fuzz's: 22 pieces each of a type of its own, every face labelled
+  `Qx<nn><a–f>`, so a label or a type ref in a body names one piece).
+- **Sections**: (1′) every row of §5d for all four viewers, t.canSee, a box
+  missing, hands, piles, per-message overrides; (2′) private zones —
+  entering with and without a back, a `'board'` zone owned by a pid, reveal
+  versus keep, one owner's two zones, another owner's (a po owner follows, a
+  real one stays), inactive zones, a seat's zone while its seat is empty,
+  board moves firing nothing, deals, takes, splits, plays, group moves,
+  t.spawn and t.move into zones; (3′) piece peeks (loud, no owner asked, a
+  pile top, "You can already see it", vetoed, strict and `allow`); (4′)
+  hide (po on an unowned die only, vis the actor's id), flip clearing both,
+  the private-piece rule (uniform refusals, an owner outside the vis),
+  roll lines, forged fields, group hide; (5′) a seat changing hands by
+  every path (the host, the player, two at once, a join, t.setSeats);
+  (6′) MIGRATE[5] and saves; (7′) two seeded runs of 500 ops (rules off,
+  rules on through the `VEX` script), every tick audited and scanned for
+  labels and type refs the viewer couldn't see (`sight`), every peek its
+  asker's, each view equal to its snapshot at the end; (8′) the setup
+  grammar's vis and po laid out, then the export round trip into a fresh
+  room (and three cases beyond §5l's list, each a piece hidden for a seat
+  whose zone would say otherwise on import: a rack tile whose rack moved
+  away, one on a rack given away since, one a script set for another seat
+  with t.setVis); (CP′) honest private jobs taken
+  by checkPatch, forged ones refused whole; (B22′) and (B23′).
+- **Checked against broken copies of core.js** (scratch only, never
+  committed): the shared form carrying `f`, no `byVis` touch on a seat
+  change, the log naming private pieces, a vis piece's move sent as a place,
+  overrides for everyone, the private-piece rule gone, `hide` without `po`
+  — each fails several of these sections.
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores
