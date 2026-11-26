@@ -12,7 +12,8 @@ brand-new table asks the host *What are we playing?* in a slim strip along
 its top edge (never a pop-up; once friends sit down it shrinks to a 🎲 chip
 in the corner, clear of their seats): one click starts Hold'em, Cards Against
 Humanity, Bridge, **Chess**, **Go** (9 × 9 or 19 × 19), **Reversi**,
-**Draughts**, **Backgammon**, turn order or a simple dealer, keeps the free
+**Draughts**, **Backgammon**, **Dominoes**, **Veiled Ranks**, turn order or
+a simple dealer, keeps the free
 table, or opens the 📜 script editor; the **🎲 Games** button offers the
 same picker any time.
 
@@ -70,8 +71,10 @@ boards, from a *game box* (a few KB of JSON: the piece types, their faces
 and backs, the table, the seats and the starting layout). Draughts and
 Backgammon ship built in, art-free: pick them from 🎲 (on a table in use the
 host is asked first — the table is cleared, and the rules switched off:
-these are played by hand); so does **Hexfront**, a hex-map wargame
-skeleton with its turn script, set up from 📦 (see *Game boxes*). Pieces look like pieces — discs with a rim,
+these are played by hand), and so do **Dominoes** and **Veiled Ranks**,
+whose scripts start with them (see *Private material*); so does
+**Hexfront**, a hex-map wargame skeleton with its turn script, set up from
+📦 (see *Game boxes*). Pieces look like pieces — discs with a rim,
 tiles, dice with pips, meeples, pawns, hexes — and a board's squares,
 points, lines and coordinates (a–h, 1–8) are drawn crisp at any zoom. The
 coordinates read upright for every player, as on a chess app's flipped
@@ -261,6 +264,40 @@ included ("Alice hid 3 pieces", "rolled 2 hidden dice": never what they are).
   rack's tiles are hidden again by their rack when the game is set up.
 - **In the terminal**: `hide <id…>`, `reveal <id>` and `peek <id>` (see
   [Terminal bridge & bots](#terminal-bridge--bots-clijs--clipy)).
+
+Two built-in games are made of it (🎲, or 📦's Built-in section; their
+scripts start with them):
+
+- **Dominoes** — the double-six set and the draw game for two, South and
+  North. Each seat has a **rack** in front of it: whatever lies on it is
+  yours alone to see (🙈 on each tile), and a tile you take off it lands
+  face up for everyone. **Draw 7** fills both racks from the boneyard, and
+  a player drawn by lot leads (then the lead goes round). On your turn,
+  play a tile out of your rack onto the line — that passes the turn — or
+  draw (the bag's **🔒 Draw to my rack** drops it straight into a free slot
+  of yours) until you can; **⏭ Pass** once the boneyard is empty.
+  Emptying your rack is a domino (🏆); the line blocked, everyone shows
+  their tiles. Nobody peeks at a hidden tile, and nobody but the player to
+  move plays or draws. Which ends match, the spinner and the score are
+  yours to keep, as at a kitchen table; **♻ New round** gathers every tile
+  back into the boneyard.
+- **Veiled Ranks** — an original game of hidden units for two (South and
+  North) on a 10 × 10 field: capture the other side's Banner. Each side's
+  twelve units — Banner, Crown (rank 4), two Blades (3), three Pikes (2),
+  two Lancers (1), a Herald (1) and two Traps — lie face down for the
+  other side, behind **screens** on its three home rows, dealt out at
+  random so no square tells which is which. **Deploy** by dragging your
+  units within your rows (onto one of yours, the two swap), then
+  **✓ Ready**; once both are, South moves. A turn is one unit one square
+  along a rank or a file — a Lancer one or two, its first square empty; the
+  Banner and the Traps never move. Picking a unit up shows where it may
+  go. Moving onto an enemy attacks it: both are revealed for good, the
+  higher rank stays and the lower is removed (both, if equal); a Trap takes
+  its attacker with it; a **Herald parleys** — both revealed, nothing
+  removed, the Herald back where it was. Take the Banner, or leave the
+  other side no move, to win: then every unit is turned over, and
+  **♻ New game** deals new armies. The script enforces it all (a strict
+  script: nothing else moves, and nobody peeks).
 
 ## How it works
 
@@ -483,7 +520,8 @@ A **game box** is a whole game in one upload: its table, seats, boards,
 pieces, dice, decks, starting layout and, optionally, its rules. The **📦**
 button (next to 🎲) lists the boxes on this table — each with its size, who
 added it and 📜 when it brings rules — the built-in ones (Draughts,
-Backgammon, Hexfront), **Upload a game…**, and, for the host, **Export this table**.
+Backgammon, Hexfront, Dominoes, Veiled Ranks), **Upload a game…**, and, for
+the host, **Export this table**.
 
 **Hexfront**, the built-in demo (original, generated from a fixed seed, so
 it is the same box every time), is a hex-map wargame skeleton for two:
@@ -1033,4 +1071,10 @@ where no piece is drawn while picking — one row, re-docked when another
 player moves a piece into its strip, scrolled by a wheel, keeping what it
 opens or asks in sight —, ⬚'s corner, a double click that only picks,
 chess's group bar, a wheel zoom that lays the page out only at its rest) and `t-p4-gflood.js`, in the serial batch, a
-guest's flood of groups under a 3 MB rules state.
+guest's flood of groups under a 3 MB rules state. Private material has
+`core-p5.test.mjs` (the engine and the per-recipient messages, a 500-op
+fuzz scanning every body, the export round trip, B22 and B23),
+`t-p5-wire.js` (a raw attacker's view of cups, racks and seats),
+`t-p5-private.js` (the cue, the bar's Hide, Reveal and Peek, racks and
+§5j's attacker cases on a desktop and a phone) and `t-p5-cli.js` (the
+terminal's `hide`, `reveal` and `peek` in both REPLs).

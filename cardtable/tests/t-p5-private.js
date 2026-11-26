@@ -321,6 +321,8 @@ async function barOn(p, id) {
   ok((await drawn(bob, ID.u1)).badge && (await drawn(bob, ID.u1)).face, "Bob's screen: its face, with 🙈");
   const seatFrom = (await malBodies()).length;
   await act(bob, { t: 'seat', watch: true });
+  // (Bob's stand-up travels to the host: north must be free there before Alice seats Mallory in it)
+  await alice.waitForFunction((p) => !window.__ct.hostState().players[p]?.seatId, BOB, { timeout: 10000 });
   await act(alice, { t: 'seat', p: MAL, id: 'north' });
   await settle(alice);
   ok(await until(bob, ID.u1, "'b' in it"), "Bob stands up: his screen draws the unit's back");

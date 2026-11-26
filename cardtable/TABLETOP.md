@@ -861,6 +861,9 @@ sync and rendering, and the Worker together with `handle`.
    - `vis` (owner-visible pieces, dice under a cup), private areas beyond the
      hand (a tile rack, a screen), and peeking at any hidden piece.
    - *Demos:* dominoes and a hidden-units game.
+   - *Done* (private material: state v6, wire version 6), in three parts:
+     the engine and the wire, the table and the terminal, then the two
+     demos. With it the build order is complete.
    - The engine and the wire (part 1 of the phase):
      - A piece lies hidden for whom its `vis` names — a player, or a seat
        and so whoever sits there — and every other player gets its back.
@@ -899,6 +902,31 @@ sync and rendering, and the Worker together with `handle`.
        draws straight into a free slot of yours.
      - The terminal hides, reveals and peeks at pieces, and marks the
        pieces only you see.
+   - The demos (part 3 of the phase), both built-in boxes with their
+     scripts, set up from 🎲 or 📦:
+     - **Dominoes** (public domain): the double-six set — each tile a type
+       of its own under one back, so a face-down tile says nothing and none
+       can be turned into another — in a boneyard bag, and a rack for each
+       of the two seats. *Draw 7* drops seven tiles into each rack, hidden
+       as they land; the leader is drawn by lot, then the lead goes round.
+       The script keeps the turn — the boneyard and a tile's way off a
+       rack are the player to move's, a tile set down face up passes the
+       turn — and forbids peeking; ⏭ *Pass* once the boneyard is empty, 🏆
+       for the rack emptied first, *New round* puts every tile back. The
+       ends, the spinner and the score are the players'.
+     - **Veiled Ranks** (original): two armies of twelve hidden units on a
+       10 × 10 field — a Banner, a Crown, Blades, Pikes, Lancers that step
+       one or two squares, a Herald that parleys, Traps — each side's
+       units face down for the other behind a screen on its three home
+       rows, dealt out at random so that no square, id or order tells a
+       rank. Both sides deploy, then *Ready*; a strict script plays every
+       move: one step along a rank or a file, an attack that reveals both
+       units (for good) and removes the lower rank, a Trap that takes its
+       attacker, a parley that only reveals, and the Banner taken — or a
+       side left with no move — to win, every unit then shown.
+     - Each played as two players and a watcher on a desktop and on
+       phones held both ways; a game exported mid-play sets up again with
+       every hidden piece hidden for the same players.
 
 The terminal bridge follows each phase:
 - pieces and boxes appear in its snapshot;
@@ -1061,3 +1089,13 @@ in `cardtable/tests/`, with a README on running it. Logic suites import
 - **Drawing into your rack shows nothing:** Draw to my rack sets the piece
   down straight in a free slot of your rack, hidden as it lands, rather
   than face down beside the bag to be dragged over (§2).
+- **A game's private pieces stay its sides':** a script that moves a
+  hidden piece into another seat's screen gives it back to its own side
+  at once, and one combat revealed stays revealed; a side's units belong
+  to its seat from the setup, so no zone hands them over (§2, §5).
+- **What a script says names nothing hidden:** a script's lines and
+  banners may only say what the table shows — Dominoes draws its leader
+  by lot rather than name who holds the highest double (§5).
+- **Built-in games with their own rules are 🎲 games too:** Dominoes and
+  Veiled Ranks start from the picker, which marks them playing while their
+  rules run, as from 📦's Built-in section (§4, §7).

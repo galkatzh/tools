@@ -4553,13 +4553,18 @@ $('add-deck-btn').addEventListener('click', () => $('deck-dialog').showModal());
 let askGame = false; // a brand-new table: invite the host to pick a game (the strip)
 
 /** The picker entry matching what the host is running now: a rules
- *  template, else the built-in box last set up (rules off), else the free
- *  table — or none ('') while a box's own rules run (📦's: Hexfront). */
+ *  template, or a box game whose own rules run (Dominoes, Veiled Ranks),
+ *  else the built-in box last set up (rules off), else the free table — or
+ *  none ('') while the rules of a box 🎲 doesn't offer run (📦's Hexfront). */
 function currentGame() {
   const rules = T?.state.rules;
-  if (rules?.enabled) return rules.box ? '' : GAMES.find((g) => RULES_TEMPLATES[g.k] === rules.code)?.k || 'custom';
-  const last = T?.state.boxes[T.state.lastSetup];
-  return (last && isBuiltin(last) && GAMES.find((g) => g.box && BOXES[g.box].name === last.name)?.k) || 'free';
+  /** The 🎲 box game whose box `id` is: a built-in box GAMES names, else ''. */
+  const boxGame = (id) => {
+    const b = T?.state.boxes[id];
+    return (b && isBuiltin(b) && GAMES.find((g) => g.box && BOXES[g.box].name === b.name)?.k) || '';
+  };
+  if (rules?.enabled) return rules.box ? boxGame(rules.box) : GAMES.find((g) => RULES_TEMPLATES[g.k] === rules.code)?.k || 'custom';
+  return boxGame(T?.state.lastSetup) || 'free';
 }
 
 function renderGames() {

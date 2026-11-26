@@ -691,7 +691,9 @@ piece is **placed** — by a player, a script (`t.move`, `t.spawn`,
 **Fog of war is the script's.** The engine hides what lies face down and
 nothing else: positions, moves and ownership are public. A game that hides
 where things are, or what a square holds, keeps that in `t.secret` (each
-player's own) and shows each player what they should see.
+player's own) and shows each player what they should see. Dominoes and Veiled Ranks (§5, 9 and 10) show both kinds of zone: a
+rack per seat whose board is owned by the seat (`"owner": "board"`), and
+two screens on the main board owned by named seats.
 
 ## 3. Enforcement path (the one structural change)
 
@@ -973,6 +975,36 @@ takes the other items off the table unasked, and leaves the hands alone.
    for a player with no move (announced) and counts at the end;
    `onSelect` on your pile hints where a disc may go; the counts are seat
    badges (`public.badges`).
+
+Two more are the scripts of built-in game boxes (Phase 5, private
+material): the box lays the material out and does the hiding — racks and
+screens are its boards' private zones — and its script, which starts with
+the box (`rules.box`), keeps the game. They are in `BOXES` (`templates.js`),
+not in the 📜 dropdown.
+
+9. **Dominoes** (`BOXES.dominoes`) — light rules over the draw game for
+   two: *Draw 7* (`t.pull(bag, {at})` into the seven slots of each rack: a
+   tile lands hidden for the rack's seat), a leader by lot (`t.random()`)
+   and then in turn, `validate` keeping the boneyard and a tile's way off a
+   rack to the player to move (rearranging your rack is free) and vetoing
+   every peek, `onAction` passing the turn when that player set a tile down
+   face up for the first time, ⏭ *Pass* once the boneyard is empty, a
+   domino when a rack empties (`t.win`), and *New round* (`t.remove`, then
+   `t.newBag` where the boneyard stood). What matches, the spinner and the
+   score are the players'.
+10. **Veiled Ranks** (`BOXES.ranks`) — strict, hidden units: deployment
+    (`handle` moves a unit within its side's screen, swapping onto one of
+    its own; ✓ *Ready* for each side), then one step a turn (a Lancer's
+    two through an empty first square, `t.line`), attacks that `t.reveal`
+    both units and remove the lower rank, a Trap that takes its attacker,
+    a Herald's parley, the Banner taken or no move left to end it
+    (`t.win`, every unit revealed). `onSelect` hints a unit's moves. A
+    unit stepping into a screen is hidden there for that screen's seat
+    (place()'s zones), so after each move the script gives it back to its
+    own side (`t.setVis`), or reveals it again once combat showed it; its
+    owner is its seat's from the setup, never one a zone gave. *New game*
+    lays the armies out again with `t.layout` (a shuffled group a side:
+    nothing in their order tells a rank).
 
 ## What it deliberately does NOT do
 

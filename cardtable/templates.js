@@ -1796,7 +1796,8 @@ export function goTemplate(n) {
 /** One entry per shipped template (k = its RULES_TEMPLATES key; `clear`: the
  *  game builds its own board, so it starts on a cleared table with a fresh
  *  state), the box games (`box`: a BOXES key — set up on a cleared table,
- *  rules off), the free table (rules off) and a custom script (the 📜 dialog). */
+ *  with the box's own rules when it has some, else none), the free table
+ *  (rules off) and a custom script (the 📜 dialog). */
 export const GAMES = [
   { k: 'holdem', emoji: '🃏', title: "Texas Hold'em", short: "Hold'em", pitch: 'No-limit poker: chips, blinds, betting rounds, automatic showdown', players: '2–8 players' },
   { k: 'cah', emoji: '😈', title: 'Cards Against Humanity', pitch: 'Fill in the blank; the Card Czar crowns the funniest answer', players: '3+ players' },
@@ -1807,6 +1808,8 @@ export const GAMES = [
   { k: 'reversi', emoji: '🔘', title: 'Reversi', clear: true, pitch: 'Outflank to turn discs over; your pile shows where a disc may go; the most discs win', players: '2 players' },
   { k: 'draughts', emoji: '⛀', title: 'Draughts', box: 'draughts', pitch: 'Checkers on an 8 × 8 board, played by hand: move, jump, crown with a double-click', players: '2 players' },
   { k: 'backgammon', emoji: '🎲', title: 'Backgammon', box: 'backgammon', pitch: 'The race around the board, played by hand: two dice and the doubling cube', players: '2 players' },
+  { k: 'dominoes', emoji: '🁫', title: 'Dominoes', box: 'dominoes', pitch: 'The draw game: seven tiles each in a rack only you can see, then match ends in turn', players: '2 players' },
+  { k: 'ranks', emoji: '🎭', title: 'Veiled Ranks', box: 'ranks', pitch: 'Hidden units: deploy behind your screen, then attack — ranks show only in combat. Take the Banner', players: '2 players' },
   { k: 'turns', emoji: '🔁', title: 'Turn order', short: 'Turns', pitch: 'Any game you like, one player at a time', players: '2+ players' },
   { k: 'dealer', emoji: '🤵', title: 'Simple dealer', short: 'Dealer', pitch: 'A "Deal 1 to all" button and nothing enforced', players: 'any number' },
   { k: 'free', emoji: '🖐', title: 'Free table', pitch: 'No rules: deal, move and flip cards however you like', players: 'any number' },
@@ -2092,6 +2095,401 @@ const EVENTS = [
   ['Quiet front', 'Neither side attacks this turn. Draw again next turn.'],
 ];
 
+/** Dominoes' script (spec §5g): the draw game for two, lightly ruled — the
+ *  deal and the turn. The box does the hiding (its racks). */
+const DOMINOES_RULES = `(() => {
+  // Dominoes, the draw game for two, lightly ruled: this script deals and
+  // keeps the turn; the box does the hiding. Each seat has a rack, a small
+  // board whose private zone ('reveal') lays any tile set down in it face
+  // down for that seat alone — and a tile taken off it is face up for all.
+  //   Draw 7: seven tiles from the boneyard into each rack (t.pull at a slot
+  //   of the rack: it lands hidden). The first leader is drawn by lot; the
+  //   lead then goes round, one round each.
+  //   Your turn: play a tile from your rack onto the table — that passes the
+  //   turn — or draw from the boneyard until you can (🔒 Draw to my rack).
+  //   ⏭ Pass once the boneyard is empty. Your rack emptied: domino!
+  // Nobody peeks at a hidden tile (validate vetoes it, as Hold'em's peek at
+  // its deck). Which ends match, the spinner and the score are the players' own.
+  const SLOT = 66; // a rack slot: a tile's 60 units and the 6 between (the bag's 🔒 Draw to my rack fills the same slots)
+  /** Player p's seat id, or undefined (a watcher). */
+  const seatOf = (t, p) => t.players().find((x) => x.id === p)?.seatId;
+  /** Player p's name, for a line or a banner. */
+  const nameOf = (t, p) => t.players({ all: true }).find((x) => x.id === p)?.name || 'A player';
+  /** Seat s's rack: the board it owns. */
+  const rackOf = (t, s) => t.find({ type: 'rack', owner: 'seat:' + s })[0];
+  const boneyard = (t) => t.find({ kind: 'bag', name: 'Boneyard' })[0];
+  /** The tiles seat s holds: hidden in its rack (a rack's tiles are its seat's: po). */
+  const held = (t, s) => t.find({ kind: 'tile', owner: 'seat:' + s }).filter((it) => it.pv);
+  /** Whether the point (x, y) lies on rack r. */
+  function onRack(t, r, x, y) {
+    const { w, h } = t.type(r.t);
+    return x >= r.x && x <= r.x + w && y >= r.y && y <= r.y + h;
+  }
+  /** The seated players with a rack: the round's players, in turn order. */
+  const players = (t) => t.players().filter((p) => p.seatId && rackOf(t, p.seatId));
+
+  /** Draw 7 (pressed by p): seven tiles into each player's rack, and the lead. */
+  function deal(t, p) {
+    const d = t.data, ps = players(t), bag = boneyard(t);
+    if (ps.length < 2 || !bag || bag.of.length < 7 * ps.length) return t.tell(p, 'Dominoes needs two seated players and a full boneyard');
+    for (const p of ps) {
+      const r = rackOf(t, p.seatId);
+      for (let k = 0; k < 7; k++) t.pull(bag.id, { at: { x: r.x + 6 + k * SLOT, y: r.y + 6 } });
+    }
+    d.lead = d.lead && ps.some((p) => p.id === d.lead) ? t.nextSeat(d.lead) : ps[Math.floor(t.random() * ps.length)].id;
+    Object.assign(d, { dealt: true, turn: d.lead, played: [], passes: 0 });
+    t.announce(nameOf(t, d.lead) + ' leads');
+  }
+  /** A new round: every tile back into a full boneyard, face down, where the old one stood. */
+  function newRound(t, p) {
+    const bag = boneyard(t), tiles = t.find({ kind: 'tile' });
+    if (!bag) return t.tell(p, 'The boneyard is gone — set the box up again from 📦');
+    t.remove([bag.id, ...tiles.map((it) => it.id)]);
+    const box = bag.box, all = [];
+    for (let a = 0; a <= 6; a++) for (let b = a; b <= 6; b++) all.push({ t: box + '/t' + a + b, up: false });
+    t.newBag(all, { at: { x: bag.x, y: bag.y }, name: 'Boneyard' });
+    Object.assign(t.data, { dealt: false, turn: null, played: [], passes: 0 });
+    t.public.winners = [];
+    t.say('A new round: the tiles are back in the boneyard');
+  }
+
+  return {
+    name: 'Dominoes',
+    setup(t) {
+      if (t.data.dealt !== undefined) return; // enabled again: the round goes on
+      Object.assign(t.data, { dealt: false, turn: null, lead: null, played: [], passes: 0 });
+      t.say('Dominoes: sit at South and North, then press Draw 7');
+    },
+    // No peeking; only the player whose turn it is draws, and plays a tile out of a rack.
+    validate(t, a) {
+      if (a.t === 'peek') return 'No peeking at hidden tiles';
+      const d = t.data, theirs = a.p === d.turn ? '' : d.turn ? "It's " + nameOf(t, d.turn) + "'s turn" : d.dealt ? 'The round is over — ♻ New round to play again' : 'Press Draw 7 first';
+      if (a.t === 'pull' && a.id === boneyard(t)?.id) return theirs;
+      if (a.t !== 'move' || !theirs) return;
+      const it = t.item(a.id), s = seatOf(t, a.p), r = s && rackOf(t, s);
+      if (it?.pv && it.owner === 'seat:' + s && !onRack(t, r, a.x + 30, a.y + 60)) return theirs; // (rearranging your rack is fine at any time)
+    },
+    // A tile the player to move set down face up for the first time is played: the turn passes.
+    onAction(t, a) {
+      const d = t.data, it = a.t === 'move' && a.p === d.turn && t.item(a.id);
+      if (!it || it.up === false || t.type(it.t)?.kind !== 'tile' || d.played.includes(a.id)) return;
+      d.played.push(a.id);
+      d.passes = 0;
+      if (!held(t, seatOf(t, a.p)).length) {
+        d.turn = null;
+        return t.win(a.p, nameOf(t, a.p) + ' plays the last tile — domino!');
+      }
+      d.turn = t.nextSeat(d.turn);
+    },
+    buttons(t) {
+      const d = t.data, ps = players(t), host = t.hostId;
+      t.public.turn = d.turn;
+      // (a button's id is its player's own: each is offered to one pid)
+      if (!d.dealt) return ps.map((p) => ({ id: 'deal-' + p.id, label: 'Draw 7', pid: p.id }));
+      const out = d.turn && !boneyard(t)?.of.length ? [{ id: 'pass', label: '⏭ Pass', pid: d.turn }] : [];
+      for (const pid of new Set(d.turn ? [host] : [...ps.map((p) => p.id), host])) out.push({ id: 'new-' + pid, label: '♻ New round', pid });
+      return out;
+    },
+    onButton(t, id, p) {
+      const d = t.data;
+      if (id.startsWith('deal-') && !d.dealt) deal(t, p);
+      else if (id.startsWith('new-')) newRound(t, p);
+      else if (id === 'pass' && p === d.turn) {
+        t.say(nameOf(t, p) + ' passes');
+        d.turn = t.nextSeat(p);
+        if (++d.passes >= players(t).length) { // (nobody could play, and nothing is left to draw)
+          d.turn = null;
+          t.announce('The line is blocked — show your tiles: the lowest count wins');
+        }
+      }
+    },
+    onLeave(t, p) {
+      if (p === t.data.turn) { t.data.turn = t.nextSeat(p); t.say('The turn passes on — its player left'); }
+    },
+  };
+})()`;
+
+/** Dominoes (public domain; spec §5g): the double-six set — 28 tiles, each a
+ *  type of its own under one shared back, so a face-down tile says nothing
+ *  and no tile can be turned into another — in a boneyard bag, and a rack
+ *  for each of the two seats: a small board whose one private zone covers
+ *  it ('reveal'). Its script deals and keeps the turn. */
+function dominoes() {
+  const W = 1000, H = 1300, RW = 600, RH = 140; // (a rack: nine slots of 60 × 120 at the 6-unit gap of 🔒 Draw to my rack)
+  const types = {
+    rack: { kind: 'board', name: 'Rack', w: RW, h: RH, faces: [{ color: '#7a4b24' }],
+      board: { zones: [{ id: 'tiles', poly: [[0, 0], [RW, 0], [RW, RH], [0, RH]], owner: 'board', private: 'reveal' }] } },
+  };
+  const bones = [];
+  for (let a = 0; a <= 6; a++) {
+    for (let b = a; b <= 6; b++) {
+      types[`t${a}${b}`] = { kind: 'tile', name: 'Domino', w: 60, h: 120, back: 'bone', stack: 'none', hand: false, faces: [{ pips: [a, b], name: `${a}|${b}`, color: '#f8fafc' }] };
+      bones.push({ t: `t${a}${b}`, up: false });
+    }
+  }
+  return {
+    name: 'Dominoes',
+    imgs: [],
+    table: { shape: 'rect', w: W, h: H, felt: '#1f4d3a' },
+    seats: [{ id: 'south', name: 'South', color: '#f59e0b', edge: 'bottom' }, { id: 'north', name: 'North', color: '#38bdf8', edge: 'top' }],
+    players: [2, 2],
+    backs: { bone: { face: { color: '#1e293b' } } },
+    types,
+    setup: [
+      { forEachSeat: [{ piece: 'rack', at: { seat: [0, 210] }, owner: 'seat' }] }, // (a rack per seat, its own: 'seat:<id>')
+      { bag: bones, name: 'Boneyard', at: [24, H / 2 - 50] },
+    ],
+    rules: DOMINOES_RULES,
+  };
+}
+
+/** Veiled Ranks' armies: per side, its twelve units — [type, name, how many,
+ *  rank (null: a Trap), label] — dealt out by a shuffled group over a block
+ *  of its home rows (files c–h of its first two), face down. The box lays
+ *  them out first, and the script again for each new game. */
+const RANKS = [['banner', 'Banner', 1, 0, '⚑'], ['crown', 'Crown', 1, 4, '4'], ['blade', 'Blade', 2, 3, '3'], ['pike', 'Pike', 3, 2, '2'],
+  ['lancer', 'Lancer', 2, 1, '1'], ['herald', 'Herald', 1, 1, '1'], ['trap', 'Trap', 2, null, '✕']];
+const ARMIES = ['south', 'north'].map((side) => {
+  const rows = side === 'south' ? [1, 2] : [10, 9], squares = rows.flatMap((r) => [...'cdefgh'].map((f) => f + r));
+  const units = RANKS.flatMap(([unit, , n]) => Array(n).fill(`${side[0]}-${unit}`));
+  // (face down, each its seat's: its zone hides it for that seat as it lands; the shuffle then
+  //  deals the identities among the places, so neither a square, an id nor z tells a rank)
+  return { group: units.map((piece, k) => ({ piece, at: squares[k], up: false, owner: `seat:${side}` })), shuffle: true };
+});
+
+/** Veiled Ranks' script (spec §5g): strict — every move is the script's. */
+const RANKS_RULES = `(() => {
+  // Veiled Ranks (an original game): capture the other side's Banner.
+  // Each side's twelve units lie face down for the other side: the box's two
+  // deployment zones — South's rows 1–3, North's rows 8–10 — are screens
+  // ('keep'): a unit set down in one lies hidden for that seat, and one that
+  // steps out stays hidden until combat shows it.
+  //   Deploy: drag your units within your three rows (onto one of yours, the
+  //   two swap places), then ✓ Ready. When both sides are, South moves.
+  //   A turn: one unit one square along a rank or a file — a Lancer one or
+  //   two, its first square empty; the Banner and the Traps never move.
+  //   Onto an enemy is an attack: both are revealed (and stay so), then the
+  //   higher rank stays and the lower is removed (both, if equal). A Trap
+  //   takes its attacker with it. A Herald parleys: both are revealed,
+  //   nothing is removed, and the Herald stays where it was.
+  //   Take the Banner, or leave the other side no move, to win.
+  // The table is the position: each hook reads where the units stand
+  // (position). t.data keeps the phase, who is ready and whose turn it is.
+  const ARMIES = ${JSON.stringify(ARMIES)}; // (the box's own layout of the units, for a new game)
+  const NAME = { south: 'South', north: 'North' }, OTHER = { south: 'north', north: 'south' };
+  const FILES = 'abcdefghij', STEPS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const sq = (c, r) => FILES[c] + (r + 1); // (c, r from 0: a1 is South's left corner)
+  const cr = (s) => [FILES.indexOf(s[0]), Number(s.slice(1)) - 1];
+  /** Each side's three home rows (its deployment zone), and their squares. */
+  const ROWS = { south: [0, 1, 2], north: [7, 8, 9] };
+  const home = (side, s) => ROWS[side].includes(cr(s)[1]);
+  const homeSquares = (side) => ROWS[side].flatMap((r) => [...FILES].map((f, c) => sq(c, r)));
+  /** Who sits in side's seat, or undefined. */
+  const holder = (t, side) => t.players().find((p) => p.seatId === side)?.id;
+  /** Player p's side (their seat: 'south' or 'north'); undefined for a watcher. */
+  const sideOf = (t, p) => t.players().find((x) => x.id === p)?.seatId;
+  const mobile = (u) => u.unit !== 'banner' && u.unit !== 'trap';
+  const named = (u) => u.name + (u.rank === null ? '' : ' (' + u.rank + ')');
+
+  /** The units on the board by square: {id, side, unit, rank, name, at, shown}. */
+  function position(t) {
+    const P = {};
+    for (const it of t.find({ kind: 'token' })) {
+      const ty = t.type(it.t);
+      if (ty?.meta?.unit && it.at) P[it.at] = { id: it.id, ...ty.meta, name: ty.name, at: it.at, shown: it.up !== false };
+    }
+    return P;
+  }
+  /** The squares unit u may move to in position P: a step along each line
+   *  (a Lancer's two, through an empty first), onto an empty square or an enemy. */
+  function targets(P, u) {
+    if (!mobile(u)) return [];
+    const [c, r] = cr(u.at), out = [];
+    for (const [dc, dr] of STEPS) {
+      for (let k = 1; k <= (u.unit === 'lancer' ? 2 : 1); k++) {
+        const x = c + dc * k, y = r + dr * k;
+        if (x < 0 || y < 0 || x > 9 || y > 9) break;
+        const there = P[sq(x, y)];
+        if (there?.side === u.side) break;
+        out.push(sq(x, y));
+        if (there) break; // (an enemy is attacked: nothing beyond it)
+      }
+    }
+    return out;
+  }
+  /** Why unit u may not move to square s, in a player's words. */
+  function whyNot(t, P, u, s) {
+    if (!mobile(u)) return u.unit === 'banner' ? 'The Banner never moves' : 'A Trap stays where it was set';
+    if (P[s]?.side === u.side) return 'That square holds one of your own';
+    const [c, r] = cr(u.at), [x, y] = cr(s);
+    if (x !== c && y !== r) return 'Units move along a rank or a file, never diagonally';
+    if (u.unit !== 'lancer') return 'One square at a time';
+    if (Math.abs(x - c) + Math.abs(y - r) > 2) return 'A Lancer moves one or two squares';
+    return "A Lancer's first square must be empty (" + t.line(u.at, s)[0] + ')';
+  }
+  /** Moves unit u to square s, as its side had it: a zone it lands in would
+   *  hide it for that zone's seat — the other side's rows would show it to
+   *  them — so it is hidden for its own side again, or shown again if combat
+   *  showed it. */
+  function step(t, u, s) {
+    t.move(u.id, s);
+    if (u.shown) t.reveal(u.id);
+    else t.setVis(u.id, ['seat:' + u.side]);
+  }
+  /** Unit u attacks foe: both revealed, then the outcome (the header's rules). */
+  function attack(t, u, foe) {
+    t.reveal(u.id);
+    t.reveal(foe.id);
+    const won = { ...u, shown: true }, at = foe.at;
+    if (u.unit === 'herald') return t.say(u.name + ' parleys with ' + named(foe) + ' at ' + at + ': both stand revealed');
+    if (foe.unit === 'trap') {
+      t.remove([u.id, foe.id]);
+      return t.say(named(u) + ' springs ' + foe.name + ' at ' + at + ': both are lost');
+    }
+    if (foe.unit === 'banner') {
+      t.remove(foe.id);
+      step(t, won, at);
+      return finish(t, u.side, named(u) + ' takes ' + NAME[foe.side] + "'s Banner — " + NAME[u.side] + ' wins');
+    }
+    if (u.rank === foe.rank) {
+      t.remove([u.id, foe.id]);
+      return t.say(named(u) + ' and ' + named(foe) + ' fall together at ' + at);
+    }
+    const [hi, lo] = u.rank > foe.rank ? [u, foe] : [foe, u];
+    t.remove(lo.id);
+    if (hi === u) step(t, won, at);
+    t.say(named(hi) + ' beats ' + named(lo) + ' at ' + at);
+  }
+  /** The other side's turn — unless it has no unit that can move: then it loses. */
+  function endTurn(t) {
+    const g = t.data, P = position(t);
+    g.turn = OTHER[g.turn];
+    if (!Object.values(P).some((u) => u.side === g.turn && targets(P, u).length)) finish(t, OTHER[g.turn], NAME[g.turn] + ' has no unit that can move — ' + NAME[OTHER[g.turn]] + ' wins');
+  }
+  /** The game is over: side wins (🏆 on its seat), and every unit is shown. */
+  function finish(t, side, msg) {
+    t.data.phase = 'over';
+    for (const u of Object.values(position(t))) if (!u.shown) t.reveal(u.id);
+    t.win(holder(t, side), msg);
+  }
+  /** A new game: the units laid out afresh (the box's layout: shuffled, face down), deployment first. */
+  function newGame(t) {
+    const left = t.find({ kind: 'token' }).filter((it) => t.type(it.t)?.meta?.unit);
+    if (left.length) t.remove(left.map((it) => it.id));
+    t.layout(t.data.box, ARMIES);
+    Object.assign(t.data, { phase: 'deploy', ready: { south: false, north: false }, turn: 'south' });
+    t.public.winners = [];
+    t.announce('Deploy your units in your three rows, then ✓ Ready');
+  }
+  /** The seats' cues: whose turn it is, and who is still deploying. */
+  function showTurn(t) {
+    const g = t.data, badges = {};
+    for (const side of ['south', 'north']) { const p = holder(t, side); if (p && g.phase === 'deploy') badges[p] = g.ready[side] ? '✓ Ready' : '⏳ Deploying'; }
+    t.public.turn = g.phase === 'play' ? holder(t, g.turn) || null : null;
+    t.public.badges = badges;
+  }
+
+  return {
+    name: 'Veiled Ranks',
+    strict: true,
+    setup(t) {
+      if (t.data.phase) return; // enabled again: the game goes on where it was
+      // (the box laid the units out: deployment begins; its id, for each new game's layout)
+      const field = t.find({ type: 'field' })[0];
+      if (!field) throw new Error('Veiled Ranks plays on its own box: set it up from 📦 (Built in)');
+      t.data.box = field.t.split('/')[0];
+      Object.assign(t.data, { phase: 'deploy', ready: { south: false, north: false }, turn: 'south' });
+      showTurn(t);
+      t.say('Veiled Ranks: deploy your units in your three rows, then ✓ Ready');
+    },
+    // Picking up one of your units shows where it may go.
+    onSelect(t, p, id) {
+      const g = t.data, side = sideOf(t, p), P = position(t), u = Object.values(P).find((x) => x.id === id);
+      if (!u || u.side !== side || g.phase === 'over' || g.ready[side] || (g.phase === 'play' && g.turn !== side)) return t.hint(p, null);
+      t.hint(p, { spaces: g.phase === 'deploy' ? homeSquares(side).filter((s) => s !== u.at) : targets(P, u) }); // (deploying: any square of its rows — one of yours swaps)
+    },
+    // Every drop of a unit: done here if it is allowed (true), else refused, saying why.
+    handle(t, a) {
+      if (a.t !== 'move') return; // strict refuses every other action
+      const g = t.data, P = position(t), u = Object.values(P).find((x) => x.id === a.id);
+      if (!u) return; // not a unit on the board (strict refuses it)
+      const side = sideOf(t, a.p);
+      if (!side) return 'Only the two players move the units';
+      if (u.side !== side) return "That's not your unit";
+      if (!a.to) return 'Drop the unit on a square of the board';
+      if (a.to === u.at) return true; // put back where it was: no move
+      if (g.phase === 'deploy') {
+        if (g.ready[side]) return "You're ready — wait for " + NAME[OTHER[side]];
+        if (!home(side, a.to)) return 'Deploy inside your three rows';
+        if (P[a.to]) t.move(P[a.to].id, u.at); // (onto one of yours: the two swap)
+        t.move(u.id, a.to);
+        return true;
+      }
+      if (g.phase === 'over') return 'The game is over — ♻ New game for another';
+      if (side !== g.turn) return "It's " + NAME[g.turn] + "'s turn";
+      if (!targets(P, u).includes(a.to)) return whyNot(t, P, u, a.to);
+      if (P[a.to]) attack(t, u, P[a.to]);
+      else step(t, u, a.to);
+      if (g.phase === 'play') endTurn(t);
+      return true;
+    },
+    // ✓ Ready for each side still deploying; once the game is over, ♻ New game for the players and the host.
+    buttons(t) {
+      const g = t.data, out = [];
+      if (g.phase === 'deploy') for (const side of ['south', 'north']) { const p = holder(t, side); if (p && !g.ready[side]) out.push({ id: 'ready-' + side, label: '✓ Ready', pid: p }); }
+      if (g.phase === 'over') for (const p of new Set([holder(t, 'south'), holder(t, 'north'), t.hostId].filter(Boolean))) out.push({ id: 'new-' + p, label: '♻ New game', pid: p });
+      return out;
+    },
+    onButton(t, id, p) {
+      const g = t.data, side = sideOf(t, p);
+      if (id.startsWith('new-')) return newGame(t);
+      if (id !== 'ready-' + side || g.phase !== 'deploy') return;
+      g.ready[side] = true;
+      t.say(NAME[side] + ' is ready');
+      if (g.ready.south && g.ready.north) {
+        g.phase = 'play';
+        t.announce('The ranks are set — South moves first');
+      }
+    },
+    onJoin: (t) => showTurn(t),
+    onAction: (t) => showTurn(t), // (after every action: a move, a button, a seat taken or left)
+  };
+})()`;
+
+/** Veiled Ranks (original: D42 and §5g's decision — no commercial game's
+ *  rank names, art or signature rules): a 10 × 10 field with two deployment
+ *  zones, screens ('keep') of three rows owned by the South and North
+ *  seats, and twelve units a side, each a token with its side's back and
+ *  its rank in `meta`; a shuffled group lays each army out face down; its
+ *  strict script plays the game. */
+function veiledRanks() {
+  const W = 1160, H = 1560, B = 1040; // (the field and, as chess has, room by each edge for a seat label and its buttons)
+  const zone = (seat, y0, y1) => ({ id: seat, owner: `seat:${seat}`, private: 'keep', poly: [[0, y0], [B, y0], [B, y1], [0, y1]] });
+  const types = {
+    field: { kind: 'board', name: 'Veiled Ranks field', w: B, faces: [{ color: '#3f3a32' }],
+      board: { primary: true, grid: { type: 'square', cols: 10, rows: 10, cell: 100, x: 20, y: 20, draw: 'checker', colors: ['#a8a29e', '#8f8a84'], labels: 'chess' },
+        zones: [zone('north', 0, 320), zone('south', 720, B)] } },
+  };
+  const SIDES = { south: ['South', '#fde68a'], north: ['North', '#bfdbfe'] }; // its name, its units' face
+  for (const [side, [Side, face]] of Object.entries(SIDES)) {
+    for (const [unit, name, , rank, label] of RANKS) {
+      types[`${side[0]}-${unit}`] = { kind: 'token', name: `${Side} ${name}`, shape: 'rect', w: 80, stack: 'none', back: side, upright: true,
+        faces: [{ color: face, label, text: name }], meta: { side, unit, rank } };
+    }
+  }
+  return {
+    name: 'Veiled Ranks',
+    imgs: [],
+    table: { shape: 'rect', w: W, h: H, felt: '#2a2723' },
+    seats: [{ id: 'south', name: 'South', color: '#d97706', edge: 'bottom' }, { id: 'north', name: 'North', color: '#2563eb', edge: 'top' }],
+    players: [2, 2],
+    backs: { south: { face: { color: '#b45309', label: '◆' } }, north: { face: { color: '#1d4ed8', label: '◆' } } },
+    types,
+    setup: [{ piece: 'field', at: 'center' }, ...ARMIES],
+    rules: RANKS_RULES,
+  };
+}
+
 /** The built-in boxes, by key: what the 🎲 picker's box games load, and
  *  📦's Built-in section (built in by content, core.js isBuiltin). */
-export const BOXES = { draughts: draughts(), backgammon: backgammon(), hexfront: hexfront() };
+export const BOXES = { draughts: draughts(), backgammon: backgammon(), hexfront: hexfront(), dominoes: dominoes(), ranks: veiledRanks() };

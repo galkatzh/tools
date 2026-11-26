@@ -2738,6 +2738,125 @@ answer a press of the dialog's own buttons; nothing they test goes through
   five expected lists gain `hide` or `peek` (spec §5g). A hidden piece's
   Flip now reads "Reveal" (the same `data-cmd="flip"`).
 
+## Phase 5 (part 3: the demos, Dominoes and Veiled Ranks)
+
+No suite of its own: `t-p5-demos.js` (§5l) and §5j's case 10 are the test
+author's, written from the spec after this part. What it needs, by name
+(`templates.js`; SPEC §9 D269–D275):
+
+- **Where they come from.** `BOXES.dominoes` and `BOXES.ranks`, and two
+  `GAMES` box entries, `k: 'dominoes'` and `k: 'ranks'` (🎲's
+  `#games-list [data-game="dominoes"]` and the game strip; 📦's
+  `#box-builtins [data-builtin="dominoes"]` / `"ranks"`). Both bring their
+  rules: a set up from either is one `loadBox {box, setup, clear, rules:
+  true}` (no trust dialog: built in), its rules running as `rules.box`, and
+  🎲 marks the game playing (`#games-list .on`) while they run. The box
+  names its seats `south` (bottom) and `north` (top); on loadBox the players
+  are seated in the seats' order as core decides, which is not always the
+  joining order (a run had Carol north and Bob watching): seat them with the
+  host's `{t: 'seat', p, id}` / `{t: 'seat', p, watch: true}` as
+  t-p5-private does.
+- **Dominoes.** A 1000 × 1300 table, seats South (`#f59e0b`) and North
+  (`#38bdf8`). Types: `rack` (a board 600 × 140, one zone `tiles` covering
+  it, `owner: 'board'`, `private: 'reveal'`; laid by `forEachSeat` with
+  `owner: 'seat'`, so the racks are owned by `seat:south` and `seat:north`,
+  locked) and 28 tiles `t<a><b>` (0 ≤ a ≤ b ≤ 6: `t00` … `t66`), each a
+  `tile` named "Domino", 60 × 120, `back: 'bone'`, `stack: 'none'`,
+  `hand: false`, one face `{pips: [a, b], name: 'a|b'}` — the log calls a
+  shown tile "3|4". A bag named "Boneyard" (`kind: 'bag'`) of the 28, face
+  down, at [24, 600]. Script name "Dominoes"; `t.data`: `{dealt, turn
+  (pid | null), lead, played (the ids played this round), passes}`;
+  `public.turn` the player to move.
+  - Buttons: `deal-<pid>` "Draw 7" for each seated player before the deal;
+    `pass` "⏭ Pass" for the player to move once the boneyard is empty;
+    `new-<pid>` "♻ New round" for the host during a round, and for the
+    players and the host once it is over.
+  - Draw 7 pulls seven tiles into each rack at its slots `(rack.x + 6 +
+    66k, rack.y + 6)`, k = 0–6 — the slots 🔒 Draw to my rack fills
+    (app.js `rackSlot`), two more left free (k = 7, 8). Each lands up
+    false, `vis: ['seat:<s>']`, `pv: 1`, owned by `seat:<s>` with `po: 1`.
+    "📣 {name} leads" (drawn by lot: one "used randomness" line), then the
+    lead goes round, a round each.
+  - A play is a `move` by the player to move that leaves a tile face up (a
+    tile off its rack) and that this round hasn't played yet: the turn
+    passes (`t.nextSeat`); a played tile moved again passes nothing. A rack
+    emptied: "📣 {name} plays the last tile — domino!" and 🏆 (`t.win`).
+    Every seated player passing in a row: "📣 The line is blocked — show
+    your tiles: the lowest count wins". New round: "removed N items…",
+    "made the bag Boneyard (28 pieces)", "A new round: the tiles are back in
+    the boneyard".
+  - Refusals (notices): "🚫 It's {name}'s turn" (a pull from the boneyard,
+    or a tile of your own rack set down off it, out of turn — rearranging
+    your own rack is never refused), "🚫 Press Draw 7 first", "🚫 The round
+    is over — ♻ New round to play again", "🚫 No peeking at hidden tiles"
+    (every `peek`); a told "Dominoes needs two seated players and a full
+    boneyard".
+- **Veiled Ranks.** A 1160 × 1560 table, seats South (`#d97706`) and North
+  (`#2563eb`). Types: `field` (the board: 1040 square, `primary`, a 10 × 10
+  square grid of cell 100 at (20, 20), chess labels a1–j10 with a1 South's
+  left corner; zones `north` — board-local y 0–320 — and `south` — y
+  720–1040 —, `owner: 'seat:<id>'`, `private: 'keep'`) and per side the
+  units `s-<unit>` / `n-<unit>`: `banner` (1, rank 0, label "⚑"), `crown`
+  (1, 4), `blade` (2, 3), `pike` (3, 2), `lancer` (2, 1), `herald` (1, 1),
+  `trap` (2, rank null, "✕"); tokens, rect 80, `upright`, `back: 'south'` /
+  `'north'` (◆ on the side's colour), one face `{color, label: the rank or
+  glyph, text: the unit's name}`, `meta: {side, unit, rank}`, type names
+  "South Crown" …. The setup: the field at the centre, then a `group` with
+  `shuffle: true` per side of twelve piece entries, each `up: false` and
+  `owner: 'seat:<side>'`, at c1–h1, c2–h2 (South) and c10–h10, c9–h9
+  (North); each lands in its zone: `vis: ['seat:<side>']`, `pv: 1`, its
+  owner the seat's own (no `po`). A quick Node check over 400 fresh setups
+  found every per-position guess (z order, key order, square) at 0.250, the
+  constant guess's.
+  - Script name "Veiled Ranks", strict, `onSelect`. `t.data`: `{box (its
+    box id), phase: 'deploy' | 'play' | 'over', ready: {south, north},
+    turn: 'south' | 'north'}`; `public.turn` the side to move's holder
+    during play; `public.badges` `{pid: '⏳ Deploying' | '✓ Ready'}`
+    during deployment.
+  - Buttons: `ready-south` / `ready-north` "✓ Ready" for each side's
+    holder while deploying (both: "📣 The ranks are set — South moves
+    first"); `new-<pid>` "♻ New game" for the two players and the host
+    once it is over (`t.layout` lays both armies out again: "placed 24
+    items of «Veiled Ranks»", "📣 Deploy your units in your three rows,
+    then ✓ Ready").
+  - Hints: a pick (a tap on a phone, a click on a desktop) of one of your
+    units hints, while deploying, every square of your three rows but its
+    own; in play, on your turn, its legal squares; else none.
+  - Moves are drags (`move` with `a.to`): deploying, within your rows
+    (onto one of yours, the two swap: two "moved a hidden piece" lines);
+    in play, one square along a rank or a file, a Lancer one or two with
+    its first square empty — onto an enemy is an attack.
+  - Lines: "{Side Unit} parleys with {Side Unit (r)} at {sq}: both stand
+    revealed", "{Side Unit (r)} springs {Side} Trap at {sq}: both are
+    lost", "{A (r)} beats {B (r)} at {sq}", "{A (r)} and {B (r)} fall
+    together at {sq}", "📣 {A (r)} takes {Side}'s Banner — {Side} wins",
+    "📣 {Side} has no unit that can move — {Other} wins"; at the end every
+    unit still hidden is revealed ("revealed N pieces: …") and 🏆 goes to
+    the winner's seat. Revealed units stay revealed (a unit that combat
+    showed and that steps into a screen is revealed again); a hidden unit
+    that steps into the other side's rows stays hidden for its own side
+    ("changed who sees a hidden piece on {sq}" follows its move).
+  - Refusals: "🚫 Deploy inside your three rows", "🚫 You're ready — wait
+    for {Side}", "🚫 Only the two players move the units" (a watcher),
+    "🚫 That's not your unit", "🚫 Drop the unit on a square of the
+    board", "🚫 It's {Side}'s turn", "🚫 The Banner never moves", "🚫 A
+    Trap stays where it was set", "🚫 That square holds one of your own",
+    "🚫 Units move along a rank or a file, never diagonally", "🚫 One
+    square at a time", "🚫 A Lancer moves one or two squares", "🚫 A
+    Lancer's first square must be empty ({sq})", "🚫 The game is over — ♻
+    New game for another"; strict's "🚫 Not a move in this game" for
+    anything but a move (a peek, a flip, a 🙈 Hide).
+- **Mechanism changes, no check weakened:** `t-fun-games.js` checks that the
+  game strip offers every shipped game, in order, and that the 🎲 dialog
+  lists them all: the two box games join the list after Backgammon (15
+  entries, was 13). `t-p4-hexplay.js` reads the "rolled 2 dice" line on the
+  host's screen, so it now waits (up to 5 s) for the other player's view to
+  show the same faces before the same equality check: the roll's patch could
+  still be on its way (it failed once that way in a full run).
+  `t-p5-private.js` section 4 waits for the host to see Bob stand up before
+  Alice seats Mallory north: Bob's `seat` is a guest's action still on its
+  way, and north still his was "🚫 That seat is taken" (once, in a full run).
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores

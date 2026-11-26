@@ -296,8 +296,10 @@ const ZOOM = X.zoomFor;
     let rolled = [];
     ok(await until(async () => (rolled = await X.linesBy(alice, A.pid, /^rolled/, from)).length > 0, 8000)
       && rolled.length === 1 && /^rolled 2 dice: \d · \d$/.test(rolled[0]), `one line: "${A.who} ${rolled.join(' | ')}"`);
-    const vals = /^rolled 2 dice: (\d) · (\d)$/.exec(rolled[0] || '')?.slice(1).map(Number), Hr = await X.hexOf(O);
-    const faces = [d1, d2].sort().map((d) => Hr.items[d].f + 1);
+    const vals = /^rolled 2 dice: (\d) · (\d)$/.exec(rolled[0] || '')?.slice(1).map(Number);
+    // (the line is read on Alice's screen, the host's: the roll's patch may still be on its way to Bob's)
+    let faces = [];
+    await until(async () => { const Hr = await X.hexOf(O); faces = [d1, d2].sort().map((d) => Hr.items[d].f + 1); return !!vals && vals.join() === faces.join(); }, 5000);
     ok(!!vals && vals.join() === faces.join(), `the values said are the faces the dice show, on ${O.who}'s screen too (${vals?.join(', ')} / ${faces.join(', ')})`);
     await putAway(A);
     from = Date.now();
