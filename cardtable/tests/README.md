@@ -2916,6 +2916,101 @@ and the console helpers with the sections above.
   overrides for everyone, the private-piece rule gone, `hide` without `po`
   — each fails several of these sections.
 
+## Phase 5 (the test author's private-material suites, written from the spec)
+
+Written from spec §5l t-p5-private (items 1–4), §5j (attacker cases
+1–11), §5a–§5i and D249–D276, apart from the implementation's own
+t-p5-private.js, t-p5-cli.js and t-p5-wire.js (whose names they don't
+reuse). Every expectation is the spec's; the implementation was read only
+for hooks and selectors.
+
+- **`p5v-lib.js`**: `spy(env, invite, peers)` is final-lib's Mallory (a raw
+  peer) with readers — `bodies()` (her `state` bodies, unwrapped, in
+  arrival order), `notes()`, `others()` (every channel but the public
+  catalog's), `count()`, `said(from)`, `tries(actions)` (sends them and
+  returns the notices they bring her, after 2.2 s: the host sends a peer 10
+  notices, then 5 a second, §0.1) and `hello(from)` (keyed hellos until a
+  snapshot addressed to her arrives: after a host reload or a demotion);
+  `scan(v, tokens)` (every key or string holding a token, at any depth);
+  `told(bodies, ids)` (every record of those pieces that says more than
+  §5d's reduced form `{k, b, x, y, rot, z, n?, owner?, lock?, at?}`, and
+  every per-recipient form of them); `drawn(p, id)` (what a screen draws of
+  a piece as a player sees it: its text, a 🙈 shown on it, the hatched
+  corner's class, its tooltip); `screenText(p, ids)`; `watchTumbles(p)`;
+  `bound99(p, n)`.
+- **Tokens.** Each box gives every face of what Mallory must never learn a
+  label, name and text found nowhere else (`Qa1`…, `Qt01`…, `Qu7x`, `Kd3`…),
+  so a body that names one is caught by text, wherever it hides (a log
+  line, a notice, a record) — and by type ref (`<box>/<type>`, each such
+  type used by those pieces alone).
+- **`t-p5-veil.js`** (E2E): Bob hosts on a desktop, Alice plays on an iPhone
+  13 (held upright, and sideways in section 3), Mallory is a raw peer seated
+  East. Box "Veil test" (original): racks South and North (`'reveal'`),
+  South's screen (`'keep'`), Alice's three dice (`Qa…`), Bob's die (`Qb…`),
+  two plain dice, tiles in two bags (Amber's `Qt…`, Blue's), loose tiles, a
+  face-down tile nobody sees (`Qf9z`), units, a coin with no back; fixed
+  ids (`ID`). Sections: (1) Alice's cup from her phone's bar (the handful,
+  D264), the 🙈 badge, the hatched corner and the tooltip hers alone, the
+  bars (hers: Reveal, 🎲 Roll; Bob's: Peek), two rolls under the cup (Bob's
+  screen tumbles the backs, hers shows the faces, "rolled 3 hidden dice");
+  (2) Bob's cup on the desktop, rolled and revealed — the face on both
+  screens, the line naming it once public; (3) on the phone held sideways,
+  ⬚ and taps: a group roll of two cupped and two shown dice ("rolled 4
+  dice (2 hidden): a · b", case 11), a group 🙈 Hide, Reveal from the bar;
+  Bob's group 🙈 Hide by Shift+click never sends the coin; (4) "🔒
+  {name}'s rack" / "🔒 Your rack" and the hatch colours, 🔒 Draw to my rack
+  on both screens (slots of their own, hidden for the seat, po), a tile
+  dragged off Bob's rack (face up for all), Alice's unit behind her screen
+  and out again (still hers alone), Bob's Peek (the overlay, its caption,
+  the loud line) and Alice's on the phone; (5) Mallory's tries — case 4
+  (move, flip, peek of Alice's rack tile), case 5 (hides), case 6 (forged
+  vis/up/pv/po/owner on a move), case 8 (flip, roll, face, move, claim of
+  the cup; the dice unchanged in the host state), and the same words for a
+  roll or face of a hidden tile or unit; (6) a seat change (Bob stands and
+  sits: north's rack tile his only while seated), a host reload (Alice's
+  cup and rack hers again, with 🙈) and a demotion (the invite opened in a
+  second tab of Bob's browser, whose Trystero id is made to start with "z"
+  so a tie goes the same way each run; the staying tab is the one holding
+  the table, the other a viewer, for 2 s on end); (7) export and import
+  through 📦 (the file: `#k` for players, no pid, no `pv`; set up again:
+  every private piece's type, face, up, vis, owner, pv and po as before);
+  (8) Alice leaves, Mallory takes South (case 3: South's rack tiles and
+  unit become hers to see, Alice's cup never; the rack's label follows);
+  (9) a script (cases 9, 11, 7); (10) Mallory moved off South (the reduced
+  forms again: an override lasts one message) and the scan of every body,
+  notice and other message she got, window by window (what was hidden from
+  her when), plus no `pips`, no override outside her time at South, no log
+  line naming a hidden piece, her view in step, and the host's own screen
+  showing none of it. `UPTO=n` stops after section n (to develop).
+  Screenshots: `shots/p5v-*.png`.
+- **`t-p5-veil-cli.js`** (E2E, §5i): Alice hosts with cli.py, Bob is a guest
+  with cli.js (each tab's posted snapshot kept as the bridge reads it), box
+  "Cubby": Alice's `hide` (hers whole with `hiddenFromOthers: true`, Bob's
+  `{kind: 'hidden'}` with its place and owner alone, no token or type ref
+  in his items), `table`'s "🙈 hidden from others", Bob's `peek` ("peek: …"
+  in his msgs alone, the line in Alice's REPL), Alice's own peek at once
+  with no line, `reveal`, Bob's tile hidden, peeked by Alice and revealed,
+  his hide of the coin refused in his msgs, and the Bridge API's
+  `hide(*ids)` in both languages (a fake tab).
+- **`t-p5-bones.js`** (E2E, cases 2, 4, 7 on the shipped Dominoes): Bob
+  picks it from 🎲 on a desktop, Alice plays on an iPhone 13, Mallory
+  watches. Draw 7 from Alice's phone fills both racks, each player's faces
+  with 🙈 on their screen alone; no body Mallory gets carries a rack tile's
+  type, name (`a|b`) or pips, nor any override; the script's validate
+  vetoes Bob's Peek and hers (no overlay, no line, no answer); her move and
+  flip refused; the leader plays a tile (public), the thirteen left still
+  nothing of hers.
+- **`t-p5-order.js`** (E2E, case 10): 20 fresh rooms (a new host context
+  each) set up Veiled Ranks with its rules; a fresh Mallory in each keeps
+  her first snapshot and reads North's 12 hidden units (by their back): z
+  order, key order, ids, squares. Her guessers — the box's declared order
+  (z, key, id) and squares, and the rank most often at a place in rooms
+  1–10 guessed in rooms 11–20 (a leave-one-out tally was dropped: it ties
+  each room's guesses to the others' and went over the binomial bound 4 %
+  of the time in a simulation of the null; the split, 0.07 %) — score at
+  most 0.25 + the 99 % binomial margin. Her first snapshots name no North
+  type and carry no `meta`.
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores
