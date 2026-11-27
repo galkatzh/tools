@@ -452,10 +452,12 @@ export async function prune(exceptRoom, need) {
   return 1;
 }
 
-/** This room's save: {state, decks, boxes, boxSrc, stored, behind?, fromOld?} — `stored`: IndexedDB
+/** This room's save: {state, decks, boxes, boxSrc, stored, behind?, migrated?, fromOld?} — `stored`: IndexedDB
  *  holds exactly this (false: a migrated save that couldn't be written),
  *  `behind`: why the room's latest save can't be resumed, when this is an
- *  older copy of it (below) — {lost: why} when it can't be resumed at all,
+ *  older copy of it (below), `migrated`: a pre-Phase 1 save, moved over by
+ *  this load — not the IndexedDB table a save left pending was made over
+ *  (app.js checkPending, D318) — {lost: why} when it can't be resumed at all,
  *  {newer: v} when a newer Card Table wrote it (never to be resumed or
  *  overwritten here), or null if this browser never hosted the room.
  *  Rejects when the save can't be READ (the caller must not write over what
@@ -524,9 +526,9 @@ function legacyNewer(room, ts) {
   localStorage.removeItem(`ct-decks-${room}`);
   return false;
 }
-/** The pre-Phase 1 save of `room` (localStorage), migrated: see loadSave.
- *  `behind`: why the room's later save can't be resumed (the migrated table
- *  says so), when IndexedDB holds a lost marker for it. `newer`: it replaces
+/** The pre-Phase 1 save of `room` (localStorage), migrated (`migrated`):
+ *  see loadSave. `behind`: why the room's later save can't be resumed (the
+ *  migrated table says so), when IndexedDB holds a lost marker for it. `newer`: it replaces
  *  an older IndexedDB save of the room, catalog and all (legacyNewer), and
  *  the result says so (`fromOld`) — or, holding no table to resume (a lost
  *  marker, unreadable), it replaces nothing and goes, said as {lost}. */
@@ -567,9 +569,9 @@ async function migrateLegacy(room, behind, newer = false) {
     localStorage.removeItem(`ct-decks-${room}`);
   } catch (err) {
     opts.notify(`Couldn't move this table's save to the new storage: ${err.message}`);
-    return out.lost ? { lost: out.lost } : { ...out, stored: false, ...(newer && { fromOld: true }) };
+    return out.lost ? { lost: out.lost } : { ...out, stored: false, migrated: true, ...(newer && { fromOld: true }) };
   }
-  return out.lost ? { lost: out.lost } : { ...out, stored: true, ...(newer && { fromOld: true }) };
+  return out.lost ? { lost: out.lost } : { ...out, stored: true, migrated: true, ...(newer && { fromOld: true }) };
 }
 
 // --- assets ---------------------------------------------------------------------

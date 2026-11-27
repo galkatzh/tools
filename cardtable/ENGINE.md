@@ -822,7 +822,8 @@ one token however many it carries, and never reaches the rules.
 
 Flood control (host): a guest may send a burst of 40 actions, then 20 per
 second; beyond that they are dropped and the sender is told to slow down
-(once per 10 s). Private notes (`t.tell`, vetoes) to one guest are
+(once per 10 s). A connection that has no player yet is priced the same,
+by the connection, whatever player ids it names. Private notes (`t.tell`, vetoes) to one guest are
 limited the same way (10, then 5 per second), and chat/renames to 5 per
 5 s. Decks that guests add share one budget per table (1.5M chars, saved
 with the table), so nobody can fill the host's browser storage.

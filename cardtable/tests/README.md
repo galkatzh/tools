@@ -88,8 +88,10 @@ const { ok, section } = h;
 - Shared helpers: `fun-lib.js` (seated players, screenshots into `shots/`),
   `final-lib.js` (a raw attacker peer; `churner(env, invite, tag)`, a raw
   page that joins again and again as a fresh connection, each time under a
-  fresh player id; and `table(template, players)`: a rules template running
-  on a real `core.js` table in Node).
+  fresh player id; `knocker(env, invite, pid, ms)`, a raw page joined once
+  that knocks as `pid` every `ms` and can `flood(n)` keyed hellos, each
+  under a fresh player id; and `table(template, players)`: a rules template
+  running on a real `core.js` table in Node).
 
 ## The wire, for raw peers and state checks
 
@@ -128,7 +130,9 @@ top of `core.js` and README "How it works".
   this is its cold render of the whole table;
   `lastTickMs`, the host's broadcast tick (signing and sending start; its
   own screen's redraw is not in it); `lastJobMs`, the host's last job on
-  its own table, rules off (`T.apply` alone: B19's apply).
+  its own table, rules off (`T.apply` alone: B19's apply). On the host,
+  `waiting()` lists the connections waiting in line to register, in line
+  order (D317).
 - **The tick in Node.** `T.takeDirty()`, then `T.patchContent(d)` (or
   `T.snapContent()` in the same tick), wrapped in `{v, kind, boot, seq,
   host}`, serialized once (`sharedText`), and `spliceBody({to, tp, base,
@@ -3412,6 +3416,42 @@ fails on the commit before (served with `APP_ROOT`) and passes on this one.
 - **Mechanism change, no check weakened:** `t-final-compat.js` (1)'s
   "neither joined the table" names what the host's log added when it fails
   (it failed once in a full run, with nothing to say why, and passed alone).
+
+## The final review's fourth fix-up (D318)
+
+SPEC §9 D318: a waiting connection's actions priced, the line kept clean,
+a state left pending over a kept or a replaced IndexedDB table, and a
+refused setup's patch. Each new check fails on the commit before (served
+with `APP_ROOT`; for t-final-sec, that commit plus the `waiting()` hook
+alone) and passes on this one.
+
+- **`t-final-sec.js`** D318, while the churners keep the line full: a
+  knocker in line sends 2,000 keyed hellos, each under a fresh player id —
+  the host logs 5 a line each, then one line counting the rest by reason,
+  40 or so reach the line and the rest are "Too many actions" (before:
+  2,000 lines, 2,000 at the line, each fresh id with its own budget of 40);
+  then two knockers of one new player wait in line, and once the churners
+  stop, both get in and neither is left in line (before: the one let in as
+  a second connection kept its place for 9 s).
+- **`t-p1-review-store.js`** (11): (10)'s newer legacy lost marker, with a
+  state left pending over the IndexedDB table, ahead of it — the pending
+  state is resumed and saved, and nothing says the moment was lost
+  (before: the older table, the mark dropped unsaid). (12): a newer legacy
+  save that replaces the IndexedDB table, with a state left pending over
+  that table, ahead by seq — the legacy save is on the table (before: the
+  pending state of the replaced table).
+- **`final.test.mjs`** (4): a refused box setup (an entry owned by '#4',
+  with two players seated) leaves the next patch without `table` and `seats` (before: both,
+  unchanged, so every guest's view started afresh); a setup that goes ahead
+  still carries its seats.
+- **Mechanism changes, no check weakened:** `t-final-compat.js` (5) picks
+  one checker a space Gus may pick, read once the table is still, and waits
+  for each pick before the next click: a Shift+click picks a space's top
+  checker, so a second point on that space put it back and the other seat's
+  picked nothing — which came first followed the random ids, and it left 1
+  picked now and then. `final-lib.js`'s `churner` logs a `room.leave()` that
+  throws (Trystero says goodbye to a peer whose channel isn't open yet)
+  instead of crashing the suite.
 
 ## Storage and images (Phase 1B)
 

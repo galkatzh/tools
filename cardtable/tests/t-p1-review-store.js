@@ -30,6 +30,11 @@
 //   (10) old lost a newer legacy save that holds no table (that tab's lost
 //                 marker: its own save failed): the IndexedDB table is resumed,
 //                 loudly, and kept — never replaced by the marker (D317)
+//   (11) …pending the same, with a state left pending over that IndexedDB
+//                 table, ahead of it: the state is resumed, as D308 says (D318)
+//   (12) old+pending a newer legacy save, and a state left pending over the
+//                 IndexedDB table it replaces: the legacy save is resumed, the
+//                 mark dropped — even ahead by seq, it is another table's (D318)
 'use strict';
 const h = require('./h');
 const L = require('./p1-lib');
@@ -356,6 +361,48 @@ const OLDER = /^Couldn't resume this table's last save \(browser storage is full
     await okWait(L.until(async () => (await L.view(q)).items[pile]?.x === 444), 'a reload resumes it again');
     await q.context().close();
   })().catch((e) => ok(false, `(10) crashed: ${e.stack}`));
+
+  section('(11) …and a state left pending over that IndexedDB table, ahead of it, is resumed as ever (D318)');
+  await (async () => {
+    const q = await A.seat(env, 'Rae', env.url, [A.toastLog]);
+    const room = await roomOf(q), invite = q.url(), pile = await waitPile(q, 'Standard');
+    await L.act(q, { t: 'move', id: pile, x: 444, y: 333 });
+    ok(await settled(q), 'the IndexedDB save holds the table (the pile at 444)');
+    await q.goto(h.plain(env));
+    const rec = await h.idb(q, 'saves', room), st = structuredClone(rec.state);
+    st.items[pile].x = 555; st.seq += 1; // (the last moment, whose pagehide write never committed in WebKit: the pile moved on to 555)
+    await q.evaluate(([room, p, l]) => { localStorage.setItem(`ct-pending-${room}`, p); localStorage.setItem(`ct-save-${room}`, l); },
+      [room, JSON.stringify({ seq: st.seq, at: Date.now(), state: st }), JSON.stringify({ ts: rec.ts + 60000, lost: 'browser storage is full' })]);
+    await back(q, invite);
+    await okWait(toasted(q, OLDER), "the host is told the last save couldn't be resumed, and an older one was");
+    const x = (await L.view(q)).items[pile]?.x;
+    ok(x === 555 && !(await toasts(q)).some((t) => /wasn't saved/.test(t)), `the pending state is resumed: the pile at ${x} (555), and nothing says the moment was lost`);
+    ok(await q.evaluate((k) => localStorage.getItem(k) === null, `ct-pending-${room}`) && !(await legacyKeys(q)).length, 'the pending mark and the legacy marker are gone');
+    ok(await settled(q) && (await h.idb(q, 'saves', room)).state.items[pile].x === 555, 'and IndexedDB holds the resumed state');
+    await q.context().close();
+  })().catch((e) => ok(false, `(11) crashed: ${e.stack}`));
+
+  section('(12) a newer legacy save replaces the IndexedDB table, and with it what was left pending over that table (D318)');
+  await (async () => {
+    const q = await A.seat(env, 'Sid', env.url, [A.toastLog]);
+    const room = await roomOf(q), invite = q.url(), pile = await waitPile(q, 'Standard');
+    await L.act(q, { t: 'move', id: pile, x: 444, y: 333 });
+    ok(await settled(q), 'the IndexedDB save holds the table (the pile at 444)');
+    await q.goto(h.plain(env));
+    const rec = await h.idb(q, 'saves', room), cat = await catalogOf(q, room), mine = structuredClone(rec.state), legacy = structuredClone(rec.state);
+    mine.items[pile].x = 555; mine.seq += 5; // (this tab played on to 555, its last write left pending)
+    legacy.items[pile].x = 222; legacy.seq += 1; // (the previous Card Table's tab played on too, and saved later)
+    for (const [pid, k] of Object.entries(legacy.keys)) legacy.players[pid].key = k;
+    delete legacy.keys; delete legacy.zMax; delete legacy.v;
+    await q.evaluate(([room, p, s, d]) => { localStorage.setItem(`ct-pending-${room}`, p); localStorage.setItem(`ct-save-${room}`, s); localStorage.setItem(`ct-decks-${room}`, d); },
+      [room, JSON.stringify({ seq: mine.seq, at: Date.now(), state: mine }), JSON.stringify({ ts: rec.ts + 60000, state: legacy }), JSON.stringify(Object.fromEntries(cat.map((r) => [r.id, r.deck])))]);
+    await back(q, invite);
+    await okWait(toasted(q, /^Resumed this table's newer save, made by a tab of the previous Card Table$/), "the host is told it resumed the previous Card Table's newer save");
+    await h.sleep(500);
+    const x = (await L.view(q)).items[pile]?.x;
+    ok(x === 222 && await q.evaluate((k) => localStorage.getItem(k) === null, `ct-pending-${room}`), `the newer save is on the table (the pile at ${x}, 222), never the state left pending over the table it replaced (555 ahead by seq), and the mark is gone`);
+    await q.context().close();
+  })().catch((e) => ok(false, `(12) crashed: ${e.stack}`));
 
   await env.done();
 })().catch(h.crash);

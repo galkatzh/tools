@@ -6,10 +6,12 @@
 // the network gate (D302) refuses an action nested too deep, a seat key too
 // long, and a new player id from a page that rejoins, and lets new players
 // in in the order they came: fresh connections that knock every 150 ms
-// can't keep a newcomer out (D317).
+// can't keep a newcomer out (D317); a connection waiting in line pays for its
+// actions whatever player id each names, is logged in a few lines, and gives
+// up its place once its player gets in another way (D318).
 const h = require('./h');
 const { ok, section, logHas } = h;
-const { mallory, churner } = require('./final-lib');
+const { mallory, churner, knocker } = require('./final-lib');
 
 /** The host's saved decks (the room's catalog), and its save record. */
 const savedDecks = async (page) => (await h.idb(page, 'catalog')).map((r) => r.deck);
@@ -148,7 +150,40 @@ const logText = (page) => page.textContent('#log');
     while (!inAt && Date.now() - tb < 30000) { if ((await names()).includes('Dee')) inAt = Date.now(); else await h.sleep(250); }
     const ahead = all().filter((t) => t > tb && t < (inAt || Infinity)).length;
     ok(inAt && ahead <= 5, `Dee knocks every 3 s among them and gets in after ${inAt ? `${((inAt - tb) / 1000).toFixed(1)} s` : 'more than 30 s'}, ${ahead} churned players ahead of her (at most one per churner that came first)`);
-    for (const c of churners) await c.stop();
+
+    section('D318: a connection waiting in line pays for its actions, whatever player id each one names, and is logged in a few lines');
+    {
+      const W = await knocker(env, invite, null, 0), lines = [];
+      const seen = (m) => { if (m.text().includes(W.peer)) lines.push(m.text()); };
+      host.on('console', seen);
+      const secs = await W.flood(2000); // (each hello under a fresh player id: before, each opened a flood budget of 40)
+      const t1 = Date.now();
+      while (!lines.some((l) => l.startsWith('refused ') && l.includes(' more actions from ')) && Date.now() - t1 < 15000) await h.sleep(250);
+      host.off('console', seen);
+      const each = lines.filter((l) => l.startsWith('refused an action from')), rest = lines.find((l) => / more actions from /.test(l)) || '';
+      const count = (re) => each.filter((l) => re.test(l)).length + Number(rest.match(new RegExp(`(\\d+) × ${re.source}`))?.[1] || 0);
+      const joining = count(/Many players are joining/), slow = count(/Too many actions/), all = each.length + Number(rest.match(/^refused (\d+) more/)?.[1] || 0);
+      ok(each.length <= 5 && rest && all >= 1999, `the host logs ${each.length} refusals a line each, then one line for the rest (${all} in all): ${JSON.stringify(rest.slice(0, 220))}`);
+      ok(joining <= 40 + 20 * (secs + 3) && slow >= 1999 - joining, `${joining} reach the line (a burst of 40, then 20 a second; sent in ${secs.toFixed(1)} s), ${slow} are refused as too many — before, each fresh id passed with its own budget`);
+      await W.stop();
+    }
+
+    section('D318: a connection in line whose player gets in through another one gives up its place');
+    {
+      const P = 'b0b0b0b0b0b0b0b0', Y = await knocker(env, invite, P, 150);
+      await h.sleep(300);
+      const X = await knocker(env, invite, P, 1000), waiting = () => host.evaluate(() => window.__ct.waiting());
+      let both = false;
+      for (const t0 = Date.now(); !both && Date.now() - t0 < 10000; await h.sleep(200)) { const w = await waiting(); both = w.includes(Y.peer) && w.includes(X.peer); }
+      ok(both, 'two connections of one new player both wait in line, while the churners keep the table full');
+      for (const c of churners) await c.stop(); // (their connections leave the line: the two are next)
+      let inAt = 0; // (the one ahead takes the next token; the other, knocking again, is that player's second connection)
+      for (const t0 = Date.now(); !inAt && Date.now() - t0 < 15000; await h.sleep(200)) if ((await Y.registered()) && (await X.registered())) inAt = Date.now();
+      const w = await waiting();
+      ok(inAt && !w.includes(X.peer) && !w.includes(Y.peer), `both get in, and neither is still in line (${inAt ? `${w.length} waiting` : 'not both in within 15 s'}) — before, the one let in as a second connection kept its place for 9 s`);
+      await X.stop();
+      await Y.stop();
+    }
   }
   await env.done();
 })().catch(h.crash);

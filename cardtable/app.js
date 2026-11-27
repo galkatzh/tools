@@ -28,7 +28,7 @@ import {
   cleanDeck, cleanDeckV1, cleanBox, isBuiltin, deckOverBudget, assetRefs, cleanName, standardDeck, cardName, pieceName, faceLabel, createTable,
   MODULE_V as CORE_V, PROTO, STATE_V, PUBLIC_ACTIONS, HOST_ACTIONS, MAX_ROLL, MAX_N, MAX_BAG, MAX_HAND, MAX_PILE, SIG, sealText, sharedText, spliceBody, viewFromSnap, applyViewPatch, roundTable, FELT,
   tableBoards, snapTo, snapAt, snaps, displayAddr, resolveAddr, liveFx, countSetup, checkTransportBox, boxOverBudget, publicBox, groupIds, GROUP_OPS, clampShift, MAX_GROUP,
-  zonesUnder, PLACEHOLDER, tooDeep,
+  zonesUnder, PLACEHOLDER, tooDeep, tokens,
 } from './core.js?v=1';
 import { MODULE_V as GRID_V, turn, spotOf, fromLocal, toLocal } from './grid.js?v=1';
 import * as pieces from './pieces.js?v=1';
@@ -1041,6 +1041,7 @@ function demote() {
   peerPid = {};
   firstPid.clear();
   knocking.clear();
+  strangers.clear();
   clearTimeout(bcastT);
   clearTimeout(persistT);
   bcastT = persistT = 0;
@@ -1216,33 +1217,46 @@ function requestSnap() {
 const NEWCOMERS = 20, NEWCOMER_MS = 3000, KNOCK_MS = 3000;
 let newcomers = { n: NEWCOMERS, at: 0 }; // host: the table's bucket of new players (newcomer)
 const knocking = new Map(); // host: refused connection → when it last knocked, in the order they first knocked (newcomer)
+const strangers = new Map(); // host: a connection with no player yet → its flood bucket (actA.onMessage, D318)
 /** Host: whether connection `peer`, whose player is new to this table, may
  *  register now — NEWCOMERS at once, then one every NEWCOMER_MS, for the
  *  whole table — so a page that mints a player id at each reconnect (a seat
  *  key and an image budget each, which the host keeps) mints few (D302).
  *  The refused wait in the order they first knocked, each keeping its place
  *  while it knocks (a guest knocks every KNOCK_MS: introduce) and losing it
- *  after 3 knocks missed or on leaving: fresh connections that knock faster
- *  take no turn from one that came first, which gets in once the tokens
- *  reach it (D317). */
+ *  after 3 knocks missed, on leaving, or once it is let in (by its caller,
+ *  whichever way it got in): fresh connections that knock faster take no
+ *  turn from one that came first, which gets in once the tokens reach it
+ *  (D317). */
 function newcomer(peer) {
   const now = Date.now();
   newcomers = { n: Math.min(NEWCOMERS, newcomers.n + (now - newcomers.at) / NEWCOMER_MS), at: now };
   for (const [q, at] of knocking) if (now - at > 3 * KNOCK_MS) knocking.delete(q);
   const ahead = knocking.has(peer) ? [...knocking.keys()].indexOf(peer) : knocking.size;
   if (newcomers.n < ahead + 1) { knocking.set(peer, now); return false; } // (a waiting one keeps its place: a Map keeps a key's first order)
-  knocking.delete(peer);
   newcomers.n--;
   return true;
 }
 
-const refusedAt = {}; // host: peer → last refusal notice (no toast storms)
-/** Host: turns away a peer's action, loudly on both ends. */
+const REFUSE_MS = 10000, REFUSE_LINES = 5;
+const refusing = new Map(); // host: peer → this window's refusals {n, more: reason → how many went unlogged} (refuse)
+/** Host: turns away a peer's action, loudly on both ends, at a bounded cost:
+ *  the peer is told once a REFUSE_MS window (no toast storms), and the
+ *  console gets the window's first REFUSE_LINES refusals a line each, then,
+ *  as the window closes, one line counting the rest by reason — a flood of
+ *  20,000 refused actions logs 6 lines, not 20,000 (D318). */
 function refuse(peer, reason) {
-  console.warn(`refused an action from ${peer}: ${reason}`);
-  if (Date.now() - (refusedAt[peer] || 0) < 10000) return;
-  refusedAt[peer] = Date.now();
-  sendNote({ msg: `🚫 ${reason}`, to: null }, peer);
+  let w = refusing.get(peer);
+  if (!w) {
+    refusing.set(peer, (w = { n: 0, more: new Map() }));
+    sendNote({ msg: `🚫 ${reason}`, to: null }, peer);
+    setTimeout(() => {
+      refusing.delete(peer);
+      if (w.more.size) console.warn(`refused ${w.n - REFUSE_LINES} more actions from ${peer} in ${REFUSE_MS / 1000} s: ${[...w.more].map(([r, k]) => `${k} × ${r}`).join('; ')}`);
+    }, REFUSE_MS);
+  }
+  if (++w.n <= REFUSE_LINES) console.warn(`refused an action from ${peer}: ${reason}`);
+  else w.more.set(reason, (w.more.get(reason) || 0) + 1);
 }
 
 // --- card images: pulled by hash ------------------------------------------------
@@ -1668,12 +1682,20 @@ function connect() {
       : own(T.state.keys, p) && T.state.keys[p] !== key ? 'That seat belongs to another player'
       : '';
     if (reason) { refuse(peer, reason); return; }
+    // Flood control prices a player's actions by their id (T.mayAct). A connection with no player yet may
+    // name a fresh id each time, so its actions are priced by the connection, and only one that registers a
+    // player opens a bucket for its id: a waiting connection's flood of fresh ids gets no fresh budgets and
+    // leaves nothing behind (D318).
+    const stranger = !own(T.state.players, p) && !own(T.state.keys, p);
+    if (stranger && !tokens(strangers, peer, 40, 20, 1, Date.now())) { refuse(peer, 'Too many actions — slow down'); return; }
+    if (stranger && !newcomer(peer)) { refuse(peer, 'Many players are joining at once — you are next in a moment'); return; }
+    knocking.delete(peer); // (let in, whichever way: it gives up its place in line, D317)
+    strangers.delete(peer);
     if (!T.mayAct(p, action)) {
       refuse(peer, 'Too many actions — slow down');
       refused(p, action); // what it named goes out again (rate-limited): the guest's optimistic move snaps back
       return;
     }
-    if (!own(T.state.players, p) && !own(T.state.keys, p) && !newcomer(peer)) { refuse(peer, 'Many players are joining at once — you are next in a moment'); return; }
     // Register/refresh the sender on EVERY action, not just hello — if the
     // keyed hello was lost, the first real action still registers the player.
     // The seat key binds at once, here (two claims of one seat can't both
@@ -1728,6 +1750,7 @@ function connect() {
     outbox.delete(peer);
     incompatible.delete(peer);
     knocking.delete(peer);
+    strangers.delete(peer);
     const p = peerPid[peer];
     delete peerPid[peer];
     if (p && !Object.values(peerPid).includes(p)) enqueue(p, { t: '_leave' });
@@ -2007,12 +2030,16 @@ async function sweepPending() {
  *  tab left pending (flushSave) holds when it never committed and is ahead
  *  of `save` (the catalog it needs is in `save`'s: D308); a pending seq
  *  alone ahead of it is said, once — unless the boot says worse (a save
- *  lost). */
+ *  lost). Only over the IndexedDB table it was made over, whatever else the
+ *  boot says of it (`behind`, D317): a pre-Phase 1 save this boot moved over
+ *  (`migrated`) replaced that table and its catalog, so the mark goes,
+ *  logged (D318). */
 function checkPending(save) {
   const p = pending();
   if (!p) return save;
   localStorage.removeItem(pendingKey());
-  if (save?.lost || save?.behind || !(p.seq > num(save?.state?.seq))) return save;
+  if (save?.migrated) { console.warn(`dropped the save left pending (seq ${p.seq}): it was made over this room's IndexedDB table, which this boot replaced with a previous Card Table's save`); return save; }
+  if (save?.lost || !(p.seq > num(save?.state?.seq))) return save;
   if (save?.state && p.state?.items && p.state.players && p.state.seq === p.seq && num(p.state.v) <= STATE_V) {
     console.warn(`resumed the last moment of play from the save left pending (seq ${p.seq}; the save has ${save.state.seq})`);
     return { ...save, state: p.state };
@@ -5476,7 +5503,7 @@ function becomeHost(saved, unsaved) {
     console.error('this table could not be resumed:', saved.lost);
     toast(`Couldn't resume this table (${saved.lost}) — started a fresh one`);
     saved = null;
-  } else if (saved?.behind) { // its last save is lost, an older copy isn't (a pre-Phase 1 save its migration couldn't replace)
+  } else if (saved?.behind) { // its last save is lost, an older copy isn't: a pre-Phase 1 save its migration couldn't replace, or this IndexedDB table, when the newer pre-Phase 1 save holds none (D317)
     console.error("this table's last save could not be resumed:", saved.behind);
     toast(`Couldn't resume this table's last save (${saved.behind}) — resumed an older one`);
   } else if (saved?.fromOld) { // a tab of the previous Card Table played on after the move to IndexedDB (D303)
@@ -5960,11 +5987,14 @@ async function boot() {
 // Worker's T.digest() of its mirror (a Promise; null with no Worker: see
 // workerDigest), `digest()` the host table's, `lastRulesError` the 📜
 // dialog's error, `jobs()` how many jobs wait in the queue or are in flight
-// (a Worker starting counts); perf adds the Worker's counters.
+// (a Worker starting counts); perf adds the Worker's counters. The network
+// gate (host): `waiting()` the connections waiting in line to register, in
+// line order (newcomer's `knocking`).
 if (window.CARDTABLE_TEST) {
   window.__ct = {
     act, view: () => view, hand: () => view.hand, log: () => view.log, boxes: () => boxes, perf,
     workerDigest, digest: () => T?.digest() ?? null, jobs: () => queue.length + !!current,
+    waiting: () => [...knocking.keys()],
     /** The host's state, copied (its seat keys left out): the catalog with its boxes' setups and rules, boxSrc, lastSetup, rules.box. */
     hostState: () => (T ? JSON.parse(JSON.stringify({ ...T.state, keys: undefined })) : null),
     get lastRulesError() { return lastRulesError; },

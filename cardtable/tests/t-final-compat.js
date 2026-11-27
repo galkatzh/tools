@@ -229,15 +229,21 @@ function dropPagehideSaves() {
     await g.waitForSelector('.item.pile .count');
     await pickGame(g, 'backgammon');
     await g.waitForFunction(() => Object.values(window.__ct.view().items).filter((it) => it.k === 'g').length >= 30, null, { timeout: 20000 });
-    await h.sleep(800);
-    const pts = await g.evaluate(() => { // (one point a piece, each where that piece is on top: a stack's checkers lie one on another)
-      const v = window.__ct.view(), seen = new Set(), out = [];
+    // One point a space whose checkers Gus may pick, where a checker of it is on top: a Shift+click picks a
+    // space's top checker, so a second point on that space put the same checker back, and the other seat's
+    // pick nothing — which ones came first followed the random ids, and sometimes left 1 picked.
+    const points = () => g.evaluate(() => {
+      const v = window.__ct.view(), me = Object.values(v.players).find((pl) => pl.name === 'Gus'), seen = new Set(), out = [];
       for (const el of document.querySelectorAll('#table .item')) {
-        const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2, at = document.elementFromPoint(x, y), id = at?.closest('.item')?.dataset.id;
-        if (y > 120 && id && v.items[id]?.k === 'g' && !v.items[id].lock && !at.closest('.count') && !seen.has(id)) { seen.add(id); out.push({ x, y }); }
+        const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2, at = document.elementFromPoint(x, y), it = v.items[at?.closest('.item')?.dataset.id];
+        const spot = it?.at ?? at?.closest('.item')?.dataset.id;
+        if (y > 120 && it?.k === 'g' && !it.lock && (!it.owner || it.owner === `seat:${me?.seatId}`) && !at.closest('.count') && !seen.has(spot)) { seen.add(spot); out.push({ x, y }); }
       }
       return out;
     });
+    // (read once the table is still — the same in two reads 300 ms apart — and each pick waited for before the next click)
+    let pts = await points();
+    for (const t0 = Date.now(); Date.now() - t0 < 10000;) { await h.sleep(300); const again = await points(); if (JSON.stringify(again) === JSON.stringify(pts)) break; pts = again; }
     const bar = () => g.evaluate(() => {
       const b = document.getElementById('action-bar'), r = b.getBoundingClientRect(), btns = [...b.querySelectorAll('button')].filter((x) => x.offsetParent).map((x) => x.getBoundingClientRect());
       b.scrollLeft = 0;
@@ -246,7 +252,10 @@ function dropPagehideSaves() {
         gapL: Math.round(left - r.left), gapR: Math.round(r.right - right) };
     });
     await g.keyboard.down('Shift');
-    for (const p of pts.slice(0, 6)) { await g.mouse.click(p.x, p.y); await h.sleep(150); }
+    for (const [k, p] of pts.slice(0, 6).entries()) {
+      await g.mouse.click(p.x, p.y);
+      await g.waitForFunction((n) => document.querySelectorAll('#table .item.selected').length >= n, k + 1, { timeout: 3000 }).catch((err) => console.error(`pick ${k + 1} not shown`, err.message));
+    }
     await g.keyboard.up('Shift');
     await h.sleep(600);
     const picked = await g.evaluate(() => document.querySelectorAll('#table .item.selected').length);

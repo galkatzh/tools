@@ -8,6 +8,9 @@
 //   (3) the facade's errors name the call (§0.2): t.newDeck() with nothing,
 //       an empty deck, t.schedule('soon') are TypeErrors saying "t.newDeck:"
 //       or "t.schedule:".
+//   (4) a refused setup (D318): the savepoint puts back whether the next
+//       patch carries the table and the seats, so it carries neither, and no
+//       player's view starts afresh (D317) for a game that never began.
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { APP_ROOT, core, ok, section, report, crash, guard, HOST, BOB, CAROL, env } from './node-lib.mjs';
@@ -85,6 +88,19 @@ try {
     ok(/^TypeError: t\.newDeck: /.test(empty), `t.newDeck({cards: []}): "${empty}"`);
     ok(/^TypeError: t\.schedule: seconds must be a number/.test(soon), `t.schedule('soon'): "${soon}"`);
     ok(Object.keys(T.state.decks).length === decks0, 'and no deck was minted by the calls that failed');
+  });
+
+  await guard('(4) a refused setup sends no seats', () => {
+    section('(4) a refused setup leaves the next patch without the table and the seats (D318)');
+    const T = room(4);
+    const box = { ...structuredClone(BOXES.draughts), name: 'Draughts for four' };
+    box.setup = [...box.setup, { ...box.setup[0], owner: '#4' }]; // (three are seated: it is refused)
+    T.takeDirty();
+    const r = run(T, HOST, { t: 'loadBox', box, setup: true, clear: false }), c = T.patchContent(T.takeDirty());
+    ok(/needs 4 seated players/.test(r.notes.join()) && T.state.seats == null, `the setup is refused, the seats as they were (${r.notes})`);
+    ok(!('seats' in c) && !('table' in c), `the next patch carries neither the seats nor the table (${Object.keys(c)}): nobody's view starts afresh (D317)`);
+    const go = run(T, HOST, { t: 'loadBox', box: BOXES.draughts, setup: true, clear: true }), c2 = T.patchContent(T.takeDirty());
+    ok(go.changed && c2.seats?.length === 2, '(control: a setup that goes ahead carries its seats)');
   });
 } catch (e) { crash(e); }
 report();

@@ -209,9 +209,13 @@ Playing on the free table:
 large): it fits the screen whichever way it turns, and each view turns
 in quarter turns so the player's own edge is at the bottom. The host's size
 menu shows it (▭ 1000 × 1360); picking a round size switches back, after a
-confirm. A new game starts everyone's view afresh, as 🧭 does: a box set
-up or reset, a rules game starting, named seats set or ended, or a new
-table shape or size (Chess, Draughts and Reversi share one size). A game can also name its **seats** (Light and Dark): players take
+confirm. A game that takes the table starts everyone's view afresh, as 🧭
+does: a box set up or reset, a rules game that names its seats or sets its
+own table (Chess, Go, Reversi), named seats ended (as a card game from 🎲
+ends a board game's), or a new table shape or size (Chess, Draughts and
+Reversi share one size). A game that keeps the table — Hold'em, Bridge,
+Cards Against Humanity, Turn order or the dealer picked on the free table —
+keeps every view, and so does a setup that is refused. A game can also name its **seats** (Light and Dark): players take
 them in order, the rest **watch** (👀 top right, with how to sit — or that
 every seat is taken; on a phone held sideways two small chips, "👀 2" and
 "👀 Watching", that a tap opens for a few seconds). Tap a seat label for its
@@ -419,7 +423,10 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   player's key, so nobody can grow it at will. The rest keep knocking and
   get in in the order they first knocked (a connection that stops knocking
   for 9 s, or leaves, loses its place), so fresh connections knocking
-  faster can't keep a newcomer out.
+  faster can't keep a newcomer out. A connection that has no player yet pays
+  for its actions as a player does, however many player ids it names (40,
+  then 20 a second, per connection), and the host's console counts a flood
+  of refused actions in one line a peer every 10 s, after its first five.
 - **Signaling health**: public Nostr relays are best-effort, so the status
   dot shows the truth — green with a player count when peers are connected,
   `● …` while searching, red `● ✕` when zero relays are reachable. A watchdog
@@ -513,7 +520,10 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   wrote after this one moved the table to IndexedDB (a tab of it left open
   across the deploy) is newer: it is resumed, and said so, never dropped;
   one that holds no table (that tab's own save failed, the browser's
-  storage full) leaves this table as it is, resumed with a warning. A browser that blocks IndexedDB runs the table unsaved, and
+  storage full) leaves this table as it is, resumed with a warning (and
+  with what this tab left pending over it). What was left pending over a
+  table that a save of the previous Card Table replaced goes with that
+  table. A browser that blocks IndexedDB runs the table unsaved, and
   says so (no fallback); it still hosts its room after a reload, by the host
   key. A save written by a newer Card Table (a tab left open across a
   deploy) is never resumed or overwritten: the older tab says "reload this

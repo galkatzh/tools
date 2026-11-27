@@ -1404,6 +1404,21 @@ export const groupIds = (a) => (Array.isArray(a?.ids) ? [...new Set(a.ids.slice(
  *  members a token, so a flood of group deletes costs what a flood of
  *  single ones does — anything else 1 (a group drag too, whatever its size). */
 export const floodCost = (a) => (a?.t === 'group' ? 1 + Math.floor(groupIds(a).length / 20) : 1);
+/** A token bucket: true while `key` may act at time `ts` (ms) — a burst of
+ *  `burst`, refilling at `perSec`, `cost` tokens an act. `map` keeps each
+ *  key's {n, at}. An act that costs more than the whole burst goes from a
+ *  full bucket and overdraws it: its sender waits the rest out before
+ *  acting again. The host's flood control (mayAct, notices, re-sends) and
+ *  the app's price of a connection that has no player yet (D318). */
+export function tokens(map, key, burst, perSec, cost, ts) {
+  const b = map.get(key) || { n: burst, at: ts };
+  b.n = Math.min(burst, b.n + ((ts - b.at) / 1000) * perSec);
+  b.at = ts;
+  map.set(key, b);
+  if (b.n < Math.min(cost, burst)) return false;
+  b.n -= cost;
+  return true;
+}
 /** Actions only the host may take: a guest's is refused with "🚫 Only the host can do that". */
 export const HOST_ACTIONS = Object.freeze(['size', 'setRules', 'table', 'loadBox', 'clear', 'setup', 'reset', 'endSeats']);
 /** Actions that take from or give to the actor's hand: a refusal re-sends it. */
@@ -2383,7 +2398,7 @@ export function createTable(host, env = {}) {
     return {
       pre: new Map(), json, rules: host.rules && { ...host.rules },
       table: host.table, seats: host.seats, zMax: host.zMax, boardSeq: host.boardSeq, guestDeckChars: host.guestDeckChars, lastSetup: host.lastSetup,
-      log: null, dirtyLog: dirty.log.length, effects: effects.length, runs: runs.slice(), marks, draws, hooks: jobHooks.length,
+      dirtyTable: dirty.table, dirtySeats: dirty.seats, log: null, dirtyLog: dirty.log.length, effects: effects.length, runs: runs.slice(), marks, draws, hooks: jobHooks.length,
       spots: [spotTB, spotSig, respot], taken: [],
     };
   }
@@ -2427,12 +2442,13 @@ export function createTable(host, env = {}) {
       } else if (k[0] === 'd') delete host.decks[id];
       else { delete host.boxes[id]; delete host.boxSrc[id]; boxIndex = null; tbVer++; }
     }
-    if (host.table !== f.table) dirty.table = true;
-    if (host.seats !== f.seats) dirty.seats = true;
     for (const k of ['table', 'seats', 'zMax', 'boardSeq', 'guestDeckChars', 'lastSetup']) {
       if (f[k] === undefined) delete host[k];
       else host[k] = f[k];
     }
+    // (and so is whether the next patch carries the table and the seats — no patch is built inside a job — so a
+    // refused setup sends no seats, which would start every player's view afresh: D318)
+    [dirty.table, dirty.seats] = [f.dirtyTable, f.dirtySeats];
     if (!f.rules) delete host.rules;
     else host.rules = { ...f.rules, ...Object.fromEntries(RULES_STATE.map((k) => [k, JSON.parse(f.json[k])])), secret: nullProto(JSON.parse(f.json.secret)) };
     if (f.log) host.log = f.log;
@@ -5087,19 +5103,8 @@ export function createTable(host, env = {}) {
   // --- flood control (host) -----------------------------------------------------
   const acts = new Map(), notes = new Map(), selects = new Map(); // player id → token bucket (see flood)
   const talk = new Map(); // player id → timestamps of recent chats/renames
-  /** Token bucket: true while `key` may act — a burst of `burst`, refilling
-   *  at `perSec`, `cost` tokens an act. `map` keeps each key's {n, at}. An
-   *  act that costs more than the whole burst goes from a full bucket and
-   *  overdraws it: its sender waits the rest out before acting again. */
-  function flood(map, key, burst, perSec, cost = 1) {
-    const ts = now(), b = map.get(key) || { n: burst, at: ts };
-    b.n = Math.min(burst, b.n + ((ts - b.at) / 1000) * perSec);
-    b.at = ts;
-    map.set(key, b);
-    if (b.n < Math.min(cost, burst)) return false;
-    b.n -= cost;
-    return true;
-  }
+  /** tokens(), on the table's clock. */
+  function flood(map, key, burst, perSec, cost = 1) { return tokens(map, key, burst, perSec, cost, now()); }
   /** Every action re-renders the host (the one authority): a guest may send
    *  bursts of 40 tokens (a drag, a reconnect's queue), then 20 per second;
    *  action `a` costs floodCost(a) of them (a `group`: 1 + ⌊N/20⌋) — while

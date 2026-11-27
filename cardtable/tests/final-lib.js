@@ -58,7 +58,8 @@ async function churner(env, invite, tag) {
     for (const t0 = Date.now(); !registered && !window.stopKnock && Date.now() - t0 < 60000; await new Promise((r) => setTimeout(r, 150))) {
       if (host) act.send({ _v: v, _pid: pid, _name: 'Churn', _key: 'c'.repeat(32), t: 'hello' }, { target: host });
     }
-    await room.leave();
+    // (Trystero's leave says goodbye to every peer, pending ones too, and throws if a channel isn't open yet)
+    try { await room.leave(); } catch (err) { console.error('churner: leaving the room', err.message); }
     return registered;
   }, { invite, relay: env.relayUrl, v: h.PROTO, pid });
   const done = (async () => {
@@ -73,6 +74,33 @@ async function churner(env, invite, tag) {
     await done;
   };
   return C;
+}
+
+/** A knocker: a RAW page joined once, as one connection that stays, which
+ *  knocks (a keyed hello, key 'k' × 32) as player `pid` every `ms` (none
+ *  with `ms` 0) once it has heard from the host. Returns {page, peer: its
+ *  connection's id, registered(): whether the host sent it a state addressed
+ *  to `pid`, flood(n): sends n keyed hellos at once, each under a fresh
+ *  player id, and resolves to the seconds they took, stop()}. */
+async function knocker(env, invite, pid, ms) {
+  const page = await h.rawPage(env, `Knock-${pid?.slice(-4) ?? 'flood'}`);
+  const peer = await page.evaluate(async ({ invite, relay, v, pid, ms }) => {
+    const { joinRoom, selfId } = await import('https://cdn.jsdelivr.net/npm/trystero@0.25.3/nostr/+esm');
+    const [, roomId, password] = invite.match(/#room~([0-9a-f]+)~([0-9a-f]+)/);
+    const room = joinRoom({ appId: 'gk-cardtable', password, rtcPolyfill: window.RawRTC, relayConfig: { urls: [relay] } }, roomId);
+    const act = room.makeAction('act'), state = room.makeAction('state'), K = (window.K = { host: null, registered: false });
+    state.onMessage = (m, { peerId }) => { K.host ||= peerId; K.registered ||= (typeof m.b === 'string' ? JSON.parse(m.b) : m).to === pid; }; // (only the host sends states)
+    const hello = (p) => act.send({ _v: v, _pid: p, _name: 'Knock', _key: 'k'.repeat(32), t: 'hello' }, { target: K.host });
+    if (ms) setInterval(() => K.host && hello(pid), ms);
+    K.flood = async (n) => {
+      const t0 = performance.now();
+      for (let k = 0; k < n; k++) { hello((0xa000000000 + k).toString(16).padStart(16, '0')); if (k % 500 === 499) await new Promise((r) => setTimeout(r, 0)); }
+      return (performance.now() - t0) / 1000;
+    };
+    await new Promise((r) => { const t = setInterval(() => { if (K.host) { clearInterval(t); r(); } }, 50); });
+    return selfId;
+  }, { invite, relay: env.relayUrl, v: h.PROTO, pid, ms });
+  return { page, peer, registered: () => page.evaluate(() => window.K.registered), flood: (n) => page.evaluate((n) => window.K.flood(n), n), stop: () => page.close() };
 }
 
 const APP = path.join(h.APP_ROOT, 'cardtable');
@@ -169,4 +197,4 @@ function table(tpl, names, o = {}) {
 const rects = (p, sel) => p.$$eval(sel, (els) => els.map((el) => { const r = el.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom, txt: el.textContent.trim().slice(0, 30) }; }));
 const overlapPast1px = (a, b) => a.l < b.r - 1 && b.l < a.r - 1 && a.t < b.b - 1 && b.t < a.b - 1;
 
-module.exports = { mallory, churner, table, rects, overlapPast1px };
+module.exports = { mallory, churner, knocker, table, rects, overlapPast1px };
