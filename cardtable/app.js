@@ -4989,21 +4989,26 @@ function renderGames() {
  *  (whose act() re-renders, hiding the strip; 'custom' renders itself).
  *  Switching away from a running game asks first: its state would be lost.
  *  (The free table only disables the rules: re-enabling keeps the state.)
- *  A card game (`cards`) over a board game — a box set up, or named seats —
+ *  A card game (`cards`) over a board game — a box set up, named seats, or
+ *  pieces on the table (a rules game's board outlives its ended seats) —
  *  takes the table, as a box game does: the board, its pieces and the named
  *  seats go (`clear`, `endSeats`), so every player is seated and dealt in;
  *  kept, the seats left the third player watching, dealt nothing (D311).
+ *  On the cleared table it starts afresh (`reset`), its own kept state
+ *  going too: a hand left in progress would refuse the new deal (D321).
  *  One that deals from a deck on the table (`deck`) gets a standard deck
  *  there, the cleared table holding none (D320). */
 function pickGame(k) {
   const game = GAMES.find((g) => g.k === k);
   if (game?.box || game?.clear) { pickCleared(game); return; }
+  const tplName = scriptName(RULES_TEMPLATES[k]), rules = T?.state.rules, seats = T?.state.seats;
+  const board = game?.cards && (T?.state.lastSetup || seats || Object.values(T?.state.items ?? {}).some((it) => it.k !== 'c' && it.k !== 'p'));
   // Another game's state (chips, scores, a hand) is discarded by setRules —
   // even while the rules are off ("Free table" keeps it for re-enabling).
-  // setRules keeps the state of a script with the same name: compare names too.
-  const tplName = scriptName(RULES_TEMPLATES[k]), rules = T?.state.rules, seats = T?.state.seats;
-  const lost = rules && rules.name !== tplName ? rules.name : '', board = game?.cards && (T?.state.lastSetup || seats);
-  if (board && !confirm(`Clear the table and start ${game.title}? The board, its pieces${seats ? ` and the named seats (${seats.map((s) => s.name).join(', ')})` : ''} go${lost ? `, with ${lost}'s game state` : ''}${game.deck ? '; a standard deck is put on the table' : ''}.`)) return;
+  // setRules keeps the state of a script with the same name — unless reset,
+  // as on a cleared table: compare names only when the table is kept.
+  const lost = rules && (board || rules.name !== tplName) ? rules.name : '';
+  if (board && !confirm(`Clear the table and start ${game.title}? The board${seats ? `, its pieces and the named seats (${seats.map((s) => s.name).join(', ')})` : ' and its pieces'} go${lost ? `, with ${lost}'s game state` : ''}${game.deck ? '; a standard deck is put on the table' : ''}.`)) return;
   if (!board && RULES_TEMPLATES[k] && lost && !confirm(rules.enabled
     ? `Stop ${rules.name}? Its game state (chips, scores, the hand in progress) will be lost.`
     : `Discard the kept ${rules.name} game state (chips, scores)?`)) return;
@@ -5015,7 +5020,7 @@ function pickGame(k) {
     if (board) act({ t: 'clear' });
     if (board && seats) act({ t: 'endSeats' });
     $('rules-code').value = RULES_TEMPLATES[k]; // the 📜 dialog shows what runs
-    act({ t: 'setRules', code: RULES_TEMPLATES[k], enabled: true });
+    act({ t: 'setRules', code: RULES_TEMPLATES[k], enabled: true, ...(board && { reset: true }) });
     // (after the new rules start: the old game's, a strict script's, would refuse the deck)
     if (board && game.deck) act({ t: 'addDeck', deck: standardDeck(false), x: TABLE_W / 2 - CARD_W / 2, y: TABLE_H / 2 - CARD_H / 2 });
   }
@@ -5527,7 +5532,7 @@ $('deck-form').addEventListener('submit', async (e) => {
  *  not save at all (no IndexedDB, or a save it couldn't read), said at boot. */
 function becomeHost(saved, unsaved) {
   noSave = unsaved || '';
-  let momentLost = false; // (said with the rest, in one toast: a second would replace it)
+  let momentLost = false; // (said in becomeHost's own notice: within the `behind` one, else on its own)
   if (saved?.newer) {
     // Mixed versions run for minutes after a deploy: this older tab must
     // never overwrite the newer save with a downgraded one. It still hosts

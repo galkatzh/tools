@@ -135,13 +135,17 @@ function needLog() {
   };
 }
 
-/** window.__toasts: every message the toast shows, as {at: Date.now(), msg}. */
+/** window.__toasts: every message the toast shows, as {at: Date.now(), msg}
+ *  — a notice each: the boot's notices are shown together, a line each
+ *  (app.js toast()), so each line is recorded on its own, and a check for
+ *  one notice holds however many others were up with it (D321). */
 function toastLog() {
   const T = (window.__toasts = []);
   document.addEventListener('readystatechange', () => {
     const el = document.getElementById('toast');
     if (document.readyState !== 'interactive' || !el) return;
-    new MutationObserver(() => T.push({ at: Date.now(), msg: el.textContent })).observe(el, { childList: true, characterData: true, subtree: true });
+    new MutationObserver(() => { const at = Date.now(); for (const msg of el.textContent.split('\n')) T.push({ at, msg }); })
+      .observe(el, { childList: true, characterData: true, subtree: true });
   });
 }
 

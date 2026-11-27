@@ -107,7 +107,7 @@ function savesFull() {
 // --- helpers -------------------------------------------------------------------------------
 const roomOf = (p) => p.evaluate(() => location.hash.match(/#room~([0-9a-f]+)/)[1]);
 const isHost = (p) => p.evaluate(() => !document.getElementById('size-sel').classList.contains('hidden'));
-const toasts = async (p, since = 0) => (await A.toastsSince(p, since)).flatMap((t) => t.split('\n'));
+const toasts = A.toastsSince; // (a notice an entry: toastLog records each line of a gathered toast)
 /** The notices page p's toast shows now, a line each ([] when hidden). */
 const onScreen = (p) => p.evaluate(() => { const el = document.getElementById('toast'); return el.classList.contains('hidden') ? [] : el.textContent.split('\n'); });
 const toasted = (p, re, ms = 15000) => L.until(async () => (await toasts(p)).some((t) => (typeof re === 'string' ? t === re : re.test(t))), ms, 150);

@@ -230,7 +230,8 @@ top of `core.js` and README "How it works".
   `tinyPngs`, `distinctPngs`, `bigDecks`, the `bomb`), `sha256`, `dataURL`,
   `imgDeck`; init scripts `hostWire` (hold, damage or swap the host's
   `asset` frames), `needLog`, `toastLog`, `decodeWatch`, `dropMissingNotes`,
-  `paceMonitor`, `longTasks`; page helpers `seat` (resolves once the page's
+  `paceMonitor`, `longTasks` (`toastLog`: `window.__toasts`, one entry per
+  notice, a gathered toast's lines each); page helpers `seat` (resolves once the page's
   view holds its own player: the host has registered it), `pileOf`, `addDeck`,
   `assetBytes`, `asked`, `stored`, `decodedBomb`, `startMoves`/`stopMoves`,
   `toastsSince`. **`img-lib.js`**: PNG, GIF, JPEG and WebP headers made in
@@ -3529,6 +3530,32 @@ before (served with `APP_ROOT`) and passes on this one.
   14 hidden tiles only a seat may see and Dominoes' rules; cancelled, the
   racks stay. The dialog waits are bounded (5 s), so on the commit before
   the checks fail rather than hang.
+
+## The final review's seal round 2 (D321)
+
+SPEC §9 D321: a card game from 🎲 knows a board game by the pieces on the
+table too, and starts afresh on the table it clears; toastLog records a
+notice an entry. Each new check fails on the commit before (served with
+`APP_ROOT`) and passes on this one.
+
+- **`t-final-play.js`** (1), after Hold'em's first New hand: 🎲 Backgammon
+  (a box with no rules: Hold'em is switched off, its hand kept), then 🎲
+  Hold'em — the confirm names "Hold'em (chips)'s game state" among what
+  goes, one 52-card deck is on the cleared table, no "Hand in progress"
+  refusal, and New hand deals all three (before: no deck, the refusal, the
+  hand still in progress, nothing dealt). Then Chess, End the named seats
+  accepted ("…32 pieces a seat owns will belong to nobody; Chess may not
+  go on without them."), then Hold'em — "The board and its pieces go, with
+  Chess's game state; a standard deck is put on the table", no piece left,
+  one deck, everyone dealt (before: "Stop Chess? …", the board kept, no
+  deck, nothing dealt).
+- **Mechanism change, no check weakened:** assets-lib's `toastLog` records
+  each line of a gathered toast as its own entry (it recorded the joined
+  text, so `includes(text)` missed a notice shown beside another — an exact
+  negative check such as t-final-compat (4)'s "with no warning" passed
+  whatever else was up). t-p1-review-store's `toasts`, which split each
+  recorded text itself, is now `A.toastsSince`; its (1) and (16) read three
+  gathered notices through it, so they fail if the recorder stops splitting.
 
 ## Storage and images (Phase 1B)
 

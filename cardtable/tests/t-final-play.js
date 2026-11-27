@@ -5,8 +5,10 @@
 //       host's seat menu ends the named seats on its own, asking first when
 //       seats own pieces (cancelled, nothing changes); a guest's endSeats
 //       is refused; a card game that deals from a deck gets one on the
-//       cleared table; a watcher's box never covers a seat label, a new game
-//       starts the view afresh — on a table of the same size too (chess
+//       cleared table, and starts afresh there — Hold'em's hand kept under
+//       Backgammon goes — and Chess's board is still a board once its named
+//       seats are ended (D321); a watcher's box never covers a seat label,
+//       a new game starts the view afresh — on a table of the same size too (chess
 //       zoomed, then Draughts: D317) — and the log follows its newest line
 //       when the hand bar comes back.
 //   (2) 🗑 of what holds many asks first (a bag of 28), as a group's does,
@@ -164,6 +166,48 @@ const itemsOf = (p, k) => P.viewOf(p, 'Object.keys(v.items).filter((id) => v.ite
   ok(await L.until(async () => { const s = await lastShown(); return s.txt.endsWith('after 2') && s.inView; }, 8000, 100), `the log still follows: its newest line is in view (${JSON.stringify(await lastShown())}): D313`);
   await L.act(ann, { t: 'rulesBtn', id: 'new' });
   ok(await P.waitView(ann, 'Object.values(v.players).every((pl) => pl.handCount === 2)', null, 15000), `New hand deals all three in (${JSON.stringify(await P.viewOf(ann, 'Object.values(v.players).map((pl) => pl.name + ":" + pl.handCount)'))})`);
+
+  /** What page p's toasts said since `k` (its __toasts index) of Hold'em's mid-hand refusal. */
+  const midHand = (p, k) => p.evaluate((k) => window.__toasts.slice(k).filter((t) => /Hand in progress/.test(t)), k);
+  /** The host's Hold'em stage (its rules state, kept or fresh). */
+  const stage = () => ann.evaluate(() => window.__ct.hostState().rules?.data?.stage ?? null);
+  /** Hold'em on a cleared table: no piece, one whole deck, and New hand deals all three (`what` says how it came). */
+  async function dealtAfresh(what) {
+    ok(await P.waitView(ann, "!v.seats && /Hold/.test(v.rules?.enabled && v.rules.name) && !Object.values(v.items).some((it) => it.k !== 'c' && it.k !== 'p') && Object.values(v.items).filter((it) => it.k === 'p' && it.n === 52).length === 1"),
+      `${what}: the board and its pieces gone, one standard deck of 52 on the table, as the confirm promised`);
+    ok(await stage() !== 'hand', `Hold'em starts afresh: no hand in progress (stage ${await stage()})`);
+    await L.act(ann, { t: 'rulesBtn', id: 'new' });
+    ok(await P.waitView(ann, 'Object.values(v.players).every((pl) => pl.handCount === 2)', null, 15000), `New hand deals all three in (${JSON.stringify(await P.viewOf(ann, 'Object.values(v.players).map((pl) => pl.name + ":" + pl.handCount)'))})`);
+  }
+
+  section("(1) Hold'em again over a box game that kept its hand: started afresh, with its deck (D321)");
+  {
+    ok(await stage() === 'hand', "(a hand of Hold'em in progress)");
+    ok(/Clear the table/.test(await pickGame(ann, 'backgammon') || ''), '🎲 Backgammon');
+    ok(await P.waitView(ann, 'v.table.w === 1480 && v.seats?.length === 2 && !v.rules?.enabled') && await stage() === 'hand', "Backgammon is set up; Hold'em is switched off, its hand kept (a box with no rules of its own)");
+    const k = await ann.evaluate(() => window.__toasts.length);
+    const asked = await pickGame(ann, 'holdem');
+    ok(asked === "Clear the table and start Texas Hold'em? The board, its pieces and the named seats (Light, Dark) go, with Hold'em (chips)'s game state; a standard deck is put on the table.", `the confirm says the kept hand goes too: "${asked}"`);
+    await dealtAfresh("Hold'em over Backgammon");
+    ok(!(await midHand(ann, k)).length, `and nothing refused the deck: no "Hand in progress" (${JSON.stringify(await midHand(ann, k))})`);
+  }
+
+  section("(1) Hold'em after Chess whose named seats were ended: the board still goes (D321)");
+  {
+    ok(/Clear the table/.test(await pickGame(ann, 'chess') || ''), '🎲 Chess');
+    ok(await P.waitView(ann, "v.seats?.length === 2 && /Chess/.test(v.rules?.enabled && v.rules.name) && Object.values(v.items).filter((it) => it.k === 'g').length === 33"), 'chess: the board and 32 men, White and Black');
+    const lab = (await P.labels(ann))[0];
+    const asked = new Promise((res) => ann.once('dialog', (d) => { res(d.message()); d.accept().catch((err) => console.error('dialog accept failed', err)); }));
+    await P.openMenu(ann, lab.text);
+    await P.pick(ann, 'End the named seats');
+    const q = await Promise.race([asked, ann.waitForTimeout(5000).then(() => 'nothing asked in 5 s')]);
+    ok(q === 'End the named seats (White, Black)? 32 pieces a seat owns will belong to nobody; Chess may not go on without them.', `asked, and accepted: "${q}"`);
+    ok(await P.waitView(ann, "!v.seats && /Chess/.test(v.rules?.enabled && v.rules.name) && Object.values(v.items).filter((it) => it.k === 'g').length === 33"), 'the seats are gone; Chess still runs, over its board (no box set up, no named seats: only the pieces say a board game is on)');
+    const pick = await pickGame(ann, 'holdem');
+    ok(pick === "Clear the table and start Texas Hold'em? The board and its pieces go, with Chess's game state; a standard deck is put on the table.", `the confirm says the board goes: "${pick}"`);
+    await dealtAfresh("Hold'em after Chess");
+    for (const [p, n] of everyone) ok(await seated(p), `${n}'s screen: all three sit`);
+  }
 
   section('(3) the 📜 dialog a guest reads follows the rules');
   await pickGame(ann, 'free');

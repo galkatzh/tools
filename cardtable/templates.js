@@ -1809,9 +1809,10 @@ export function goTemplate(n) {
 /** One entry per shipped template (k = its RULES_TEMPLATES key; `clear`: the
  *  game builds its own board, so it starts on a cleared table with a fresh
  *  state; `cards`: a card game that deals to every player, so over a board
- *  game — a box set up, or named seats — it clears the table and ends the
- *  named seats first, D311; `deck`: it deals from a standard deck on the
- *  table, so a table cleared for it gets one, D320), the box games (`box`:
+ *  game — a box set up, named seats, or pieces on the table — it clears the
+ *  table and ends the named seats first, then starts afresh, D311, D321;
+ *  `deck`: it deals from a standard deck on the table, so a table cleared
+ *  for it gets one, D320), the box games (`box`:
  *  a BOXES key — set up on a cleared table, with the box's own rules when
  *  it has some, else none), the free table (rules off) and a custom script
  *  (the 📜 dialog). */

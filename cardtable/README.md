@@ -231,11 +231,14 @@ saying what it costs: the pieces a seat owns belong to nobody once its seat
 is gone, a hidden piece only a seat may see is seen by no one — its player
 included — and the rules that run may not go on without the seats. A card
 game from 🎲 — Hold'em, Cards Against Humanity, Bridge, the simple dealer —
-started over a board game clears the table and ends its named seats, after
-a confirm, so everyone is dealt in; Hold'em, Bridge and the dealer get a
-standard deck on the cleared table to deal from (Cards Against Humanity
-brings its own). An offline player's seat waits for them. With
-ordinary seating, a watcher taps **Sit down**. A guest
+started over a board game (a box set up, named seats, or any piece on the
+table: Chess's board stays a board once its seats are ended) clears the
+table and ends its named seats, after a confirm, so everyone is dealt in;
+it starts afresh there, so a hand of Hold'em left in progress under a box
+game goes with the rest (the confirm says so). Hold'em, Bridge and the
+dealer get a standard deck on the cleared table to deal from (Cards
+Against Humanity brings its own). An offline player's seat waits for them.
+With ordinary seating, a watcher taps **Sit down**. A guest
 that loses the host for a minute reloads itself, as one that never found
 the host does.
 
