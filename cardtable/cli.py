@@ -168,15 +168,79 @@ class Bridge:
     def draw(self, pile=None): self.send(t='draw', id=pile)
     def btn(self, bid): self.send(t='btn', id=bid)
 
+    def roll(self, *ids):
+        """Rolls dice (ids) together, in one roll."""
+        self.send(t='roll', ids=list(ids))
+
+    def take(self, supply, x=None, y=None, hand=False):
+        """Takes a piece from a supply (an id or its type's name): onto the
+        table (at x, y, or beside it), or into the hand."""
+        self.send(t='take', id=supply, x=x, y=y, hand=hand)
+
+    def place(self, ref, addr):
+        """Puts item `ref` on a board's spot `addr` ('e4', 'bar', 'map:c3'):
+        an item id moves there; a supply (id or type name) hands out a piece
+        there."""
+        self.send(t='place', id=ref, at=addr)
+
+    def answer(self, aid, value):
+        """Answers the rules' question `aid` (see state['asks']) with `value`:
+        an option's index or label, an item id, an address, hand indices
+        ([0, 3] or '0,3'), a number — the tab turns it into the answer the
+        host checks."""
+        self.send(t='answer', id=aid, v=value)
+
+    def select(self, iid):
+        """Selects item `iid`: rules that want it may answer with a hint (state['hint'])."""
+        self.send(t='select', id=iid)
+
+    def seat(self, sid):
+        """Sits in named seat `sid`; '-' stands up to watch, '+' sits down
+        again (automatic seating)."""
+        if sid == '-':
+            self.send(t='seat', watch=True)
+        elif sid == '+':
+            self.send(t='seat', sit=True)
+        else:
+            self.send(t='seat', id=sid)
+
+    def setup(self, box, keep=False, rules=False):
+        """Host: sets game box `box` up (its id or name; see state['boxes']):
+        `keep` keeps the table's items, `rules` enables its rules — the host
+        still confirms a box's rules on the page unless the box is built in."""
+        self.send(t='setup', box=box, keep=keep, rules=rules)
+
+    def reset(self):
+        """Host: lays the box last set up (state['lastSetup']) out again."""
+        self.send(t='reset')
+
+    def group(self, op, ids, **kw):
+        """One op on many items, as one action (spec §4i): `op` is move (dx=,
+        dy=), rot (deg=: a turn by that much each), flip, roll (the dice among
+        them), lock, unlock, del, bag (bag=: an id or a name) or hide; `ids` a
+        list of item ids (or names). The host skips the members you may not
+        handle, and says how many in one notice."""
+        self.send(t='group', op=op, ids=list(ids), **kw)
+
+    def hide(self, *ids):
+        """Hides pieces (ids) from the others, at once (spec §5i): you alone
+        see their faces, and they are yours until revealed — dice under a cup."""
+        self.send(t='hide', ids=list(ids))
+
+    def reveal(self, iid):
+        """Turns hidden piece `iid` face up for everyone (a flip; never of a
+        piece face up already)."""
+        self.send(t='reveal', id=iid)
+
     def close(self):
         self._server.shutdown()
 
 
 # ---------------------------------------------------------------------------
 HELP = """commands:
-  hand                    your cards, with indices
-  table                   piles (with a face-up top card) and table cards
-  players                 who sits where (⏳ turn, ⭐ badges, 🏆)
+  hand                    your cards (and pieces), with indices
+  table                   cards, piles, pieces, supplies and bags
+  players                 who sits where (⏳ turn, ⭐ badges, 🏆, [seat], watching)
   log [n]                 last n log lines (default 15)
   buttons                 rules buttons you can press
   play <idx...> [--down]  play hand card(s) at your seat (--down = face down)
@@ -184,9 +248,28 @@ HELP = """commands:
   draw [pile]             draw from a pile (default: biggest; id or name)
   deal [pile] [--up]      deal the top card onto the table
   shuffle [pile]          shuffle a pile
-  flip|peek|tohand <id>   flip / peek at / take a table card
+  flip|peek|tohand <id>   flip / peek at / take a table card (peek: a face-down card, a pile's top, a hidden piece)
+  hide <id...>            hide pieces from the others: you alone see their faces (dice: a cup)
+  reveal <id>             turn a hidden piece face up for everyone
   move <id> <x> <y>       move an item (table coords)
+  roll <id...> | roll all roll dice together (all: every die you may handle, at most 20)
+  face <id> <f>           turn a piece to face f (0, 1, …; not a die)
+  take <supply> [x y] [--hand]  take a piece from a supply (id or type name)
+  pull <bag> [x y] [--hand]     draw a random piece from a bag (id or name)
+  split <id> [n] [x y]    take n (default 1) off a ×N stack
+  place <ref> <addr>      put a piece on a board's spot (e4, bar, map:c3); a supply (id or type name) hands one out there
+  bag <id> <bag>          put a piece into a bag
+  lock|unlock <id>        lock an item in place, or free it
+  claim|release <id>      make an item yours, or nobody's
+  group <op> <id,id,…> [dx dy | deg | bag]  one op on many items: move dx dy, rot deg, flip, roll, lock, unlock, del, bag <bag>, hide
+  seat <id> | seat - | seat +   sit in a named seat; - stand up to watch; + sit down again
   btn <id>                press a rules button (see "buttons")
+  asks                    the rules' questions waiting for you (new ones print as they come)
+  answer <id> <value>     answer one: an option's label or number, an item id, a spot, hand indices (0,3), a number
+  select <id>             select a piece: the rules may hint where it can go
+  boxes                   the game boxes on this table (📜 has rules; "set up": the last one set up)
+  setup <box> [--keep] [--rules]  host: set a box up (id or name); --keep keeps the table, --rules runs its rules
+  reset                   host: set the last box up again
   chat <msg>              say something (also "!commands" for rules scripts)
   quit"""
 
@@ -197,6 +280,67 @@ def fmt_card(c):
     if text and c['name'].startswith('“'):
         return f'“{text}”'
     return c['name'] + (f' — {text}' if text and text != c['name'] else '')
+
+
+def fmt_piece(p):
+    """A shown piece: its face's label (if any), then its type's name."""
+    return (f"{p['label']} " if p.get('label') is not None else '') + p['type']
+
+
+def fmt_top(t):
+    """A pile's top: a hidden piece, a shown piece, or a card."""
+    return 'hidden piece' if t.get('hidden') else fmt_piece(t) if 'type' in t else fmt_card(t)
+
+
+def fmt_hand(c):
+    """A hand entry: a card, or a piece (its label, then its type's name)."""
+    return fmt_piece({'label': c.get('label'), 'type': c['name']}) if c.get('kind') == 'piece' else fmt_card(c)
+
+
+def fmt_item(it):
+    """A table item as one line: every line keeps the `  [id] … @x,y` frame
+    (parsers split on it), then the owner, 🔒 and "🙈 hidden from others" (a
+    piece you see whose back the others see, spec §5i) when present (spec §2i)."""
+    at = f" @{it['x']},{it['y']}" + (f" at:{it['at']}" if it.get('at') else '')
+    tail = (f" owner:{it['owner']}" if it.get('owner') else '') + (' 🔒' if it.get('locked') else '') + (' 🙈 hidden from others' if it.get('hiddenFromOthers') else '')
+    n = f" ×{it['n']}" if it.get('n') else ''
+    head = f"  [{it['id']}] "
+    kind = it['kind']
+    if kind == 'card':
+        return f"{head}{fmt_card(it) if it['up'] else 'face-down card'}{at}{tail}"
+    if kind == 'pile':
+        top = f" top: {fmt_top(it['top'])}" if it.get('top') else ''
+        return f"{head}pile \"{it['name'] or 'stack'}\" ×{it['count']}{top}{at}{tail}"
+    if kind == 'bag':
+        return f"{head}bag \"{it['name']}\" ×{it['count']}{at}{tail}"
+    if kind == 'supply':
+        what = 'of hidden pieces' if it.get('hidden') else '? unknown piece' if it.get('unknown') else f"{fmt_piece(it)} ({it['pieceKind']})"
+        return f"{head}supply {what} ∞{at}{tail}"
+    if kind == 'hidden':
+        return f"{head}hidden piece{n}{at}{tail}"
+    if kind == 'board':
+        return f"{head}board {it['type']} (board){at}{tail}"
+    if kind == 'unknown':
+        return f"{head}? unknown piece{at}{tail}"
+    return f"{head}{fmt_piece(it)} ({kind}){n}{at}{tail}"
+
+
+def fmt_box(b, last):
+    """A game box as one line (spec §4i): its id, name, size, rules, where it comes from, and whether it was set up last."""
+    src = 'built in' if b.get('builtin') else {'upload': "a guest's upload", 'script': 'made by the rules'}.get(b['src'], "the host's")
+    n = b['types']
+    return (f"  [{b['id']}] {b['name']} — {n} piece type{'' if n == 1 else 's'}"
+            + (' · 📜 rules' if b.get('rules') else '') + f' · {src}' + (' · set up' if b['id'] == last else ''))
+
+
+NUMBER = re.compile(r'[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?')  # a finite number, as text
+
+
+def spot(args):
+    """Splits args into (the rest joined, x, y): x and y when the last two are numbers."""
+    if len(args) >= 2 and all(NUMBER.fullmatch(a) for a in args[-2:]):
+        return ' '.join(args[:-2]), float(args[-2]), float(args[-1])
+    return ' '.join(args), None, None
 
 
 def out(s):
@@ -218,6 +362,7 @@ def need(args, n, usage):
 
 
 STALE_S = 25  # a live tab re-polls at least every 20 s
+GROUP_USAGE = 'group <op> <id,id,…> [dx dy | deg | bag] — op: move dx dy, rot deg, flip, roll, lock, unlock, del, bag <bag>, hide'
 
 
 def run_cmd(bridge, line):
@@ -235,28 +380,38 @@ def run_cmd(bridge, line):
         raise SystemExit
     elif cmd == 'hand':
         for c in s['hand']:
-            out(f" {c['idx']:2}. {fmt_card(c)}")
+            out(f" {c['idx']:2}. {fmt_hand(c)}")
         if not s['hand']:
             out('(empty hand)')
     elif cmd == 'table':
         for it in s['items']:
-            if it['kind'] == 'pile':
-                top = f" top: {fmt_card(it['top'])}" if it.get('top') else ''
-                out(f"  [{it['id']}] pile \"{it['name'] or 'stack'}\" ×{it['count']}{top} @{it['x']},{it['y']}")
-            else:
-                out(f"  [{it['id']}] {fmt_card(it) if it['up'] else 'face-down card'} @{it['x']},{it['y']}")
+            out(fmt_item(it))
     elif cmd == 'players':
         for p in s['players']:
             mark = '🏆' if p.get('winner') else ('⏳' if p.get('turn') else ' ')
             you = ' (you)' if p['id'] == s['pid'] else ''
+            seat = f" [{p['seatId']}]" if p.get('seatId') else ''
             badge = f" {p['badge']}" if p.get('badge') else ''
+            watching = ' (watching)' if p.get('watching') else ''
             off = '' if p['online'] else ' (offline)'
-            out(f"  {mark} {p['name']}{you} 🂠{p['cards']}{badge}{off}")
+            out(f"  {mark} {p['name']}{you}{seat} 🂠{p['cards']}{badge}{watching}{off}")
     elif cmd == 'log':
         n = int(args[0]) if args else 15
         for e in s['log'][-n:]:
             sep = ':' if e.get('chat') else ''
             out(f"  {e['who']}{sep} {e['text']}")
+    elif cmd == 'boxes':
+        for b in s['boxes']:
+            out(fmt_box(b, s.get('lastSetup')))
+        if not s['boxes']:
+            out('(no game boxes on this table)')
+    elif cmd == 'setup':
+        box = ' '.join(a for a in args if not a.startswith('--'))
+        if not box:
+            raise ValueError('setup <box> [--keep] [--rules] — see "boxes"')
+        bridge.setup(box, '--keep' in args, '--rules' in args)
+    elif cmd == 'reset':
+        bridge.reset()
     elif cmd == 'buttons':
         for b in s['buttons']:
             out(f"  [{b['id']}] {b['label']}")
@@ -284,9 +439,74 @@ def run_cmd(bridge, line):
     elif cmd in ('flip', 'peek', 'tohand', 'btn'):
         need(args, 1, f'{cmd} <id>')
         bridge.send(t='toHand' if cmd == 'tohand' else cmd, id=args[0])
+    elif cmd == 'hide':
+        if not args:
+            raise ValueError('hide <id...>')
+        bridge.hide(*args)
+    elif cmd == 'reveal':
+        need(args, 1, 'reveal <id>')
+        bridge.reveal(args[0])
     elif cmd == 'move':
         x, y = need(args, 3, 'move <id> <x> <y>')
         bridge.send(t='move', id=args[0], x=x, y=y)
+    elif cmd == 'roll':
+        if not args:
+            raise ValueError('roll <id...> | roll all')
+        if args[0] == 'all':
+            bridge.send(t='roll', all=True)
+        else:
+            bridge.roll(*args)
+    elif cmd == 'face':
+        f, = need(args, 2, 'face <id> <f>')
+        bridge.send(t='face', id=args[0], f=f)
+    elif cmd in ('take', 'pull'):
+        ref, x, y = spot([a for a in args if a != '--hand'])
+        if not ref:
+            raise ValueError(f"{cmd} <{'supply' if cmd == 'take' else 'bag'}> [x y] [--hand]")
+        bridge.send(t=cmd, id=ref, x=x, y=y, hand='--hand' in args)
+    elif cmd == 'split':
+        nums = need(args, max(len(args), 1), 'split <id> [n] [x y]')
+        if len(nums) > 3:
+            raise ValueError('split <id> [n] [x y]')
+        n, x, y = ([None] + nums) if len(nums) == 2 else (nums + [None] * 3)[:3]
+        bridge.send(t='split', id=args[0], n=n, x=x, y=y)
+    elif cmd == 'place':
+        if len(args) < 2:
+            raise ValueError('place <ref> <addr>')
+        bridge.place(' '.join(args[:-1]), args[-1])
+    elif cmd == 'bag':
+        if len(args) < 2:
+            raise ValueError('bag <id> <bag>')
+        bridge.send(t='toBag', id=args[0], bag=' '.join(args[1:]))
+    elif cmd in ('lock', 'unlock'):
+        need(args, 1, f'{cmd} <id>')
+        bridge.send(t='lock', id=args[0], on=cmd == 'lock')
+    elif cmd == 'group':
+        op, ids, rest = (args + [''])[0], args[1] if len(args) > 1 else '', args[2:]
+        n = {'move': 2, 'rot': 1}.get(op)
+        try:
+            nums = [float(a) for a in rest] if n else []
+        except ValueError:
+            nums = None
+        if not ids or (n and (len(rest) != n or nums is None or not all(map(math.isfinite, nums)))) or (op == 'bag' and not rest):
+            raise ValueError(GROUP_USAGE)
+        kw = {'dx': nums[0], 'dy': nums[1]} if op == 'move' else {'deg': nums[0]} if op == 'rot' else {'bag': ' '.join(rest)} if op == 'bag' else {}
+        bridge.group(op, [i for i in ids.split(',') if i], **kw)
+    elif cmd in ('claim', 'release'):
+        need(args, 1, f'{cmd} <id>')
+        bridge.send(t='owner', id=args[0], to=s['pid'] if cmd == 'claim' else None)
+    elif cmd == 'seat':
+        need(args, 1, 'seat <id> | seat - | seat +')
+        bridge.seat(args[0])
+    elif cmd == 'asks':
+        bridge.send(t='asks')  # (the tab writes the text: the same in both REPLs)
+    elif cmd == 'answer':
+        if len(args) < 2:
+            raise ValueError('answer <id> <value>')
+        bridge.answer(args[0], ' '.join(args[1:]))
+    elif cmd == 'select':
+        need(args, 1, 'select <id>')
+        bridge.select(args[0])
     elif cmd == 'chat':
         bridge.chat(' '.join(args))
     else:
