@@ -114,9 +114,12 @@ Playing on the free table:
 - **Click** a piece for its bar: Flip, 🎲 Roll, ⟲ ⟳ (not on a die, nor on
   a plain round piece — a checker looks the same at any angle; an oval
   doesn't), ✂ Take 1, ✋ Hand,
-  🔒 Lock, 👤 Claim / Release (and the host's Give ▸), 🗑. Keys, with a
+  🔒 Lock, 👤 Claim / Release (and the host's Give ▸), 🗑 (a stack, pile or
+  bag of more than five, or a supply, asks first: the first press turns it
+  into "🗑 Remove all 52?" for a moment, the second removes). Keys, with a
   piece selected: **R** / **Shift+R** rotate, **F** flips, **Space** rolls,
-  **Delete** removes, **Esc** deselects (a held key acts once). On a touch
+  **Delete** removes (at once, without asking), **Esc** deselects (a held
+  key acts once). On a touch
   screen, press and hold a piece to read its face. The bar always matches
   the moment: when a seat changes hands, a seat-bound piece's bar changes
   with it.
@@ -183,7 +186,8 @@ Playing on the free table:
   largest turn step among them), **Flip**, **🎲 Roll** (their dice, as one
   throw, 20 at most), **🔒 / 🔓**, **👜 Into bag ▸** (the bags on the
   table; only pieces go in), **🗑** (more than five ask first: "🗑 Remove
-  8?"), and **✕**; so do **R**, **F**, **Space** and **Delete**. **Esc**, a click on the felt, ✕ or
+  8?"), and **✕**; so do **R**, **F**, **Space** and **Delete** (which
+  removes at once). **Esc**, a click on the felt, ✕ or
   ⬚ off clears them. One action for the lot means one log line ("moved 8
   items", "rolled 3 dice: 4 · 1 · 6"), and one notice for the members the
   table or the rules refused ("2 of 8 were skipped: That belongs to Bob").
@@ -222,10 +226,15 @@ every seat is taken; on a phone held sideways two small chips, "👀 2" and
 menu — *Sit here* on a free seat, *Stand up (watch)* on your own; the host
 also seats players and moves them to the watchers, and *End the named
 seats* goes back to ordinary seating, where every watcher sits (a label is
-a button for the keyboard too: Tab, then Enter). A card game from 🎲 —
-Hold'em, Cards Against Humanity, Bridge, the simple dealer — started over a
-board game clears the table and ends its named seats, after a confirm, so
-everyone is dealt in. An offline player's seat waits for them. With
+a button for the keyboard too: Tab, then Enter). Mid-game it asks first,
+saying what it costs: the pieces a seat owns belong to nobody once its seat
+is gone, a hidden piece only a seat may see is seen by no one — its player
+included — and the rules that run may not go on without the seats. A card
+game from 🎲 — Hold'em, Cards Against Humanity, Bridge, the simple dealer —
+started over a board game clears the table and ends its named seats, after
+a confirm, so everyone is dealt in; Hold'em, Bridge and the dealer get a
+standard deck on the cleared table to deal from (Cards Against Humanity
+brings its own). An offline player's seat waits for them. With
 ordinary seating, a watcher taps **Sit down**. A guest
 that loses the host for a minute reloads itself, as one that never found
 the host does.
@@ -513,10 +522,12 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   number), and the next
   start resumes from it, or, with the number alone, says "the last moment
   of play before the reload wasn't saved". Any page's upkeep, a few
-  seconds after it starts, removes what no start needs (the room's save
-  holds it, as it does wherever the write landed after all, or the room
-  has no table saved), and cuts a table left more than a day ago to its
-  move number: localStorage is shared by every app of the site. A save the previous Card Table
+  seconds after it starts, removes what no start needs (the table the
+  room's next start resumes holds it, as it does wherever the write landed
+  after all, or the room has no table to resume — its save, or with none
+  the previous Card Table's save that start moves over), and cuts a table
+  left more than a day ago to its move number: localStorage is shared by
+  every app of the site. A save the previous Card Table
   wrote after this one moved the table to IndexedDB (a tab of it left open
   across the deploy) is newer: it is resumed, and said so, never dropped;
   one that holds no table (that tab's own save failed, the browser's
@@ -527,7 +538,12 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   lost when the previous Card Table's save stands in for it, goes with that
   table; when no save of this Card Table exists at all (the move over, and
   every save since, failed), what was left pending was made over the
-  previous Card Table's save itself, and applies to it as above. A browser that blocks IndexedDB runs the table unsaved, and
+  previous Card Table's save itself, and applies to it: a whole table is
+  resumed, and a move number alone says that none of this table's saves
+  is in the browser's storage and the previous Card Table's save was
+  resumed. What a start says — a save that couldn't be moved, the table
+  it resumed, its first save failing — is shown together, one under the
+  other, never one notice replacing another. A browser that blocks IndexedDB runs the table unsaved, and
   says so (no fallback); it still hosts its room after a reload, by the host
   key. A save written by a newer Card Table (a tab left open across a
   deploy) is never resumed or overwritten: the older tab says "reload this

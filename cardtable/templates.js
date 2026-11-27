@@ -1810,13 +1810,15 @@ export function goTemplate(n) {
  *  game builds its own board, so it starts on a cleared table with a fresh
  *  state; `cards`: a card game that deals to every player, so over a board
  *  game — a box set up, or named seats — it clears the table and ends the
- *  named seats first, D311), the box games (`box`: a BOXES key — set up on a
- *  cleared table, with the box's own rules when it has some, else none), the
- *  free table (rules off) and a custom script (the 📜 dialog). */
+ *  named seats first, D311; `deck`: it deals from a standard deck on the
+ *  table, so a table cleared for it gets one, D320), the box games (`box`:
+ *  a BOXES key — set up on a cleared table, with the box's own rules when
+ *  it has some, else none), the free table (rules off) and a custom script
+ *  (the 📜 dialog). */
 export const GAMES = [
-  { k: 'holdem', cards: true, emoji: '🃏', title: "Texas Hold'em", short: "Hold'em", pitch: 'No-limit poker: chips, blinds, betting rounds, automatic showdown', players: '2–8 players' },
+  { k: 'holdem', cards: true, deck: true, emoji: '🃏', title: "Texas Hold'em", short: "Hold'em", pitch: 'No-limit poker: chips, blinds, betting rounds, automatic showdown', players: '2–8 players' },
   { k: 'cah', cards: true, emoji: '😈', title: 'Cards Against Humanity', pitch: 'Fill in the blank; the Card Czar crowns the funniest answer', players: '3+ players' },
-  { k: 'bridge', cards: true, emoji: '🤝', title: 'Bridge', pitch: 'Partners bid in the chat, then tricks, trumps, the dummy and scoring', players: '4 players' },
+  { k: 'bridge', cards: true, deck: true, emoji: '🤝', title: 'Bridge', pitch: 'Partners bid in the chat, then tricks, trumps, the dummy and scoring', players: '4 players' },
   { k: 'chess', emoji: '♟️', title: 'Chess', clear: true, pitch: 'Every rule enforced: pick a piece up to see its moves; castling, en passant, promotion, mate and the draws', players: '2 players' },
   { k: 'go9', emoji: '⚫', title: 'Go 9 × 9', short: 'Go 9×9', clear: true, pitch: 'Stones from your bowl onto the points; captures and ko enforced; pass twice, then Count', players: '2 players' },
   { k: 'go19', emoji: '⚪', title: 'Go 19 × 19', short: 'Go 19×19', clear: true, pitch: 'The full board: 361 points, area scoring, komi 6.5 (capture dead stones before passing)', players: '2 players' },
@@ -1826,7 +1828,7 @@ export const GAMES = [
   { k: 'dominoes', emoji: '🁫', title: 'Dominoes', box: 'dominoes', pitch: 'The draw game: seven tiles each in a rack only you can see, then match ends in turn', players: '2 players' },
   { k: 'ranks', emoji: '🎭', title: 'Veiled Ranks', box: 'ranks', pitch: 'Hidden units: deploy behind your screen, then attack — ranks show only in combat. Take the Banner', players: '2 players' },
   { k: 'turns', emoji: '🔁', title: 'Turn order', short: 'Turns', pitch: 'Any game you like, one player at a time', players: '2+ players' },
-  { k: 'dealer', cards: true, emoji: '🤵', title: 'Simple dealer', short: 'Dealer', pitch: 'A "Deal 1 to all" button and nothing enforced', players: 'any number' },
+  { k: 'dealer', cards: true, deck: true, emoji: '🤵', title: 'Simple dealer', short: 'Dealer', pitch: 'A "Deal 1 to all" button and nothing enforced', players: 'any number' },
   { k: 'free', emoji: '🖐', title: 'Free table', pitch: 'No rules: deal, move and flip cards however you like', players: 'any number' },
   { k: 'custom', emoji: '📜', title: 'Custom script…', short: 'Custom…', pitch: 'Write or paste your own rules', players: '' },
 ];

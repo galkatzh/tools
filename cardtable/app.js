@@ -92,15 +92,23 @@ function renderSizeSel() {
 
 // --- loud error reporting -------------------------------------------------
 let toastT = 0, pinned = ''; // pinned: a notice that stays up (it returns once later toasts expire)
+let toastLines = [], gatherTill = Infinity; // the notices up, [{msg, ok}]; until when a new one joins them (boot ends it)
 /** Shows a 5s notice: red (a problem) unless `ok` marks it as good news;
- *  `pin` keeps it up for good. */
+ *  `pin` keeps it up for good. A notice replaces the one up — except what
+ *  the boot says: from the page's start until 5 s after its role is decided
+ *  (boot), a notice joins those up, a ruled block each (at most 4), red if any is.
+ *  A boot's notices come within a few ms of each other (a save that couldn't
+ *  be moved, the table it resumed, its first save failing), and each
+ *  replaced the last unseen (D320). */
 function toast(msg, ok, pin) {
   if (pin) pinned = msg;
-  toastEl.classList.toggle('ok', !!ok);
-  toastEl.textContent = msg;
+  toastLines = Date.now() < gatherTill ? [...toastLines.filter((s) => s.msg !== msg), { msg, ok: !!ok }].slice(-4) : [{ msg, ok: !!ok }];
+  toastEl.classList.toggle('ok', toastLines.every((s) => s.ok));
+  // (a block per notice, ruled apart; the newlines between keep its textContent one line per notice)
+  toastEl.replaceChildren(...toastLines.flatMap((s, k) => [...(k ? ['\n'] : []), Object.assign(document.createElement('div'), { textContent: s.msg })]));
   toastEl.classList.remove('hidden');
   clearTimeout(toastT);
-  if (msg !== pinned) toastT = setTimeout(() => (pinned ? toast(pinned) : toastEl.classList.add('hidden')), 5000);
+  if (toastLines.length > 1 || msg !== pinned) toastT = setTimeout(() => { toastLines = []; if (pinned) toast(pinned); else toastEl.classList.add('hidden'); }, 5000);
 }
 window.addEventListener('error', (e) => { console.error(e.error || e.message); toast(`Error: ${e.message}`); });
 window.addEventListener('unhandledrejection', (e) => {
@@ -2008,11 +2016,14 @@ function pending(k = pendingKey()) {
 }
 /** Upkeep (D317): the saves left pending that no boot needs any more go —
  *  localStorage is shared by every app of the site, and each holds up to
- *  PENDING_MAX characters. One its room's save holds (at or past its seq:
- *  the write of the page that left committed), or whose room has no table
- *  saved to resume it on, is removed; a state left over PENDING_MS ago,
- *  ahead of its save (WebKit's, never committed), keeps its seq alone, so
- *  that room's next boot still says its last moment of play wasn't saved. */
+ *  PENDING_MAX characters. One the table its room's next boot resumes holds
+ *  (at or past its seq: the write of the page that left committed), or
+ *  whose room has no table to resume it on, is removed — that table is the
+ *  IndexedDB save's, or with no IndexedDB record the pre-Phase 1 save's,
+ *  which that boot migrates (store.savedSeqs, D320); a state left over
+ *  PENDING_MS ago, ahead of its table (WebKit's, never committed), keeps its
+ *  seq alone, so that room's next boot still says its last moment of play
+ *  wasn't saved. */
 async function sweepPending() {
   const keys = Object.keys(localStorage).filter((k) => k.startsWith('ct-pending-'));
   if (!keys.length) return;
@@ -2023,7 +2034,7 @@ async function sweepPending() {
     if (gone) localStorage.removeItem(k);
     else if (p?.state && !(now - num(p.at) < PENDING_MS)) localStorage.setItem(k, String(p.seq));
     else return;
-    console.info(`${k}: ${gone ? 'removed: its save holds it, or there is none' : 'its state, left over a day ago, cut to its seq'}`);
+    console.info(`${k}: ${gone ? (seqs[j] === null ? 'removed: its room has no table to resume' : `removed: the table its room resumes holds it (seq ${seqs[j]})`) : 'its state, left over a day ago, cut to its seq'}`);
   });
 }
 /** Host, at boot: [the save to resume, whether the last moment of play was
@@ -2033,14 +2044,19 @@ async function sweepPending() {
  *  is the moment lost, which becomeHost says with whatever else the boot
  *  says (D319) — unless the boot says worse (a save lost). Only over the
  *  table it was made over, whatever else the boot says of it (`behind`,
- *  D317): a pre-Phase 1 save that took the place of what IndexedDB held
- *  (`replaced`: its table, or its lost marker) is another table, so the
- *  mark goes, logged (D318). */
+ *  D317): over a pre-Phase 1 save that took the place of what IndexedDB
+ *  held (`replaced`) the mark goes, logged (D318) — with `fromOld` it was
+ *  made over the IndexedDB table that save replaced, another table; with
+ *  `behind`, over the save IndexedDB lost, which the boot says is gone. */
 function checkPending(save) {
   const p = pending();
   if (!p) return [save, false];
   localStorage.removeItem(pendingKey());
-  if (save?.replaced) { console.warn(`dropped the save left pending (seq ${p.seq}): it was made over the table this boot replaced with a previous Card Table's save`); return [save, false]; }
+  if (save?.replaced) {
+    console.warn(`dropped the save left pending (seq ${p.seq}): ${save.fromOld ? "it was made over the table this boot replaced with a previous Card Table's save"
+      : `it was made over this table's last save, which was lost (${save.behind}) — the boot says so, and resumes the previous Card Table's save`}`);
+    return [save, false];
+  }
   if (save?.lost || !(p.seq > num(save?.state?.seq))) return [save, false];
   if (save?.state && p.state?.items && p.state.players && p.state.seq === p.seq && num(p.state.v) <= STATE_V) {
     console.warn(`resumed the last moment of play from the save left pending (seq ${p.seq}; the save has ${save.state.seq})`);
@@ -2753,7 +2769,8 @@ const seatLabelAt = (x, y) => seatEls.find(({ el }) => {
  *  named seat → stand up; a free named seat → sit there (the host: or seat
  *  anyone there); another player's label → the host moves them to the
  *  watchers; and the host's way back from named seats to automatic seating,
- *  on any label (D311). Nothing that the host would refuse. */
+ *  on any label (D311), asked first when a game is in progress
+ *  (endSeatsAsk, D320). Nothing that the host would refuse. */
 function seatMenu(s) {
   const host = role === 'host', players = Object.entries(view.players);
   const end = host && view.seats ? [['End the named seats', { t: 'endSeats' }]] : [];
@@ -2787,10 +2804,25 @@ wrapEl.addEventListener('keydown', (e) => { // (a seat label focused: Enter or S
   openSeatMenu(s);
   seatMenuEl.querySelector('button')?.focus();
 });
+/** Host: what ending the named seats would cost the game in progress, as
+ *  the question to ask first — the pieces a seat owns become nobody's, the
+ *  hidden pieces only seats may see are seen by no one (their own players
+ *  included), and rules that run may count on the seats — or '' when it
+ *  costs nothing (D320). The 🎲 picker asks its own (pickGame). */
+function endSeatsAsk() {
+  const items = Object.values(T.state.items), rules = T.state.rules?.enabled && T.state.rules.name;
+  const n = (k, one) => `${k} ${one}${k === 1 ? '' : 's'}`;
+  const owned = items.filter((it) => it.owner?.startsWith('seat:')).length;
+  const unseen = items.filter((it) => it.up === false && it.vis?.length && it.vis.every((r) => r.startsWith('seat:'))).length;
+  const costs = [owned && `${n(owned, 'piece')} a seat owns will belong to nobody`, unseen && `${n(unseen, 'hidden piece')} only a seat may see will be seen by no one, its player included`].filter(Boolean);
+  if (!costs.length && !rules) return '';
+  return `End the named seats (${T.state.seats.map((s) => s.name).join(', ')})? ${[...costs, rules && `${rules} may not go on without them`].filter(Boolean).join('; ')}.`;
+}
 seatMenuEl.addEventListener('click', (e) => {
-  const k = e.target.closest('[data-k]')?.dataset.k;
-  if (k != null) act(seatMenuActs[k]);
+  const a = seatMenuActs[e.target.closest('[data-k]')?.dataset.k];
   closeSeatMenu();
+  if (a?.t === 'endSeats') { const ask = endSeatsAsk(); if (ask && !confirm(ask)) return; }
+  if (a) act(a);
 });
 // A tap on a seat label opens its menu (the labels let the pointer through:
 // the table's own handlers skip such a tap, see pointerup); any other click
@@ -4960,7 +4992,9 @@ function renderGames() {
  *  A card game (`cards`) over a board game — a box set up, or named seats —
  *  takes the table, as a box game does: the board, its pieces and the named
  *  seats go (`clear`, `endSeats`), so every player is seated and dealt in;
- *  kept, the seats left the third player watching, dealt nothing (D311). */
+ *  kept, the seats left the third player watching, dealt nothing (D311).
+ *  One that deals from a deck on the table (`deck`) gets a standard deck
+ *  there, the cleared table holding none (D320). */
 function pickGame(k) {
   const game = GAMES.find((g) => g.k === k);
   if (game?.box || game?.clear) { pickCleared(game); return; }
@@ -4969,7 +5003,7 @@ function pickGame(k) {
   // setRules keeps the state of a script with the same name: compare names too.
   const tplName = scriptName(RULES_TEMPLATES[k]), rules = T?.state.rules, seats = T?.state.seats;
   const lost = rules && rules.name !== tplName ? rules.name : '', board = game?.cards && (T?.state.lastSetup || seats);
-  if (board && !confirm(`Clear the table and start ${game.title}? The board, its pieces${seats ? ` and the named seats (${seats.map((s) => s.name).join(', ')})` : ''} go${lost ? `, with ${lost}'s game state` : ''}.`)) return;
+  if (board && !confirm(`Clear the table and start ${game.title}? The board, its pieces${seats ? ` and the named seats (${seats.map((s) => s.name).join(', ')})` : ''} go${lost ? `, with ${lost}'s game state` : ''}${game.deck ? '; a standard deck is put on the table' : ''}.`)) return;
   if (!board && RULES_TEMPLATES[k] && lost && !confirm(rules.enabled
     ? `Stop ${rules.name}? Its game state (chips, scores, the hand in progress) will be lost.`
     : `Discard the kept ${rules.name} game state (chips, scores)?`)) return;
@@ -4982,6 +5016,8 @@ function pickGame(k) {
     if (board && seats) act({ t: 'endSeats' });
     $('rules-code').value = RULES_TEMPLATES[k]; // the 📜 dialog shows what runs
     act({ t: 'setRules', code: RULES_TEMPLATES[k], enabled: true });
+    // (after the new rules start: the old game's, a strict script's, would refuse the deck)
+    if (board && game.deck) act({ t: 'addDeck', deck: standardDeck(false), x: TABLE_W / 2 - CARD_W / 2, y: TABLE_H / 2 - CARD_H / 2 });
   }
 }
 
@@ -5511,7 +5547,12 @@ function becomeHost(saved, unsaved) {
   } else if (saved?.fromOld) { // a tab of the previous Card Table played on after the move to IndexedDB (D303)
     console.warn('resumed the newer save a tab of the previous Card Table made');
     toast("Resumed this table's newer save, made by a tab of the previous Card Table");
-  } else if (momentLost) toast("The last moment of play before the reload wasn't saved (the browser closed first)");
+  } else if (momentLost) {
+    // (over a pre-Phase 1 save migrated with no IndexedDB record, a tab played on and none of its saves landed —
+    // its migration, the saves since and the lost marker all failed: not a last moment lost but all of it, D320)
+    toast(saved?.unrecorded ? "Couldn't resume this table's last save (it isn't in this browser's storage) — resumed the previous Card Table's save"
+      : "The last moment of play before the reload wasn't saved (the browser closed first)");
+  }
   const t = createTable(saved ? { ...saved.state, decks: saved.decks, boxes: saved.boxes, boxSrc: saved.boxSrc } : {}, { pid, hooks: pageHooks });
   if (saved) t.resume(myName); // re-sanitizes the decks and boxes, everyone else waits offline
   else t.open(myName); // the host's seat and a standard deck
@@ -5960,6 +6001,7 @@ async function boot() {
     role = 'guest';
     resumePaused();
   }
+  gatherTill = toastLines.length ? Date.now() + 5000 : 0; // (what the boot said stays together with what follows it for 5 s: the host's first save, starting now, may fail)
   if (window.innerWidth <= 820) sideEl.classList.add('hidden');
   layout();
   renderAll(null);
@@ -6013,4 +6055,4 @@ if (window.CARDTABLE_TEST) {
     },
   };
 }
-boot().catch((err) => { console.error('boot failed', err); toast(`Failed to start: ${err.message}`); });
+boot().catch((err) => { console.error('boot failed', err); toast(`Failed to start: ${err.message}`); gatherTill = Date.now() + 5000; });

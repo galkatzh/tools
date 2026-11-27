@@ -2,8 +2,10 @@
 //   (1) seats across games: a card game from 🎲 after a board game clears the
 //       board and ends its named seats (the confirm says so), so the third
 //       player, who watched draughts, sits and is dealt into Hold'em; the
-//       host's seat menu ends the named seats on its own; a guest's endSeats
-//       is refused; a watcher's box never covers a seat label, a new game
+//       host's seat menu ends the named seats on its own, asking first when
+//       seats own pieces (cancelled, nothing changes); a guest's endSeats
+//       is refused; a card game that deals from a deck gets one on the
+//       cleared table; a watcher's box never covers a seat label, a new game
 //       starts the view afresh — on a table of the same size too (chess
 //       zoomed, then Draughts: D317) — and the log follows its newest line
 //       when the hand bar comes back.
@@ -24,7 +26,8 @@ const h = require('./h');
 const L = require('./p1-lib');
 const P = require('./p2t-lib');
 const { pinch } = require('./p4s-lib');
-const { pickGame } = require('./stones-lib');
+const ST = require('./stones-lib');
+const { pickGame } = ST;
 const { ok, section } = h;
 
 /** Waits for page p to show a toast containing `txt`; its text, or ''. */
@@ -110,8 +113,21 @@ const itemsOf = (p, k) => P.viewOf(p, 'Object.keys(v.items).filter((id) => v.ite
     const r = await L.act(bo, { t: 'endSeats' });
     await bo.waitForTimeout(600);
     ok(await P.viewOf(ann, 'v.seats?.length') === 2, `Bo's own endSeats changes nothing (${JSON.stringify(r)})`);
+    // (Draughts' 24 men belong to Light and Dark: ending the seats asks first, D320)
+    const owners = () => P.viewOf(ann, "Object.values(v.items).filter((it) => it.owner?.startsWith('seat:')).length");
+    const answer = (p, yes) => new Promise((res) => p.once('dialog', (d) => { res(d.message()); (yes ? d.accept() : d.dismiss()).catch((err) => console.error('dialog answer failed', err)); }));
+    let asked = answer(ann, false);
+    await P.openMenu(ann, lab.text);
     await P.pick(ann, 'End the named seats');
-    ok(await P.waitView(ann, '!v.seats') && await seated(ann), 'the seats are gone and every player sits (the watcher too)');
+    const q = await Promise.race([asked, ann.waitForTimeout(5000).then(() => 'nothing asked in 5 s')]);
+    ok(q === 'End the named seats (Light, Dark)? 24 pieces a seat owns will belong to nobody.', `the host is asked first, told what it costs: "${q}"`);
+    await ann.waitForTimeout(600);
+    ok(await P.viewOf(ann, 'v.seats?.length') === 2 && await owners() === 24, 'cancelled, nothing changes: two seats, 24 men still theirs');
+    asked = answer(ann, true);
+    await P.openMenu(ann, lab.text);
+    await P.pick(ann, 'End the named seats');
+    await Promise.race([asked, ann.waitForTimeout(5000)]);
+    ok(await P.waitView(ann, '!v.seats') && await seated(ann), 'accepted: the seats are gone and every player sits (the watcher too)');
     ok(await P.waitView(ann, "v.log.some((e) => e.txt === 'removed the named seats: everyone sits where they like')"), 'the log says so');
   }
 
@@ -139,13 +155,10 @@ const itemsOf = (p, k) => P.viewOf(p, 'Object.keys(v.items).filter((id) => v.ite
 
   section('(1) a card game after a board game: the board and the named seats go');
   let asked = await pickGame(ann, 'holdem');
-  ok(asked === "Clear the table and start Texas Hold'em? The board, its pieces and the named seats (Light, Dark) go, with Chess's game state.", `the confirm says what goes (and the chess game's kept state): "${asked}"`);
+  ok(asked === "Clear the table and start Texas Hold'em? The board, its pieces and the named seats (Light, Dark) go, with Chess's game state; a standard deck is put on the table.", `the confirm says what goes (and the chess game's kept state), and that a deck comes: "${asked}"`);
   ok(await P.waitView(ann, "!v.seats && !Object.values(v.items).some((it) => it.k === 'g') && v.rules?.enabled && /Hold/.test(v.rules.name)"), "the board and its pieces are gone, the seats ended, Hold'em on");
   for (const [p, n] of everyone) ok(await seated(p), `${n}'s screen: all three sit`);
-  await ann.click('#add-deck-btn');
-  await ann.waitForSelector('#deck-dialog[open]');
-  await ann.click('#deck-add');
-  ok(await P.waitView(ann, "Object.values(v.items).some((it) => it.k === 'p')"), '(+ Deck: a standard deck)');
+  ok(await P.waitView(ann, "Object.values(v.items).filter((it) => it.k === 'p' && it.n === 52).length === 1"), "a standard deck of 52 is on the cleared table, for Hold'em to deal from — no + Deck needed (D320)");
   ok(await P.waitView(ann, "!document.body.classList.contains('nohand') || true") && await L.until(() => ann.evaluate(() => !document.body.classList.contains('nohand')), 10000, 100), "the hand bar comes back (a deck's cards go in hands)");
   for (let k = 0; k < 3; k++) await L.act(ann, { t: 'chat', msg: `after ${k}` });
   ok(await L.until(async () => { const s = await lastShown(); return s.txt.endsWith('after 2') && s.inView; }, 8000, 100), `the log still follows: its newest line is in view (${JSON.stringify(await lastShown())}): D313`);
@@ -178,6 +191,21 @@ const itemsOf = (p, k) => P.viewOf(p, 'Object.keys(v.items).filter((id) => v.ite
   await bo.tap('#action-bar [data-cmd="del"]');
   ok(!!await toastSays(bo, 'The tiles and the boneyard stay on the table'), 'the second sends it, and the rules refuse it: "The tiles and the boneyard stay on the table"');
   ok(await P.viewOf(ann, 'v.items[a]?.n', bag) === 28, 'the boneyard is still there, whole');
+  { // a game in progress: the host's End the named seats says what it would cost (D320)
+    let drew = false;
+    for (const [p] of everyone) if (!drew && (await ST.buttons(p)).includes('Draw 7')) drew = await ST.press(p, /^Draw 7$/);
+    const hidden = "Object.values(v.items).filter((it) => it.k === 'g' && 'b' in it).length === 14"; // (as the watcher sees them: both racks)
+    const wpage = (await Promise.all(everyone.map(async ([p]) => [p, await P.viewOf(p, 'v.players[me].seat == null')]))).find(([, w]) => w)?.[0];
+    ok(drew && !!wpage && await P.waitView(wpage, hidden), '(Draw 7: seven hidden tiles in each rack)');
+    const name = await P.viewOf(ann, 'v.rules.name'), lab = (await P.labels(ann))[0];
+    const asked = new Promise((res) => ann.once('dialog', (d) => { res(d.message()); d.dismiss().catch((err) => console.error('dialog dismiss failed', err)); }));
+    await P.openMenu(ann, lab.text);
+    await P.pick(ann, 'End the named seats');
+    const q = await Promise.race([asked, ann.waitForTimeout(5000).then(() => 'nothing asked in 5 s')]);
+    ok(q === `End the named seats (South, North)? 16 pieces a seat owns will belong to nobody; 14 hidden pieces only a seat may see will be seen by no one, its player included; ${name} may not go on without them.`, `mid-game, the host is told what ending the seats costs: "${q}"`);
+    await ann.waitForTimeout(600);
+    ok(await P.viewOf(ann, 'v.seats?.length') === 2 && await P.viewOf(wpage, hidden), 'cancelled: the seats and the hidden tiles stay as they were');
+  }
 
   section('(2) Reveal on a cupped die lifts its cup');
   await pickGame(ann, 'backgammon');

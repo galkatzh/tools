@@ -40,7 +40,19 @@
 //                 play was lost — never two, the second replacing the first (D319)
 //   (14) no record a legacy save and no IndexedDB record (its migration, and
 //                 every save since, failed): what a tab left pending over it
-//                 applies — a seq alone is said, a whole state resumed (D319)
+//                 applies — a seq alone is said, as the play since the move
+//                 lost and the previous Card Table's save resumed (D320); a
+//                 whole state is resumed (D319)
+//   (15) …swept  the same, after another page's upkeep ran first: the mark is
+//                 kept for that boot, not swept as "no table" (D320)
+//   (16) still full the lineage of (14) and of (7) played out — boot 1's
+//                 migration and saves fail, it plays on — with storage still
+//                 full at boot 2: what boot 2 says, the move that failed, the
+//                 table it resumed and its first save failing, is one toast,
+//                 a line each, all of it on screen; the console says why a
+//                 mark over the save IndexedDB lost goes (D320)
+// A toast holds a line per notice while the boot's are up (app.js toast,
+// D320): `toasts` reads the notices as lines.
 'use strict';
 const h = require('./h');
 const L = require('./p1-lib');
@@ -80,12 +92,25 @@ function fullUntilGC() {
     return del.apply(this, a);
   };
 }
+/** While sessionStorage.__savesFull is set (it outlives reloads), `saves`
+ *  refuses every put ('all': a lost marker too; 'data': all but a lost
+ *  marker) with a QuotaExceededError. */
+function savesFull() {
+  const { put } = IDBObjectStore.prototype;
+  IDBObjectStore.prototype.put = function (v, ...r) {
+    const m = sessionStorage.getItem('__savesFull');
+    if (m && this.name === 'saves' && (m === 'all' || typeof v?.lost !== 'string')) throw new DOMException('quota (test)', 'QuotaExceededError');
+    return put.call(this, v, ...r);
+  };
+}
 
 // --- helpers -------------------------------------------------------------------------------
 const roomOf = (p) => p.evaluate(() => location.hash.match(/#room~([0-9a-f]+)/)[1]);
 const isHost = (p) => p.evaluate(() => !document.getElementById('size-sel').classList.contains('hidden'));
-const toasts = (p) => A.toastsSince(p, 0);
-const toasted = (p, re, ms = 15000) => L.until(async () => (await toasts(p)).some((t) => re.test(t)), ms, 150);
+const toasts = async (p, since = 0) => (await A.toastsSince(p, since)).flatMap((t) => t.split('\n'));
+/** The notices page p's toast shows now, a line each ([] when hidden). */
+const onScreen = (p) => p.evaluate(() => { const el = document.getElementById('toast'); return el.classList.contains('hidden') ? [] : el.textContent.split('\n'); });
+const toasted = (p, re, ms = 15000) => L.until(async () => (await toasts(p)).some((t) => (typeof re === 'string' ? t === re : re.test(t))), ms, 150);
 /** Waits until the host's save holds the table it shows. */
 async function settled(p, ms = 15000) {
   const room = await roomOf(p);
@@ -137,6 +162,10 @@ async function toLegacy(p, env, room) {
   await p.evaluate(([room, s, d]) => { localStorage.setItem(`ct-save-${room}`, s); localStorage.setItem(`ct-decks-${room}`, d); }, [room, save, decks]);
 }
 const OLDER = /^Couldn't resume this table's last save \(browser storage is full\) — resumed an older one$/;
+const MOVE = /^Couldn't move this table's save to the new storage: .+$/, CANT = /^Can't save this table \(browser storage is full\) — reloading the host tab would reset it$/;
+const UNRECORDED = "Couldn't resume this table's last save (it isn't in this browser's storage) — resumed the previous Card Table's save";
+/** Whether notices `lines` are, in order, one per pattern of `res`. */
+const linesAre = (lines, res) => lines.length === res.length && res.every((re, k) => (typeof re === 'string' ? re === lines[k] : re.test(lines[k])));
 
 (async () => {
   const env = await h.start();
@@ -158,6 +187,9 @@ const OLDER = /^Couldn't resume this table's last save \(browser storage is full
     await pat.reload();
     await pat.waitForSelector('.item.pile .count', { timeout: 30000 });
     await okWait(toasted(pat, OLDER), 'a reload with storage still full says the last save is lost, and resumes an older one');
+    await okWait(toasted(pat, CANT), '(and its first save fails too)');
+    const up = await onScreen(pat);
+    ok(linesAre(up, [MOVE, OLDER, CANT]), `the toast on screen says all three, a line each: the move, the table resumed, the save failing — none replaced another (${JSON.stringify(up)}): D320`);
     ok((await legacyKeys(pat)).length === 2, 'the legacy keys survive it');
     await okWait(L.until(async () => (await faces(pat)) === 2 && (await L.view(pat)).log.some((e) => e.txt === 'resumed the table')), 'and the legacy table is back, its images drawn');
     ok(!(await toasts(pat)).some((t) => /started a fresh one/.test(t)), 'not a fresh table');
@@ -430,12 +462,14 @@ const OLDER = /^Couldn't resume this table's last save \(browser storage is full
     await q.context().close();
   })().catch((e) => ok(false, `(13) crashed: ${e.stack}`));
 
-  section('(14) a legacy save with no IndexedDB record: what was left pending over it applies (D319)');
+  section('(14) a legacy save with no IndexedDB record: what was left pending over it applies (D319, D320)');
   await (async () => {
     const q = await A.seat(env, 'Jun', env.url, [A.toastLog]);
     const room = await roomOf(q), invite = q.url(), pile = await waitPile(q, 'Standard');
     await L.act(q, { t: 'move', id: pile, x: 444, y: 333 });
     ok(await settled(q), 'the IndexedDB save holds the table (the pile at 444)');
+    // (whole: a state of a table its catalog lacks no deck of — flushSave's whole state over a table whose
+    // migration failed lists every deck as unsaved, so only a table with no deck could leave one; the code path is checked)
     for (const whole of [false, true]) {
       await q.goto(h.plain(env));
       const rec = await h.idb(q, 'saves', room), st = structuredClone(rec.state);
@@ -446,10 +480,11 @@ const OLDER = /^Couldn't resume this table's last save \(browser storage is full
       await back(q, invite);
       if (whole) {
         await okWait(L.until(async () => (await L.view(q)).items[pile]?.x === 555), 'a whole state left pending is resumed over the migrated table (the pile at 555)');
-        ok(!(await A.toastsSince(q, t0)).some((t) => /wasn't saved/.test(t)), 'and nothing says the moment was lost');
+        ok(!(await toasts(q, t0)).some((t) => /wasn't saved|Couldn't resume/.test(t)), 'and nothing says play was lost');
         ok(await settled(q) && (await h.idb(q, 'saves', room)).state.items[pile].x === 555, 'IndexedDB holds the resumed state');
       } else {
-        await okWait(toasted(q, /^The last moment of play before the reload wasn't saved \(the browser closed first\)$/), 'a seq alone ahead of the migrated table: the host is told the last moment was lost');
+        await okWait(toasted(q, UNRECORDED), `a seq alone ahead of the migrated table: the host is told none of its saves since the move is in storage, and the previous Card Table's save resumed ("${UNRECORDED}"): D320`);
+        ok(!(await toasts(q, t0)).some((t) => /wasn't saved \(the browser closed first\)/.test(t)), 'never "the last moment … (the browser closed first)": nothing closed early, every save failed');
         ok((await L.view(q)).items[pile]?.x === 444, 'and the migrated table is resumed (the pile at 444)');
         ok(await settled(q), '(saved again)');
       }
@@ -457,6 +492,59 @@ const OLDER = /^Couldn't resume this table's last save \(browser storage is full
     }
     await q.context().close();
   })().catch((e) => ok(false, `(14) crashed: ${e.stack}`));
+
+  section("(15) …and another page's upkeep keeps that mark for the room's boot (D320)");
+  await (async () => {
+    const q = await A.seat(env, 'Kai', env.url, [A.toastLog]);
+    const room = await roomOf(q), invite = q.url(), pile = await waitPile(q, 'Standard');
+    await L.act(q, { t: 'move', id: pile, x: 444, y: 333 });
+    ok(await settled(q), 'the IndexedDB save holds the table (the pile at 444)');
+    await q.goto(h.plain(env));
+    const seq = (await h.idb(q, 'saves', room)).state.seq, none = 'cd'.repeat(12);
+    await toLegacy(q, env, room);
+    await q.evaluate(([k, p, n]) => { localStorage.setItem(k, p); localStorage.setItem(`ct-pending-${n}`, '7'); }, [`ct-pending-${room}`, String(seq + 3), none]);
+    await q.goto(env.url); // (another Card Table page — a new table — whose upkeep sweeps 5 s after it settles)
+    await q.waitForSelector('.item.pile .count', { timeout: 30000 });
+    const mark = (r) => q.evaluate((k) => localStorage.getItem(k), `ct-pending-${r}`);
+    ok(await L.until(async () => (await mark(none)) === null, 20000, 250), "(its upkeep ran: it removed a mark whose room has no table at all)");
+    ok(await mark(room) === String(seq + 3), `and kept the mark ahead of the room's pre-Phase 1 table, which the room's next boot migrates (${await mark(room)})`);
+    await q.goto(h.plain(env));
+    await back(q, invite);
+    await okWait(toasted(q, UNRECORDED), "the room's boot says its play since the move wasn't kept");
+    ok((await L.view(q)).items[pile]?.x === 444 && await mark(room) === null, 'the legacy table resumed (the pile at 444), the mark gone');
+    await q.context().close();
+  })().catch((e) => ok(false, `(15) crashed: ${e.stack}`));
+
+  section('(16) storage still full at the next boot: all it says is on screen, a line each (D320)');
+  await (async () => {
+    for (const mode of ['all', 'data']) { // all: even the lost marker fails (14's lineage); data: lost markers land (7's)
+      const q = await A.seat(env, mode === 'all' ? 'Lia' : 'Mo', env.url, [A.toastLog, savesFull]);
+      const room = await roomOf(q), invite = q.url(), pile = await waitPile(q, 'Standard');
+      await L.act(q, { t: 'move', id: pile, x: 444, y: 333 });
+      ok(await settled(q), `${mode}: the IndexedDB save holds the table (the pile at 444)`);
+      await toLegacy(q, env, room);
+      await q.evaluate((m) => sessionStorage.setItem('__savesFull', m), mode);
+      await back(q, invite); // boot 1: the move to IndexedDB fails, so do its saves
+      await okWait(toasted(q, CANT), "boot 1: the move fails, and the table's saves too");
+      for (let k = 0; k < 3; k++) { await L.act(q, { t: 'move', id: pile, x: 500 + 20 * k, y: 333 }); await h.sleep(300); }
+      const seq = (await L.view(q)).seq, rec = await h.idb(q, 'saves', room);
+      ok(mode === 'all' ? rec === null : rec?.lost === 'browser storage is full', `(IndexedDB holds ${mode === 'all' ? 'no record' : 'a lost marker'}: ${JSON.stringify(rec)})`);
+      const n0 = q.logs.length;
+      await q.reload(); // boot 2, storage still full: it leaves a seq alone pending (the catalog was never saved)
+      await q.waitForSelector('.item.pile .count', { timeout: 30000 });
+      const want = [MOVE, mode === 'all' ? UNRECORDED : OLDER, CANT];
+      await okWait(L.until(async () => linesAre(await onScreen(q), want), 5000, 50), `boot 2's toast shows the move failing, ${mode === 'all' ? 'the play since it lost' : 'the last save lost'}, and the first save failing, a line each (${JSON.stringify(await onScreen(q))})`);
+      await h.sleep(2500);
+      ok(linesAre(await onScreen(q), want), `…still all three 2.5 s on — the save's failure joined them, replacing none (${JSON.stringify(await onScreen(q))})`);
+      ok((await L.view(q)).items[pile]?.x === 444, `the legacy table is resumed (the pile at 444; seq ${seq} was lost)`);
+      if (mode === 'data') {
+        const why = q.logs.slice(n0).find((l) => /dropped the save left pending/.test(l.text))?.text || '';
+        ok(/it was made over this table's last save, which was lost \(browser storage is full\) — the boot says so/.test(why), `the console says why the mark goes — over the save IndexedDB lost, not "another table" ("${why}"): D320`);
+      }
+      await q.evaluate(() => sessionStorage.removeItem('__savesFull'));
+      await q.context().close();
+    }
+  })().catch((e) => ok(false, `(16) crashed: ${e.stack}`));
 
   await env.done();
 })().catch(h.crash);

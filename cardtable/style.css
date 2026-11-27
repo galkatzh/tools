@@ -839,6 +839,7 @@ dialog ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 14px; }
   background: #dc2626; color: #fff; padding: 10px 16px; border-radius: 10px;
   box-shadow: 0 4px 14px #000a; max-width: 92%; font-size: 14px; text-align: center;
 }
+#toast > div + div { margin-top: 6px; padding-top: 6px; border-top: 1px solid #fff6; } /* the boot's notices, one block each (app.js toast) */
 #toast.ok { background: #059669; }
 /* the module-version check failed (app.js boot): nothing else runs */
 #skew-banner {

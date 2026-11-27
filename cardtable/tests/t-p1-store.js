@@ -55,14 +55,12 @@ const PICS = {
 const KEEPER = '({ name: "Keeper", setup(t) { t.data.moves ??= 0; t.public.moves ??= 0; }, onAction(t, a) { if (a.t === "move") t.public.moves = ++t.data.moves; } })';
 
 // --- init scripts (they run in the page, before the app) ------------------------
-/** Every toast the page shows, in order: window.__toasts (each text #toast is given). */
+/** Every toast the page shows, in order: window.__toasts (each notice toast()
+ *  gives #toast: the last of the blocks it writes — the boot's join those up, D320). */
 function toastLog() {
   window.__toasts = [];
-  const d = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent');
-  Object.defineProperty(Node.prototype, 'textContent', {
-    ...d,
-    set(v) { if (this.id === 'toast') window.__toasts.push(String(v)); d.set.call(this, v); },
-  });
+  const rc = Element.prototype.replaceChildren;
+  Element.prototype.replaceChildren = function (...n) { if (this.id === 'toast') window.__toasts.push(n.at(-1)?.textContent ?? ''); return rc.apply(this, n); };
 }
 /** Every IndexedDB put, in order: window.__puts = [{store, tx (one number per transaction), id, room, ts, lost}]. */
 function putLog() {
@@ -294,6 +292,8 @@ const okWait = async (promise, msg) => ok(await promise.then((x) => x !== false,
   // (b) the migration goes through
   await alice.goto(h.plain(env));
   await dropDB(alice); // the refused run left a lost marker behind: start from the legacy keys alone
+  // (and without the save its page left pending as it went: over the legacy table it says, rightly, that (a)'s play since the move wasn't kept — D320, t-p1-review-store (14))
+  await alice.evaluate((room) => localStorage.removeItem(`ct-pending-${room}`), room);
   ok(L.same(await legacyNow(), [legacySave, legacyDecks]), 'only the legacy save is left (an empty database)');
   await back(alice, invite);
   await okWait(L.until(async () => resumes((await L.view(alice)).log) > resumes(truth2.log)), 'the host resumes the legacy save');

@@ -3483,6 +3483,53 @@ before (served with `APP_ROOT`) and passes on this one.
   with this one (and 1 of 6, 0 of 6 at × 8). `t-final-compat.js` now
   checks that `seat` returns with Bob registered.
 
+## The final review's seal round 1 (D320)
+
+SPEC §9 D320: every boot notice in one toast, a line each; a pending seq
+over a pre-Phase 1 table with no IndexedDB record said as the play since
+the move lost; the upkeep keeps that mark; checkPending's console reason by
+case; End the named seats asks first mid-game; a card game that deals from
+a deck gets one on the table it clears. Each new check fails on the commit
+before (served with `APP_ROOT`) and passes on this one.
+
+- **Toasts at boot hold a line per notice** (app.js `toast`): from the
+  page's start until 5 s after its role is decided, a toast joins those up
+  (a `div` each in `#toast`, newlines between, so its text is a line per
+  notice), and toastLog records the joined text.
+  t-p1-review-store's `toasts` reads each recorded text as its lines
+  (`toasted` takes a RegExp or an exact string); `onScreen` reads what
+  `#toast` shows now, a line each — the check toastLog can't make (it
+  records a notice up for 15 ms as shown). `t-p1-store.js`'s `toastLog`
+  hooked the `textContent` setter on `#toast`, which `toast()` no longer
+  calls: it now records the newest notice of each `replaceChildren` on
+  `#toast` (one per `toast()`, as before). Its (2b) starts from the legacy
+  keys alone, as its comment says: the pending mark (a)'s page left as it
+  went is removed with the database (over the legacy table it says, rightly,
+  that (a)'s play since the move wasn't kept — the case (14) checks).
+- **`t-p1-review-store.js`** (1): at the storage-full reload, `#toast`
+  shows "Couldn't move…", "Couldn't resume … — resumed an older one" and
+  "Can't save this table (…)" (before: the last alone). (14): a seq alone
+  over the migrated table says "Couldn't resume this table's last save (it
+  isn't in this browser's storage) — resumed the previous Card Table's
+  save", never "(the browser closed first)"; its whole-state half is kept as
+  a check of the code path (only a table with no deck can leave a whole
+  state there). (15): another page's upkeep runs first — it removes a mark
+  whose room has no table at all and keeps this room's (before: removed,
+  and the room's boot said nothing). (16): (14)'s and (7)'s lineages played
+  out — boot 1's move and saves fail and it plays on, boot 2 with storage
+  still full — boot 2's toast shows the three lines, still 2.5 s on, the
+  pile back at 444; in (7)'s lineage the console says the mark went over
+  the save IndexedDB lost (before: "another table").
+- **`t-final-play.js`** (1): the host's End the named seats on Draughts
+  asks "End the named seats (Light, Dark)? 24 pieces a seat owns will
+  belong to nobody."; cancelled, nothing changes; accepted, everyone sits.
+  🎲 Hold'em over Backgammon says a standard deck is put on the table, and
+  it is there (52) for New hand — the test no longer adds one with + Deck.
+  (2): Dominoes after Draw 7 — the ask names the 16 seat-owned pieces, the
+  14 hidden tiles only a seat may see and Dominoes' rules; cancelled, the
+  racks stay. The dialog waits are bounded (5 s), so on the commit before
+  the checks fail rather than hang.
+
 ## Storage and images (Phase 1B)
 
 The host saves in IndexedDB (`../store.js`, database `cardtable` v1: stores
@@ -3556,8 +3603,10 @@ alpha colour for VP8X).
   new storage: …"; "The last moment of play before the reload wasn't saved
   (the browser closed first)" (over a table resumed `behind`, said in its
   toast instead: "Couldn't resume this table's last save (…) — resumed an
-  older one, and the last moment of play before the reload wasn't saved");
-  "This table was saved by a newer Card Table —
+  older one, and the last moment of play before the reload wasn't saved";
+  over a pre-Phase 1 table migrated with no IndexedDB record: "Couldn't
+  resume this table's last save (it isn't in this browser's storage) —
+  resumed the previous Card Table's save"); "This table was saved by a newer Card Table —
   reload this page" (pinned: it stays); "Browser storage was full — deleted
   N old table save(s) to keep this one"; "Can't save this table (browser
   storage is full) — reloading the host tab would reset it"; "Couldn't cache
