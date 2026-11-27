@@ -230,8 +230,9 @@ top of `core.js` and README "How it works".
   `tinyPngs`, `distinctPngs`, `bigDecks`, the `bomb`), `sha256`, `dataURL`,
   `imgDeck`; init scripts `hostWire` (hold, damage or swap the host's
   `asset` frames), `needLog`, `toastLog`, `decodeWatch`, `dropMissingNotes`,
-  `paceMonitor`, `longTasks` (`toastLog`: `window.__toasts`, one entry per
-  notice, a gathered toast's lines each); page helpers `seat` (resolves once the page's
+  `paceMonitor`, `longTasks` (`toastLog`: `window.__toasts`, an entry per
+  `toast()` call, the notice it added: one up beside it is not recorded
+  again, D322); page helpers `seat` (resolves once the page's
   view holds its own player: the host has registered it), `pileOf`, `addDeck`,
   `assetBytes`, `asked`, `stored`, `decodedBomb`, `startMoves`/`stopMoves`,
   `toastsSince`. **`img-lib.js`**: PNG, GIF, JPEG and WebP headers made in
@@ -3468,7 +3469,8 @@ before (served with `APP_ROOT`) and passes on this one.
   full) — resumed an older one, and the last moment of play before the
   reload wasn't saved", and it is the one shown (before: checkPending's
   toast and becomeHost's were set in one task, and only the second showed;
-  toastLog's MutationObserver sees only the last text a task sets). (14): a
+  toastLog's MutationObserver then saw only the last text a task set; since
+  D322 it records each `toast()` call). (14): a
   legacy save and no IndexedDB record (its migration, and every save since,
   failed) — a seq left pending ahead of it says the last moment was lost,
   and a whole state left pending is resumed and saved (before: the mark
@@ -3555,7 +3557,24 @@ notice an entry. Each new check fails on the commit before (served with
   negative check such as t-final-compat (4)'s "with no warning" passed
   whatever else was up). t-p1-review-store's `toasts`, which split each
   recorded text itself, is now `A.toastsSince`; its (1) and (16) read three
-  gathered notices through it, so they fail if the recorder stops splitting.
+  gathered notices through it, so they fail with a recorder of joined text.
+  (Splitting recorded every line up on each toast, so a gathered boot's
+  earlier notices came again with each later one: seal round 3 records
+  only what each toast added.)
+
+## The final review's seal round 3 (D322)
+
+SPEC §9 D322: assets-lib's `toastLog` records an entry per `toast()` call —
+the last node of the one `replaceChildren` each call makes (one
+MutationRecord per call in Chromium, WebKit and Firefox, even two calls in
+one task), the notice that call said — rather than every line up on each
+change, which recorded a gathered boot's notices [A, A, B, A, B, C] for
+three said once each. A test's own `textContent = ''` records nothing.
+Presence checks are unchanged; a count now counts what the app said.
+
+- **`t-p1-review-store.js`** (1) and (16), both lineages: the reloaded
+  page's log is exactly its three notices, once each, in order (round 2's
+  recorder: three failures, six entries each).
 
 ## Storage and images (Phase 1B)
 

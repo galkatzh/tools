@@ -135,17 +135,22 @@ function needLog() {
   };
 }
 
-/** window.__toasts: every message the toast shows, as {at: Date.now(), msg}
- *  — a notice each: the boot's notices are shown together, a line each
- *  (app.js toast()), so each line is recorded on its own, and a check for
- *  one notice holds however many others were up with it (D321). */
+/** window.__toasts: every notice the toast shows, as {at: Date.now(), msg},
+ *  an entry per app.js toast() call. Each call rewrites #toast with one
+ *  replaceChildren (one MutationRecord, even two calls in a task), the new
+ *  notice its last node — also when the boot's notices are shown together,
+ *  a block each (D320): so the record's last added node is what that call
+ *  said, and a notice is recorded once however many join it later (D322). A
+ *  test's own `textContent = ''` adds no node and records nothing. */
 function toastLog() {
   const T = (window.__toasts = []);
   document.addEventListener('readystatechange', () => {
     const el = document.getElementById('toast');
     if (document.readyState !== 'interactive' || !el) return;
-    new MutationObserver(() => { const at = Date.now(); for (const msg of el.textContent.split('\n')) T.push({ at, msg }); })
-      .observe(el, { childList: true, characterData: true, subtree: true });
+    new MutationObserver((recs) => {
+      const at = Date.now();
+      for (const { addedNodes: n } of recs) if (n.length) T.push({ at, msg: n[n.length - 1].textContent });
+    }).observe(el, { childList: true });
   });
 }
 

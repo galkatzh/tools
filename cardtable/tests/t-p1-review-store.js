@@ -52,7 +52,9 @@
 //                 a line each, all of it on screen; the console says why a
 //                 mark over the save IndexedDB lost goes (D320)
 // A toast holds a line per notice while the boot's are up (app.js toast,
-// D320): `toasts` reads the notices as lines.
+// D320): `onScreen` reads the one up as its lines; `toasts` is assets-lib's
+// log, an entry per notice said — (1) and (16) check that a gathered boot's
+// are each recorded once (D322).
 'use strict';
 const h = require('./h');
 const L = require('./p1-lib');
@@ -107,7 +109,7 @@ function savesFull() {
 // --- helpers -------------------------------------------------------------------------------
 const roomOf = (p) => p.evaluate(() => location.hash.match(/#room~([0-9a-f]+)/)[1]);
 const isHost = (p) => p.evaluate(() => !document.getElementById('size-sel').classList.contains('hidden'));
-const toasts = A.toastsSince; // (a notice an entry: toastLog records each line of a gathered toast)
+const toasts = A.toastsSince; // (an entry per toast() call: toastLog records the notice each one adds, D322)
 /** The notices page p's toast shows now, a line each ([] when hidden). */
 const onScreen = (p) => p.evaluate(() => { const el = document.getElementById('toast'); return el.classList.contains('hidden') ? [] : el.textContent.split('\n'); });
 const toasted = (p, re, ms = 15000) => L.until(async () => (await toasts(p)).some((t) => (typeof re === 'string' ? t === re : re.test(t))), ms, 150);
@@ -190,6 +192,8 @@ const linesAre = (lines, res) => lines.length === res.length && res.every((re, k
     await okWait(toasted(pat, CANT), '(and its first save fails too)');
     const up = await onScreen(pat);
     ok(linesAre(up, [MOVE, OLDER, CANT]), `the toast on screen says all three, a line each: the move, the table resumed, the save failing — none replaced another (${JSON.stringify(up)}): D320`);
+    const said = await toasts(pat);
+    ok(linesAre(said, [MOVE, OLDER, CANT]), `the toast log holds each once, in order — not again as the next joins it (${JSON.stringify(said)}): D322`);
     ok((await legacyKeys(pat)).length === 2, 'the legacy keys survive it');
     await okWait(L.until(async () => (await faces(pat)) === 2 && (await L.view(pat)).log.some((e) => e.txt === 'resumed the table')), 'and the legacy table is back, its images drawn');
     ok(!(await toasts(pat)).some((t) => /started a fresh one/.test(t)), 'not a fresh table');
@@ -536,6 +540,8 @@ const linesAre = (lines, res) => lines.length === res.length && res.every((re, k
       await okWait(L.until(async () => linesAre(await onScreen(q), want), 5000, 50), `boot 2's toast shows the move failing, ${mode === 'all' ? 'the play since it lost' : 'the last save lost'}, and the first save failing, a line each (${JSON.stringify(await onScreen(q))})`);
       await h.sleep(2500);
       ok(linesAre(await onScreen(q), want), `…still all three 2.5 s on — the save's failure joined them, replacing none (${JSON.stringify(await onScreen(q))})`);
+      const said = await toasts(q);
+      ok(linesAre(said, want), `the toast log holds each once, in order (${JSON.stringify(said)}): D322`);
       ok((await L.view(q)).items[pile]?.x === 444, `the legacy table is resumed (the pile at 444; seq ${seq} was lost)`);
       if (mode === 'data') {
         const why = q.logs.slice(n0).find((l) => /dropped the save left pending/.test(l.text))?.text || '';
