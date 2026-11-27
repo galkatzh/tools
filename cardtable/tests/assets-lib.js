@@ -205,7 +205,10 @@ function longTasks() {
 
 // --- page helpers ---------------------------------------------------------------------
 /** A seated player on its own context, with p1-lib's RTC hook and `scripts`
- *  (init scripts, in order); `logs` collects its console warnings and errors. */
+ *  (init scripts, in order); `logs` collects its console warnings and errors.
+ *  Resolves once its view holds its own player: a guest's first pile may be
+ *  the public snapshot that answers its anonymous knock, drawn before the
+ *  host registers its hello (and logs its join). */
 async function seat(env, name, url, scripts = [], o = {}) {
   const p = await env.page(name, o);
   for (const s of [L.rtcHook, ...scripts]) await p.addInitScript(s);
@@ -214,6 +217,7 @@ async function seat(env, name, url, scripts = [], o = {}) {
   await p.goto(url);
   await h.joinAs(p, name);
   await p.waitForSelector('.item.pile .count', { timeout: 30000 });
+  await p.waitForFunction(() => !!window.__ct.view().players[localStorage.getItem('ct-pid')], null, { timeout: 30000 });
   return p;
 }
 /** The id of the pile named `name` in page's view (null if none). */

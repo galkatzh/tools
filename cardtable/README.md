@@ -521,9 +521,13 @@ Built on the stack mapped out in [`../mdmath/COLLAB-DESIGN.md`](../mdmath/COLLAB
   across the deploy) is newer: it is resumed, and said so, never dropped;
   one that holds no table (that tab's own save failed, the browser's
   storage full) leaves this table as it is, resumed with a warning (and
-  with what this tab left pending over it). What was left pending over a
-  table that a save of the previous Card Table replaced goes with that
-  table. A browser that blocks IndexedDB runs the table unsaved, and
+  with what this tab left pending over it: a whole table resumed, a move
+  number named in that same warning). What was left pending over a
+  table that a save of the previous Card Table replaced, or over the table
+  lost when the previous Card Table's save stands in for it, goes with that
+  table; when no save of this Card Table exists at all (the move over, and
+  every save since, failed), what was left pending was made over the
+  previous Card Table's save itself, and applies to it as above. A browser that blocks IndexedDB runs the table unsaved, and
   says so (no fallback); it still hosts its room after a reload, by the host
   key. A save written by a newer Card Table (a tab left open across a
   deploy) is never resumed or overwritten: the older tab says "reload this

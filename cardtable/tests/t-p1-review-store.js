@@ -35,6 +35,12 @@
 //   (12) old+pending a newer legacy save, and a state left pending over the
 //                 IndexedDB table it replaces: the legacy save is resumed, the
 //                 mark dropped — even ahead by seq, it is another table's (D318)
+//   (13) …seq alone as (11), with a pending seq alone: one toast says both
+//                 that an older save was resumed and that the last moment of
+//                 play was lost — never two, the second replacing the first (D319)
+//   (14) no record a legacy save and no IndexedDB record (its migration, and
+//                 every save since, failed): what a tab left pending over it
+//                 applies — a seq alone is said, a whole state resumed (D319)
 'use strict';
 const h = require('./h');
 const L = require('./p1-lib');
@@ -403,6 +409,54 @@ const OLDER = /^Couldn't resume this table's last save \(browser storage is full
     ok(x === 222 && await q.evaluate((k) => localStorage.getItem(k) === null, `ct-pending-${room}`), `the newer save is on the table (the pile at ${x}, 222), never the state left pending over the table it replaced (555 ahead by seq), and the mark is gone`);
     await q.context().close();
   })().catch((e) => ok(false, `(12) crashed: ${e.stack}`));
+
+  section('(13) …and a seq alone left pending over that IndexedDB table is said in the same toast (D319)');
+  await (async () => {
+    const q = await A.seat(env, 'Ivo', env.url, [A.toastLog]);
+    const room = await roomOf(q), invite = q.url(), pile = await waitPile(q, 'Standard');
+    await L.act(q, { t: 'move', id: pile, x: 444, y: 333 });
+    ok(await settled(q), 'the IndexedDB save holds the table (the pile at 444)');
+    await q.goto(h.plain(env));
+    const rec = await h.idb(q, 'saves', room);
+    // (the last moment named a deck the saved catalog lacked, or was over PENDING_MAX: its seq alone)
+    await q.evaluate(([room, p, l]) => { localStorage.setItem(`ct-pending-${room}`, p); localStorage.setItem(`ct-save-${room}`, l); },
+      [room, String(rec.state.seq + 1), JSON.stringify({ ts: rec.ts + 60000, lost: 'browser storage is full' })]);
+    await back(q, invite);
+    const BOTH = /^Couldn't resume this table's last save \(browser storage is full\) — resumed an older one, and the last moment of play before the reload wasn't saved$/;
+    await okWait(toasted(q, BOTH), 'one toast says an older save was resumed, and that the last moment of play was lost');
+    const said = await toasts(q);
+    ok(said.length === 1 && BOTH.test(await q.textContent('#toast')), `and it is the toast shown, the only one (${JSON.stringify(said)})`);
+    ok((await L.view(q)).items[pile]?.x === 444, 'the IndexedDB table is resumed (the pile at 444)');
+    await q.context().close();
+  })().catch((e) => ok(false, `(13) crashed: ${e.stack}`));
+
+  section('(14) a legacy save with no IndexedDB record: what was left pending over it applies (D319)');
+  await (async () => {
+    const q = await A.seat(env, 'Jun', env.url, [A.toastLog]);
+    const room = await roomOf(q), invite = q.url(), pile = await waitPile(q, 'Standard');
+    await L.act(q, { t: 'move', id: pile, x: 444, y: 333 });
+    ok(await settled(q), 'the IndexedDB save holds the table (the pile at 444)');
+    for (const whole of [false, true]) {
+      await q.goto(h.plain(env));
+      const rec = await h.idb(q, 'saves', room), st = structuredClone(rec.state);
+      st.items[pile].x = 555; st.seq += 3; // (this tab played on: its migration and every save since failed, the lost marker too)
+      await toLegacy(q, env, room);
+      await q.evaluate(([k, p]) => localStorage.setItem(k, p), [`ct-pending-${room}`, whole ? JSON.stringify({ seq: st.seq, at: Date.now(), state: st }) : String(st.seq)]);
+      const t0 = Date.now();
+      await back(q, invite);
+      if (whole) {
+        await okWait(L.until(async () => (await L.view(q)).items[pile]?.x === 555), 'a whole state left pending is resumed over the migrated table (the pile at 555)');
+        ok(!(await A.toastsSince(q, t0)).some((t) => /wasn't saved/.test(t)), 'and nothing says the moment was lost');
+        ok(await settled(q) && (await h.idb(q, 'saves', room)).state.items[pile].x === 555, 'IndexedDB holds the resumed state');
+      } else {
+        await okWait(toasted(q, /^The last moment of play before the reload wasn't saved \(the browser closed first\)$/), 'a seq alone ahead of the migrated table: the host is told the last moment was lost');
+        ok((await L.view(q)).items[pile]?.x === 444, 'and the migrated table is resumed (the pile at 444)');
+        ok(await settled(q), '(saved again)');
+      }
+      ok(await q.evaluate((k) => localStorage.getItem(k) === null, `ct-pending-${room}`) && !(await legacyKeys(q)).length, 'the pending mark and the legacy keys are gone');
+    }
+    await q.context().close();
+  })().catch((e) => ok(false, `(14) crashed: ${e.stack}`));
 
   await env.done();
 })().catch(h.crash);

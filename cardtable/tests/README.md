@@ -230,7 +230,8 @@ top of `core.js` and README "How it works".
   `tinyPngs`, `distinctPngs`, `bigDecks`, the `bomb`), `sha256`, `dataURL`,
   `imgDeck`; init scripts `hostWire` (hold, damage or swap the host's
   `asset` frames), `needLog`, `toastLog`, `decodeWatch`, `dropMissingNotes`,
-  `paceMonitor`, `longTasks`; page helpers `seat`, `pileOf`, `addDeck`,
+  `paceMonitor`, `longTasks`; page helpers `seat` (resolves once the page's
+  view holds its own player: the host has registered it), `pileOf`, `addDeck`,
   `assetBytes`, `asked`, `stored`, `decodedBomb`, `startMoves`/`stopMoves`,
   `toastsSince`. **`img-lib.js`**: PNG, GIF, JPEG and WebP headers made in
   code, each with the byte count its size needs (`hdr`), for imageDims.
@@ -3415,7 +3416,8 @@ fails on the commit before (served with `APP_ROOT`) and passes on this one.
   moment of play before the reload wasn't saved (the browser closed first)".
 - **Mechanism change, no check weakened:** `t-final-compat.js` (1)'s
   "neither joined the table" names what the host's log added when it fails
-  (it failed once in a full run, with nothing to say why, and passed alone).
+  (it failed in full runs; the cause, Bob's own join read too early, is in
+  the D319 section below).
 
 ## The final review's fourth fix-up (D318)
 
@@ -3452,6 +3454,34 @@ alone) and passes on this one.
   picked now and then. `final-lib.js`'s `churner` logs a `room.leave()` that
   throws (Trystero says goodbye to a peer whose channel isn't open yet)
   instead of crashing the suite.
+
+## The final review's fifth fix-up (D319)
+
+SPEC §9 D319: what a boot says of a save left pending, in one toast; a
+pending mark over a pre-Phase 1 table migrated with no IndexedDB record;
+and `seat`'s wait. Each new check of t-p1-review-store fails on the commit
+before (served with `APP_ROOT`) and passes on this one.
+
+- **`t-p1-review-store.js`** (13): (11) with a seq alone left pending — one
+  toast says "Couldn't resume this table's last save (browser storage is
+  full) — resumed an older one, and the last moment of play before the
+  reload wasn't saved", and it is the one shown (before: checkPending's
+  toast and becomeHost's were set in one task, and only the second showed;
+  toastLog's MutationObserver sees only the last text a task sets). (14): a
+  legacy save and no IndexedDB record (its migration, and every save since,
+  failed) — a seq left pending ahead of it says the last moment was lost,
+  and a whole state left pending is resumed and saved (before: the mark
+  dropped, nothing said, the pile where the legacy save had it).
+- **Mechanism change, no check weakened:** assets-lib's `seat` resolves
+  once its page's view holds its own player. Its first pile can be the
+  public snapshot that answers a guest's anonymous knock, drawn before the
+  host registers the keyed hello, so `t-final-compat.js` (1) read the
+  host's log before Bob's own "joined the table" and failed "neither joined
+  the table" under load (three full runs). A probe that seats six guests
+  in turn, with the host's CPU throttled × 12, twice: 4 of 12 `seat`s
+  returned before the host logged the join with the old helper, 0 of 12
+  with this one (and 1 of 6, 0 of 6 at × 8). `t-final-compat.js` now
+  checks that `seat` returns with Bob registered.
 
 ## Storage and images (Phase 1B)
 
@@ -3524,7 +3554,10 @@ alpha colour for VP8X).
   saved; reloading the host tab will reset it" (a guest: "… — card images
   will download again next time"); "Couldn't move this table's save to the
   new storage: …"; "The last moment of play before the reload wasn't saved
-  (the browser closed first)"; "This table was saved by a newer Card Table —
+  (the browser closed first)" (over a table resumed `behind`, said in its
+  toast instead: "Couldn't resume this table's last save (…) — resumed an
+  older one, and the last moment of play before the reload wasn't saved");
+  "This table was saved by a newer Card Table —
   reload this page" (pinned: it stays); "Browser storage was full — deleted
   N old table save(s) to keep this one"; "Can't save this table (browser
   storage is full) — reloading the host tab would reset it"; "Couldn't cache

@@ -77,6 +77,7 @@ function dropPagehideSaves() {
   const alice = await A.seat(env, 'Alice', env.url, [A.toastLog]);
   const invite = alice.url();
   const bob = await A.seat(env, 'Bob', invite, [A.toastLog]);
+  ok((await L.view(alice)).players[await L.pidOf(bob)]?.online, "A.seat returns once the host has registered Bob (his join is in the host's log before (1) reads it)");
   const logOf = () => L.view(alice).then((v) => v.log.map((e) => e.txt).join('\n'));
 
   section('(1) the version gate names the side that must reload (D304)');

@@ -452,12 +452,13 @@ export async function prune(exceptRoom, need) {
   return 1;
 }
 
-/** This room's save: {state, decks, boxes, boxSrc, stored, behind?, migrated?, fromOld?} — `stored`: IndexedDB
+/** This room's save: {state, decks, boxes, boxSrc, stored, behind?, replaced?, fromOld?} — `stored`: IndexedDB
  *  holds exactly this (false: a migrated save that couldn't be written),
  *  `behind`: why the room's latest save can't be resumed, when this is an
- *  older copy of it (below), `migrated`: a pre-Phase 1 save, moved over by
- *  this load — not the IndexedDB table a save left pending was made over
- *  (app.js checkPending, D318) — {lost: why} when it can't be resumed at all,
+ *  older copy of it (below), `replaced`: a pre-Phase 1 save that took the
+ *  place of what IndexedDB held (its table, `fromOld`, or its lost marker,
+ *  `behind`) — not the table a save left pending was made over (app.js
+ *  checkPending, D318, D319) — {lost: why} when it can't be resumed at all,
  *  {newer: v} when a newer Card Table wrote it (never to be resumed or
  *  overwritten here), or null if this browser never hosted the room.
  *  Rejects when the save can't be READ (the caller must not write over what
@@ -526,12 +527,16 @@ function legacyNewer(room, ts) {
   localStorage.removeItem(`ct-decks-${room}`);
   return false;
 }
-/** The pre-Phase 1 save of `room` (localStorage), migrated (`migrated`):
- *  see loadSave. `behind`: why the room's later save can't be resumed (the
- *  migrated table says so), when IndexedDB holds a lost marker for it. `newer`: it replaces
+/** The pre-Phase 1 save of `room` (localStorage), migrated: see loadSave.
+ *  `behind`: why the room's later save can't be resumed (the migrated table
+ *  says so), when IndexedDB holds a lost marker for it. `newer`: it replaces
  *  an older IndexedDB save of the room, catalog and all (legacyNewer), and
  *  the result says so (`fromOld`) — or, holding no table to resume (a lost
- *  marker, unreadable), it replaces nothing and goes, said as {lost}. */
+ *  marker, unreadable), it replaces nothing and goes, said as {lost}. A
+ *  table migrated with either took the place of what IndexedDB held
+ *  (`replaced`); with neither, IndexedDB holds nothing for the room, so a
+ *  save a tab left pending was made over this very table (its migration,
+ *  and every save since, failed: D319). */
 async function migrateLegacy(room, behind, newer = false) {
   const key = `ct-save-${room}`, raw = localStorage.getItem(key);
   if (raw === null) return null;
@@ -562,16 +567,18 @@ async function migrateLegacy(room, behind, newer = false) {
     console.error('corrupt save discarded', err);
     out = { lost: `the save is unreadable: ${err.message}` };
   }
+  let stored = true;
   try {
     if (!out.lost) await writeSave(room, out.state, Object.entries(out.decks).map(([id, deck]) => ({ id, kind: 'deck', deck })), newer);
     else if (!newer) await markLost(room, out.lost, out.ts); // (a newer one never replaces the room's table with a lost marker: loadSave resumes that, behind)
     localStorage.removeItem(key);
     localStorage.removeItem(`ct-decks-${room}`);
   } catch (err) {
+    console.error("this table's save couldn't be moved to IndexedDB", err);
     opts.notify(`Couldn't move this table's save to the new storage: ${err.message}`);
-    return out.lost ? { lost: out.lost } : { ...out, stored: false, migrated: true, ...(newer && { fromOld: true }) };
+    stored = false;
   }
-  return out.lost ? { lost: out.lost } : { ...out, stored: true, migrated: true, ...(newer && { fromOld: true }) };
+  return out.lost ? { lost: out.lost } : { ...out, stored, ...((newer || behind) && { replaced: true }), ...(newer && { fromOld: true }) };
 }
 
 // --- assets ---------------------------------------------------------------------

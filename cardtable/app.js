@@ -2026,27 +2026,28 @@ async function sweepPending() {
     console.info(`${k}: ${gone ? 'removed: its save holds it, or there is none' : 'its state, left over a day ago, cut to its seq'}`);
   });
 }
-/** Host, at boot: the save to resume — `save`, or the state a save this
- *  tab left pending (flushSave) holds when it never committed and is ahead
- *  of `save` (the catalog it needs is in `save`'s: D308); a pending seq
- *  alone ahead of it is said, once — unless the boot says worse (a save
- *  lost). Only over the IndexedDB table it was made over, whatever else the
- *  boot says of it (`behind`, D317): a pre-Phase 1 save this boot moved over
- *  (`migrated`) replaced that table and its catalog, so the mark goes,
- *  logged (D318). */
+/** Host, at boot: [the save to resume, whether the last moment of play was
+ *  lost]. The save is `save`, or the state a save this tab left pending
+ *  (flushSave) holds when it never committed and is ahead of `save` (the
+ *  catalog it needs is in `save`'s: D308); a pending seq alone ahead of it
+ *  is the moment lost, which becomeHost says with whatever else the boot
+ *  says (D319) — unless the boot says worse (a save lost). Only over the
+ *  table it was made over, whatever else the boot says of it (`behind`,
+ *  D317): a pre-Phase 1 save that took the place of what IndexedDB held
+ *  (`replaced`: its table, or its lost marker) is another table, so the
+ *  mark goes, logged (D318). */
 function checkPending(save) {
   const p = pending();
-  if (!p) return save;
+  if (!p) return [save, false];
   localStorage.removeItem(pendingKey());
-  if (save?.migrated) { console.warn(`dropped the save left pending (seq ${p.seq}): it was made over this room's IndexedDB table, which this boot replaced with a previous Card Table's save`); return save; }
-  if (save?.lost || !(p.seq > num(save?.state?.seq))) return save;
+  if (save?.replaced) { console.warn(`dropped the save left pending (seq ${p.seq}): it was made over the table this boot replaced with a previous Card Table's save`); return [save, false]; }
+  if (save?.lost || !(p.seq > num(save?.state?.seq))) return [save, false];
   if (save?.state && p.state?.items && p.state.players && p.state.seq === p.seq && num(p.state.v) <= STATE_V) {
     console.warn(`resumed the last moment of play from the save left pending (seq ${p.seq}; the save has ${save.state.seq})`);
-    return { ...save, state: p.state };
+    return [{ ...save, state: p.state }, false];
   }
   console.warn(`the last save before the reload never committed (seq ${p.seq}; the save has ${save?.state?.seq ?? 'none'})`);
-  toast("The last moment of play before the reload wasn't saved (the browser closed first)");
-  return save;
+  return [save, true];
 }
 
 // --- rendering ------------------------------------------------------------
@@ -5490,6 +5491,7 @@ $('deck-form').addEventListener('submit', async (e) => {
  *  not save at all (no IndexedDB, or a save it couldn't read), said at boot. */
 function becomeHost(saved, unsaved) {
   noSave = unsaved || '';
+  let momentLost = false; // (said with the rest, in one toast: a second would replace it)
   if (saved?.newer) {
     // Mixed versions run for minutes after a deploy: this older tab must
     // never overwrite the newer save with a downgraded one. It still hosts
@@ -5498,18 +5500,18 @@ function becomeHost(saved, unsaved) {
     console.error(`this table was saved by a newer Card Table (state v${saved.newer}): not resuming it, and never writing over it`);
     toast('This table was saved by a newer Card Table — reload this page', false, true);
     saved = null;
-  } else if (!noSave) saved = checkPending(saved);
+  } else if (!noSave) [saved, momentLost] = checkPending(saved);
   if (saved?.lost) {
     console.error('this table could not be resumed:', saved.lost);
     toast(`Couldn't resume this table (${saved.lost}) — started a fresh one`);
     saved = null;
   } else if (saved?.behind) { // its last save is lost, an older copy isn't: a pre-Phase 1 save its migration couldn't replace, or this IndexedDB table, when the newer pre-Phase 1 save holds none (D317)
     console.error("this table's last save could not be resumed:", saved.behind);
-    toast(`Couldn't resume this table's last save (${saved.behind}) — resumed an older one`);
+    toast(`Couldn't resume this table's last save (${saved.behind}) — resumed an older one${momentLost ? ", and the last moment of play before the reload wasn't saved" : ''}`);
   } else if (saved?.fromOld) { // a tab of the previous Card Table played on after the move to IndexedDB (D303)
     console.warn('resumed the newer save a tab of the previous Card Table made');
     toast("Resumed this table's newer save, made by a tab of the previous Card Table");
-  }
+  } else if (momentLost) toast("The last moment of play before the reload wasn't saved (the browser closed first)");
   const t = createTable(saved ? { ...saved.state, decks: saved.decks, boxes: saved.boxes, boxSrc: saved.boxSrc } : {}, { pid, hooks: pageHooks });
   if (saved) t.resume(myName); // re-sanitizes the decks and boxes, everyone else waits offline
   else t.open(myName); // the host's seat and a standard deck
